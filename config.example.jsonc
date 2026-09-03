@@ -1,0 +1,143 @@
+{
+  "settings": {
+    "default": "a/gpt-5.6-terra",
+    "small_model": "a/gpt-5.6-luna" // e.g. for title summary
+  },
+  "providers": {
+    "a": {
+      "type": "response", // default type
+      "base_url": "https://example.com", // without /v1
+      "api_key": "sk-example", // or ${SOME_KEY}
+      "models": {
+        "grok-4.6": {
+          "name": "Grok 4.6",
+          "modalities": { "input": ["text", "image", "pdf"] },
+          "reasoning": true,
+          "limit": { "context": 500000, "output": 500000 },
+          "variants": ["low", "medium", "high", "xhigh"],
+          "cost": {
+            "input": 2,
+            "output": 6,
+            "cache_read": 0.5,
+            "context_over_200k": { "input": 4, "output": 12, "cache_read": 1 }
+          }
+        },
+        "qwen3.8-27b": {
+          "name": "Qwen 3.8 27B",
+          "modalities": { "input": ["text", "image"] },
+          "reasoning": true,
+          "variants": ["low", "medium", "xhigh"],
+          "cost": { "input": 0.4, "output": 3, "cache_read": 0.04 }
+        },
+        "grok-build-0.1": {
+          "name": "Grok Build 0.1",
+          "modalities": { "input": ["text", "image", "pdf"] },
+          "limit": { "context": 256000, "output": 256000 },
+          "cost": {
+            "input": 1,
+            "output": 2,
+            "cache_read": 0.2,
+            "context_over_200k": { "input": 2, "output": 4, "cache_read": 0.4 }
+          }
+        },
+        "claude-sonnet-4-6": {
+          "name": "Claude Sonnet 4.6",
+          "type": "anthropic", // override response type, endpoint suffix changed
+          "modalities": { "input": ["text", "image", "pdf"] },
+          "reasoning": true,
+          "variants": ["low", "medium", "high", "max"],
+          "cost": {
+            "input": 3,
+            "output": 15,
+            "cache_write": 3.75,
+            "cache_read": 0.3
+          }
+        },
+        "claude-opus-4-6": {
+          "name": "Claude Opus 4.6",
+          "type": "anthropic",
+          "modalities": { "input": ["text", "image", "pdf"] },
+          "reasoning": true,
+          "variants": ["low", "medium", "high", "xhigh", "max"],
+          "cost": {
+            "input": 5,
+            "output": 25,
+            "cache_write": 6.25,
+            "cache_read": 0.5
+          }
+        },
+        "gpt-5.6-luna": {
+          "name": "GPT-5.6 Luna",
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "limit": { "context": 400000, "output": 128000 },
+          "variants": ["minimal", "low", "medium", "high"],
+          "cost": {
+            "input": 0.2,
+            "output": 1.2,
+            "cache_read": 0.02,
+            "cache_write": 0.25,
+            "context_over_200k": {
+              "input": 0.4,
+              "output": 1.8,
+              "cache_read": 0.04
+            }
+          }
+        },
+        "gpt-5.6-terra": {
+          "name": "GPT-5.6 Terra",
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "limit": { "context": 400000, "output": 128000 },
+          "variants": ["minimal", "low", "medium", "high"],
+          "cost": {
+            "input": 2,
+            "output": 12,
+            "cache_read": 0.2,
+            "cache_write": 2.5,
+            "context_over_200k": { "input": 4, "output": 18, "cache_read": 0.4 }
+          }
+        },
+        "gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol",
+          "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+          },
+          "reasoning": true,
+          "limit": { "context": 400000, "output": 128000 },
+          "variants": ["minimal", "low", "medium", "high"],
+          "cost": {
+            "input": 4,
+            "output": 20,
+            "cache_read": 0.4,
+            "cache_write": 5,
+            "context_over_200k": { "input": 8, "output": 30, "cache_read": 0.8 }
+          }
+        },
+        "glm-5.3": {
+          "name": "GLM 5.3",
+          "modalities": { "input": ["text"] },
+          "reasoning": true,
+          "limit": { "context": 1000000, "output": 128000 },
+          "variants": ["low", "high", "max"],
+          "cost": { "input": 1.4, "output": 4.4, "cache_read": 0.26 }
+        },
+        "glm-5.3-flash": {
+          "name": "GLM 5.3 Flash",
+          "modalities": { "input": ["text", "image", "video", "pdf"] },
+          "reasoning": true,
+          "limit": { "context": 1000000, "output": 128000 },
+          "variants": ["low", "high", "max"],
+          "cost": { "input": 0.15, "output": 0.5, "cache_read": 0.03 }
+        }
+      }
+    }
+  }
+}

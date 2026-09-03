@@ -1,0 +1,135 @@
+use std::sync::Arc;
+
+use crate::provider::anthropic::AnthropicProvider;
+use crate::provider::gemini::GeminiProvider;
+use crate::provider::response::ResponseProvider;
+use crate::provider::Provider;
+use super::model::{AppConfig, ModelConfig, ProviderType};
+use super::parser::ConfigError;
+
+pub struct ResolvedModel {
+    pub provider_id: String,
+    pub model_id: String,
+    pub full_spec: String,
+    pub model_config: ModelConfig,
+    pub provider: Arc<dyn Provider>,
+    pub selected_variant: Option<String>,
+}
+
+impl std::fmt::Debug for ResolvedModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedModel")
+            .field("provider_id", &self.provider_id)
+            .field("model_id", &self.model_id)
+            .field("full_spec", &self.full_spec)
+            .field("model_config", &self.model_config)
+            .field("provider_name", &self.provider.name())
+            .field("selected_variant", &self.selected_variant)
+            .finish()
+    }
+}
+
+impl AppConfig {
+    /// 根据模型规格标识（如 "a/gpt-5.6-terra"）解析出对应的 Provider 与配置
+    pub fn resolve_model(
+        &self,
+        spec: &str,
+        requested_variant: Option<&str>,
+    ) -> Result<ResolvedModel, ConfigError> {
+        let (provider_id, model_id) = if let Some((p, m)) = spec.split_once('/') {
+            (p.to_string(), m.to_string())
+        } else {
+            // 若没有指定 provider 前缀，尝试从各 provider 中查找该 model
+            let mut found = None;
+            for (p_id, p_cfg) in &self.providers {
+                if p_cfg.models.contains_key(spec) {
+                    found = Some((p_id.clone(), spec.to_string()));
+                    break;
+                }
+            }
+            found.ok_or_else(|| ConfigError::ModelNotFound(spec.to_string()))?
+        };
+
+        let provider_cfg = self
+            .providers
+            .get(&provider_id)
+            .ok_or_else(|| ConfigError::ModelNotFound(format!("Provider '{provider_id}' not found")))?;
+
+        let model_cfg = provider_cfg
+            .models
+            .get(&model_id)
+            .ok_or_else(|| {
+                ConfigError::ModelNotFound(format!(
+                    "Model '{model_id}' not found under provider '{provider_id}'"
+                ))
+            })?
+            .clone();
+
+        // 校验或确定推理强度档位 (Variant)
+        let selected_variant = if let Some(req_var) = requested_variant {
+            if let Some(valid_vars) = &model_cfg.variants {
+                if !valid_vars.iter().any(|v| v == req_var) {
+                    return Err(ConfigError::InvalidVariant {
+                        variant: req_var.to_string(),
+                        model: model_id.clone(),
+                        valid: valid_vars.clone(),
+                    });
+                }
+            }
+            Some(req_var.to_string())
+        } else if let Some(valid_vars) = &model_cfg.variants {
+            // 默认优先选择 medium 或首选档位
+            if valid_vars.iter().any(|v| v == "medium") {
+                Some("medium".to_string())
+            } else {
+                valid_vars.first().cloned()
+            }
+        } else {
+            None
+        };
+
+        // 计算实际生效的 ProviderType（支持模型级 override）
+        let effective_type = model_cfg.effective_type(provider_cfg.provider_type);
+
+        // 规范化 Base URL（针对各 API 标准端点添加后缀）
+        let base_url = provider_cfg.base_url.trim_end_matches('/');
+        let api_key = &provider_cfg.api_key;
+
+        let provider_inst: Arc<dyn Provider> = match effective_type {
+            ProviderType::Response => {
+                let url = if base_url.ends_with("/v1") {
+                    base_url.to_string()
+                } else {
+                    format!("{base_url}/v1")
+                };
+                Arc::new(ResponseProvider::new(api_key).with_base_url(url))
+            }
+            ProviderType::Anthropic => {
+                let url = if base_url.ends_with("/v1") {
+                    base_url.to_string()
+                } else {
+                    format!("{base_url}/v1")
+                };
+                Arc::new(AnthropicProvider::new(api_key).with_base_url(url))
+            }
+            ProviderType::Gemini => {
+                let url = if base_url.ends_with("/v1beta") {
+                    base_url.to_string()
+                } else {
+                    format!("{base_url}/v1beta")
+                };
+                Arc::new(GeminiProvider::new(api_key).with_base_url(url))
+            }
+        };
+
+        let full_spec = format!("{provider_id}/{model_id}");
+        Ok(ResolvedModel {
+            provider_id,
+            model_id,
+            full_spec,
+            model_config: model_cfg,
+            provider: provider_inst,
+            selected_variant,
+        })
+    }
+}

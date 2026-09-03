@@ -1,0 +1,396 @@
+use async_trait::async_trait;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+
+use crate::model::{
+    AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall,
+    ToolDefinition, TurnMeta,
+};
+use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
+
+pub struct AnthropicProvider {
+    client: reqwest::Client,
+    api_key: String,
+    base_url: String,
+}
+
+impl AnthropicProvider {
+    pub fn new(api_key: impl Into<String>) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            api_key: api_key.into(),
+            base_url: "https://api.anthropic.com/v1".into(),
+        }
+    }
+
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.base_url = base_url.into();
+        self
+    }
+
+    /// 将 Session 转换为符合 Anthropic Messages API 的请求体（保留 thinking 签名并注入缓存断点）
+    pub fn build_request_body(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> serde_json::Value {
+        let mut api_tools: Vec<serde_json::Value> = Vec::new();
+        for tool in tools {
+            api_tools.push(serde_json::json!({
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.parameters,
+            }));
+        }
+
+        let mut system_text = String::new();
+        let mut messages_payload: Vec<serde_json::Value> = Vec::new();
+
+        // 收集所有 turn 下的消息
+        let mut flattened_msgs = Vec::new();
+        for turn in &session.turns {
+            for msg in &turn.messages {
+                flattened_msgs.push(msg);
+            }
+        }
+
+        let total_msgs = flattened_msgs.len();
+        for (i, msg) in flattened_msgs.iter().enumerate() {
+            let is_last_user_turn = i + 1 == total_msgs && msg.role == Role::User;
+            let should_cache = msg.meta.anthropic.as_ref().map(|a| a.ephemeral_cache).unwrap_or(false)
+                || is_last_user_turn;
+
+            match msg.role {
+                Role::System => {
+                    system_text.push_str(&msg.text_content());
+                }
+                Role::User => {
+                    let mut content_blocks = Vec::new();
+                    for part in &msg.parts {
+                        match part {
+                            ContentPart::Text { text, .. } => {
+                                let mut block = serde_json::json!({
+                                    "type": "text",
+                                    "text": text,
+                                });
+                                if should_cache {
+                                    block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                                }
+                                content_blocks.push(block);
+                            }
+                            ContentPart::Image { source, .. } => {
+                                match source {
+                                    crate::model::MediaSource::Base64 { data, mime_type } => {
+                                        content_blocks.push(serde_json::json!({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": mime_type,
+                                                "data": data,
+                                            }
+                                        }));
+                                    }
+                                    crate::model::MediaSource::Url { url } => {
+                                        content_blocks.push(serde_json::json!({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "url",
+                                                "url": url,
+                                            }
+                                        }));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    messages_payload.push(serde_json::json!({
+                        "role": "user",
+                        "content": content_blocks,
+                    }));
+                }
+                Role::Assistant => {
+                    let mut content_blocks = Vec::new();
+                    for part in &msg.parts {
+                        match part {
+                            ContentPart::Reasoning { content, signature } => {
+                                // 核心原生优势：将带数字签名的 thinking 块原样带回，防止被 API 拒绝
+                                let mut block = serde_json::json!({
+                                    "type": "thinking",
+                                    "thinking": content,
+                                });
+                                if let Some(sig) = signature {
+                                    block["signature"] = serde_json::json!(sig);
+                                }
+                                content_blocks.push(block);
+                            }
+                            ContentPart::Text { text, .. } => {
+                                content_blocks.push(serde_json::json!({
+                                    "type": "text",
+                                    "text": text,
+                                }));
+                            }
+                            ContentPart::ToolCall(call) => {
+                                let args_val = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                                    .unwrap_or_else(|_| serde_json::json!({}));
+                                content_blocks.push(serde_json::json!({
+                                    "type": "tool_use",
+                                    "id": call.id,
+                                    "name": call.name,
+                                    "input": args_val,
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+                    messages_payload.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": content_blocks,
+                    }));
+                }
+                Role::Tool => {
+                    let mut content_blocks = Vec::new();
+                    for part in &msg.parts {
+                        if let ContentPart::ToolResult(res) = part {
+                            let mut block = serde_json::json!({
+                                "type": "tool_result",
+                                "tool_use_id": res.tool_call_id,
+                                "content": res.content,
+                                "is_error": res.is_error,
+                            });
+                            if should_cache {
+                                block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                            }
+                            content_blocks.push(block);
+                        }
+                    }
+                    messages_payload.push(serde_json::json!({
+                        "role": "user",
+                        "content": content_blocks,
+                    }));
+                }
+            }
+        }
+
+        let mut body = serde_json::json!({
+            "model": options.model,
+            "max_tokens": options.max_tokens.unwrap_or(4096),
+            "messages": messages_payload,
+        });
+
+        if !system_text.is_empty() {
+            body["system"] = serde_json::json!([
+                {
+                    "type": "text",
+                    "text": system_text,
+                    "cache_control": { "type": "ephemeral" } // 系统指令默认启用 Prompt Caching
+                }
+            ]);
+        }
+
+        if !api_tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(api_tools);
+        }
+
+        if let Some(temp) = options.temperature {
+            body["temperature"] = serde_json::json!(temp);
+        }
+
+        body
+    }
+
+    /// 解析 Anthropic Messages API 响应
+    pub fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
+        let mut parts = Vec::new();
+
+        if let Some(contents) = json["content"].as_array() {
+            for c in contents {
+                let block_type = c["type"].as_str().unwrap_or_default();
+                match block_type {
+                    "thinking" => {
+                        let content = c["thinking"].as_str().unwrap_or_default().to_string();
+                        let signature = c["signature"].as_str().map(|s| s.to_string());
+                        parts.push(ContentPart::Reasoning { content, signature });
+                    }
+                    "text" => {
+                        let text = c["text"].as_str().unwrap_or_default().to_string();
+                        parts.push(ContentPart::text(text));
+                    }
+                    "tool_use" => {
+                        let id = c["id"].as_str().unwrap_or_default().to_string();
+                        let name = c["name"].as_str().unwrap_or_default().to_string();
+                        let arguments = c["input"].to_string();
+                        parts.push(ContentPart::ToolCall(ToolCall { id, name, arguments }));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut usage = None;
+        let mut turn_meta = TurnMeta::default();
+
+        if let Some(u) = json.get("usage") {
+            let prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+            let completion_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
+            let cache_creation = u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
+            let cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
+
+            usage = Some(TokenUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens: prompt_tokens + completion_tokens,
+                cached_tokens: cache_read,
+                reasoning_tokens: None,
+            });
+
+            turn_meta.anthropic = Some(AnthropicTurnMeta {
+                cache_creation_input_tokens: cache_creation,
+                cache_read_input_tokens: cache_read,
+                stop_reason: json["stop_reason"].as_str().map(|s| s.to_string()),
+            });
+        }
+
+        let message = Message::assistant(parts);
+
+        Ok(ProviderResponse {
+            messages: vec![message],
+            usage,
+            meta: turn_meta,
+        })
+    }
+}
+
+#[async_trait]
+impl Provider for AnthropicProvider {
+    fn name(&self) -> &str {
+        "anthropic"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_native_search: false,
+            supports_prompt_caching: true,
+            supports_thinking_signature: true,
+            supports_stateful_response_id: false,
+        }
+    }
+
+    async fn complete(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let url = format!("{}/messages", self.base_url);
+        let body = self.build_request_body(session, tools, options);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&self.api_key).map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let res = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let body_text = res.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let json_resp: serde_json::Value = res.json().await?;
+        self.parse_response(json_resp)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_anthropic_thinking_signature_and_caching_roundtrip() {
+        let provider = AnthropicProvider::new("test-key");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+
+        // 用户输入
+        let user_msg = Message::user("Solve this puzzle with deep thinking");
+        session.append_turn(Turn::user_turn(user_msg, None));
+
+        // 模拟 Anthropic 返回包含 thinking block 和 signature 的响应
+        let mock_resp = serde_json::json!({
+            "id": "msg_01X999",
+            "type": "message",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "thinking",
+                    "thinking": "Step 1: analyze conditions. Step 2: deduce solution.",
+                    "signature": "sig_cryptographic_verification_token"
+                },
+                {
+                    "type": "text",
+                    "text": "The answer is 42."
+                }
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 350,
+                "cache_creation_input_tokens": 1000,
+                "cache_read_input_tokens": 0
+            }
+        });
+
+        let parsed = provider.parse_response(mock_resp).expect("parse response");
+        let anthropic_meta = parsed.meta.anthropic.as_ref().unwrap();
+        assert_eq!(anthropic_meta.cache_creation_input_tokens, Some(1000));
+        assert_eq!(anthropic_meta.stop_reason.as_deref(), Some("end_turn"));
+
+        // 将 assistant turn 加入 session
+        let mut assistant_turn = Turn::assistant_turn(parsed.messages, None);
+        assistant_turn.meta = parsed.meta;
+        session.append_turn(assistant_turn);
+
+        // 下一轮用户继续追问
+        session.append_turn(Turn::user_turn(Message::user("Why 42?"), None));
+
+        // 生成下一次调用的 request body，验证 thinking 和 signature 被完整保留
+        let options = CompletionOptions {
+            model: "claude-3-7-sonnet-20250219".into(),
+            ..Default::default()
+        };
+        let body = provider.build_request_body(&session, &[], &options);
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+
+        // 检查第二条（assistant 历史）中是否保留了 signature
+        let asst_content = msgs[1]["content"].as_array().unwrap();
+        assert_eq!(asst_content[0]["type"], "thinking");
+        assert_eq!(
+            asst_content[0]["signature"],
+            "sig_cryptographic_verification_token"
+        );
+
+        // 检查最后一条用户消息是否自动注入了 cache_control
+        let last_user_content = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(
+            last_user_content[0]["cache_control"]["type"],
+            "ephemeral"
+        );
+    }
+}
