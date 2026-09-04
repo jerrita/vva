@@ -14,8 +14,8 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     // 居中计算弹出框尺寸
-    let modal_width = 82.min(area.width.saturating_sub(4));
-    let modal_height = 18.min(area.height.saturating_sub(4));
+    let modal_width = 60.min(area.width.saturating_sub(4));
+    let modal_height = 16.min(area.height.saturating_sub(4));
 
     let modal_rect = Rect {
         x: (area.width - modal_width) / 2,
@@ -31,7 +31,7 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Magenta))
         .title(Span::styled(
-            " Select Reasoning Variant / Effort (↑/↓ to navigate, Enter to switch) ",
+            " Select Reasoning Variant (↑/↓ to navigate, Enter to switch) ",
             Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
         ));
 
@@ -89,9 +89,8 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         // 表头
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<20}", "Variant / Effort"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<10}", "Status"), Style::default().fg(Color::DarkGray)),
-            Span::styled("Description", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{:<28}", "Variant / Effort"), Style::default().fg(Color::DarkGray)),
+            Span::styled("Status", Style::default().fg(Color::DarkGray)),
         ]));
 
         let list_visible_height = chunks[1].height.saturating_sub(1) as usize;
@@ -140,9 +139,8 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
 
             lines.push(Line::from(vec![
                 Span::styled(prefix, row_style),
-                Span::styled(format!("{:<20}", item.display_name), row_style),
-                Span::styled(format!("{:<10}", status_str), status_style),
-                Span::styled(&item.description, if is_selected { row_style } else { Style::default().fg(Color::Gray) }),
+                Span::styled(format!("{:<28}", item.display_name), row_style),
+                Span::styled(status_str, status_style),
             ]));
         }
 

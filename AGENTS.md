@@ -97,8 +97,14 @@ src/
 │   ├── mod.rs
 │   └── agent.rs            # 多轮 Agent 循环驱动 (AgentEngine)
 └── ui/                     # 现代化 Ratatui 交互式终端用户界面
-    ├── mod.rs              # TUI 启动与事件主循环驱动 (run_tui)
-    ├── app.rs              # App 响应式控制器、Session 切换调度与斜杠命令执行
+    ├── app/                # App 响应式控制器、状态机与子系统调度
+    │   ├── mod.rs          # App 结构体定义、生命周期与模块导出
+    │   ├── session.rs      # Session 切换与模态框状态调度
+    │   ├── editor.rs       # 输入缓冲编辑、光标移动与斜杠命令补全
+    │   ├── dispatch.rs     # 用户提交、斜杠命令路由与 AgentEvent 分发
+    │   ├── selection.rs    # 文本与输入选区模型 (TextCoord/TextSelection) 与剪贴板
+    │   ├── scroll.rs       # 视口滚动与坐标映射
+    │   └── tests.rs        # App 完整自动化单元测试集
     ├── command.rs          # 斜杠命令系统与 Claude Code 风格前缀自动补全
     ├── history.rs          # ChatEntry 对话流与 SidebarStats 纯函数视图投影
     ├── input.rs            # InputBuffer 多行文本编辑、光标计算与 CJK 对齐算法

@@ -3,7 +3,6 @@
 pub struct VariantItem {
     pub id: Option<String>,
     pub display_name: String,
-    pub description: String,
     pub is_default: bool,
 }
 
@@ -69,19 +68,16 @@ mod tests {
         let v1 = VariantItem {
             id: None,
             display_name: "none (default)".into(),
-            description: "Default reasoning".into(),
             is_default: true,
         };
         let v2 = VariantItem {
             id: Some("low".into()),
             display_name: "low".into(),
-            description: "Low effort".into(),
             is_default: false,
         };
         let v3 = VariantItem {
             id: Some("high".into()),
             display_name: "high".into(),
-            description: "High effort".into(),
             is_default: false,
         };
 

@@ -14,8 +14,14 @@ vva 终端界面基于 Rust TUI 框架 [Ratatui](https://github.com/ratatui/rata
 
 ```
 src/ui/
-├── mod.rs                  # TUI 初始化、终端模式配置与主事件循环 (run_app_loop)
-├── app.rs                  # App 核心控制器、Session 切换调度、斜杠命令分发
+├── app/                    # App 响应式控制器、状态机与子系统调度
+│   ├── mod.rs              # App 结构体定义、生命周期与统一导出
+│   ├── session.rs          # Session 切换与模态框状态调度
+│   ├── editor.rs           # 输入缓冲编辑、光标移动与斜杠命令补全
+│   ├── dispatch.rs         # 用户提交、斜杠命令路由与 AgentEvent 分发
+│   ├── selection.rs        # 文本与输入选区模型 (TextCoord/TextSelection) 与剪贴板
+│   ├── scroll.rs           # 视口滚动与坐标映射
+│   └── tests.rs            # App 完整自动化单元测试集
 ├── session_manager.rs      # 全局 Session 单例与并发后台运行管理器
 ├── command.rs              # 斜杠命令系统与前缀匹配补全引擎
 ├── input.rs                # InputBuffer 多行文本编辑与 CJK 宽字符光标算法
