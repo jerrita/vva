@@ -153,8 +153,9 @@ fn get_os_info() -> String {
             });
 
         let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .ok()
             .map(|s| s.trim().to_string())
-            .or_else(|_| run_command_output("uname", &["-r"]).map(|s| s.trim().to_string()));
+            .or_else(|| run_command_output("uname", &["-r"]).map(|s| s.trim().to_string()));
 
         match (distro, kernel) {
             (Some(d), Some(k)) => format!("{d} (Kernel {k})"),
