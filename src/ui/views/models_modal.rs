@@ -127,10 +127,7 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         },
     ]));
 
-    let (start_idx, visible) = visible_window(
-        state.selected_index,
-        list_area.height.saturating_sub(1) as usize,
-    );
+    let (start_idx, visible) = visible_window(state.selected_index, list_area.height as usize);
 
     for (i, item) in state
         .filtered_models

@@ -139,13 +139,32 @@ pub fn selected_row_style(accent: Color) -> Style {
 }
 
 /// 计算选中项可见的滚动窗口：(起始下标, 可见条数)。
-/// 最后一行保留给表头，选中项滚出视口下方时窗口跟随。
+/// 首行保留给表头，选中项滚出视口下方时窗口跟随。
 pub fn visible_window(selected: usize, viewport_height: usize) -> (usize, usize) {
     let visible = viewport_height.saturating_sub(1);
-    let start = if selected >= visible {
+    let start = if visible > 0 && selected >= visible {
         selected - visible + 1
     } else {
         0
     };
     (start, visible)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_visible_window_reserves_header_row() {
+        // 视口 2 行 = 表头 1 行 + 仅剩 1 条可见（回归：过滤后单条目曾渲染 0 行）
+        assert_eq!(visible_window(0, 2), (0, 1));
+        assert_eq!(visible_window(0, 1), (0, 0));
+
+        // 未滚动时从头展示
+        assert_eq!(visible_window(0, 11), (0, 10));
+
+        // 选中项滚出视口下方时窗口跟随
+        assert_eq!(visible_window(9, 11), (0, 10));
+        assert_eq!(visible_window(10, 11), (1, 10));
+    }
 }
