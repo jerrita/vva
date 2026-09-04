@@ -22,8 +22,14 @@ pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/variant",
         aliases: &["/v", "/effort"],
-        description: "Set reasoning variant (minimal, low, medium, high, max)",
-        example: "/variant <effort>",
+        description: "Select reasoning variant interactively or switch (/variant <effort>)",
+        example: "/variant [effort]",
+    },
+    SlashCommand {
+        name: "/config",
+        aliases: &["/settings"],
+        description: "View and adjust session configuration interactively",
+        example: "/config",
     },
     SlashCommand {
         name: "/search",
@@ -92,6 +98,14 @@ mod tests {
         let q_matches = match_commands("/q");
         assert_eq!(q_matches.len(), 1);
         assert_eq!(q_matches[0].name, "/quit");
+
+        let v_matches = match_commands("/v");
+        assert_eq!(v_matches.len(), 1);
+        assert_eq!(v_matches[0].name, "/variant");
+
+        let cfg_matches = match_commands("/conf");
+        assert_eq!(cfg_matches.len(), 1);
+        assert_eq!(cfg_matches[0].name, "/config");
 
         // 带空格或参数时不显示命令选单
         assert_eq!(match_commands("/model ").len(), 0);

@@ -55,6 +55,25 @@ impl AnthropicProvider {
         }
 
         let total_msgs = flattened_msgs.len();
+        // Anthropic 要求 messages 中 user 与 assistant 必须严格交替出现
+        let mut append_blocks = |role: &str, blocks: Vec<serde_json::Value>| {
+            if blocks.is_empty() {
+                return;
+            }
+            if let Some(last) = messages_payload.last_mut()
+                && last["role"] == role
+                    && let Some(arr) = last["content"].as_array_mut() {
+                        for b in blocks {
+                            arr.push(b);
+                        }
+                        return;
+                    }
+            messages_payload.push(serde_json::json!({
+                "role": role,
+                "content": blocks,
+            }));
+        };
+
         for (i, msg) in flattened_msgs.iter().enumerate() {
             let is_last_user_turn = i + 1 == total_msgs && msg.role == Role::User;
             let should_cache = msg.meta.anthropic.as_ref().map(|a| a.ephemeral_cache).unwrap_or(false)
@@ -105,10 +124,7 @@ impl AnthropicProvider {
                             _ => {}
                         }
                     }
-                    messages_payload.push(serde_json::json!({
-                        "role": "user",
-                        "content": content_blocks,
-                    }));
+                    append_blocks("user", content_blocks);
                 }
                 Role::Assistant => {
                     let mut content_blocks = Vec::new();
@@ -144,10 +160,7 @@ impl AnthropicProvider {
                             _ => {}
                         }
                     }
-                    messages_payload.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": content_blocks,
-                    }));
+                    append_blocks("assistant", content_blocks);
                 }
                 Role::Tool => {
                     let mut content_blocks = Vec::new();
@@ -165,10 +178,7 @@ impl AnthropicProvider {
                             content_blocks.push(block);
                         }
                     }
-                    messages_payload.push(serde_json::json!({
-                        "role": "user",
-                        "content": content_blocks,
-                    }));
+                    append_blocks("user", content_blocks);
                 }
             }
         }
@@ -283,7 +293,12 @@ impl Provider for AnthropicProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
-        let url = format!("{}/messages", self.base_url);
+        let base = self.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/messages") {
+            base.to_string()
+        } else {
+            format!("{base}/messages")
+        };
         let body = self.build_request_body(session, tools, options);
 
         let mut headers = HeaderMap::new();
@@ -392,5 +407,48 @@ mod tests {
             last_user_content[0]["cache_control"]["type"],
             "ephemeral"
         );
+    }
+
+    #[test]
+    fn test_anthropic_tool_results_merged_into_single_user_turn() {
+        let provider = AnthropicProvider::new("test-key").with_base_url("https://proxy.example.com/v1/messages/");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+
+        session.append_turn(Turn::user_turn(Message::user("List files and run command"), None));
+
+        let asst_msg = Message::assistant(vec![
+            ContentPart::ToolCall(ToolCall { id: "call_1".into(), name: "file_view".into(), arguments: "{}".into() }),
+            ContentPart::ToolCall(ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() }),
+        ]);
+        session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
+
+        // 两个连续的 Tool turn
+        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
+            tool_call_id: "call_1".into(),
+            content: "file contents".into(),
+            is_error: false,
+        })], None));
+        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
+            tool_call_id: "call_2".into(),
+            content: "command output".into(),
+            is_error: false,
+        })], None));
+
+        let options = CompletionOptions {
+            model: "claude-3-7-sonnet".into(),
+            ..Default::default()
+        };
+        let body = provider.build_request_body(&session, &[], &options);
+        let msgs = body["messages"].as_array().unwrap();
+
+        // 验证两个 tool result 被合并到了同一个 user message 中，保证严格交替：user -> assistant -> user
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert_eq!(msgs[2]["role"], "user");
+        let tool_blocks = msgs[2]["content"].as_array().unwrap();
+        assert_eq!(tool_blocks.len(), 2);
+        assert_eq!(tool_blocks[0]["type"], "tool_result");
+        assert_eq!(tool_blocks[1]["type"], "tool_result");
     }
 }

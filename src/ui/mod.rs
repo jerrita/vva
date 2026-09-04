@@ -20,12 +20,14 @@ use crate::storage::SessionStore;
 use app::{ActiveModal, App};
 use session_manager::{ManagedSession, SessionManager};
 use views::chat::render_chat;
+use views::config_modal::render_config_modal;
 use views::header::render_header;
 use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
 use views::sidebar::render_sidebar;
+use views::variants_modal::render_variants_modal;
 
 /// 启动 Ratatui 交互式终端 UI
 pub async fn run_tui(
@@ -85,18 +87,26 @@ async fn run_app_loop(
     let mut reader = EventStream::new();
     let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
 
+    let (mut session_id, mut session_title, mut session_model, mut session_variant, mut session_workspace) = {
+        let s = app.active_session.session.read().await;
+        (
+            s.id.clone(),
+            s.title.clone().unwrap_or_default(),
+            s.current_model.clone(),
+            s.current_variant.clone(),
+            s.workspace_root.display().to_string(),
+        )
+    };
+
     loop {
-        // 读取当前会话的元信息用于渲染
-        let (session_id, session_title, session_model, session_variant, session_workspace) = {
-            let s = app.active_session.session.read().await;
-            (
-                s.id.clone(),
-                s.title.clone().unwrap_or_default(),
-                s.current_model.clone(),
-                s.current_variant.clone(),
-                s.workspace_root.display().to_string(),
-            )
-        };
+        // 读取当前会话的元信息用于渲染（使用 try_read 避免在后台执行期间阻塞 UI 事件主循环）
+        if let Ok(s) = app.active_session.session.try_read() {
+            session_id = s.id.clone();
+            session_title = s.title.clone().unwrap_or_default();
+            session_model = s.current_model.clone();
+            session_variant = s.current_variant.clone();
+            session_workspace = s.workspace_root.display().to_string();
+        }
         let status_text = app.active_session.status().await;
 
         terminal.draw(|frame| {
@@ -157,6 +167,8 @@ async fn run_app_loop(
             match &app.modal {
                 ActiveModal::Sessions => render_sessions_modal(app, frame, size),
                 ActiveModal::Models => render_models_modal(app, frame, size),
+                ActiveModal::Variants => render_variants_modal(app, frame, size),
+                ActiveModal::Config => render_config_modal(app, frame, size),
                 ActiveModal::Help => render_help_modal(frame, size),
                 ActiveModal::None => {}
             }
@@ -256,6 +268,84 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                         if let Some(spec) = selected_spec {
                             app.modal = ActiveModal::None;
                             app.switch_model(&spec).await;
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            ActiveModal::Variants => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if let Some(ref mut vm) = app.variants_modal {
+                            vm.previous();
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if let Some(ref mut vm) = app.variants_modal {
+                            vm.next();
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let selected = app
+                            .variants_modal
+                            .as_ref()
+                            .and_then(|vm| vm.selected_variant().cloned());
+
+                        if let Some(item) = selected {
+                            app.modal = ActiveModal::None;
+                            app.switch_variant(item.id.as_deref()).await;
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            ActiveModal::Config => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if let Some(ref mut cm) = app.config_modal {
+                            cm.previous();
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if let Some(ref mut cm) = app.config_modal {
+                            cm.next();
+                        }
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        let selected_kind = app
+                            .config_modal
+                            .as_ref()
+                            .and_then(|cm| cm.selected_item().map(|it| it.kind));
+
+                        if let Some(kind) = selected_kind {
+                            match kind {
+                                app::ConfigItemKind::Model => {
+                                    app.modal = ActiveModal::None;
+                                    app.open_models_modal().await;
+                                }
+                                app::ConfigItemKind::Variant => {
+                                    app.modal = ActiveModal::None;
+                                    app.open_variants_modal().await;
+                                }
+                                app::ConfigItemKind::WebSearch => {
+                                    app.enable_web_search = !app.enable_web_search;
+                                    let status = if app.enable_web_search { "ON" } else { "OFF" };
+                                    app.chat_entries.push(app::ChatEntry::SystemNotice {
+                                        text: format!("Native web search is now {status}"),
+                                    });
+                                    if let Some(ref mut cm) = app.config_modal {
+                                        cm.update_web_search(app.enable_web_search);
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => {}

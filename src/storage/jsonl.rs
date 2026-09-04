@@ -123,14 +123,14 @@ impl SessionStore for JsonlSessionStore {
         for entry in fs::read_dir(&self.base_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                if let Ok(file) = File::open(&path) {
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                && let Ok(file) = File::open(&path) {
                     let reader = BufReader::new(file);
                     let mut lines = reader.lines();
-                    if let Some(Ok(first_line)) = lines.next() {
-                        if let Ok(JsonlRecord::Header(header)) = serde_json::from_str::<JsonlRecord>(&first_line) {
+                    if let Some(Ok(first_line)) = lines.next()
+                        && let Ok(JsonlRecord::Header(header)) = serde_json::from_str::<JsonlRecord>(&first_line) {
                             // 统计后续行数（Turn 数量）
-                            let turn_count = lines.filter_map(|l| l.ok()).filter(|l| !l.trim().is_empty()).count();
+                            let turn_count = lines.map_while(Result::ok).filter(|l| !l.trim().is_empty()).count();
                             summaries.push(SessionSummary {
                                 id: header.id,
                                 title: header.title,
@@ -141,12 +141,10 @@ impl SessionStore for JsonlSessionStore {
                                 current_variant: header.current_variant,
                             });
                         }
-                    }
                 }
-            }
         }
 
-        summaries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        summaries.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         Ok(summaries)
     }
 }

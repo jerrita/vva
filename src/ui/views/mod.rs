@@ -1,8 +1,10 @@
 pub mod chat;
+pub mod config_modal;
 pub mod header;
 pub mod help_modal;
 pub mod input_area;
 pub mod models_modal;
 pub mod sessions_modal;
 pub mod sidebar;
+pub mod variants_modal;
 

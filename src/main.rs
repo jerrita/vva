@@ -341,8 +341,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionAction::List => {
                 let sessions = store.list_sessions().await?;
                 println!(
-                    "{:<36} | {:<20} | {:<8} | {:<5} | {:<16} | {}",
-                    "Session ID", "Model", "Variant", "Turns", "Created At", "Title / Workspace"
+                    "{:<36} | {:<20} | {:<8} | {:<5} | {:<16} | Title / Workspace",
+                    "Session ID", "Model", "Variant", "Turns", "Created At"
                 );
                 println!(
                     "{:-<36}-+-{:-<20}-+-{:-<8}-+-{:-<5}-+-{:-<16}-+-{:-<30}",

@@ -167,10 +167,145 @@ impl ModelsModalState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantItem {
+    pub id: Option<String>,
+    pub display_name: String,
+    pub description: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct VariantsModalState {
+    pub current_model: String,
+    pub active_variant: Option<String>,
+    pub variants: Vec<VariantItem>,
+    pub selected_index: usize,
+}
+
+impl VariantsModalState {
+    pub fn new(
+        current_model: String,
+        active_variant: Option<String>,
+        variants: Vec<VariantItem>,
+    ) -> Self {
+        let selected_index = variants
+            .iter()
+            .position(|v| v.id == active_variant)
+            .unwrap_or(0);
+
+        Self {
+            current_model,
+            active_variant,
+            variants,
+            selected_index,
+        }
+    }
+
+    pub fn next(&mut self) {
+        if !self.variants.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.variants.len();
+        }
+    }
+
+    pub fn previous(&mut self) {
+        if !self.variants.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.variants.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    pub fn selected_variant(&self) -> Option<&VariantItem> {
+        self.variants.get(self.selected_index)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigItemKind {
+    Model,
+    Variant,
+    WebSearch,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigSettingItem {
+    pub kind: ConfigItemKind,
+    pub name: String,
+    pub current_value: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigModalState {
+    pub items: Vec<ConfigSettingItem>,
+    pub selected_index: usize,
+}
+
+impl ConfigModalState {
+    pub fn new(current_model: String, current_variant: Option<String>, web_search: bool) -> Self {
+        let items = vec![
+            ConfigSettingItem {
+                kind: ConfigItemKind::Model,
+                name: "Active Model".to_string(),
+                current_value: if current_model.is_empty() { "default".into() } else { current_model },
+                description: "Select target model from configured providers".to_string(),
+            },
+            ConfigSettingItem {
+                kind: ConfigItemKind::Variant,
+                name: "Reasoning Effort".to_string(),
+                current_value: current_variant.unwrap_or_else(|| "none".into()),
+                description: "Select reasoning variant / thinking effort level".to_string(),
+            },
+            ConfigSettingItem {
+                kind: ConfigItemKind::WebSearch,
+                name: "Web Search Grounding".to_string(),
+                current_value: if web_search { "Enabled".into() } else { "Disabled".into() },
+                description: "Toggle native search grounding for models".to_string(),
+            },
+        ];
+
+        Self {
+            items,
+            selected_index: 0,
+        }
+    }
+
+    pub fn update_web_search(&mut self, web_search: bool) {
+        if let Some(item) = self.items.iter_mut().find(|it| it.kind == ConfigItemKind::WebSearch) {
+            item.current_value = if web_search { "Enabled".into() } else { "Disabled".into() };
+        }
+    }
+
+    pub fn next(&mut self) {
+        if !self.items.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.items.len();
+        }
+    }
+
+    pub fn previous(&mut self) {
+        if !self.items.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.items.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    pub fn selected_item(&self) -> Option<&ConfigSettingItem> {
+        self.items.get(self.selected_index)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveModal {
     None,
     Sessions,
     Models,
+    Variants,
+    Config,
     Help,
 }
 
@@ -202,6 +337,8 @@ pub struct App {
     pub modal: ActiveModal,
     pub sessions_modal: Option<SessionsModalState>,
     pub models_modal: Option<ModelsModalState>,
+    pub variants_modal: Option<VariantsModalState>,
+    pub config_modal: Option<ConfigModalState>,
     pub matched_commands: Vec<&'static SlashCommand>,
     pub selected_command_index: usize,
     pub stats: SidebarStats,
@@ -229,6 +366,8 @@ impl App {
             modal: ActiveModal::None,
             sessions_modal: None,
             models_modal: None,
+            variants_modal: None,
+            config_modal: None,
             matched_commands: Vec::new(),
             selected_command_index: 0,
             stats: SidebarStats::default(),
@@ -322,10 +461,12 @@ impl App {
             (s.id.clone(), s.current_variant.clone())
         };
 
-        // 校验新模型是否支持当前 variant
+        // 校验新模型是否支持当前 variant，不支持则回退到新模型的默认档位
         let new_variant = if let Some(cfg) = self.session_mgr.app_config() {
             if let Ok(resolved) = cfg.resolve_model(model_spec, current_var.as_deref()) {
                 resolved.selected_variant
+            } else if let Ok(fallback) = cfg.resolve_model(model_spec, None) {
+                fallback.selected_variant
             } else {
                 None
             }
@@ -348,6 +489,170 @@ impl App {
             text: format!("Switched model to '{model_spec}' for session {sid}"),
         });
         self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+    }
+
+    /// 打开 /variant 模态框并基于当前模型获取可用的 reasoning effort 档位
+    pub async fn open_variants_modal(&mut self) {
+        let (current_model, current_variant) = {
+            let s = self.active_session.session.read().await;
+            (s.current_model.clone(), s.current_variant.clone())
+        };
+
+        // 获取当前模型在配置中的 ModelConfig（若存在）
+        let model_cfg = if let Some(cfg) = self.session_mgr.app_config() {
+            if let Ok(resolved) = cfg.resolve_model(&current_model, None) {
+                Some(resolved.model_config)
+            } else {
+                let mut found = None;
+                for p_cfg in cfg.providers.values() {
+                    if let Some(m) = p_cfg.models.get(&current_model) {
+                        found = Some(m.clone());
+                        break;
+                    }
+                }
+                found
+            }
+        } else {
+            None
+        };
+
+        let mut items = Vec::new();
+        // 1. None / Default 选项
+        items.push(VariantItem {
+            id: None,
+            display_name: "none (default)".to_string(),
+            description: "Default reasoning effort or disable reasoning override".to_string(),
+            is_default: true,
+        });
+
+        // 2. 根据模型配置构建候选档位
+        if let Some(cfg) = &model_cfg {
+            if let Some(valid_vars) = &cfg.variants {
+                for v in valid_vars {
+                    let desc = match v.as_str() {
+                        "minimal" => "Minimal reasoning effort (fastest response, light thinking)",
+                        "low" => "Low reasoning effort (quick thinking for simpler tasks)",
+                        "medium" => "Medium reasoning effort (balanced reasoning and speed)",
+                        "high" => "High reasoning effort (deep thinking for complex coding tasks)",
+                        "xhigh" => "Extra high reasoning effort (extended exploration)",
+                        "max" => "Maximum reasoning effort (exhaustive verification)",
+                        _ => "Configured model reasoning variant",
+                    };
+                    items.push(VariantItem {
+                        id: Some(v.clone()),
+                        display_name: v.clone(),
+                        description: desc.to_string(),
+                        is_default: false,
+                    });
+                }
+            } else {
+                let standard_tiers = [
+                    ("minimal", "Minimal reasoning effort (fastest response, light thinking)"),
+                    ("low", "Low reasoning effort (quick thinking for simpler tasks)"),
+                    ("medium", "Medium reasoning effort (balanced reasoning and speed)"),
+                    ("high", "High reasoning effort (deep thinking for complex coding tasks)"),
+                    ("xhigh", "Extra high reasoning effort (extended exploration)"),
+                    ("max", "Maximum reasoning effort (exhaustive verification)"),
+                ];
+                for (v, desc) in standard_tiers {
+                    items.push(VariantItem {
+                        id: Some(v.to_string()),
+                        display_name: v.to_string(),
+                        description: desc.to_string(),
+                        is_default: false,
+                    });
+                }
+            }
+        } else {
+            let standard_tiers = [
+                ("minimal", "Minimal reasoning effort (fastest response, light thinking)"),
+                ("low", "Low reasoning effort (quick thinking for simpler tasks)"),
+                ("medium", "Medium reasoning effort (balanced reasoning and speed)"),
+                ("high", "High reasoning effort (deep thinking for complex coding tasks)"),
+                ("xhigh", "Extra high reasoning effort (extended exploration)"),
+                ("max", "Maximum reasoning effort (exhaustive verification)"),
+            ];
+            for (v, desc) in standard_tiers {
+                items.push(VariantItem {
+                    id: Some(v.to_string()),
+                    display_name: v.to_string(),
+                    description: desc.to_string(),
+                    is_default: false,
+                });
+            }
+        }
+
+        // 如果当前生效的 variant 不在列表中，追加展示为自定义项
+        if let Some(ref cur) = current_variant
+            && !items.iter().any(|it| it.id.as_deref() == Some(cur.as_str())) {
+                items.push(VariantItem {
+                    id: Some(cur.clone()),
+                    display_name: cur.clone(),
+                    description: "Currently active custom variant".to_string(),
+                    is_default: false,
+                });
+            }
+
+        self.variants_modal = Some(VariantsModalState::new(
+            current_model,
+            current_variant,
+            items,
+        ));
+        self.modal = ActiveModal::Variants;
+    }
+
+    /// 切换推理强度档位并持久化保存 Session Header
+    pub async fn switch_variant(&mut self, variant: Option<&str>) {
+        let (sid, current_model) = {
+            let s = self.active_session.session.read().await;
+            (s.id.clone(), s.current_model.clone())
+        };
+
+        let new_variant = match variant {
+            Some(v) if v == "none" || v == "default" || v.is_empty() => None,
+            Some(v) => Some(v.to_string()),
+            None => None,
+        };
+
+        if let (Some(v), Some(cfg)) = (&new_variant, self.session_mgr.app_config())
+            && let Err(e) = cfg.resolve_model(&current_model, Some(v)) {
+                self.chat_entries.push(ChatEntry::SystemNotice {
+                    text: format!("Notice: {e}"),
+                });
+            }
+
+        {
+            let mut s = self.active_session.session.write().await;
+            s.set_model(current_model, new_variant.clone());
+        }
+
+        let s_clone = {
+            let s_ref = self.active_session.session.read().await;
+            let _ = self.session_mgr.store().save_header(&s_ref).await;
+            s_ref.clone()
+        };
+
+        let display = new_variant.as_deref().unwrap_or("none");
+        self.chat_entries.push(ChatEntry::SystemNotice {
+            text: format!("Set reasoning variant to '{display}' for session {sid}"),
+        });
+        self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+    }
+
+    /// 打开 /config 模态框，交互式查看与调整整体会话配置
+    pub async fn open_config_modal(&mut self) {
+        let (current_model, current_variant) = {
+            let s = self.active_session.session.read().await;
+            (s.current_model.clone(), s.current_variant.clone())
+        };
+
+        let state = ConfigModalState::new(
+            current_model,
+            current_variant,
+            self.enable_web_search,
+        );
+        self.config_modal = Some(state);
+        self.modal = ActiveModal::Config;
     }
 
     /// 用户键盘输入字符
@@ -489,37 +794,13 @@ impl App {
             }
             "/variant" | "/v" | "/effort" => {
                 if arg.is_empty() {
-                    let curr = {
-                        let s = self.active_session.session.read().await;
-                        s.current_variant.clone().unwrap_or_else(|| "none".into())
-                    };
-                    self.chat_entries.push(ChatEntry::SystemNotice {
-                        text: format!("Current variant: {curr}. Usage: /variant <effort>"),
-                    });
+                    self.open_variants_modal().await;
                 } else {
-                    let var = if arg == "none" || arg == "default" {
-                        None
-                    } else {
-                        Some(arg.clone())
-                    };
-                    let (sid, current_model) = {
-                        let s = self.active_session.session.read().await;
-                        (s.id.clone(), s.current_model.clone())
-                    };
-                    {
-                        let mut s = self.active_session.session.write().await;
-                        s.set_model(current_model, var.clone());
-                    }
-                    let s_clone = {
-                        let s_ref = self.active_session.session.read().await;
-                        let _ = self.session_mgr.store().save_header(&s_ref).await;
-                        s_ref.clone()
-                    };
-                    self.chat_entries.push(ChatEntry::SystemNotice {
-                        text: format!("Set reasoning variant to '{arg}' for session {sid}"),
-                    });
-                    self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+                    self.switch_variant(Some(&arg)).await;
                 }
+            }
+            "/config" | "/settings" => {
+                self.open_config_modal().await;
             }
             "/search" | "/web" => {
                 if arg.eq_ignore_ascii_case("on") {
@@ -646,12 +927,11 @@ pub fn compute_stats(session: &Session, app_config: Option<&AppConfig>) -> Sideb
     let mut context_limit = None;
     let mut cost_cfg: Option<ModelCostConfig> = None;
 
-    if let Some(cfg) = app_config {
-        if let Ok(resolved) = cfg.resolve_model(&session.current_model, session.current_variant.as_deref()) {
+    if let Some(cfg) = app_config
+        && let Ok(resolved) = cfg.resolve_model(&session.current_model, session.current_variant.as_deref()) {
             context_limit = resolved.model_config.limit.as_ref().map(|l| l.context as u64);
             cost_cfg = resolved.model_config.cost.clone();
         }
-    }
 
     let mut estimated_cost = 0.0;
     if let Some(cost) = cost_cfg {
@@ -880,4 +1160,117 @@ mod tests {
         modal.previous();
         assert_eq!(modal.selected_index, 1);
     }
+
+    #[test]
+    fn test_variants_modal_navigation() {
+        let v1 = VariantItem {
+            id: None,
+            display_name: "none (default)".into(),
+            description: "Default reasoning".into(),
+            is_default: true,
+        };
+        let v2 = VariantItem {
+            id: Some("low".into()),
+            display_name: "low".into(),
+            description: "Low effort".into(),
+            is_default: false,
+        };
+        let v3 = VariantItem {
+            id: Some("high".into()),
+            display_name: "high".into(),
+            description: "High effort".into(),
+            is_default: false,
+        };
+
+        // 默认定位到 active_variant (high)
+        let mut modal = VariantsModalState::new(
+            "prov/model-1".into(),
+            Some("high".into()),
+            vec![v1, v2, v3],
+        );
+        assert_eq!(modal.selected_index, 2);
+        assert_eq!(modal.selected_variant().unwrap().id.as_deref(), Some("high"));
+
+        modal.next();
+        assert_eq!(modal.selected_index, 0); // wrap around to none
+        assert_eq!(modal.selected_variant().unwrap().id, None);
+
+        modal.previous();
+        assert_eq!(modal.selected_index, 2); // wrap around back to high
+
+        modal.previous();
+        assert_eq!(modal.selected_index, 1); // low
+        assert_eq!(modal.selected_variant().unwrap().id.as_deref(), Some("low"));
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_variant_execution() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_variant_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr.create_session("init_model".into(), None, None).await.unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 无参 /variant 打开 Variants 模态框，且支持上下键选择
+        app.input = "/variant".into();
+        app.submit_input().await;
+        assert_eq!(app.modal, ActiveModal::Variants);
+        assert!(app.variants_modal.is_some());
+        let vm = app.variants_modal.as_ref().unwrap();
+        assert!(!vm.variants.is_empty());
+        assert_eq!(vm.variants[0].id, None); // 首项为 default / none
+
+        // 2. 带参 /variant 切换推理档位
+        app.input = "/variant high".into();
+        app.submit_input().await;
+        let curr = app.active_session.session.read().await.current_variant.clone();
+        assert_eq!(curr, Some("high".to_string()));
+        assert!(app.chat_entries.iter().any(|e| match e {
+            ChatEntry::SystemNotice { text } => text.contains("Set reasoning variant to 'high'"),
+            _ => false,
+        }));
+
+        // 3. /variant none 重置为 None
+        app.input = "/variant none".into();
+        app.submit_input().await;
+        let curr_none = app.active_session.session.read().await.current_variant.clone();
+        assert_eq!(curr_none, None);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_config_modal_navigation_and_toggle() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_config_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr.create_session("test_model".into(), Some("medium".into()), None).await.unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 打开 /config 模态框
+        app.input = "/config".into();
+        app.submit_input().await;
+        assert_eq!(app.modal, ActiveModal::Config);
+        assert!(app.config_modal.is_some());
+
+        let cm = app.config_modal.as_mut().unwrap();
+        assert_eq!(cm.items.len(), 3);
+        assert_eq!(cm.items[0].kind, ConfigItemKind::Model);
+        assert_eq!(cm.items[1].kind, ConfigItemKind::Variant);
+        assert_eq!(cm.items[2].kind, ConfigItemKind::WebSearch);
+        assert_eq!(cm.items[2].current_value, "Disabled");
+
+        // 导航
+        cm.next();
+        assert_eq!(cm.selected_index, 1);
+        cm.next();
+        assert_eq!(cm.selected_index, 2);
+        cm.update_web_search(true);
+        assert_eq!(cm.items[2].current_value, "Enabled");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
+

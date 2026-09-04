@@ -204,6 +204,11 @@ mod tests {
             }
             _ => panic!("Expected InvalidVariant error"),
         }
+
+        // 4. 验证 gpt-5.6-luna 解析及其 variants (包含 medium)
+        let resolved_luna = config.resolve_model("a/gpt-5.6-luna", Some("medium")).expect("resolve luna");
+        assert_eq!(resolved_luna.selected_variant.as_deref(), Some("medium"));
+        assert_eq!(resolved_luna.provider.name(), "response");
     }
 
     #[test]

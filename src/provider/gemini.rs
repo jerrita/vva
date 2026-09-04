@@ -35,58 +35,127 @@ impl GeminiProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> serde_json::Value {
-        let mut gemini_contents = Vec::new();
+        let mut gemini_contents: Vec<serde_json::Value> = Vec::new();
+        let mut system_instruction_parts = Vec::new();
+
+        let mut append_content = |role: &str, parts: Vec<serde_json::Value>| {
+            if parts.is_empty() {
+                return;
+            }
+            if let Some(last) = gemini_contents.last_mut()
+                && last["role"] == role
+                    && let Some(arr) = last["parts"].as_array_mut() {
+                        for p in parts {
+                            arr.push(p);
+                        }
+                        return;
+                    }
+            gemini_contents.push(serde_json::json!({
+                "role": role,
+                "parts": parts,
+            }));
+        };
 
         for turn in &session.turns {
             for msg in &turn.messages {
-                let gemini_role = match msg.role {
-                    Role::Assistant => "model",
-                    Role::User | Role::System => "user",
-                    Role::Tool => "user",
-                };
+                match msg.role {
+                    Role::System => {
+                        system_instruction_parts.push(serde_json::json!({
+                            "text": msg.text_content()
+                        }));
+                    }
+                    Role::User => {
+                        let mut parts_arr = Vec::new();
+                        for part in &msg.parts {
+                            match part {
+                                ContentPart::Text { text, .. } => {
+                                    parts_arr.push(serde_json::json!({ "text": text }));
+                                }
+                                ContentPart::Reasoning { content, .. } => {
+                                    parts_arr.push(serde_json::json!({
+                                        "thought": true,
+                                        "text": content
+                                    }));
+                                }
+                                ContentPart::Image {
+                                    source: crate::model::MediaSource::Base64 { data, mime_type },
+                                    ..
+                                } => {
+                                    parts_arr.push(serde_json::json!({
+                                        "inline_data": {
+                                            "mime_type": mime_type,
+                                            "data": data
+                                        }
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                        append_content("user", parts_arr);
+                    }
+                    Role::Assistant => {
+                        let mut parts_arr = Vec::new();
+                        for part in &msg.parts {
+                            match part {
+                                ContentPart::Text { text, .. } => {
+                                    parts_arr.push(serde_json::json!({ "text": text }));
+                                }
+                                ContentPart::Reasoning { content, .. } => {
+                                    parts_arr.push(serde_json::json!({
+                                        "thought": true,
+                                        "text": content
+                                    }));
+                                }
+                                ContentPart::ToolCall(call) => {
+                                    let args: serde_json::Value = serde_json::from_str(&call.arguments)
+                                        .unwrap_or_else(|_| serde_json::json!({}));
+                                    parts_arr.push(serde_json::json!({
+                                        "functionCall": {
+                                            "name": call.name,
+                                            "args": args
+                                        }
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                        append_content("model", parts_arr);
+                    }
+                    Role::Tool => {
+                        let mut parts_arr = Vec::new();
+                        for part in &msg.parts {
+                            if let ContentPart::ToolResult(res) = part {
+                                // 查找该 tool_call_id 对应的实际函数名称
+                                let function_name = session
+                                    .turns
+                                    .iter()
+                                    .rev()
+                                    .find_map(|t| {
+                                        t.messages.iter().find_map(|m| {
+                                            m.parts.iter().find_map(|p| {
+                                                if let ContentPart::ToolCall(tc) = p
+                                                    && tc.id == res.tool_call_id {
+                                                        return Some(tc.name.clone());
+                                                    }
+                                                None
+                                            })
+                                        })
+                                    })
+                                    .unwrap_or_else(|| res.tool_call_id.clone());
 
-                let mut parts_arr = Vec::new();
-                for part in &msg.parts {
-                    match part {
-                        ContentPart::Text { text, .. } => {
-                            parts_arr.push(serde_json::json!({ "text": text }));
-                        }
-                        ContentPart::Reasoning { content, .. } => {
-                            parts_arr.push(serde_json::json!({
-                                "thought": true,
-                                "text": content
-                            }));
-                        }
-                        ContentPart::Image { source, .. } => {
-                            if let crate::model::MediaSource::Base64 { data, mime_type } = source {
                                 parts_arr.push(serde_json::json!({
-                                    "inline_data": {
-                                        "mime_type": mime_type,
-                                        "data": data
+                                    "functionResponse": {
+                                        "name": function_name,
+                                        "response": {
+                                            "content": res.content,
+                                            "is_error": res.is_error
+                                        }
                                     }
                                 }));
                             }
                         }
-                        ContentPart::ToolResult(res) => {
-                            parts_arr.push(serde_json::json!({
-                                "functionResponse": {
-                                    "name": res.tool_call_id,
-                                    "response": {
-                                        "content": res.content,
-                                        "is_error": res.is_error
-                                    }
-                                }
-                            }));
-                        }
-                        _ => {}
+                        append_content("user", parts_arr);
                     }
-                }
-
-                if !parts_arr.is_empty() {
-                    gemini_contents.push(serde_json::json!({
-                        "role": gemini_role,
-                        "parts": parts_arr,
-                    }));
                 }
             }
         }
@@ -94,6 +163,12 @@ impl GeminiProvider {
         let mut body = serde_json::json!({
             "contents": gemini_contents,
         });
+
+        if !system_instruction_parts.is_empty() {
+            body["systemInstruction"] = serde_json::json!({
+                "parts": system_instruction_parts
+            });
+        }
 
         let mut tools_list: Vec<serde_json::Value> = Vec::new();
 
@@ -194,8 +269,8 @@ impl GeminiProvider {
 
                     if let Some(indices) = sup["groundingChunkIndices"].as_array() {
                         for idx_val in indices {
-                            if let Some(idx) = idx_val.as_u64().map(|v| v as usize) {
-                                if let Some(src) = search_sources.get(idx) {
+                            if let Some(idx) = idx_val.as_u64().map(|v| v as usize)
+                                && let Some(src) = search_sources.get(idx) {
                                     citations.push(Annotation::UrlCitation {
                                         url: src.url.clone(),
                                         title: src.title.clone(),
@@ -203,7 +278,6 @@ impl GeminiProvider {
                                         end_index: end_idx,
                                     });
                                 }
-                            }
                         }
                     }
                 }
@@ -274,17 +348,25 @@ impl GeminiProvider {
             let prompt = um["promptTokenCount"].as_u64().unwrap_or(0) as u32;
             let completion = um["candidatesTokenCount"].as_u64().unwrap_or(0) as u32;
             let total = um["totalTokenCount"].as_u64().unwrap_or(0) as u32;
+            let cached = um["cachedContentTokenCount"].as_u64().map(|v| v as u32);
+            let reasoning = um["candidatesTokensDetails"]
+                .as_array()
+                .and_then(|arr| arr.iter().find(|d| d["modality"] == "THOUGHT"))
+                .and_then(|d| d["tokenCount"].as_u64())
+                .map(|v| v as u32);
             usage = Some(TokenUsage {
                 prompt_tokens: prompt,
                 completion_tokens: completion,
                 total_tokens: total,
-                cached_tokens: None,
-                reasoning_tokens: None,
+                cached_tokens: cached,
+                reasoning_tokens: reasoning,
             });
         }
 
-        let mut turn_meta = TurnMeta::default();
-        turn_meta.gemini = Some(gemini_turn_meta);
+        let turn_meta = TurnMeta {
+            gemini: Some(gemini_turn_meta),
+            ..Default::default()
+        };
 
         let message = Message::assistant(parts);
 
@@ -317,14 +399,25 @@ impl Provider for GeminiProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
-        let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            self.base_url, options.model, self.api_key
-        );
+        let base = self.base_url.trim().trim_end_matches('/');
+        let model_name = options.model.strip_prefix("models/").unwrap_or(&options.model);
+        let path = if base.ends_with("/models") {
+            format!("{base}/{model_name}:generateContent")
+        } else {
+            format!("{base}/models/{model_name}:generateContent")
+        };
+        let url = if path.contains('?') {
+            format!("{path}&key={}", self.api_key)
+        } else {
+            format!("{path}?key={}", self.api_key)
+        };
         let body = self.build_request_body(session, tools, options);
 
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Ok(key_val) = HeaderValue::from_str(&self.api_key) {
+            headers.insert("x-goog-api-key", key_val);
+        }
 
         let res = self
             .client
@@ -352,6 +445,7 @@ impl Provider for GeminiProvider {
 mod tests {
     use super::*;
     use crate::model::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_gemini_grounding_metadata_projection() {
@@ -455,5 +549,58 @@ mod tests {
         let gemini_meta = parsed.meta.gemini.unwrap();
         assert_eq!(gemini_meta.finish_reason.as_deref(), Some("STOP"));
         assert_eq!(gemini_meta.safety_ratings.len(), 1);
+    }
+
+    #[test]
+    fn test_gemini_system_instruction_and_tool_call_response_mapping() {
+        let provider = GeminiProvider::new("test-key").with_base_url("https://generativelanguage.googleapis.com/v1beta/models");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+
+        // System 指令
+        session.append_turn(Turn::new(Role::System, vec![Message::system("You are a helpful assistant.")], None));
+        // User 问题
+        session.append_turn(Turn::user_turn(Message::user("List files"), None));
+
+        // Assistant 调用 bash 工具
+        let asst_msg = Message::assistant(vec![ContentPart::ToolCall(ToolCall {
+            id: "call_abc123".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"ls"}"#.into(),
+        })]);
+        session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
+
+        // Tool 返回执行结果
+        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
+            tool_call_id: "call_abc123".into(),
+            content: "file1.txt\nfile2.txt".into(),
+            is_error: false,
+        })], None));
+
+        let options = CompletionOptions {
+            model: "gemini-2.0-flash".into(),
+            ..Default::default()
+        };
+        let body = provider.build_request_body(&session, &[], &options);
+
+        // 验证 systemInstruction 独立提取
+        let sys_inst = &body["systemInstruction"]["parts"][0]["text"];
+        assert_eq!(sys_inst, "You are a helpful assistant.");
+
+        // 验证 contents 角色交替与结构：user -> model (functionCall) -> user (functionResponse)
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[2]["role"], "user");
+
+        // 验证 model 的 functionCall
+        let fc = &contents[1]["parts"][0]["functionCall"];
+        assert_eq!(fc["name"], "bash");
+        assert_eq!(fc["args"]["command"], "ls");
+
+        // 验证 user 的 functionResponse 函数名正确匹配为 bash，而非 call_abc123
+        let fr = &contents[2]["parts"][0]["functionResponse"];
+        assert_eq!(fr["name"], "bash");
+        assert_eq!(fr["response"]["content"], "file1.txt\nfile2.txt");
     }
 }

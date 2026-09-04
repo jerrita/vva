@@ -111,11 +111,12 @@ pub fn render_input_area(
         Span::styled(ws_name, Style::default().fg(Color::DarkGray)),
         Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
         Span::styled("/model", Style::default().fg(Color::Cyan)),
-        Span::styled(" to select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/sessions", Style::default().fg(Color::Cyan)),
-        Span::styled(" to resume  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" /variant", Style::default().fg(Color::Magenta)),
+        Span::styled(" /config", Style::default().fg(Color::Yellow)),
+        Span::styled(" /sessions", Style::default().fg(Color::Cyan)),
+        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
         Span::styled("/help", Style::default().fg(Color::Cyan)),
-        Span::styled(" for commands", Style::default().fg(Color::DarkGray)),
+        Span::styled(" for help", Style::default().fg(Color::DarkGray)),
     ]);
     let bottom_bar = Paragraph::new(bottom_line);
     frame.render_widget(bottom_bar, chunks[2]);

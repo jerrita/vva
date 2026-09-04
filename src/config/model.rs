@@ -3,17 +3,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ProviderType {
+    #[default]
     Response,
     Anthropic,
     Gemini,
 }
 
-impl Default for ProviderType {
-    fn default() -> Self {
-        Self::Response
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {

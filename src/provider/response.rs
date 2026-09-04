@@ -40,7 +40,7 @@ impl ResponseProvider {
         let mut api_tools: Vec<serde_json::Value> = Vec::new();
         if options.enable_web_search {
             api_tools.push(serde_json::json!({
-                "type": "web_search_preview"
+                "type": "web_search"
             }));
         }
 
@@ -78,6 +78,16 @@ impl ResponseProvider {
         for turn in turns_to_send {
             for msg in &turn.messages {
                 match msg.role {
+                    Role::System => {
+                        input_items.push(serde_json::json!({
+                            "type": "message",
+                            "role": "system",
+                            "content": [{
+                                "type": "input_text",
+                                "text": msg.text_content(),
+                            }],
+                        }));
+                    }
                     Role::User => {
                         let mut content_arr = Vec::new();
                         for part in &msg.parts {
@@ -88,13 +98,14 @@ impl ResponseProvider {
                                         "text": text,
                                     }));
                                 }
-                                ContentPart::Image { source, .. } => {
-                                    if let crate::model::MediaSource::Url { url } = source {
-                                        content_arr.push(serde_json::json!({
-                                            "type": "input_image",
-                                            "image_url": url,
-                                        }));
-                                    }
+                                ContentPart::Image {
+                                    source: crate::model::MediaSource::Url { url },
+                                    ..
+                                } => {
+                                    content_arr.push(serde_json::json!({
+                                        "type": "input_image",
+                                        "image_url": url,
+                                    }));
                                 }
                                 _ => {}
                             }
@@ -104,6 +115,36 @@ impl ResponseProvider {
                             "role": "user",
                             "content": content_arr,
                         }));
+                    }
+                    Role::Assistant => {
+                        // 当无 previous_response_id 时（跨供应商切换或冷启动），需带上历史 Assistant 内容与 ToolCall
+                        let mut content_arr = Vec::new();
+                        for part in &msg.parts {
+                            match part {
+                                ContentPart::Text { text, .. } => {
+                                    content_arr.push(serde_json::json!({
+                                        "type": "output_text",
+                                        "text": text,
+                                    }));
+                                }
+                                ContentPart::ToolCall(call) => {
+                                    input_items.push(serde_json::json!({
+                                        "type": "function_call",
+                                        "call_id": call.id,
+                                        "name": call.name,
+                                        "arguments": call.arguments,
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !content_arr.is_empty() {
+                            input_items.push(serde_json::json!({
+                                "type": "message",
+                                "role": "assistant",
+                                "content": content_arr,
+                            }));
+                        }
                     }
                     Role::Tool => {
                         for part in &msg.parts {
@@ -116,7 +157,6 @@ impl ResponseProvider {
                             }
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -134,7 +174,10 @@ impl ResponseProvider {
             body["tools"] = serde_json::Value::Array(api_tools);
         }
 
-        if let Some(temp) = options.temperature {
+        // OpenAI Responses API 中开启 reasoning 时传 temperature 会报 400
+        if let Some(temp) = options.temperature
+            && options.reasoning_effort.is_none()
+        {
             body["temperature"] = serde_json::json!(temp);
         }
 
@@ -142,8 +185,12 @@ impl ResponseProvider {
             body["max_output_tokens"] = serde_json::json!(max_tokens);
         }
 
-        if let Some(effort) = &options.reasoning_effort {
-            body["reasoning_effort"] = serde_json::json!(effort);
+        if let Some(effort) = &options.reasoning_effort
+            && !effort.is_empty()
+        {
+            body["reasoning"] = serde_json::json!({
+                "effort": effort
+            });
         }
 
         body
@@ -157,7 +204,13 @@ impl ResponseProvider {
             .to_string();
 
         let status = json["status"].as_str().map(|s| s.to_string());
+        let previous_response_id = json["previous_response_id"].as_str().map(|s| s.to_string());
+        let service_tier = json["service_tier"].as_str().map(|s| s.to_string());
+        let system_fingerprint = json["system_fingerprint"].as_str().map(|s| s.to_string());
+        let reasoning_effort = json["reasoning"]["effort"].as_str().map(|s| s.to_string());
+
         let mut parts = Vec::new();
+        let mut last_msg_item_id = None;
 
         if let Some(output_items) = json["output"].as_array() {
             for item in output_items {
@@ -186,33 +239,67 @@ impl ResponseProvider {
                             sources,
                         }));
                     }
+                    "reasoning" => {
+                        let mut reasoning_text = String::new();
+                        if let Some(sum) = item["summary"].as_str() {
+                            reasoning_text = sum.to_string();
+                        } else if let Some(contents) = item["summary"].as_array() {
+                            for c in contents {
+                                if let Some(t) = c["text"].as_str() {
+                                    if !reasoning_text.is_empty() {
+                                        reasoning_text.push('\n');
+                                    }
+                                    reasoning_text.push_str(t);
+                                }
+                            }
+                        }
+                        if !reasoning_text.is_empty() {
+                            parts.push(ContentPart::Reasoning {
+                                content: reasoning_text,
+                                signature: None,
+                            });
+                        }
+                    }
                     "message" => {
+                        if let Some(id) = item["id"].as_str() {
+                            last_msg_item_id = Some(id.to_string());
+                        }
                         if let Some(contents) = item["content"].as_array() {
                             for c in contents {
-                                if c["type"].as_str() == Some("text") {
-                                    let text = c["text"].as_str().unwrap_or_default().to_string();
-                                    let mut annotations = Vec::new();
-
-                                    if let Some(ann_arr) = c["annotations"].as_array() {
-                                        for ann in ann_arr {
-                                            if ann["type"].as_str() == Some("url_citation") {
-                                                annotations.push(Annotation::UrlCitation {
-                                                    url: ann["url"].as_str().unwrap_or_default().to_string(),
-                                                    title: ann["title"].as_str().unwrap_or_default().to_string(),
-                                                    start_index: ann["start_index"].as_u64().unwrap_or(0) as usize,
-                                                    end_index: ann["end_index"].as_u64().unwrap_or(0) as usize,
-                                                });
+                                let c_type = c["type"].as_str().unwrap_or_default();
+                                match c_type {
+                                    "output_text" => {
+                                        let text = c["text"].as_str().unwrap_or_default().to_string();
+                                        if !text.is_empty() {
+                                            let mut annotations = Vec::new();
+                                            if let Some(ann_arr) = c["annotations"].as_array() {
+                                                for ann in ann_arr {
+                                                    if ann["type"].as_str() == Some("url_citation") {
+                                                        annotations.push(Annotation::UrlCitation {
+                                                            url: ann["url"].as_str().unwrap_or_default().to_string(),
+                                                            title: ann["title"].as_str().unwrap_or_default().to_string(),
+                                                            start_index: ann["start_index"].as_u64().unwrap_or(0) as usize,
+                                                            end_index: ann["end_index"].as_u64().unwrap_or(0) as usize,
+                                                        });
+                                                    }
+                                                }
                                             }
+                                            parts.push(ContentPart::Text { text, annotations });
                                         }
                                     }
-
-                                    parts.push(ContentPart::Text { text, annotations });
+                                    "refusal" => {
+                                        let refusal = c["refusal"].as_str().unwrap_or_default().to_string();
+                                        if !refusal.is_empty() {
+                                            parts.push(ContentPart::text(refusal));
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
                     }
                     "function_call" => {
-                        let call_id = item["id"].as_str().unwrap_or_default().to_string();
+                        let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
                         let name = item["name"].as_str().unwrap_or_default().to_string();
                         let arguments = item["arguments"].as_str().unwrap_or("{}").to_string();
 
@@ -229,26 +316,39 @@ impl ResponseProvider {
 
         let mut usage = None;
         if let Some(u) = json.get("usage") {
+            let cached = u["input_tokens_details"]["cached_tokens"]
+                .as_u64()
+                .map(|v| v as u32);
+            let reasoning = u["output_tokens_details"]["reasoning_tokens"]
+                .as_u64()
+                .map(|v| v as u32);
             usage = Some(TokenUsage {
                 prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
                 completion_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
                 total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-                cached_tokens: None,
-                reasoning_tokens: None,
+                cached_tokens: cached,
+                reasoning_tokens: reasoning,
             });
         }
 
-        let mut meta = TurnMeta::default();
-        meta.response = Some(ResponseTurnMeta {
-            response_id,
-            previous_response_id: json["previous_response_id"].as_str().map(|s| s.to_string()),
-            status,
-            service_tier: json["service_tier"].as_str().map(|s| s.to_string()),
-            system_fingerprint: json["system_fingerprint"].as_str().map(|s| s.to_string()),
-            reasoning_effort: json["reasoning_effort"].as_str().map(|s| s.to_string()),
-        });
+        let meta = TurnMeta {
+            response: Some(ResponseTurnMeta {
+                response_id,
+                previous_response_id,
+                status,
+                service_tier,
+                system_fingerprint,
+                reasoning_effort,
+            }),
+            ..Default::default()
+        };
 
-        let message = Message::assistant(parts);
+        let mut message = Message::assistant(parts);
+        if let Some(msg_id) = last_msg_item_id {
+            message.meta.response = Some(crate::model::ResponseMessageMeta {
+                item_id: Some(msg_id),
+            });
+        }
 
         Ok(ProviderResponse {
             messages: vec![message],
@@ -279,7 +379,12 @@ impl Provider for ResponseProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
-        let url = format!("{}/responses", self.base_url);
+        let base = self.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/responses") {
+            base.to_string()
+        } else {
+            format!("{base}/responses")
+        };
         let body = self.build_request_body(session, tools, options);
 
         let mut headers = HeaderMap::new();
@@ -327,15 +432,19 @@ mod tests {
         let user_turn = Turn::user_turn(user_msg, None);
         session.append_turn(user_turn);
 
-        // 第一轮：无 previous_response_id
+        // 第一轮：无 previous_response_id，携带 reasoning_effort
         let options = CompletionOptions {
             model: "gpt-4.5-preview".into(),
             enable_web_search: true,
+            reasoning_effort: Some("medium".into()),
             ..Default::default()
         };
         let body1 = provider.build_request_body(&session, &[], &options);
         assert!(body1.get("previous_response_id").is_none());
-        assert_eq!(body1["tools"][0]["type"], "web_search_preview");
+        assert_eq!(body1["tools"][0]["type"], "web_search");
+        // Responses API 标准：reasoning.effort，禁止 top-level reasoning_effort
+        assert_eq!(body1["reasoning"]["effort"], "medium");
+        assert!(body1.get("reasoning_effort").is_none());
 
         // 模拟第一轮 Assistant 成功返回 response_id = "resp_turn_1"
         let mut asst_turn = Turn::assistant_turn(vec![Message::assistant(vec![ContentPart::text("It is sunny.")])], None);
@@ -353,6 +462,7 @@ mod tests {
         let inputs = body2["input"].as_array().unwrap();
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0]["content"][0]["text"], "What about tomorrow?");
+        assert_eq!(body2["reasoning"]["effort"], "medium");
     }
 
     #[test]
@@ -361,6 +471,9 @@ mod tests {
         let mock_json = serde_json::json!({
             "id": "resp_98765",
             "status": "completed",
+            "reasoning": {
+                "effort": "medium"
+            },
             "output": [
                 {
                     "type": "web_search_call",
@@ -382,7 +495,7 @@ mod tests {
                     "role": "assistant",
                     "content": [
                         {
-                            "type": "text",
+                            "type": "output_text",
                             "text": "Tokyo is sunny with 22C today [1].",
                             "annotations": [
                                 {
@@ -405,7 +518,9 @@ mod tests {
         });
 
         let parsed = provider.parse_response(mock_json).expect("parse response");
-        assert_eq!(parsed.meta.response.unwrap().response_id, "resp_98765");
+        let resp_meta = parsed.meta.response.as_ref().unwrap();
+        assert_eq!(resp_meta.response_id, "resp_98765");
+        assert_eq!(resp_meta.reasoning_effort.as_deref(), Some("medium"));
         let msg = &parsed.messages[0];
         assert_eq!(msg.parts.len(), 2);
 
@@ -435,4 +550,133 @@ mod tests {
             _ => panic!("Expected Text with annotations"),
         }
     }
+
+    #[test]
+    fn test_response_provider_cold_start_history_and_temperature_guard() {
+        let provider = ResponseProvider::new("test-key").with_base_url("https://api.openai.com/v1/responses/");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+
+        // System 提示
+        session.append_turn(Turn::new(Role::System, vec![Message::system("Be concise.")], None));
+        // User 问题
+        session.append_turn(Turn::user_turn(Message::user("Hello"), None));
+        // Assistant 回复且包含 ToolCall（来自其他 provider 或无 previous_response_id）
+        let asst_msg = Message::assistant(vec![
+            ContentPart::text("Calling tool"),
+            ContentPart::ToolCall(ToolCall { id: "c1".into(), name: "bash".into(), arguments: r#"{"command":"pwd"}"#.into() }),
+        ]);
+        session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
+        // Tool 返回
+        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
+            tool_call_id: "c1".into(),
+            content: "/home/project".into(),
+            is_error: false,
+        })], None));
+
+        let options = CompletionOptions {
+            model: "gpt-5.6-luna".into(),
+            temperature: Some(0.7),
+            reasoning_effort: Some("high".into()),
+            enable_web_search: true,
+            ..Default::default()
+        };
+        let body = provider.build_request_body(&session, &[], &options);
+
+        // 验证推理模式下 temperature 被安全抑制
+        assert!(body.get("temperature").is_none());
+        assert_eq!(body["reasoning"]["effort"], "high");
+
+        // 验证冷启动时系统消息与 Assistant 消息均被序列化进 input
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[0]["type"], "message");
+        assert_eq!(input[0]["role"], "system");
+        assert_eq!(input[0]["content"][0]["text"], "Be concise.");
+
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["role"], "user");
+
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["name"], "bash");
+
+        assert_eq!(input[3]["type"], "message");
+        assert_eq!(input[3]["role"], "assistant");
+        assert_eq!(input[3]["content"][0]["type"], "output_text");
+
+        assert_eq!(input[4]["type"], "function_call_output");
+        assert_eq!(input[4]["call_id"], "c1");
+    }
+
+    #[test]
+    fn test_response_provider_parse_standard_output_text_and_reasoning() {
+        let provider = ResponseProvider::new("test-key");
+
+        // 标准 OpenAI Responses API: output[].content[].type == "output_text"，以及 reasoning 块与 item_id 绑定
+        let json_standard = serde_json::json!({
+            "id": "resp_std_001",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": "Analyzing the user query step by step"
+                },
+                {
+                    "type": "message",
+                    "id": "msg_std_100",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Here is the exact response from the model."
+                        }
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_fn_1",
+                    "name": "bash",
+                    "arguments": "{\"command\":\"echo hello\"}"
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "total_tokens": 30
+            }
+        });
+
+        let parsed = provider.parse_response(json_standard).expect("parse standard response");
+        assert_eq!(parsed.messages.len(), 1);
+        let msg = &parsed.messages[0];
+        assert_eq!(
+            msg.meta.response.as_ref().and_then(|r| r.item_id.as_deref()),
+            Some("msg_std_100")
+        );
+        let parts = &msg.parts;
+        assert_eq!(parts.len(), 3);
+
+        match &parts[0] {
+            ContentPart::Reasoning { content, .. } => {
+                assert_eq!(content, "Analyzing the user query step by step");
+            }
+            _ => panic!("Expected Reasoning part"),
+        }
+
+        match &parts[1] {
+            ContentPart::Text { text, .. } => {
+                assert_eq!(text, "Here is the exact response from the model.");
+            }
+            _ => panic!("Expected Text part"),
+        }
+
+        match &parts[2] {
+            ContentPart::ToolCall(call) => {
+                assert_eq!(call.id, "call_fn_1");
+                assert_eq!(call.name, "bash");
+                assert_eq!(call.arguments, "{\"command\":\"echo hello\"}");
+            }
+            _ => panic!("Expected ToolCall part"),
+        }
+    }
 }
+

@@ -75,8 +75,12 @@ impl AppConfig {
                         valid: valid_vars.clone(),
                     });
                 }
+                Some(req_var.to_string())
+            } else if model_cfg.reasoning {
+                Some(req_var.to_string())
+            } else {
+                None
             }
-            Some(req_var.to_string())
         } else if let Some(valid_vars) = &model_cfg.variants {
             // 默认优先选择 medium 或首选档位
             if valid_vars.iter().any(|v| v == "medium") {
@@ -91,13 +95,15 @@ impl AppConfig {
         // 计算实际生效的 ProviderType（支持模型级 override）
         let effective_type = model_cfg.effective_type(provider_cfg.provider_type);
 
-        // 规范化 Base URL（针对各 API 标准端点添加后缀）
-        let base_url = provider_cfg.base_url.trim_end_matches('/');
-        let api_key = &provider_cfg.api_key;
+        // 规范化 Base URL（针对各 API 标准端点严格对接与去重）
+        let base_url = provider_cfg.base_url.trim().trim_end_matches('/');
+        let api_key = provider_cfg.api_key.trim();
 
         let provider_inst: Arc<dyn Provider> = match effective_type {
             ProviderType::Response => {
-                let url = if base_url.ends_with("/v1") {
+                let url = if base_url.is_empty() {
+                    "https://api.openai.com/v1".to_string()
+                } else if base_url.ends_with("/v1") || base_url.ends_with("/responses") {
                     base_url.to_string()
                 } else {
                     format!("{base_url}/v1")
@@ -105,7 +111,9 @@ impl AppConfig {
                 Arc::new(ResponseProvider::new(api_key).with_base_url(url))
             }
             ProviderType::Anthropic => {
-                let url = if base_url.ends_with("/v1") {
+                let url = if base_url.is_empty() {
+                    "https://api.anthropic.com/v1".to_string()
+                } else if base_url.ends_with("/v1") || base_url.ends_with("/messages") {
                     base_url.to_string()
                 } else {
                     format!("{base_url}/v1")
@@ -113,7 +121,9 @@ impl AppConfig {
                 Arc::new(AnthropicProvider::new(api_key).with_base_url(url))
             }
             ProviderType::Gemini => {
-                let url = if base_url.ends_with("/v1beta") {
+                let url = if base_url.is_empty() {
+                    "https://generativelanguage.googleapis.com/v1beta".to_string()
+                } else if base_url.ends_with("/v1beta") || base_url.ends_with("/v1") || base_url.contains("/models") {
                     base_url.to_string()
                 } else {
                     format!("{base_url}/v1beta")
