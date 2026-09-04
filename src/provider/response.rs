@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::common::EventForwarder;
+use super::common::{EventForwarder, require_u64};
 use super::http::{SseEventHandler, consume_sse, post_sse};
 use super::{
     CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
@@ -257,8 +257,10 @@ impl ResponseProvider {
         if let Some(effort) = &options.reasoning_effort
             && !effort.is_empty()
         {
+            // OpenAI 仅在显式请求 summary 时才生成思考摘要，否则 reasoning item 的 summary 恒为空
             body["reasoning"] = serde_json::json!({
-                "effort": effort
+                "effort": effort,
+                "summary": "auto"
             });
         }
 
@@ -377,7 +379,8 @@ impl ResponseProvider {
                         let ResponseReasoningContent::ReasoningText { text } = c;
                         texts.push(text.clone());
                     }
-                    let reasoning_text = texts.join("\n");
+                    // 各 summary/content 段以空行分隔（markdown 段落边界），渲染时独立成行
+                    let reasoning_text = texts.join("\n\n");
                     if !reasoning_text.is_empty() {
                         parts.push(ContentPart::Reasoning {
                             content: reasoning_text,
@@ -602,6 +605,15 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                 self.forwarder.text(delta).await;
                 Ok(())
             }
+            "response.reasoning_summary_part.added" => {
+                // 官方规范：summary 分多段时每段以该事件起始。各段语义独立，
+                // 以空行（markdown 段落边界）分隔，避免渲染时被软换行合并成一行
+                let summary_index = require_u64(&json, "summary_index")?;
+                if summary_index > 0 {
+                    self.forwarder.thought("\n\n").await;
+                }
+                Ok(())
+            }
             "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
                 let delta = json["delta"].as_str().ok_or_else(|| {
                     ProviderError::Protocol("Missing 'delta' in reasoning delta event".into())
@@ -662,6 +674,8 @@ mod tests {
         assert_eq!(body1["tools"][0]["type"], "web_search");
         // Responses API 标准：reasoning.effort，禁止 top-level reasoning_effort
         assert_eq!(body1["reasoning"]["effort"], "medium");
+        // 思考摘要需显式请求，否则 reasoning item 的 summary 恒为空
+        assert_eq!(body1["reasoning"]["summary"], "auto");
         assert!(body1.get("reasoning_effort").is_none());
 
         // 模拟第一轮 Assistant 成功返回 response_id = "resp_turn_1"
@@ -686,6 +700,7 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0]["content"][0]["text"], "What about tomorrow?");
         assert_eq!(body2["reasoning"]["effort"], "medium");
+        assert_eq!(body2["reasoning"]["summary"], "auto");
     }
 
     #[test]
@@ -891,6 +906,7 @@ mod tests {
         // 验证推理模式下 temperature 被安全抑制
         assert!(body.get("temperature").is_none());
         assert_eq!(body["reasoning"]["effort"], "high");
+        assert_eq!(body["reasoning"]["summary"], "auto");
 
         // 验证冷启动时系统消息与 Assistant 消息均被序列化进 input
         let input = body["input"].as_array().unwrap();
@@ -1164,6 +1180,43 @@ mod tests {
         let result = provider.parse_response(mock_failed_json);
         assert!(
             matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("Response failed: The model failed to generate a response."))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_handler_separates_summary_parts_with_newline() {
+        let provider = ResponseProvider::new("test-key");
+        let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+        let mut handler = ResponseStreamHandler {
+            provider: &provider,
+            forwarder: EventForwarder::new(Some(tx)),
+            completed: None,
+        };
+
+        // 官方规范流序列：首段 part.added(summary_index=0) → delta → 次段 part.added(1) → delta
+        for ev in [
+            serde_json::json!({"type": "response.reasoning_summary_part.added", "summary_index": 0}),
+            serde_json::json!({"type": "response.reasoning_summary_text.delta", "delta": "part one"}),
+            serde_json::json!({"type": "response.reasoning_summary_part.added", "summary_index": 1}),
+            serde_json::json!({"type": "response.reasoning_summary_text.delta", "delta": "part two"}),
+        ] {
+            handler.on_event(ev).await.unwrap();
+        }
+
+        let mut acc = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if let AgentEvent::Thought(text) = event {
+                acc.push_str(&text);
+            }
+        }
+        assert_eq!(acc, "part one\n\npart two");
+
+        // summary_index 为规范必填字段，缺失即报协议错误
+        let result = handler
+            .on_event(serde_json::json!({"type": "response.reasoning_summary_part.added"}))
+            .await;
+        assert!(
+            matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("Missing 'summary_index'"))
         );
     }
 }
