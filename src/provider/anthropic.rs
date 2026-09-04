@@ -760,22 +760,22 @@ mod tests {
         let events = decoder.decode(sse_data.as_bytes());
 
         for ev in events {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                if json["type"] == "content_block_delta" {
-                    let delta = &json["delta"];
-                    if delta["type"] == "thinking_delta" {
-                        let _ = tx
-                            .send(ProviderDelta::Thought(
-                                delta["thinking"].as_str().unwrap().to_string(),
-                            ))
-                            .await;
-                    } else if delta["type"] == "text_delta" {
-                        let _ = tx
-                            .send(ProviderDelta::Text(
-                                delta["text"].as_str().unwrap().to_string(),
-                            ))
-                            .await;
-                    }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
+                && json["type"] == "content_block_delta"
+            {
+                let delta = &json["delta"];
+                if delta["type"] == "thinking_delta" {
+                    let _ = tx
+                        .send(ProviderDelta::Thought(
+                            delta["thinking"].as_str().unwrap().to_string(),
+                        ))
+                        .await;
+                } else if delta["type"] == "text_delta" {
+                    let _ = tx
+                        .send(ProviderDelta::Text(
+                            delta["text"].as_str().unwrap().to_string(),
+                        ))
+                        .await;
                 }
             }
         }

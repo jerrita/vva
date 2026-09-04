@@ -54,34 +54,33 @@ mod tests {
 
     #[test]
     fn test_typed_metadata_integrity() {
-        let mut turn_meta = TurnMeta::default();
-        turn_meta.response = Some(ResponseTurnMeta {
-            response_id: Some("resp_abc123xyz".into()),
-            previous_response_id: Some("resp_root000".into()),
-            status: "completed".into(),
-            service_tier: Some("default".into()),
-            reasoning_effort: Some("high".into()),
-            store: true,
-            output_items: Vec::new(),
-        });
-
-        turn_meta.anthropic = Some(AnthropicTurnMeta {
-            cache_creation_input_tokens: Some(1024),
-            cache_read_input_tokens: Some(512),
-            stop_reason: Some("end_turn".into()),
-        });
-
-        turn_meta.gemini = Some(GeminiTurnMeta {
-            finish_reason: Some("STOP".into()),
-            safety_ratings: vec![GeminiSafetyRating {
-                category: "HARM_CATEGORY_HATE_SPEECH".into(),
-                probability: "NEGLIGIBLE".into(),
-            }],
-            code_execution_result: Some(GeminiCodeExecutionResult {
-                outcome: "OUTCOME_OK".into(),
-                output: "Hello from sandbox".into(),
+        let turn_meta = TurnMeta {
+            response: Some(ResponseTurnMeta {
+                response_id: Some("resp_abc123xyz".into()),
+                previous_response_id: Some("resp_root000".into()),
+                status: "completed".into(),
+                service_tier: Some("default".into()),
+                reasoning_effort: Some("high".into()),
+                store: true,
+                output_items: Vec::new(),
             }),
-        });
+            anthropic: Some(AnthropicTurnMeta {
+                cache_creation_input_tokens: Some(1024),
+                cache_read_input_tokens: Some(512),
+                stop_reason: Some("end_turn".into()),
+            }),
+            gemini: Some(GeminiTurnMeta {
+                finish_reason: Some("STOP".into()),
+                safety_ratings: vec![GeminiSafetyRating {
+                    category: "HARM_CATEGORY_HATE_SPEECH".into(),
+                    probability: "NEGLIGIBLE".into(),
+                }],
+                code_execution_result: Some(GeminiCodeExecutionResult {
+                    outcome: "OUTCOME_OK".into(),
+                    output: "Hello from sandbox".into(),
+                }),
+            }),
+        };
 
         let json = serde_json::to_string(&turn_meta).expect("serialize turn_meta");
         let decoded: TurnMeta = serde_json::from_str(&json).expect("deserialize turn_meta");

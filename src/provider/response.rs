@@ -1350,7 +1350,7 @@ mod tests {
         // 校验：当 store: false 时不记录 response_id、previous_response_id，且 store 为 false
         assert!(resp_meta.response_id.is_none());
         assert!(resp_meta.previous_response_id.is_none());
-        assert_eq!(resp_meta.store, false);
+        assert!(!resp_meta.store);
         // 不记录依赖 store 的 message item_id
         assert!(parsed.messages[0].meta.response.is_none());
 

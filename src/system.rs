@@ -225,12 +225,12 @@ fn get_cpu_info() -> String {
     {
         if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
             for line in content.lines() {
-                if line.starts_with("model name") || line.starts_with("Processor") {
-                    if let Some((_, model)) = line.split_once(':') {
-                        let trimmed = model.trim();
-                        if !trimmed.is_empty() {
-                            return format!("{trimmed} ({cores} logical cores)");
-                        }
+                if (line.starts_with("model name") || line.starts_with("Processor"))
+                    && let Some((_, model)) = line.split_once(':')
+                {
+                    let trimmed = model.trim();
+                    if !trimmed.is_empty() {
+                        return format!("{trimmed} ({cores} logical cores)");
                     }
                 }
             }
@@ -315,12 +315,12 @@ fn get_gpu_info() -> String {
         if let Some(out) = run_command_output("lspci", &[]) {
             let mut gpus = Vec::new();
             for line in out.lines() {
-                if line.contains("VGA compatible controller") || line.contains("3D controller") {
-                    if let Some((_, rest)) = line.split_once(':') {
-                        let trimmed = rest.trim();
-                        if !trimmed.is_empty() && !gpus.contains(&trimmed.to_string()) {
-                            gpus.push(trimmed.to_string());
-                        }
+                if (line.contains("VGA compatible controller") || line.contains("3D controller"))
+                    && let Some((_, rest)) = line.split_once(':')
+                {
+                    let trimmed = rest.trim();
+                    if !trimmed.is_empty() && !gpus.contains(&trimmed.to_string()) {
+                        gpus.push(trimmed.to_string());
                     }
                 }
             }
@@ -390,11 +390,11 @@ fn get_memory_info() -> String {
             for line in content.lines() {
                 if line.starts_with("MemTotal:") {
                     let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        if let Ok(kb) = parts[1].parse::<f64>() {
-                            let gb = kb / (1024.0 * 1024.0);
-                            return format!("{gb:.1} GB");
-                        }
+                    if parts.len() >= 2
+                        && let Ok(kb) = parts[1].parse::<f64>()
+                    {
+                        let gb = kb / (1024.0 * 1024.0);
+                        return format!("{gb:.1} GB");
                     }
                 }
             }

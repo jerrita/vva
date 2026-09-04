@@ -923,20 +923,19 @@ mod tests {
         let events = decoder.decode(sse_data.as_bytes());
 
         for ev in events {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                if let Some(candidate) = json["candidates"].as_array().and_then(|c| c.first())
-                    && let Some(parts) = candidate["content"]["parts"].as_array()
-                {
-                    for p in parts {
-                        if p["thought"].as_bool() == Some(true) {
-                            let _ = tx
-                                .send(ProviderDelta::Thought(
-                                    p["text"].as_str().unwrap().to_string(),
-                                ))
-                                .await;
-                        } else if let Some(t) = p["text"].as_str() {
-                            let _ = tx.send(ProviderDelta::Text(t.to_string())).await;
-                        }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
+                && let Some(candidate) = json["candidates"].as_array().and_then(|c| c.first())
+                && let Some(parts) = candidate["content"]["parts"].as_array()
+            {
+                for p in parts {
+                    if p["thought"].as_bool() == Some(true) {
+                        let _ = tx
+                            .send(ProviderDelta::Thought(
+                                p["text"].as_str().unwrap().to_string(),
+                            ))
+                            .await;
+                    } else if let Some(t) = p["text"].as_str() {
+                        let _ = tx.send(ProviderDelta::Text(t.to_string())).await;
                     }
                 }
             }
