@@ -16,6 +16,51 @@ pub struct TextSelection {
     pub head: TextCoord,
 }
 
+/// 选区状态追踪器：选区与其"拖拽进行中"标志成对维护，消除双字段不变量
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SelectionTracker {
+    pub selection: Option<TextSelection>,
+    selecting: bool,
+}
+
+impl SelectionTracker {
+    pub fn start(&mut self, line: usize, col: usize) {
+        let coord = TextCoord { line, col };
+        self.selection = Some(TextSelection::new(coord, coord));
+        self.selecting = true;
+    }
+
+    pub fn update(&mut self, line: usize, col: usize) {
+        if let Some(ref mut sel) = self.selection {
+            sel.head = TextCoord { line, col };
+        }
+    }
+
+    pub fn finish(&mut self) {
+        self.selecting = false;
+        if self.selection.as_ref().is_some_and(|sel| sel.is_empty()) {
+            self.selection = None;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.selection = None;
+        self.selecting = false;
+    }
+
+    pub fn get(&self) -> Option<&TextSelection> {
+        self.selection.as_ref()
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.selection.is_some()
+    }
+
+    pub fn is_selecting(&self) -> bool {
+        self.selecting
+    }
+}
+
 impl TextSelection {
     pub fn new(anchor: TextCoord, head: TextCoord) -> Self {
         Self { anchor, head }
@@ -69,56 +114,36 @@ pub fn char_in_column_range(ch: char, col: usize, range: (usize, usize)) -> bool
 
 impl App {
     pub fn start_text_selection(&mut self, line: usize, col: usize) {
-        let coord = TextCoord { line, col };
-        self.text_selection = Some(TextSelection::new(coord, coord));
-        self.is_selecting_text = true;
+        self.text_selection.start(line, col);
         self.auto_scroll = false;
     }
 
     pub fn update_text_selection(&mut self, line: usize, col: usize) {
-        if let Some(ref mut sel) = self.text_selection {
-            sel.head = TextCoord { line, col };
-        }
+        self.text_selection.update(line, col);
     }
 
     pub fn finish_text_selection(&mut self) {
-        self.is_selecting_text = false;
-        if let Some(ref sel) = self.text_selection
-            && sel.is_empty()
-        {
-            self.text_selection = None;
-        }
+        self.text_selection.finish();
     }
 
     pub fn clear_text_selection(&mut self) {
-        self.text_selection = None;
-        self.is_selecting_text = false;
+        self.text_selection.clear();
     }
 
     pub fn start_sidebar_selection(&mut self, line: usize, col: usize) {
-        let coord = TextCoord { line, col };
-        self.sidebar_selection = Some(TextSelection::new(coord, coord));
-        self.is_selecting_sidebar = true;
+        self.sidebar_selection.start(line, col);
     }
 
     pub fn update_sidebar_selection(&mut self, line: usize, col: usize) {
-        if let Some(ref mut sel) = self.sidebar_selection {
-            sel.head = TextCoord { line, col };
-        }
+        self.sidebar_selection.update(line, col);
     }
 
     pub fn finish_sidebar_selection(&mut self) {
-        self.is_selecting_sidebar = false;
-        if let Some(ref sel) = self.sidebar_selection
-            && sel.is_empty()
-        {
-            self.sidebar_selection = None;
-        }
+        self.sidebar_selection.finish();
     }
 
     pub fn clear_sidebar_selection(&mut self) {
-        self.sidebar_selection = None;
-        self.is_selecting_sidebar = false;
+        self.sidebar_selection.clear();
     }
 
     pub fn copy_selection_to_clipboard(&mut self) -> bool {
@@ -130,14 +155,14 @@ impl App {
         }
         let max_width = (self.chat_area.width as usize).saturating_sub(1).max(20);
         let lines = crate::ui::views::chat::build_chat_lines(self, max_width);
-        if let Some(ref sel) = self.text_selection
+        if let Some(sel) = self.text_selection.get()
             && let Some(text) = crate::ui::views::chat::extract_selected_text(&lines, sel)
             && !text.is_empty()
         {
             let _ = set_clipboard_text(&text);
             return true;
         }
-        if let Some(ref sel) = self.sidebar_selection
+        if let Some(sel) = self.sidebar_selection.get()
             && let Some(text) =
                 crate::ui::views::chat::extract_selected_text(&self.sidebar_lines, sel)
             && !text.is_empty()

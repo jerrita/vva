@@ -6,16 +6,15 @@ pub mod tool;
 pub mod turn;
 
 pub use content::{
-    Annotation, ContentPart, ImageDetail, MediaSource, SearchStatus, WebSearchCall, WebSearchSource,
+    Annotation, ContentPart, MediaSource, SearchStatus, WebSearchCall, WebSearchSource,
 };
 pub use message::{Message, Role};
 pub use meta::{
-    AnthropicMessageMeta, AnthropicSessionMeta, AnthropicTurnMeta, GeminiCodeExecutionResult,
-    GeminiMessageMeta, GeminiSafetyRating, GeminiSessionMeta, GeminiTurnMeta, MessageMeta,
-    ResponseMessageContent, ResponseMessageMeta, ResponseMessageRole, ResponseOutputItem,
-    ResponseReasoningContent, ResponseReasoningSummary, ResponseSessionMeta, ResponseTurnMeta,
-    ResponseWebSearchAction, ResponseWebSearchSource, ResponseWebSearchSourceType, SessionMeta,
-    TurnMeta,
+    AnthropicSessionMeta, AnthropicTurnMeta, GeminiCodeExecutionResult, GeminiSafetyRating,
+    GeminiSessionMeta, GeminiTurnMeta, MessageMeta, ResponseMessageContent, ResponseMessageMeta,
+    ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent, ResponseReasoningSummary,
+    ResponseSessionMeta, ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
+    ResponseWebSearchSourceType, SessionMeta, TurnMeta,
 };
 pub use session::{JsonlRecord, Session, SessionHeader, SessionSummary, provisional_title};
 pub use tool::{ToolCall, ToolDefinition, ToolResult};

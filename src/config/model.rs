@@ -37,7 +37,10 @@ impl AppConfig {
                 if !p_cfg.api_key.is_empty() {
                     base_prov.api_key = p_cfg.api_key;
                 }
-                base_prov.provider_type = p_cfg.provider_type;
+                // 仅在项目配置显式声明 type 时覆写，防止 serde 默认值静默翻转协议
+                if let Some(provider_type) = p_cfg.provider_type {
+                    base_prov.provider_type = Some(provider_type);
+                }
                 for (m_id, m_cfg) in p_cfg.models {
                     base_prov.models.insert(m_id, m_cfg);
                 }
@@ -60,8 +63,10 @@ pub struct GlobalSettings {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderConfig {
-    #[serde(rename = "type", default)]
-    pub provider_type: ProviderType,
+    /// 供应商协议类型；`None` 表示配置未显式声明 `type` 字段，
+    /// 合并时不覆写既有声明，解析时按 Response 协议处理
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<ProviderType>,
     #[serde(default)]
     pub base_url: String,
     #[serde(default)]

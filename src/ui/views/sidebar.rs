@@ -69,7 +69,11 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
             .add_modifier(Modifier::BOLD),
     );
     lines[1] = label_value("Session", short_id, Style::default().fg(Color::Cyan));
-    lines[2] = label_value("Workspace", ws_display.to_string(), Style::default().fg(Color::White));
+    lines[2] = label_value(
+        "Workspace",
+        ws_display.to_string(),
+        Style::default().fg(Color::White),
+    );
     lines[3] = label_value(
         "Turns",
         app.stats.total_turns.to_string(),
@@ -93,7 +97,10 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
     );
     lines[11] = label_value(
         "In/Out",
-        format!("{} / {}", app.stats.prompt_tokens, app.stats.completion_tokens),
+        format!(
+            "{} / {}",
+            app.stats.prompt_tokens, app.stats.completion_tokens
+        ),
         Style::default().fg(Color::Rgb(170, 170, 170)),
     );
     lines[15] = label_value(
@@ -158,7 +165,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
 
     let (_context_limit, ratio, percent) = context_usage(&app.stats);
     let mut lines = build_sidebar_lines(app, info);
-    if let Some(selection) = &app.sidebar_selection {
+    if let Some(selection) = app.sidebar_selection.get() {
         apply_selection_highlight(&mut lines, selection);
     }
     app.sidebar_lines = lines.clone();
@@ -237,7 +244,7 @@ mod tests {
 
         assert_eq!(app.sidebar_area, Rect::new(1, 1, 29, 22));
         assert_eq!(
-            app.sidebar_selection,
+            app.sidebar_selection.selection,
             Some(TextSelection::new(
                 TextCoord { line: 0, col: 7 },
                 TextCoord { line: 0, col: 14 }
@@ -246,7 +253,7 @@ mod tests {
         assert_eq!(
             crate::ui::views::chat::extract_selected_text(
                 &app.sidebar_lines,
-                app.sidebar_selection.as_ref().unwrap(),
+                app.sidebar_selection.get().unwrap(),
             ),
             Some("Example".to_string())
         );

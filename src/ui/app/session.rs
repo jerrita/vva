@@ -32,7 +32,12 @@ impl App {
         if let Some(ref mut cm) = self.config_modal {
             cm.update_item_value(
                 ConfigItemKind::WebSearch,
-                if session_web_search { "Enabled" } else { "Disabled" }.to_string(),
+                if session_web_search {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+                .to_string(),
             );
         }
 
@@ -76,7 +81,8 @@ impl App {
         if let Some(cfg) = self.session_mgr.app_config() {
             for (p_id, p_cfg) in &cfg.providers {
                 for (m_id, m_cfg) in &p_cfg.models {
-                    let effective_type = m_cfg.effective_type(p_cfg.provider_type);
+                    let effective_type =
+                        m_cfg.effective_type(p_cfg.provider_type.unwrap_or_default());
                     models.push(ModelItem {
                         full_id: format!("{p_id}/{m_id}"),
                         provider_id: p_id.clone(),
@@ -120,12 +126,9 @@ impl App {
             let mut s = self.active_session.session.write().await;
             s.set_model(model_spec.to_string(), new_variant);
         }
-
+        let _ = self.session_mgr.persist_header(&self.active_session).await;
         let s_clone = {
             let s_ref = self.active_session.session.read().await;
-            if self.active_session.is_persisted() {
-                let _ = self.session_mgr.store().save_header(&s_ref).await;
-            }
             s_ref.clone()
         };
 
@@ -212,12 +215,9 @@ impl App {
             let mut s = self.active_session.session.write().await;
             s.set_model(current_model, new_variant.clone());
         }
-
+        let _ = self.session_mgr.persist_header(&self.active_session).await;
         let s_clone = {
             let s_ref = self.active_session.session.read().await;
-            if self.active_session.is_persisted() {
-                let _ = self.session_mgr.store().save_header(&s_ref).await;
-            }
             s_ref.clone()
         };
 

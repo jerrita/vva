@@ -1,6 +1,7 @@
 pub mod bash;
 pub mod file;
 pub mod powershell;
+pub mod shell;
 
 use crate::model::{ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
@@ -38,7 +39,9 @@ impl ToolRegistry {
     pub fn with_workspace_defaults(workspace: &std::path::Path) -> Self {
         let mut registry = Self::new();
         #[cfg(windows)]
-        registry.register(Arc::new(crate::tools::powershell::PowerShellTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::powershell::PowerShellTool::new(
+            workspace,
+        )));
         #[cfg(not(windows))]
         registry.register(Arc::new(crate::tools::bash::BashTool::new(workspace)));
         registry.register(Arc::new(crate::tools::file::FileViewTool::new(workspace)));

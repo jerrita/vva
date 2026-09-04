@@ -1,15 +1,15 @@
-//! SSE (Server-Sent Events) 流解析工具
+//! SSE (Server-Sent Events) 流解析工具。
+//! 仅解码 `data:` 行（事件分发在各厂商报文的 JSON `type` 字段中），
+//! 其余字段行（`event:` / `id:` / 注释行等）按 SSE 规范忽略。
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SseEvent {
-    pub event: Option<String>,
     pub data: String,
 }
 
 #[derive(Debug, Default)]
 pub struct SseDecoder {
     buffer: String,
-    current_event: Option<String>,
     current_data: Vec<String>,
 }
 
@@ -37,20 +37,12 @@ impl SseDecoder {
                 // 空行触发单次事件派发
                 if !self.current_data.is_empty() {
                     let data = self.current_data.join("\n");
-                    events.push(SseEvent {
-                        event: self.current_event.take(),
-                        data,
-                    });
+                    events.push(SseEvent { data });
                     self.current_data.clear();
-                } else if self.current_event.is_some() {
-                    self.current_event = None;
                 }
             } else if let Some(stripped) = line.strip_prefix("data:") {
                 let val = stripped.strip_prefix(' ').unwrap_or(stripped);
                 self.current_data.push(val.to_string());
-            } else if let Some(stripped) = line.strip_prefix("event:") {
-                let val = stripped.strip_prefix(' ').unwrap_or(stripped);
-                self.current_event = Some(val.to_string());
             }
         }
 
@@ -59,16 +51,12 @@ impl SseDecoder {
 
     /// 在流结束时如果存在残余数据，产生最终事件
     pub fn flush(&mut self) -> Option<SseEvent> {
-        if !self.current_data.is_empty() {
-            let data = self.current_data.join("\n");
-            self.current_data.clear();
-            Some(SseEvent {
-                event: self.current_event.take(),
-                data,
-            })
-        } else {
-            None
+        if self.current_data.is_empty() {
+            return None;
         }
+        let data = self.current_data.join("\n");
+        self.current_data.clear();
+        Some(SseEvent { data })
     }
 }
 
@@ -83,10 +71,9 @@ mod tests {
             b"event: message\ndata: {\"text\": \"hello\"}\n\nevent: done\ndata: [DONE]\n\n";
         let events = decoder.decode(payload);
 
+        // event: 行按规范忽略，仅产出 data 内容
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event.as_deref(), Some("message"));
         assert_eq!(events[0].data, "{\"text\": \"hello\"}");
-        assert_eq!(events[1].event.as_deref(), Some("done"));
         assert_eq!(events[1].data, "[DONE]");
     }
 
@@ -104,12 +91,20 @@ mod tests {
     }
 
     #[test]
-    fn test_sse_decoder_crlf() {
+    fn test_sse_decoder_crlf_and_multiline_data() {
         let mut decoder = SseDecoder::new();
-        let payload = b"event: test\r\ndata: hello world\r\n\r\n";
+        let payload = b"event: test\r\ndata: line1\r\ndata: line2\r\n\r\n";
         let events = decoder.decode(payload);
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event.as_deref(), Some("test"));
-        assert_eq!(events[0].data, "hello world");
+        assert_eq!(events[0].data, "line1\nline2");
+    }
+
+    #[test]
+    fn test_sse_decoder_ignores_comment_lines() {
+        let mut decoder = SseDecoder::new();
+        let payload = b": keep-alive comment\ndata: {\"ok\":true}\n\n";
+        let events = decoder.decode(payload);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "{\"ok\":true}");
     }
 }

@@ -26,8 +26,6 @@ pub trait FilterableModal {
     /// 过滤后的条目数量
     fn filtered_len(&self) -> usize;
 
-    fn selected_index(&self) -> usize;
-
     fn selected_index_mut(&mut self) -> &mut usize;
 
     fn query_mut(&mut self) -> &mut String;

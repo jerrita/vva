@@ -99,10 +99,7 @@ pub fn command_row(
     desc_style: Style,
 ) -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            format!("{prefix}{:<name_width$}", name),
-            name_style,
-        ),
+        Span::styled(format!("{prefix}{:<name_width$}", name), name_style),
         Span::styled(format!(" - {description}"), desc_style),
     ])
 }

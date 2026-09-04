@@ -2,8 +2,12 @@ use async_trait::async_trait;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::http::{SseEventHandler, consume_sse, post_json, post_sse};
-use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
+use super::common::{RoleBlockMerger, function_tool_def, require_str, require_u64};
+use super::http::{SseEventHandler, consume_sse, post_sse};
+use super::{
+    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
+    shared_client,
+};
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
@@ -12,7 +16,6 @@ use crate::model::{
 };
 
 pub struct GeminiProvider {
-    client: reqwest::Client,
     api_key: String,
     base_url: String,
 }
@@ -20,7 +23,6 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: super::shared_client().clone(),
             api_key: api_key.into(),
             base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
         }
@@ -55,13 +57,15 @@ impl GeminiProvider {
     }
 
     /// JSON Content-Type 与 x-goog-api-key 鉴权头
-    fn auth_headers(&self) -> HeaderMap {
+    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if let Ok(key_val) = HeaderValue::from_str(&self.api_key) {
-            headers.insert("x-goog-api-key", key_val);
-        }
-        headers
+        headers.insert(
+            "x-goog-api-key",
+            HeaderValue::from_str(&self.api_key)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        Ok(headers)
     }
 
     /// 将 Session 转换为 Gemini API 的 contents 与 tools 结构
@@ -70,28 +74,10 @@ impl GeminiProvider {
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> serde_json::Value {
-        let mut gemini_contents: Vec<serde_json::Value> = Vec::new();
+    ) -> Result<serde_json::Value, ProviderError> {
+        // Gemini 要求连续同角色内容聚合进同一条 content，仅与 Anthropic 的字段名不同
+        let mut merger = RoleBlockMerger::new("parts");
         let mut system_instruction_parts = Vec::new();
-
-        let mut append_content = |role: &str, parts: Vec<serde_json::Value>| {
-            if parts.is_empty() {
-                return;
-            }
-            if let Some(last) = gemini_contents.last_mut()
-                && last["role"] == role
-                && let Some(arr) = last["parts"].as_array_mut()
-            {
-                for p in parts {
-                    arr.push(p);
-                }
-                return;
-            }
-            gemini_contents.push(serde_json::json!({
-                "role": role,
-                "parts": parts,
-            }));
-        };
 
         for turn in &session.turns {
             for msg in &turn.messages {
@@ -128,7 +114,7 @@ impl GeminiProvider {
                                 _ => {}
                             }
                         }
-                        append_content("user", parts_arr);
+                        merger.push("user", parts_arr);
                     }
                     Role::Assistant => {
                         let mut parts_arr = Vec::new();
@@ -145,8 +131,12 @@ impl GeminiProvider {
                                 }
                                 ContentPart::ToolCall(call) => {
                                     let args: serde_json::Value =
-                                        serde_json::from_str(&call.arguments)
-                                            .unwrap_or_else(|_| serde_json::json!({}));
+                                        serde_json::from_str(&call.arguments).map_err(|e| {
+                                            ProviderError::Protocol(format!(
+                                                "Invalid tool call '{}' arguments JSON: {e}",
+                                                call.name
+                                            ))
+                                        })?;
                                     parts_arr.push(serde_json::json!({
                                         "functionCall": {
                                             "name": call.name,
@@ -157,30 +147,22 @@ impl GeminiProvider {
                                 _ => {}
                             }
                         }
-                        append_content("model", parts_arr);
+                        merger.push("model", parts_arr);
                     }
                     Role::Tool => {
                         let mut parts_arr = Vec::new();
                         for part in &msg.parts {
                             if let ContentPart::ToolResult(res) = part {
-                                // 查找该 tool_call_id 对应的实际函数名称
+                                // 查找该 tool_call_id 对应的实际函数名称（缺失即会话数据损坏，按协议错误上报）
                                 let function_name = session
-                                    .turns
-                                    .iter()
-                                    .rev()
-                                    .find_map(|t| {
-                                        t.messages.iter().find_map(|m| {
-                                            m.parts.iter().find_map(|p| {
-                                                if let ContentPart::ToolCall(tc) = p
-                                                    && tc.id == res.tool_call_id
-                                                {
-                                                    return Some(tc.name.clone());
-                                                }
-                                                None
-                                            })
-                                        })
-                                    })
-                                    .unwrap_or_else(|| res.tool_call_id.clone());
+                                    .find_tool_call(&res.tool_call_id)
+                                    .map(|c| c.name.clone())
+                                    .ok_or_else(|| {
+                                        ProviderError::Protocol(format!(
+                                            "No ToolCall '{}' found for functionResponse",
+                                            res.tool_call_id
+                                        ))
+                                    })?;
 
                                 parts_arr.push(serde_json::json!({
                                     "functionResponse": {
@@ -193,14 +175,14 @@ impl GeminiProvider {
                                 }));
                             }
                         }
-                        append_content("user", parts_arr);
+                        merger.push("user", parts_arr);
                     }
                 }
             }
         }
 
         let mut body = serde_json::json!({
-            "contents": gemini_contents,
+            "contents": merger.into_messages(),
         });
 
         if !system_instruction_parts.is_empty() {
@@ -219,14 +201,10 @@ impl GeminiProvider {
         }
 
         if !tools.is_empty() {
-            let mut function_declarations = Vec::new();
-            for t in tools {
-                function_declarations.push(serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                }));
-            }
+            let function_declarations: Vec<serde_json::Value> = tools
+                .iter()
+                .map(|t| function_tool_def(t, "parameters"))
+                .collect();
             tools_list.push(serde_json::json!({
                 "function_declarations": function_declarations
             }));
@@ -251,7 +229,7 @@ impl GeminiProvider {
             body["generationConfig"] = gen_config;
         }
 
-        body
+        Ok(body)
     }
 
     /// 解析 Gemini 响应，将 groundingMetadata 映射为 Responses 风格的 WebSearchCall 与 Annotation
@@ -259,14 +237,18 @@ impl GeminiProvider {
         &self,
         json: serde_json::Value,
     ) -> Result<ProviderResponse, ProviderError> {
-        if json["candidates"].as_array().and_then(|c| c.first()).is_none() {
+        if json["candidates"]
+            .as_array()
+            .and_then(|c| c.first())
+            .is_none()
+        {
             return Err(ProviderError::Protocol(
                 "Empty candidates in Gemini response".into(),
             ));
         }
 
         let mut accumulator = GeminiAccumulator::new(None);
-        accumulator.merge_response(&json);
+        accumulator.merge_response(&json)?;
         let (parts, meta, usage) = accumulator.finish();
 
         Ok(ProviderResponse {
@@ -289,24 +271,29 @@ impl Provider for GeminiProvider {
             supports_prompt_caching: false,
             supports_thinking_signature: false,
             supports_stateful_response_id: false,
+            supports_reasoning_effort: false,
         }
     }
 
-    async fn complete(
+    fn endpoint_url(&self, model: &str, stream: bool) -> Result<String, ProviderError> {
+        Ok(GeminiProvider::endpoint_url(self, model, stream))
+    }
+
+    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
+        GeminiProvider::auth_headers(self)
+    }
+
+    fn build_request_body(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ProviderResponse, ProviderError> {
-        let body = self.build_request_body(session, tools, options);
-        let json_resp = post_json(
-            &self.client,
-            &self.endpoint_url(&options.model, false),
-            self.auth_headers(),
-            &body,
-        )
-        .await?;
-        self.parse_response(json_resp)
+    ) -> Result<serde_json::Value, ProviderError> {
+        GeminiProvider::build_request_body(self, session, tools, options)
+    }
+
+    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
+        GeminiProvider::parse_response(self, json)
     }
 
     async fn complete_stream(
@@ -316,14 +303,14 @@ impl Provider for GeminiProvider {
         options: &CompletionOptions,
         event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
-        let body = self.build_request_body(session, tools, options);
+        let body = self.build_request_body(session, tools, options)?;
 
-        let mut headers = self.auth_headers();
+        let mut headers = self.auth_headers()?;
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
 
         let res = post_sse(
-            &self.client,
-            &self.endpoint_url(&options.model, true),
+            shared_client(),
+            &GeminiProvider::endpoint_url(self, &options.model, true),
             headers,
             &body,
         )
@@ -347,6 +334,8 @@ impl Provider for GeminiProvider {
 /// 流式场景额外实时转发 Thought / Text / Citation 增量事件。
 struct GeminiAccumulator {
     sender: Option<mpsc::Sender<AgentEvent>>,
+    /// 合并期间暂存的增量事件：同步合并逻辑无法 await，由异步 on_event 统一按背压语义转发
+    pending_events: Vec<AgentEvent>,
     thought: String,
     text: String,
     tool_calls: Vec<ToolCall>,
@@ -362,6 +351,7 @@ impl GeminiAccumulator {
     fn new(sender: Option<mpsc::Sender<AgentEvent>>) -> Self {
         Self {
             sender,
+            pending_events: Vec::new(),
             thought: String::new(),
             text: String::new(),
             tool_calls: Vec::new(),
@@ -374,8 +364,9 @@ impl GeminiAccumulator {
         }
     }
 
-    /// 合并单个 GenerateContentResponse（流式 chunk 或完整响应）
-    fn merge_response(&mut self, json: &serde_json::Value) {
+    /// 合并单个 GenerateContentResponse（流式 chunk 或完整响应）；
+    /// 必填字段缺失或类型不符直接报协议错误
+    fn merge_response(&mut self, json: &serde_json::Value) -> Result<(), ProviderError> {
         if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
             if let Some(fr) = candidate["finishReason"].as_str() {
                 self.finish_reason = Some(fr.to_string());
@@ -384,43 +375,44 @@ impl GeminiAccumulator {
             if let Some(sr_arr) = candidate["safetyRatings"].as_array() {
                 for sr in sr_arr {
                     self.safety_ratings.push(GeminiSafetyRating {
-                        category: sr["category"].as_str().unwrap_or_default().to_string(),
-                        probability: sr["probability"].as_str().unwrap_or_default().to_string(),
+                        category: require_str(sr, "category")?.to_string(),
+                        probability: require_str(sr, "probability")?.to_string(),
                     });
                 }
             }
 
             if let Some(ce) = candidate.get("codeExecutionResult") {
                 self.code_execution_result = Some(GeminiCodeExecutionResult {
-                    outcome: ce["outcome"].as_str().unwrap_or_default().to_string(),
-                    output: ce["output"].as_str().unwrap_or_default().to_string(),
+                    outcome: require_str(ce, "outcome")?.to_string(),
+                    output: require_str(ce, "output")?.to_string(),
                 });
             }
 
             // 处理 GroundingMetadata：检索行为与文本引用注脚
             if let Some(gm) = candidate.get("groundingMetadata") {
-                self.merge_grounding(gm);
+                self.merge_grounding(gm)?;
             }
 
             // 处理 Parts (Thought / Text / ToolCall)
             if let Some(raw_parts) = candidate["content"]["parts"].as_array() {
-                self.merge_parts(raw_parts);
+                self.merge_parts(raw_parts)?;
             }
         }
 
         if let Some(um) = json.get("usageMetadata") {
-            self.usage = Some(parse_usage_metadata(um));
+            self.usage = Some(parse_usage_metadata(um)?);
         }
+        Ok(())
     }
 
-    fn merge_grounding(&mut self, gm: &serde_json::Value) {
+    fn merge_grounding(&mut self, gm: &serde_json::Value) -> Result<(), ProviderError> {
         let mut search_sources = Vec::new();
         if let Some(chunks) = gm["groundingChunks"].as_array() {
             for chunk in chunks {
                 if let Some(web) = chunk.get("web") {
                     search_sources.push(WebSearchSource {
-                        url: web["uri"].as_str().unwrap_or_default().to_string(),
-                        title: web["title"].as_str().unwrap_or_default().to_string(),
+                        url: require_str(web, "uri")?.to_string(),
+                        title: require_str(web, "title")?.to_string(),
                         snippet: None,
                     });
                 }
@@ -437,12 +429,32 @@ impl GeminiAccumulator {
             .unwrap_or_default();
 
         if !search_sources.is_empty() || !queries.is_empty() {
-            self.search_call = Some(WebSearchCall {
-                id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
-                query: queries.join(" | "),
-                status: SearchStatus::Completed,
-                sources: search_sources.clone(),
-            });
+            // 流式响应中 groundingMetadata 会在多个 chunk 上分别下发，追加合并而非整体覆盖
+            let joined = queries.join(" | ");
+            match &mut self.search_call {
+                Some(existing) => {
+                    for src in &search_sources {
+                        if !existing.sources.contains(src) {
+                            existing.sources.push(src.clone());
+                        }
+                    }
+                    if !joined.is_empty() && !existing.query.contains(&joined) {
+                        existing.query = if existing.query.is_empty() {
+                            joined
+                        } else {
+                            format!("{} | {}", existing.query, joined)
+                        };
+                    }
+                }
+                None => {
+                    self.search_call = Some(WebSearchCall {
+                        id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
+                        query: joined,
+                        status: SearchStatus::Completed,
+                        sources: search_sources.clone(),
+                    });
+                }
+            }
         }
 
         if let Some(supports) = gm["groundingSupports"].as_array() {
@@ -463,12 +475,10 @@ impl GeminiAccumulator {
                                 end_index: end_idx,
                             };
                             if !self.citations.contains(&ann) {
-                                if let Some(tx) = &self.sender {
-                                    let _ = tx.try_send(AgentEvent::Citation {
-                                        title: src.title.clone(),
-                                        url: src.url.clone(),
-                                    });
-                                }
+                                self.pending_events.push(AgentEvent::Citation {
+                                    title: src.title.clone(),
+                                    url: src.url.clone(),
+                                });
                                 self.citations.push(ann);
                             }
                         }
@@ -476,30 +486,34 @@ impl GeminiAccumulator {
                 }
             }
         }
+
+        Ok(())
     }
 
-    fn merge_parts(&mut self, raw_parts: &[serde_json::Value]) {
+    fn merge_parts(&mut self, raw_parts: &[serde_json::Value]) -> Result<(), ProviderError> {
         for p in raw_parts {
             if p["thought"].as_bool() == Some(true) {
                 if let Some(t) = p["text"].as_str() {
                     self.thought.push_str(t);
-                    if let Some(tx) = &self.sender {
-                        let _ = tx.try_send(AgentEvent::Thought(t.to_string()));
-                    }
+                    self.pending_events.push(AgentEvent::Thought(t.to_string()));
                 }
             } else if let Some(text) = p["text"].as_str() {
                 self.text.push_str(text);
-                if let Some(tx) = &self.sender {
-                    let _ = tx.try_send(AgentEvent::Text(text.to_string()));
-                }
+                self.pending_events.push(AgentEvent::Text(text.to_string()));
             } else if let Some(fc) = p.get("functionCall") {
                 self.tool_calls.push(ToolCall {
                     id: format!("call_{}", uuid::Uuid::new_v4().simple()),
-                    name: fc["name"].as_str().unwrap_or_default().to_string(),
-                    arguments: fc["args"].to_string(),
+                    name: require_str(fc, "name")?.to_string(),
+                    arguments: fc
+                        .get("args")
+                        .ok_or_else(|| {
+                            ProviderError::Protocol("Missing 'args' in functionCall".into())
+                        })?
+                        .to_string(),
                 });
             }
         }
+        Ok(())
     }
 
     /// 组装为统一的领域内容块（检索记录 → 思考 → 正文 → 工具调用）与轮次元数据
@@ -540,29 +554,35 @@ impl GeminiAccumulator {
 #[async_trait]
 impl SseEventHandler for GeminiAccumulator {
     async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError> {
-        self.merge_response(&json);
+        self.merge_response(&json)?;
+        let pending = std::mem::take(&mut self.pending_events);
+        if let Some(tx) = &self.sender {
+            for ev in pending {
+                let _ = tx.send(ev).await;
+            }
+        }
         Ok(())
     }
 }
 
-/// 解析 Gemini usageMetadata 为统一 TokenUsage
-fn parse_usage_metadata(um: &serde_json::Value) -> TokenUsage {
-    let prompt = um["promptTokenCount"].as_u64().unwrap_or(0) as u32;
-    let completion = um["candidatesTokenCount"].as_u64().unwrap_or(0) as u32;
-    let total = um["totalTokenCount"].as_u64().unwrap_or(0) as u32;
+/// 解析 Gemini usageMetadata 为统一 TokenUsage（必填计数字段缺失即协议错误）
+fn parse_usage_metadata(um: &serde_json::Value) -> Result<TokenUsage, ProviderError> {
+    let prompt = require_u64(um, "promptTokenCount")? as u32;
+    let completion = require_u64(um, "candidatesTokenCount")? as u32;
+    let total = require_u64(um, "totalTokenCount")? as u32;
     let cached = um["cachedContentTokenCount"].as_u64().map(|v| v as u32);
     let reasoning = um["candidatesTokensDetails"]
         .as_array()
         .and_then(|arr| arr.iter().find(|d| d["modality"] == "THOUGHT"))
         .and_then(|d| d["tokenCount"].as_u64())
         .map(|v| v as u32);
-    TokenUsage {
+    Ok(TokenUsage {
         prompt_tokens: prompt,
         completion_tokens: completion,
         total_tokens: total,
         cached_tokens: cached,
         reasoning_tokens: reasoning,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -724,7 +744,9 @@ mod tests {
             model: "gemini-2.0-flash".into(),
             ..Default::default()
         };
-        let body = provider.build_request_body(&session, &[], &options);
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body");
 
         // 验证 systemInstruction 独立提取
         let sys_inst = &body["systemInstruction"]["parts"][0]["text"];
@@ -801,8 +823,8 @@ mod tests {
         });
 
         let mut streaming = GeminiAccumulator::new(None);
-        streaming.merge_response(&chunk1);
-        streaming.merge_response(&chunk2);
+        streaming.merge_response(&chunk1).expect("merge chunk1");
+        streaming.merge_response(&chunk2).expect("merge chunk2");
         let (stream_parts, stream_meta, stream_usage) = streaming.finish();
 
         let full = serde_json::json!({
@@ -854,5 +876,47 @@ mod tests {
         assert_eq!(normalize(stream_parts), normalize(full_parts));
         assert_eq!(stream_meta, full_meta);
         assert_eq!(stream_usage, full_usage);
+    }
+
+    #[test]
+    fn test_gemini_streaming_grounding_chunks_merge_not_overwrite() {
+        // 回归：流式响应中多个 chunk 分别携带 groundingMetadata 时，
+        // 检索来源与查询必须合并保留，不得整体覆盖
+        let chunk1 = serde_json::json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "webSearchQueries": ["query one"],
+                    "groundingChunks": [
+                        { "web": { "uri": "https://a.example.com", "title": "A" } }
+                    ]
+                }
+            }]
+        });
+        let chunk2 = serde_json::json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "webSearchQueries": ["query two"],
+                    "groundingChunks": [
+                        { "web": { "uri": "https://b.example.com", "title": "B" } }
+                    ]
+                }
+            }]
+        });
+
+        let mut acc = GeminiAccumulator::new(None);
+        acc.merge_response(&chunk1).expect("merge chunk1");
+        acc.merge_response(&chunk2).expect("merge chunk2");
+        let (parts, _, _) = acc.finish();
+
+        match &parts[0] {
+            ContentPart::WebSearchCall(call) => {
+                assert_eq!(call.sources.len(), 2);
+                assert_eq!(call.sources[0].url, "https://a.example.com");
+                assert_eq!(call.sources[1].url, "https://b.example.com");
+                assert!(call.query.contains("query one"));
+                assert!(call.query.contains("query two"));
+            }
+            _ => panic!("Expected WebSearchCall"),
+        }
     }
 }

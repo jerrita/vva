@@ -50,7 +50,8 @@ async fn ensure_success(res: reqwest::Response) -> Result<reqwest::Response, Pro
 }
 
 /// 消费 SSE 流并将每个事件 JSON 交给处理器。
-/// 跳过 "[DONE]" 哨兵与无法解析的事件行，流结束后 flush 解码器残留事件。
+/// "[DONE]" 为 OpenAI 风格流终止哨兵（Anthropic / Gemini 不发送），收到即终止；
+/// 无法解析的事件数据按协议错误上报（仅跳过空数据行），流自然结束后 flush 解码器残留事件。
 pub async fn consume_sse<H: SseEventHandler>(
     res: reqwest::Response,
     handler: &mut H,
@@ -62,20 +63,29 @@ pub async fn consume_sse<H: SseEventHandler>(
         let chunk = chunk_res?;
         for ev in decoder.decode(&chunk) {
             if ev.data == "[DONE]" {
-                break;
+                return Ok(());
             }
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                handler.on_event(json).await?;
-            }
+            dispatch_event(&ev.data, handler).await?;
         }
     }
 
     if let Some(ev) = decoder.flush()
         && ev.data != "[DONE]"
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
     {
-        handler.on_event(json).await?;
+        dispatch_event(&ev.data, handler).await?;
     }
 
     Ok(())
+}
+
+async fn dispatch_event<H: SseEventHandler>(
+    data: &str,
+    handler: &mut H,
+) -> Result<(), ProviderError> {
+    if data.trim().is_empty() {
+        return Ok(());
+    }
+    let json = serde_json::from_str::<serde_json::Value>(data)
+        .map_err(|e| ProviderError::Protocol(format!("Invalid JSON in SSE event data: {e}")))?;
+    handler.on_event(json).await
 }

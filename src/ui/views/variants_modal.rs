@@ -1,12 +1,13 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::ui::app::App;
 use crate::ui::views::modal_shell::{
-    centered_rect, filter_line, footer_hints, modal_block, selected_row_style, visible_window,
+    ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
+    selected_row_style, visible_window,
 };
 
 /// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位
@@ -16,27 +17,7 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         None => return,
     };
 
-    let modal_rect = centered_rect(area, 60, 16);
-    frame.render_widget(Clear, modal_rect);
-
-    let block = modal_block(
-        " Select Reasoning Variant (↑/↓ to navigate, Enter to switch) ",
-        Color::Magenta,
-    );
-
-    let inner = block.inner(modal_rect);
-    frame.render_widget(block, modal_rect);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // 当前模型、当前生效 Variant 与搜索条件
-            Constraint::Min(1),    // Variant 列表
-            Constraint::Length(1), // 底部操作按键提示
-        ])
-        .split(inner);
-
-    // 1. 顶部状态指示行
+    // 顶部状态指示行
     let curr_model = &state.current_model;
     let curr_var = state.active_variant.as_deref().unwrap_or("none");
     let top_line = Line::from(vec![
@@ -68,101 +49,91 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    frame.render_widget(
-        Paragraph::new(vec![top_line, filter_line(&state.query, Color::Magenta)]),
-        chunks[0],
+
+    let list_area = render_modal_shell(
+        frame,
+        area,
+        ModalShellSpec {
+            title: " Select Reasoning Variant (↑/↓ to navigate, Enter to switch) ",
+            accent: Color::Magenta,
+            width: 60,
+            height: 16,
+            header_height: 3,
+        },
+        vec![top_line, filter_line(&state.query, Color::Magenta)],
+        footer_hints(&[
+            (
+                " [↑/↓/j/k] ",
+                Style::default().fg(Color::Magenta),
+                "Navigate  ",
+            ),
+            (
+                " [Enter] ",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+                "Set Variant  ",
+            ),
+            (" [type] ", Style::default().fg(Color::Magenta), "Filter  "),
+            (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
+        ]),
     );
 
-    // 2. 档位列表渲染
+    // 档位列表渲染
     if state.filtered_variants.is_empty() {
-        let empty_msg = vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::raw("   "),
-                Span::styled(
-                    "No variants match the filter.",
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(empty_msg), chunks[1]);
-    } else {
-        let mut lines = Vec::new();
-        // 表头
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                format!("{:<28}", "Variant / Effort"),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled("Status", Style::default().fg(Color::DarkGray)),
-        ]));
-
-        let (start_idx, visible) = visible_window(
-            state.selected_index,
-            chunks[1].height.saturating_sub(1) as usize,
+        frame.render_widget(
+            Paragraph::new(empty_state("No variants match the filter.", None)),
+            list_area,
         );
-
-        for (i, item) in state
-            .filtered_variants
-            .iter()
-            .enumerate()
-            .skip(start_idx)
-            .take(visible)
-        {
-            let is_selected = i == state.selected_index;
-            let is_active = item.id.as_ref() == state.active_variant.as_ref();
-
-            let prefix = if is_selected {
-                "> "
-            } else if is_active {
-                "* "
-            } else {
-                "  "
-            };
-
-            let row_style = if is_selected {
-                selected_row_style(Color::Magenta)
-            } else if is_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
-            let status_str = if is_active { "[active]" } else { "-" };
-
-            let status_style = if is_selected {
-                selected_row_style(Color::Magenta)
-            } else if is_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled(prefix, row_style),
-                Span::styled(format!("{:<28}", item.display_name), row_style),
-                Span::styled(status_str, status_style),
-            ]));
-        }
-
-        frame.render_widget(Paragraph::new(lines), chunks[1]);
+        return;
     }
 
-    // 3. 底部操作指引
-    let footer = footer_hints(&[
-        (" [↑/↓/j/k] ", Style::default().fg(Color::Magenta), "Navigate  "),
-        (
-            " [Enter] ",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-            "Set Variant  ",
+    let mut lines = Vec::new();
+    // 表头
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{:<28}", "Variant / Effort"),
+            Style::default().fg(Color::DarkGray),
         ),
-        (" [type] ", Style::default().fg(Color::Magenta), "Filter  "),
-        (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
-    ]);
-    frame.render_widget(Paragraph::new(footer), chunks[2]);
+        Span::styled("Status", Style::default().fg(Color::DarkGray)),
+    ]));
+
+    let (start_idx, visible) = visible_window(
+        state.selected_index,
+        list_area.height.saturating_sub(1) as usize,
+    );
+
+    for (i, item) in state
+        .filtered_variants
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(visible)
+    {
+        let is_selected = i == state.selected_index;
+        let is_active = item.id.as_ref() == state.active_variant.as_ref();
+
+        let (prefix, row_style) = list_row_affix(is_selected, is_active, Color::Magenta);
+
+        let status_str = if is_active { "[active]" } else { "-" };
+
+        let status_style = if is_selected {
+            selected_row_style(Color::Magenta)
+        } else if is_active {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(prefix, row_style),
+            Span::styled(format!("{:<28}", item.display_name), row_style),
+            Span::styled(status_str, status_style),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), list_area);
 }

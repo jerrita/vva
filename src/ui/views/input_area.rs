@@ -214,7 +214,11 @@ fn line_selection_spans(
             chunk.push(c);
         } else {
             if !chunk.is_empty() {
-                let style = if in_sel == Some(true) { selected } else { normal };
+                let style = if in_sel == Some(true) {
+                    selected
+                } else {
+                    normal
+                };
                 spans.push(Span::styled(std::mem::take(&mut chunk), style));
             }
             chunk.push(c);
@@ -223,7 +227,11 @@ fn line_selection_spans(
     }
 
     if !chunk.is_empty() {
-        let style = if in_sel == Some(true) { selected } else { normal };
+        let style = if in_sel == Some(true) {
+            selected
+        } else {
+            normal
+        };
         spans.push(Span::styled(chunk, style));
     }
     spans

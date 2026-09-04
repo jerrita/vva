@@ -54,48 +54,23 @@ impl Tool for PowerShellTool {
             args.command
         );
 
-        let output = Command::new("powershell")
-            .arg("-NoProfile")
+        let mut cmd = Command::new("powershell");
+        cmd.arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-Command")
             .arg(&wrapped_command)
-            .current_dir(&self.working_dir)
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run command: {e}"))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str("STDERR:\n");
-            result.push_str(&stderr);
-        }
-
-        if !output.status.success() {
-            let code = output.status.code().unwrap_or(-1);
-            return Err(format!("Command exited with status code {code}:\n{result}"));
-        }
-
-        Ok(result)
+            .current_dir(&self.working_dir);
+        super::shell::run_shell_command(cmd).await
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
 
     #[tokio::test]
-    #[cfg(windows)]
     async fn test_powershell_tool_execution() {
         let tool = PowerShellTool::new(std::env::current_dir().unwrap());
         let result = tool
@@ -107,7 +82,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(windows)]
     async fn test_powershell_tool_error_exit() {
         let tool = PowerShellTool::new(std::env::current_dir().unwrap());
         let result = tool.execute(r#"{"command":"exit 42"}"#).await;

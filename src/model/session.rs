@@ -65,10 +65,6 @@ impl Session {
         }
     }
 
-    pub fn last_turn(&self) -> Option<&Turn> {
-        self.turns.last()
-    }
-
     pub fn last_turn_id(&self) -> Option<String> {
         self.turns.last().map(|t| t.id.clone())
     }
@@ -83,6 +79,32 @@ impl Session {
         self.current_model = model.into();
         self.current_variant = variant;
         self.updated_at = Utc::now();
+    }
+
+    /// 应用 CLI / TUI 传入的会话恢复覆写参数，返回是否有字段被修改
+    pub fn apply_overrides(
+        &mut self,
+        model: Option<String>,
+        variant: Option<String>,
+        web_search: Option<bool>,
+    ) -> bool {
+        let mut changed = false;
+        if let Some(m) = model {
+            self.current_model = m;
+            changed = true;
+        }
+        if variant.is_some() {
+            self.current_variant = variant;
+            changed = true;
+        }
+        if let Some(w) = web_search {
+            self.web_search = w;
+            changed = true;
+        }
+        if changed {
+            self.updated_at = Utc::now();
+        }
+        changed
     }
 
     /// 更新会话原生网络搜索开启状态

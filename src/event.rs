@@ -22,6 +22,10 @@ pub enum AgentEvent {
         title: String,
         url: String,
     },
+    /// 信息级通知（如能力协商降级说明），区别于 Error
+    Notice(String),
     Finished,
+    /// 轮次被用户取消（区别于正常完成）
+    Aborted,
     Error(String),
 }

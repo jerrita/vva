@@ -8,6 +8,10 @@ pub use model::{AppConfig, GlobalSettings, ModelConfig, ProviderConfig, Provider
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::{ResolvedModel, ResolvedProviderInfo, resolve_provider};
 
+/// 无任何配置文件可用时的新会话兜底模型规格。
+/// 必须是不带 provider 前缀的裸模型名，使环境变量路由（OPENAI_API_KEY 直连）仍可解析。
+pub const FALLBACK_MODEL_SPEC: &str = "gpt-5.6-terra";
+
 /// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
 pub fn home_dir() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME")
@@ -193,10 +197,55 @@ mod tests {
 
         // 验证 prov2：新增 provider
         let p2 = merged.providers.get("prov2").expect("prov2 exists");
-        assert_eq!(p2.provider_type, ProviderType::Anthropic);
+        assert_eq!(p2.provider_type, Some(ProviderType::Anthropic));
         assert_eq!(p2.base_url, "https://anthropic.example.com");
         assert_eq!(p2.api_key, "proj-key-2");
         assert_eq!(p2.models["model-c"].name, "Model C");
+    }
+
+    #[test]
+    fn test_config_merge_preserves_provider_type_when_omitted() {
+        // 回归：项目配置对既有 provider 只覆写 base_url 而省略 type 时，
+        // serde 默认值不得把全局的 anthropic 协议静默翻转为 response
+        let global_json = r#"{
+            "providers": {
+                "prov": {
+                    "type": "anthropic",
+                    "base_url": "https://global.example.com",
+                    "api_key": "key",
+                    "models": { "m": { "name": "M" } }
+                }
+            }
+        }"#;
+        let project_json = r#"{
+            "providers": {
+                "prov": {
+                    "base_url": "https://proxy.example.com",
+                    "api_key": "project-key"
+                }
+            }
+        }"#;
+
+        let global = parse_config_str(global_json).expect("parse global");
+        let project = parse_config_str(project_json).expect("parse project");
+        let merged = global.merge(project);
+
+        let p = merged.providers.get("prov").expect("prov exists");
+        assert_eq!(p.provider_type, Some(ProviderType::Anthropic));
+        assert_eq!(p.base_url, "https://proxy.example.com");
+        assert_eq!(p.api_key, "project-key");
+
+        // 显式声明时仍应覆写
+        let project_override =
+            parse_config_str(r#"{ "providers": { "prov": { "type": "gemini" } } }"#)
+                .expect("parse override");
+        let merged2 = parse_config_str(global_json)
+            .expect("parse global 2")
+            .merge(project_override);
+        assert_eq!(
+            merged2.providers.get("prov").unwrap().provider_type,
+            Some(ProviderType::Gemini)
+        );
     }
 
     #[test]
@@ -210,7 +259,7 @@ mod tests {
         );
 
         let provider_a = config.providers.get("a").expect("provider a exists");
-        assert_eq!(provider_a.provider_type, ProviderType::Response);
+        assert_eq!(provider_a.provider_type, Some(ProviderType::Response));
 
         // 1. 验证默认模型解析与 Variant 校验
         let resolved = config

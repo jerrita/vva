@@ -12,8 +12,8 @@ pub use super::history::{ChatEntry, SidebarStats, compute_stats, entries_from_tu
 pub use super::input::InputBuffer;
 pub use super::modals::*;
 pub use selection::{
-    TextCoord, TextSelection, base64_encode, char_in_column_range, get_clipboard_text,
-    set_clipboard_text,
+    SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
+    get_clipboard_text, set_clipboard_text,
 };
 
 pub mod dispatch;
@@ -39,12 +39,10 @@ pub struct App {
     pub viewport_height: usize,
     pub chat_area: Rect,
     pub is_dragging_scrollbar: bool,
-    pub text_selection: Option<TextSelection>,
-    pub is_selecting_text: bool,
+    pub text_selection: SelectionTracker,
     pub sidebar_area: Rect,
     pub sidebar_lines: Vec<Line<'static>>,
-    pub sidebar_selection: Option<TextSelection>,
-    pub is_selecting_sidebar: bool,
+    pub sidebar_selection: SelectionTracker,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
@@ -89,12 +87,10 @@ impl App {
             viewport_height: 0,
             chat_area: Rect::default(),
             is_dragging_scrollbar: false,
-            text_selection: None,
-            is_selecting_text: false,
+            text_selection: SelectionTracker::default(),
             sidebar_area: Rect::default(),
             sidebar_lines: Vec::new(),
-            sidebar_selection: None,
-            is_selecting_sidebar: false,
+            sidebar_selection: SelectionTracker::default(),
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,

@@ -27,10 +27,6 @@ pub struct TurnMeta {
 pub struct MessageMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response: Option<ResponseMessageMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub anthropic: Option<AnthropicMessageMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gemini: Option<GeminiMessageMeta>,
 }
 
 // ================== OpenAI Responses API 专有元数据 ==================
@@ -201,13 +197,6 @@ pub struct AnthropicTurnMeta {
     pub stop_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct AnthropicMessageMeta {
-    /// 缓存断点设置 (cache_control: {"type": "ephemeral"})
-    #[serde(default)]
-    pub ephemeral_cache: bool,
-}
-
 // ================== Google Gemini 专有元数据 ==================
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -225,12 +214,6 @@ pub struct GeminiTurnMeta {
     /// Gemini 原生代码执行沙盒结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_execution_result: Option<GeminiCodeExecutionResult>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct GeminiMessageMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thought_signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

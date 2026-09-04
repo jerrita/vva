@@ -81,8 +81,10 @@ impl SessionsModalState {
 
     /// 会话是否属于当前工作空间（优先规范化路径比对，失败时退回字面比对）
     fn in_current_project(&self, session: &SessionSummary) -> bool {
-        if let (Some(c_cur), Ok(c_s)) = (&self.canonical_current, session.workspace_root.canonicalize())
-        {
+        if let (Some(c_cur), Ok(c_s)) = (
+            &self.canonical_current,
+            session.workspace_root.canonicalize(),
+        ) {
             &c_s == c_cur
         } else {
             session.workspace_root == self.current_workspace
@@ -108,10 +110,6 @@ impl SessionsModalState {
 impl FilterableModal for SessionsModalState {
     fn filtered_len(&self) -> usize {
         self.filtered_sessions.len()
-    }
-
-    fn selected_index(&self) -> usize {
-        self.selected_index
     }
 
     fn selected_index_mut(&mut self) -> &mut usize {

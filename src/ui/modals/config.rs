@@ -124,10 +124,6 @@ impl FilterableModal for ConfigModalState {
         self.filtered_items.len()
     }
 
-    fn selected_index(&self) -> usize {
-        self.selected_index
-    }
-
     fn selected_index_mut(&mut self) -> &mut usize {
         &mut self.selected_index
     }
@@ -154,10 +150,7 @@ mod tests {
         cm.next();
         cm.next();
         assert_eq!(cm.selected_index, 2);
-        cm.update_item_value(
-            ConfigItemKind::WebSearch,
-            "Enabled".to_string(),
-        );
+        cm.update_item_value(ConfigItemKind::WebSearch, "Enabled".to_string());
         assert_eq!(cm.items[2].current_value, "Enabled");
 
         // toggle 内部会重建过滤列表，选中项应被恢复而非重置，后续导航仍指向下一项

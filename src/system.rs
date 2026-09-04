@@ -51,6 +51,32 @@ pub fn build_system_prompt(workspace: &Path) -> String {
     SystemInfo::collect().to_system_prompt(workspace)
 }
 
+/// 创建带工作区系统提示 Turn 的新会话（CLI 单次运行与 TUI 懒持久化首条消息共用）
+pub fn new_session(
+    workspace: &Path,
+    title: Option<&str>,
+    model: impl Into<String>,
+    variant: Option<String>,
+    web_search: bool,
+) -> crate::model::Session {
+    let mut session = crate::model::Session::with_model(
+        workspace,
+        title.map(str::to_string),
+        model,
+        variant,
+        web_search,
+    );
+    let sys_turn = crate::model::Turn::new(
+        crate::model::Role::System,
+        vec![crate::model::Message::system(build_system_prompt(
+            workspace,
+        ))],
+        None,
+    );
+    session.append_turn(sys_turn);
+    session
+}
+
 fn get_current_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
@@ -413,4 +439,3 @@ fn get_memory_info() -> String {
 
     "Unknown".to_string()
 }
-

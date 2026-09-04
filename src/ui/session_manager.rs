@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -6,11 +6,10 @@ use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tracing::error;
 
 use crate::config::{AppConfig, resolve_provider};
-use crate::harness::{AgentConfig, AgentEngine, AgentEvent};
+use crate::harness::{AgentEngine, AgentEvent, build_engine};
 use crate::model::{ContentPart, Message, Session, Turn};
 use crate::provider::CompletionOptions;
 use crate::storage::SessionStore;
-use crate::tools::ToolRegistry;
 
 /// 单个活跃会话的运行时单例句柄
 pub struct ManagedSession {
@@ -22,6 +21,8 @@ pub struct ManagedSession {
     pub status_text: Arc<RwLock<String>>,
     pub event_tx: broadcast::Sender<AgentEvent>,
     pub task_abort_handle: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
+    /// 已广播过的能力协商降级提示（同一会话去重，避免逐轮刷屏）
+    notified_caps: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ManagedSession {
@@ -45,6 +46,7 @@ impl ManagedSession {
             status_text: Arc::new(RwLock::new(String::new())),
             event_tx,
             task_abort_handle: Arc::new(Mutex::new(None)),
+            notified_caps: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -60,7 +62,7 @@ impl ManagedSession {
         self.status_text.read().await.clone()
     }
 
-    /// 取消当前正在执行的轮次
+    /// 取消当前正在执行的轮次（发送 Aborted 事件，与正常完成区分）
     pub async fn abort_current(&self) {
         let mut handle = self.task_abort_handle.lock().await;
         if let Some(h) = handle.take() {
@@ -68,7 +70,7 @@ impl ManagedSession {
         }
         self.is_running.store(false, Ordering::SeqCst);
         *self.status_text.write().await = String::new();
-        let _ = self.event_tx.send(AgentEvent::Finished);
+        let _ = self.event_tx.send(AgentEvent::Aborted);
     }
 }
 
@@ -166,6 +168,15 @@ impl SessionManager {
         Ok(())
     }
 
+    /// 会话字段变更后的 Header 持久化单点（未落盘的新会话跳过）
+    pub async fn persist_header(&self, managed: &ManagedSession) -> Result<(), String> {
+        if !managed.is_persisted() {
+            return Ok(());
+        }
+        let s = managed.session.read().await;
+        self.store.save_header(&s).await.map_err(|e| e.to_string())
+    }
+
     /// 为指定 Session 启动一轮后台执行任务
     /// 后台任务在独立任务中运行，与当前 UI 聚焦状态解耦
     pub async fn submit_prompt(
@@ -176,33 +187,64 @@ impl SessionManager {
         if managed.is_deleted.load(Ordering::SeqCst) {
             return Err("Session has been deleted".to_string());
         }
-        if managed.is_running() {
+        // 原子占位运行标志，消除 check-then-act 竞态；失败路径负责释放
+        if managed.is_running.swap(true, Ordering::SeqCst) {
             return Err("Session is currently running another prompt".to_string());
         }
 
-        // 1. 如果尚未持久化（新会话第一条消息），固定生成系统提示词并写入 Header
+        match self.prepare_turn(&managed, prompt).await {
+            Ok((engine, notices)) => {
+                for notice in notices {
+                    let mut sent = managed.notified_caps.lock().await;
+                    if sent.insert(notice.clone()) {
+                        drop(sent);
+                        let _ = managed.event_tx.send(AgentEvent::Notice(notice));
+                    }
+                }
+                self.spawn_engine_task(managed, engine).await;
+                Ok(())
+            }
+            Err(e) => {
+                managed.is_running.store(false, Ordering::SeqCst);
+                Err(e)
+            }
+        }
+    }
+
+    /// 首条消息懒持久化（系统提示 Turn + 占位标题）、追加 User Turn 并组装引擎
+    async fn prepare_turn(
+        &self,
+        managed: &ManagedSession,
+        prompt: &str,
+    ) -> Result<(AgentEngine, Vec<String>), String> {
         let mut should_generate_title = false;
         let parent_turn_id = if !managed.is_persisted() {
-            let mut s = managed.session.write().await;
-
-            let sys_prompt = crate::system::build_system_prompt(&s.workspace_root);
+            let workspace_root = {
+                let s = managed.session.read().await;
+                s.workspace_root.clone()
+            };
+            // 系统信息采集涉及子进程调用（nvidia-smi / lspci 等），在拿写锁前完成，
+            // 避免阻塞 executor 线程并卡住该会话的全部并发读写
+            let sys_prompt = crate::system::build_system_prompt(&workspace_root);
             let sys_turn = Turn::new(
                 crate::model::Role::System,
                 vec![Message::system(sys_prompt)],
                 None,
             );
             let sys_turn_id = sys_turn.id.clone();
-            s.append_turn(sys_turn);
 
-            if s.title.is_none() {
-                s.title = Some(crate::model::provisional_title(prompt));
-                should_generate_title = true;
+            {
+                let mut s = managed.session.write().await;
+                s.append_turn(sys_turn);
+                if s.title.is_none() {
+                    s.title = Some(crate::model::provisional_title(prompt));
+                    should_generate_title = true;
+                }
+                self.store
+                    .save_header(&s)
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
-
-            self.store
-                .save_header(&s)
-                .await
-                .map_err(|e| e.to_string())?;
 
             managed.is_persisted.store(true, Ordering::SeqCst);
             Some(sys_turn_id)
@@ -211,7 +253,7 @@ impl SessionManager {
             s.last_turn_id()
         };
 
-        // 2. 追加 User Turn
+        // 追加 User Turn
         let user_msg = Message::user(prompt);
         let user_turn = Turn::user_turn(user_msg, parent_turn_id);
 
@@ -247,7 +289,6 @@ impl SessionManager {
             });
         }
 
-        // 2. 解析 Provider 与参数
         let (current_model, current_variant, session_workspace, session_web_search) = {
             let s = managed.session.read().await;
             (
@@ -258,25 +299,18 @@ impl SessionManager {
             )
         };
 
-        let (provider, effective_model, reasoning_effort) =
-            resolve_provider(&self.app_config, &current_model, current_variant.as_deref())?;
+        build_engine(
+            &self.app_config,
+            &current_model,
+            current_variant.as_deref(),
+            session_web_search,
+            &session_workspace,
+            self.store.clone(),
+        )
+    }
 
-        let tools = ToolRegistry::with_workspace_defaults(&session_workspace);
-
-        let agent_config = AgentConfig {
-            completion_options: CompletionOptions {
-                model: effective_model,
-                enable_web_search: session_web_search,
-                reasoning_effort,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-
-        let engine = AgentEngine::new(provider, self.store.clone(), tools, agent_config);
-
-        // 3. 标记运行中并启动后台任务
-        managed.is_running.store(true, Ordering::SeqCst);
+    /// 启动事件转发与引擎执行后台任务（任务结束时自行释放运行标志）
+    async fn spawn_engine_task(&self, managed: Arc<ManagedSession>, engine: AgentEngine) {
         *managed.status_text.write().await = "Thinking...".to_string();
 
         let (tx, mut rx) = mpsc::channel::<AgentEvent>(64);
@@ -285,7 +319,7 @@ impl SessionManager {
         let is_running = managed.is_running.clone();
         let session_lock = managed.session.clone();
 
-        // 启动事件转发小任务
+        // 事件转发小任务：将 mpsc 增量事件映射为状态文本并广播
         let fwd_status = status_text.clone();
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -303,8 +337,8 @@ impl SessionManager {
                     AgentEvent::Text(_) => {
                         *fwd_status.write().await = "Responding...".to_string();
                     }
-                    AgentEvent::Citation { .. } => {}
-                    AgentEvent::Finished => {
+                    AgentEvent::Citation { .. } | AgentEvent::Notice(_) => {}
+                    AgentEvent::Finished | AgentEvent::Aborted => {
                         *fwd_status.write().await = String::new();
                     }
                     AgentEvent::Error(_) => {
@@ -334,8 +368,6 @@ impl SessionManager {
 
         let mut abort_handle = managed.task_abort_handle.lock().await;
         *abort_handle = Some(task.abort_handle());
-
-        Ok(())
     }
 }
 

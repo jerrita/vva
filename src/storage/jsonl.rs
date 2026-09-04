@@ -138,10 +138,21 @@ fn list_sessions_sync(base_dir: &Path) -> Result<Vec<SessionSummary>, StoreError
         {
             let reader = BufReader::new(file);
             let mut lines = reader.lines();
-            if let Some(Ok(first_line)) = lines.next()
-                && let Ok(JsonlRecord::Header(header)) =
-                    serde_json::from_str::<JsonlRecord>(&first_line)
-            {
+            let first_line = lines.next();
+            let parsed_header = first_line.and_then(|l| l.ok()).and_then(|line| {
+                match serde_json::from_str::<JsonlRecord>(&line) {
+                    Ok(JsonlRecord::Header(header)) => Some(header),
+                    // 损坏的 Header 不再静默吞没：显式告警后跳过该文件
+                    _ => {
+                        eprintln!(
+                            "warning: corrupt session header, skipped: {}",
+                            path.display()
+                        );
+                        None
+                    }
+                }
+            });
+            if let Some(header) = parsed_header {
                 // 统计后续行数（Turn 数量）
                 let turn_count = lines
                     .map_while(Result::ok)
@@ -230,7 +241,7 @@ mod tests {
         let mut user_msg = Message::user("Here is the error screenshot");
         user_msg
             .parts
-            .push(ContentPart::image_url("https://example.com/err.png", None));
+            .push(ContentPart::image_url("https://example.com/err.png"));
         let user_turn = Turn::user_turn(user_msg, None);
         store
             .append_turn(&session.id, &user_turn)

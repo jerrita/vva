@@ -79,10 +79,6 @@ impl FilterableModal for VariantsModalState {
         self.filtered_variants.len()
     }
 
-    fn selected_index(&self) -> usize {
-        self.selected_index
-    }
-
     fn selected_index_mut(&mut self) -> &mut usize {
         &mut self.selected_index
     }

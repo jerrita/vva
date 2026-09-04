@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 use super::tool::{ToolCall, ToolResult};
 
@@ -25,28 +24,6 @@ pub enum ContentPart {
         source: MediaSource,
         #[serde(skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        detail: Option<ImageDetail>,
-    },
-    /// 结构化文档模态 (PDF, Markdown, etc.)
-    Document {
-        source: MediaSource,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mime_type: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filename: Option<String>,
-    },
-    /// 音频模态
-    Audio {
-        source: MediaSource,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mime_type: Option<String>,
-    },
-    /// 视频模态
-    Video {
-        source: MediaSource,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        mime_type: Option<String>,
     },
     /// 通用工具调用
     ToolCall(ToolCall),
@@ -64,13 +41,6 @@ impl ContentPart {
         }
     }
 
-    pub fn text_with_annotations(text: impl Into<String>, annotations: Vec<Annotation>) -> Self {
-        Self::Text {
-            text: text.into(),
-            annotations,
-        }
-    }
-
     pub fn reasoning(content: impl Into<String>, signature: Option<String>) -> Self {
         Self::Reasoning {
             content: content.into(),
@@ -78,31 +48,10 @@ impl ContentPart {
         }
     }
 
-    pub fn image_url(url: impl Into<String>, detail: Option<ImageDetail>) -> Self {
+    pub fn image_url(url: impl Into<String>) -> Self {
         Self::Image {
             source: MediaSource::Url { url: url.into() },
             mime_type: None,
-            detail,
-        }
-    }
-
-    pub fn image_path(path: impl Into<PathBuf>, mime_type: Option<String>) -> Self {
-        Self::Image {
-            source: MediaSource::Path { path: path.into() },
-            mime_type,
-            detail: None,
-        }
-    }
-
-    pub fn document_path(
-        path: impl Into<PathBuf>,
-        filename: Option<String>,
-        mime_type: Option<String>,
-    ) -> Self {
-        Self::Document {
-            source: MediaSource::Path { path: path.into() },
-            mime_type,
-            filename,
         }
     }
 }
@@ -113,15 +62,6 @@ impl ContentPart {
 pub enum MediaSource {
     Url { url: String },
     Base64 { data: String, mime_type: String },
-    Path { path: PathBuf },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageDetail {
-    Auto,
-    Low,
-    High,
 }
 
 /// 参考 OpenAI Responses API 规范的注脚与引用系统
@@ -134,6 +74,7 @@ pub enum Annotation {
         start_index: usize,
         end_index: usize,
     },
+    /// Responses API 规范定义的文件引用注脚（当前流式路径未产出，保留为协议词汇）
     FileCitation {
         file_id: String,
         filename: String,
@@ -155,15 +96,6 @@ pub struct WebSearchCall {
 }
 
 impl WebSearchCall {
-    pub fn new(id: impl Into<String>, query: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            query: query.into(),
-            status: SearchStatus::Searching,
-            sources: Vec::new(),
-        }
-    }
-
     pub fn completed(
         id: impl Into<String>,
         query: impl Into<String>,

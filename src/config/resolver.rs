@@ -91,8 +91,9 @@ impl AppConfig {
             None
         };
 
-        // 计算实际生效的 ProviderType（支持模型级 override）
-        let effective_type = model_cfg.effective_type(provider_cfg.provider_type);
+        // 计算实际生效的 ProviderType（支持模型级 override；未声明 type 时按 Response）
+        let effective_type =
+            model_cfg.effective_type(provider_cfg.provider_type.unwrap_or_default());
 
         // 规范化 Base URL（针对各 API 标准端点严格对接与去重）
         let base_url = provider_cfg.base_url.trim().trim_end_matches('/');

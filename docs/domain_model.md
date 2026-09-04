@@ -39,9 +39,6 @@ classDiagram
         Text(text, annotations)
         Reasoning(content, signature)
         Image(source, mime_type)
-        Document(source, mime_type)
-        Audio(source, mime_type)
-        Video(source, mime_type)
         ToolCall(ToolCall)
         ToolResult(ToolResult)
         WebSearchCall(WebSearchCall)
@@ -91,13 +88,13 @@ classDiagram
 |---|---|---|
 | `Text` | `text: String`, `annotations: Vec<Annotation>` | 纯文本内容，内嵌引用注脚系统 |
 | `Reasoning` | `content: String`, `signature: Option<String>` | 深度思考过程。携带可选的数字签名 `signature`（Anthropic 官方防篡改签名） |
-| `Image` | `source: MediaSource`, `mime_type: String` | 支持 URL、Base64 或本地文件路径的多模态图像 |
-| `Document` | `source: MediaSource`, `mime_type: String` | 支持 PDF、文档解析的专用多模态内容 |
-| `Audio` | `source: MediaSource`, `mime_type: String` | 语音与音频输入 |
-| `Video` | `source: MediaSource`, `mime_type: String` | 视频多模态输入 |
+| `Image` | `source: MediaSource`, `mime_type: Option<String>` | 多模态图像（URL / Base64） |
 | `ToolCall` | `ToolCall` (`id`, `name`, `arguments`) | Agent 工具调用请求封装 |
 | `ToolResult` | `ToolResult` (`tool_call_id`, `content`, `is_error`) | Agent 工具执行结果与错误封装 |
 | `WebSearchCall` | `WebSearchCall` (`id`, `query`, `status`, `sources`) | 结构化记录网络检索意图、状态与引文数据源 |
+
+> Document / Audio / Video 多模态变体为规划中的扩展方向，当前未实现任何供应商映射，
+> 待实际接入时再行引入（避免维护零实现的序列化变体）。
 
 ### 结构化引用注脚系统 (Annotation)
 统一参考 OpenAI Responses 规范建立注脚模型：
@@ -144,13 +141,13 @@ Gemini 原生的 `groundingChunks` 与 `groundingSupports` 在适配器层直接
   - `cache_creation_input_tokens: Option<u32>`：本次请求创建缓存的 Token 数；
   - `cache_read_input_tokens: Option<u32>`：本次请求命中并读取缓存的 Token 数；
   - `stop_reason: Option<String>`：停止原因（`end_turn`, `tool_use`, `max_tokens` 等）。
-- **`AnthropicMessageMeta`**：
-  - `ephemeral_cache: bool`：该消息是否显式注入 `cache_control: {"type": "ephemeral"}`。
 
 ### 3.3 Google Gemini API 元数据
 - **`GeminiTurnMeta`**：
   - `finish_reason: Option<String>`：完成原因（`STOP`, `SAFETY`, `MAX_TOKENS`）；
   - `safety_ratings: Vec<GeminiSafetyRating>`：安全评级指标列表；
   - `code_execution_result: Option<GeminiCodeExecutionResult>`：Gemini 内置代码沙盒执行输出。
-- **`GeminiMessageMeta`**：
-  - `thought_signature: Option<String>`：思考块的专属标识或签名。
+
+> 消息级元数据当前仅保留 Responses 的 `ResponseMessageMeta`（`item_id` 链式绑定）；
+> Anthropic / Gemini 的消息级元数据（`ephemeral_cache`、`thought_signature`）
+> 待对应功能真正落地时再引入。

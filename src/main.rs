@@ -5,13 +5,11 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
-use vva::config::{AppConfig, home_dir, load_config};
-use vva::harness::{AgentConfig, AgentEngine, AgentEvent};
-use vva::model::{Annotation, ContentPart, Message, Session, Turn};
-use vva::provider::CompletionOptions;
+use vva::config::{AppConfig, FALLBACK_MODEL_SPEC, home_dir, load_config};
+use vva::harness::{AgentEvent, build_engine};
+use vva::model::{Annotation, ContentPart, Message, Turn};
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
-use vva::tools::ToolRegistry;
 use vva::ui::run_tui;
 
 #[derive(Parser)]
@@ -145,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let default_model = app_config
         .as_ref()
         .map(|c| c.settings.default.clone())
-        .unwrap_or_else(|| "response/gpt-4.5-preview".to_string());
+        .unwrap_or_else(|| FALLBACK_MODEL_SPEC.to_string());
 
     match cli.command {
         None => {
@@ -205,44 +203,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .load_session(&sid)
                     .await?
                     .ok_or_else(|| format!("Session not found: {sid}"))?;
-
-                let mut changed = false;
-                if let Some(m) = model {
-                    s.current_model = m;
-                    changed = true;
-                }
-                if variant.is_some() {
-                    s.current_variant = variant;
-                    changed = true;
-                }
-                if let Some(w) = web_search {
-                    s.web_search = w;
-                    changed = true;
-                }
-                if changed {
-                    s.updated_at = chrono::Utc::now();
+                if s.apply_overrides(model, variant, web_search) {
                     store.save_header(&s).await?;
                 }
                 s
             } else {
                 let target_model = model.unwrap_or(default_model);
                 let target_search = web_search.unwrap_or(true);
-                let mut s = Session::with_model(
+                vva::system::new_session(
                     &workspace,
-                    Some(vva::model::provisional_title(&prompt)),
+                    Some(&vva::model::provisional_title(&prompt)),
                     target_model,
                     variant,
                     target_search,
-                );
-                let sys_prompt = vva::system::build_system_prompt(&workspace);
-                let sys_turn = Turn::new(
-                    vva::model::Role::System,
-                    vec![Message::system(sys_prompt)],
-                    None,
-                );
-                s.append_turn(sys_turn);
-                store.save_header(&s).await?;
-                s
+                )
             };
 
             println!("🚀 [vva] Session ID: {}", session.id);
@@ -252,31 +226,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("⚡ Reasoning Variant: {}", v);
             }
 
-            // 解析 Provider 实例（配置路由单点：历史会话模型失效时回退默认模型）
-            let (provider_inst, effective_model_name, reasoning_effort) =
-                match vva::config::resolve_provider(
-                    &app_config,
-                    &session.current_model,
-                    session.current_variant.as_deref(),
-                ) {
-                    Ok(info) => info,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        std::process::exit(1);
-                    }
-                };
+            // 引擎组装共享单点（配置路由 + 能力协商降级通知）
+            let (engine, notices) = match build_engine(
+                &app_config,
+                &session.current_model,
+                session.current_variant.as_deref(),
+                session.web_search,
+                &workspace,
+                store.clone(),
+            ) {
+                Ok(v) => v,
+                Err(err) => {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            };
 
             println!(
                 "🤖 Active Provider: {} (API Model: {})",
-                provider_inst.name(),
-                effective_model_name
+                engine.provider_name(),
+                engine.model()
             );
             if session.web_search {
                 println!("🌐 Native Web Search: Enabled");
             }
-
-            // 初始化 Coding 工具
-            let tools = ToolRegistry::with_workspace_defaults(&workspace);
+            for notice in notices {
+                eprintln!("⚠️  [Notice] {notice}");
+            }
 
             let user_msg = Message::user(&prompt);
             let parent_turn_id = session.last_turn_id();
@@ -284,17 +260,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             store.append_turn(&session.id, &user_turn).await?;
             session.append_turn(user_turn);
 
-            let agent_config = AgentConfig {
-                completion_options: CompletionOptions {
-                    model: effective_model_name,
-                    enable_web_search: session.web_search,
-                    reasoning_effort,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
-
-            let engine = AgentEngine::new(provider_inst, store.clone(), tools, agent_config);
             let (tx, mut rx) = mpsc::channel::<AgentEvent>(32);
 
             let run_handle =
@@ -327,6 +292,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AgentEvent::Citation { title, url } => {
                         println!("\n🔗 [Citation] {} ({})", title, url);
                     }
+                    AgentEvent::Notice(notice) => {
+                        eprintln!("\n⚠️  [Notice] {notice}");
+                    }
                     AgentEvent::ToolExecuting { name, args } => {
                         in_thought = false;
                         in_text = false;
@@ -344,6 +312,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         in_thought = false;
                         in_text = false;
                         println!("\n✨ Turn completed successfully.");
+                    }
+                    AgentEvent::Aborted => {
+                        in_thought = false;
+                        in_text = false;
+                        println!("\n🛑 Turn aborted.");
                     }
                     AgentEvent::Error(err) => {
                         eprintln!("\n❌ [Error] {}", err);
@@ -486,10 +459,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ContentPart::Image { source, .. } => {
                                     println!("    🖼️ [Image]: {:?}", source);
                                 }
-                                ContentPart::Document { filename, .. } => {
-                                    println!("    📄 [Document]: {:?}", filename);
-                                }
-                                _ => {}
                             }
                         }
                     }

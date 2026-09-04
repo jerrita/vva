@@ -1,7 +1,9 @@
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
+use crate::config::resolve_provider;
 use crate::model::{ContentPart, Message, Session, Turn};
 use crate::provider::{CompletionOptions, Provider, ProviderError};
 use crate::storage::{SessionStore, StoreError};
@@ -24,6 +26,62 @@ impl Default for AgentConfig {
 
 pub use crate::event::AgentEvent;
 
+/// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）
+pub fn capability_notices(provider: &dyn Provider, options: &CompletionOptions) -> Vec<String> {
+    let caps = provider.capabilities();
+    let mut notices = Vec::new();
+    if options.enable_web_search && !caps.supports_native_search {
+        notices.push(format!(
+            "Web search is enabled but provider '{}' has no native search support; the option is ignored.",
+            provider.name()
+        ));
+    }
+    if let Some(effort) = &options.reasoning_effort
+        && !effort.is_empty()
+        && !caps.supports_reasoning_effort
+    {
+        notices.push(format!(
+            "Reasoning effort '{effort}' is set but provider '{}' does not support the effort parameter; it is ignored.",
+            provider.name()
+        ));
+    }
+    notices
+}
+
+/// 组装一轮 Agent 执行引擎：Provider 解析 → 工具集 → CompletionOptions → AgentEngine。
+/// CLI 与 TUI 共用的唯一组装路径，同时返回能力协商降级通知。
+pub fn build_engine(
+    app_config: &Option<crate::config::AppConfig>,
+    model_spec: &str,
+    variant: Option<&str>,
+    web_search: bool,
+    workspace: &Path,
+    store: Arc<dyn SessionStore>,
+) -> Result<(AgentEngine, Vec<String>), String> {
+    let (provider, effective_model, reasoning_effort) =
+        resolve_provider(app_config, model_spec, variant)?;
+
+    let completion_options = CompletionOptions {
+        model: effective_model,
+        enable_web_search: web_search,
+        reasoning_effort,
+        ..Default::default()
+    };
+    let notices = capability_notices(provider.as_ref(), &completion_options);
+
+    let tools = ToolRegistry::with_workspace_defaults(workspace);
+    let engine = AgentEngine::new(
+        provider,
+        store,
+        tools,
+        AgentConfig {
+            completion_options,
+            ..Default::default()
+        },
+    );
+    Ok((engine, notices))
+}
+
 pub struct AgentEngine {
     provider: Arc<dyn Provider>,
     store: Arc<dyn SessionStore>,
@@ -44,6 +102,16 @@ impl AgentEngine {
             tools,
             config,
         }
+    }
+
+    /// 供应商名称（诊断展示用）
+    pub fn provider_name(&self) -> &str {
+        self.provider.name()
+    }
+
+    /// 生效的 API 模型名（诊断展示用）
+    pub fn model(&self) -> &str {
+        &self.config.completion_options.model
     }
 
     /// 执行单轮对话或多轮自动工具调度循环
@@ -154,4 +222,28 @@ pub enum AgentError {
     Provider(#[from] ProviderError),
     #[error("Storage error: {0}")]
     Storage(#[from] StoreError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capability_notices_flag_unsupported_options() {
+        let provider = crate::provider::anthropic::AnthropicProvider::new("k");
+        let options = CompletionOptions {
+            model: "claude-x".into(),
+            enable_web_search: true,
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let notices = capability_notices(&provider, &options);
+        assert_eq!(notices.len(), 2);
+        assert!(notices[0].contains("native search"));
+        assert!(notices[1].contains("Reasoning effort 'high'"));
+
+        // 全能力供应商（Responses）无通知
+        let response = crate::provider::response::ResponseProvider::new("k");
+        assert!(capability_notices(&response, &options).is_empty());
+    }
 }

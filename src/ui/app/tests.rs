@@ -137,8 +137,7 @@ async fn test_slash_command_variant_execution() {
         .create_session("prov/model-without-vars".into(), None, None, false)
         .await
         .unwrap();
-    let mut app_no_vars =
-        App::new(app.session_mgr.clone(), session_no_vars, false).await;
+    let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars, false).await;
     app_no_vars.set_input("/variant");
     app_no_vars.submit_input().await;
     assert_eq!(app_no_vars.modal, ActiveModal::Variants);

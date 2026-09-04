@@ -2,8 +2,12 @@ use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::http::{SseEventHandler, consume_sse, post_json, post_sse};
-use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
+use super::common::EventForwarder;
+use super::http::{SseEventHandler, consume_sse, post_sse};
+use super::{
+    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
+    shared_client,
+};
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, Message, ResponseMessageContent, ResponseOutputItem,
@@ -13,7 +17,6 @@ use crate::model::{
 };
 
 pub struct ResponseProvider {
-    client: reqwest::Client,
     api_key: String,
     base_url: String,
 }
@@ -21,7 +24,6 @@ pub struct ResponseProvider {
 impl ResponseProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: super::shared_client().clone(),
             api_key: api_key.into(),
             base_url: "https://api.openai.com/v1".into(),
         }
@@ -33,14 +35,14 @@ impl ResponseProvider {
     }
 
     /// 规范化请求端点：base_url 无论是否携带 /responses 后缀，均收敛到唯一端点
-    fn endpoint_url(&self) -> String {
+    fn normalized_endpoint(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         let base = base.strip_suffix("/responses").unwrap_or(base);
         format!("{base}/responses")
     }
 
     /// Bearer 鉴权与 JSON Content-Type 头
-    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
+    fn build_auth_headers(&self) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -57,7 +59,7 @@ impl ResponseProvider {
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> serde_json::Value {
+    ) -> Result<serde_json::Value, ProviderError> {
         let prev_id = session.latest_openai_response_id();
 
         // 构造 tools 列表
@@ -260,7 +262,7 @@ impl ResponseProvider {
             });
         }
 
-        body
+        Ok(body)
     }
 
     /// 解析 Responses API 响应体：先反序列化为强类型 output items，
@@ -334,9 +336,7 @@ impl ResponseProvider {
                             queries,
                             sources,
                         } => {
-                            let q = query
-                                .clone()
-                                .unwrap_or_else(|| queries.join(", "));
+                            let q = query.clone().unwrap_or_else(|| queries.join(", "));
                             let srcs = sources
                                 .iter()
                                 .map(|src| WebSearchSource {
@@ -355,9 +355,7 @@ impl ResponseProvider {
                                 snippet: None,
                             }],
                         ),
-                        ResponseWebSearchAction::FindInPage { .. } => {
-                            (String::new(), Vec::new())
-                        }
+                        ResponseWebSearchAction::FindInPage { .. } => (String::new(), Vec::new()),
                     };
 
                     parts.push(ContentPart::WebSearchCall(WebSearchCall {
@@ -367,7 +365,9 @@ impl ResponseProvider {
                         sources,
                     }));
                 }
-                ResponseOutputItem::Reasoning { summary, content, .. } => {
+                ResponseOutputItem::Reasoning {
+                    summary, content, ..
+                } => {
                     let mut texts = Vec::new();
                     for s in summary {
                         let ResponseReasoningSummary::SummaryText { text } = s;
@@ -501,19 +501,29 @@ impl Provider for ResponseProvider {
             supports_prompt_caching: false,
             supports_thinking_signature: false,
             supports_stateful_response_id: true,
+            supports_reasoning_effort: true,
         }
     }
 
-    async fn complete(
+    fn endpoint_url(&self, _model: &str, _stream: bool) -> Result<String, ProviderError> {
+        Ok(self.normalized_endpoint())
+    }
+
+    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
+        self.build_auth_headers()
+    }
+
+    fn build_request_body(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<ProviderResponse, ProviderError> {
-        let body = self.build_request_body(session, tools, options);
-        let json_resp = post_json(&self.client, &self.endpoint_url(), self.auth_headers()?, &body)
-            .await?;
-        self.parse_response(json_resp)
+    ) -> Result<serde_json::Value, ProviderError> {
+        ResponseProvider::build_request_body(self, session, tools, options)
+    }
+
+    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
+        ResponseProvider::parse_response(self, json)
     }
 
     async fn complete_stream(
@@ -523,17 +533,23 @@ impl Provider for ResponseProvider {
         options: &CompletionOptions,
         event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
-        let mut body = self.build_request_body(session, tools, options);
+        let mut body = self.build_request_body(session, tools, options)?;
         body["stream"] = serde_json::json!(true);
 
         let mut headers = self.auth_headers()?;
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
 
-        let res = post_sse(&self.client, &self.endpoint_url(), headers, &body).await?;
+        let res = post_sse(
+            shared_client(),
+            &self.endpoint_url(&options.model, true)?,
+            headers,
+            &body,
+        )
+        .await?;
 
         let mut handler = ResponseStreamHandler {
             provider: self,
-            sender: event_sender,
+            forwarder: EventForwarder::new(event_sender),
             completed: None,
         };
         consume_sse(res, &mut handler).await?;
@@ -547,7 +563,7 @@ impl Provider for ResponseProvider {
 /// Responses API 流式事件累积处理器
 struct ResponseStreamHandler<'a> {
     provider: &'a ResponseProvider,
-    sender: Option<mpsc::Sender<AgentEvent>>,
+    forwarder: EventForwarder,
     completed: Option<ProviderResponse>,
 }
 
@@ -583,18 +599,14 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                         "Missing 'delta' in response.output_text.delta event".into(),
                     )
                 })?;
-                if let Some(tx) = &self.sender {
-                    let _ = tx.send(AgentEvent::Text(delta.to_string())).await;
-                }
+                self.forwarder.text(delta).await;
                 Ok(())
             }
             "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
                 let delta = json["delta"].as_str().ok_or_else(|| {
                     ProviderError::Protocol("Missing 'delta' in reasoning delta event".into())
                 })?;
-                if let Some(tx) = &self.sender {
-                    let _ = tx.send(AgentEvent::Thought(delta.to_string())).await;
-                }
+                self.forwarder.thought(delta).await;
                 Ok(())
             }
             "response.completed" => {
@@ -602,19 +614,12 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                     ProviderError::Protocol("Missing 'response' in response.completed event".into())
                 })?;
                 let parsed = self.provider.parse_response(resp_obj.clone())?;
-                if let Some(tx) = &self.sender {
-                    for msg in &parsed.messages {
-                        for part in &msg.parts {
-                            if let ContentPart::Text { annotations, .. } = part {
-                                for ann in annotations {
-                                    if let Annotation::UrlCitation { title, url, .. } = ann {
-                                        let _ = tx
-                                            .send(AgentEvent::Citation {
-                                                title: title.clone(),
-                                                url: url.clone(),
-                                            })
-                                            .await;
-                                    }
+                for msg in &parsed.messages {
+                    for part in &msg.parts {
+                        if let ContentPart::Text { annotations, .. } = part {
+                            for ann in annotations {
+                                if let Annotation::UrlCitation { title, url, .. } = ann {
+                                    self.forwarder.citation(title, url).await;
                                 }
                             }
                         }
@@ -650,7 +655,9 @@ mod tests {
             reasoning_effort: Some("medium".into()),
             ..Default::default()
         };
-        let body1 = provider.build_request_body(&session, &[], &options);
+        let body1 = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body1");
         assert!(body1.get("previous_response_id").is_none());
         assert_eq!(body1["tools"][0]["type"], "web_search");
         // Responses API 标准：reasoning.effort，禁止 top-level reasoning_effort
@@ -670,7 +677,9 @@ mod tests {
         session.append_turn(Turn::user_turn(user_msg2, None));
 
         // 第二轮：应自动提取 previous_response_id: "resp_turn_1"
-        let body2 = provider.build_request_body(&session, &[], &options);
+        let body2 = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body2");
         assert_eq!(body2["previous_response_id"], "resp_turn_1");
         // 增量 input 只包含第二轮的用户提问
         let inputs = body2["input"].as_array().unwrap();
@@ -716,7 +725,9 @@ mod tests {
         };
 
         // 4. 构建下次请求 Payload：需携带 previous_response_id，且 input 必须同时包含 function_call 和 function_call_output
-        let body = provider.build_request_body(&session, &[], &options);
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body");
         assert_eq!(body["previous_response_id"], "resp_asst_1");
 
         let inputs = body["input"].as_array().unwrap();
@@ -873,7 +884,9 @@ mod tests {
             enable_web_search: true,
             ..Default::default()
         };
-        let body = provider.build_request_body(&session, &[], &options);
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body");
 
         // 验证推理模式下 temperature 被安全抑制
         assert!(body.get("temperature").is_none());
@@ -1086,7 +1099,9 @@ mod tests {
         };
 
         // 4. 构建第二轮请求体：因未留存，必须回退至全量发送 input，且不传 previous_response_id
-        let body = provider.build_request_body(&session, &[], &options);
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body");
         assert!(body.get("previous_response_id").is_none());
         assert_eq!(body["store"], true);
         assert_eq!(body["prompt_cache_key"], session.id);

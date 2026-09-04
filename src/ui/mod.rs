@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::error;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, FALLBACK_MODEL_SPEC};
 use crate::storage::SessionStore;
 use app::{ActiveModal, App};
 use modals::{ModalInput, classify_modal_key};
@@ -89,28 +89,12 @@ pub async fn run_tui(
     let initial_session: Arc<ManagedSession> = if let Some(sid) = initial_session_id {
         match session_mgr.get_or_load(&sid).await {
             Ok(s) => {
-                let mut changed = false;
-                {
+                let changed = {
                     let mut guard = s.session.write().await;
-                    if let Some(m) = default_model {
-                        guard.current_model = m;
-                        changed = true;
-                    }
-                    if default_variant.is_some() {
-                        guard.current_variant = default_variant;
-                        changed = true;
-                    }
-                    if let Some(w) = enable_web_search {
-                        guard.web_search = w;
-                        changed = true;
-                    }
-                    if changed {
-                        guard.updated_at = chrono::Utc::now();
-                    }
-                }
+                    guard.apply_overrides(default_model, default_variant, enable_web_search)
+                };
                 if changed {
-                    let s_ref = s.session.read().await;
-                    let _ = store.save_header(&s_ref).await;
+                    let _ = session_mgr.persist_header(&s).await;
                 }
                 s
             }
@@ -118,7 +102,7 @@ pub async fn run_tui(
                 error!("Failed to load session {sid}: {e}. Creating new session.");
                 let fallback_model = default_model
                     .or_else(|| app_config.as_ref().map(|c| c.settings.default.clone()))
-                    .unwrap_or_else(|| "openai/gpt-5.6-terra".to_string());
+                    .unwrap_or_else(|| FALLBACK_MODEL_SPEC.to_string());
                 let fallback_search = enable_web_search.unwrap_or(true);
                 session_mgr
                     .create_session(fallback_model, default_variant, None, fallback_search)
@@ -128,7 +112,7 @@ pub async fn run_tui(
     } else {
         let effective_model = default_model
             .or_else(|| app_config.as_ref().map(|c| c.settings.default.clone()))
-            .unwrap_or_else(|| "openai/gpt-5.6-terra".to_string());
+            .unwrap_or_else(|| FALLBACK_MODEL_SPEC.to_string());
         let effective_search = enable_web_search.unwrap_or(true);
         session_mgr
             .create_session(effective_model, default_variant, None, effective_search)
@@ -326,10 +310,10 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                 if app.is_selecting_input {
                     app.finish_input_selection();
                 }
-                if app.is_selecting_text {
+                if app.text_selection.is_selecting() {
                     app.finish_text_selection();
                 }
-                if app.is_selecting_sidebar {
+                if app.sidebar_selection.is_selecting() {
                     app.finish_sidebar_selection();
                 }
             }
@@ -458,53 +442,10 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                                     app.open_variants_modal().await;
                                 }
                                 app::ConfigItemKind::WebSearch => {
-                                    app.enable_web_search = !app.enable_web_search;
-                                    {
-                                        let mut s = app.active_session.session.write().await;
-                                        s.set_web_search(app.enable_web_search);
-                                    }
-                                    if app.active_session.is_persisted() {
-                                        let s_ref = app.active_session.session.read().await;
-                                        let _ = app.session_mgr.store().save_header(&s_ref).await;
-                                    }
-
-                                    let status = if app.enable_web_search { "ON" } else { "OFF" };
-                                    app.chat_entries.push(app::ChatEntry::SystemNotice {
-                                        text: format!("Native web search is now {status}"),
-                                    });
-                                    if let Some(ref mut cm) = app.config_modal {
-                                        cm.update_item_value(
-                                            kind,
-                                            if app.enable_web_search {
-                                                "Enabled"
-                                            } else {
-                                                "Disabled"
-                                            }
-                                            .to_string(),
-                                        );
-                                    }
+                                    app.set_web_search(None).await;
                                 }
                                 app::ConfigItemKind::ThinkingDisplay => {
-                                    app.thinking_concise = !app.thinking_concise;
-                                    let mode_str = if app.thinking_concise {
-                                        "concise (1 line)"
-                                    } else {
-                                        "full"
-                                    };
-                                    app.chat_entries.push(app::ChatEntry::SystemNotice {
-                                        text: format!("Thinking display mode set to {mode_str}."),
-                                    });
-                                    if let Some(ref mut cm) = app.config_modal {
-                                        cm.update_item_value(
-                                            kind,
-                                            if app.thinking_concise {
-                                                "Concise (1 line)"
-                                            } else {
-                                                "Full"
-                                            }
-                                            .to_string(),
-                                        );
-                                    }
+                                    app.toggle_thinking_display();
                                 }
                             }
                         }
@@ -792,10 +733,8 @@ fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
         && mouse.row < app.input_inner_area.y + app.input_inner_area.height;
 
     if in_input_x && in_input_y {
-        let rel_row =
-            (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
-        let rel_col =
-            (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
+        let rel_row = (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
+        let rel_col = (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
         let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
         app.start_input_selection(char_pos);
         app.clear_text_selection();
@@ -826,8 +765,8 @@ fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
         let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
         let in_scrollbar_col =
             mouse.column >= scrollbar_col.saturating_sub(1) && mouse.column <= scrollbar_col;
-        let in_chat_rows = mouse.row >= app.chat_area.y
-            && mouse.row < app.chat_area.y + app.chat_area.height;
+        let in_chat_rows =
+            mouse.row >= app.chat_area.y && mouse.row < app.chat_area.y + app.chat_area.height;
 
         if in_scrollbar_col && in_chat_rows && app.max_scroll > 0 {
             app.is_dragging_scrollbar = true;
@@ -879,7 +818,7 @@ fn handle_mouse_left_drag(app: &mut App, mouse: crossterm::event::MouseEvent) {
         };
         let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
         app.update_input_selection(char_pos);
-    } else if app.is_selecting_text && app.chat_area.height > 0 {
+    } else if app.text_selection.is_selecting() && app.chat_area.height > 0 {
         // 拖拽越过聊天区边界时自动滚动
         if mouse.row < app.chat_area.y {
             app.scroll_up(1);
@@ -907,7 +846,7 @@ fn handle_mouse_left_drag(app: &mut App, mouse: crossterm::event::MouseEvent) {
         };
         let line = scroll + row_offset;
         app.update_text_selection(line, col_offset);
-    } else if app.is_selecting_sidebar && app.sidebar_area.height > 0 {
+    } else if app.sidebar_selection.is_selecting() && app.sidebar_area.height > 0 {
         let row_offset = if mouse.row < app.sidebar_area.y {
             0
         } else {

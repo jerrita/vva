@@ -65,10 +65,6 @@ impl FilterableModal for ModelsModalState {
         self.filtered_models.len()
     }
 
-    fn selected_index(&self) -> usize {
-        self.selected_index
-    }
-
     fn selected_index_mut(&mut self) -> &mut usize {
         &mut self.selected_index
     }

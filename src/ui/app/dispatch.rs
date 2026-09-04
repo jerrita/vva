@@ -44,6 +44,57 @@ impl App {
         }
     }
 
+    /// 设置或切换原生网络搜索（/search 命令与 Config 弹窗共用）：
+    /// 更新会话字段、持久化 Header、同步弹窗显示并输出系统提示
+    pub async fn set_web_search(&mut self, target: Option<bool>) {
+        self.enable_web_search = target.unwrap_or(!self.enable_web_search);
+        {
+            let mut s = self.active_session.session.write().await;
+            s.set_web_search(self.enable_web_search);
+        }
+        let _ = self.session_mgr.persist_header(&self.active_session).await;
+
+        let status = if self.enable_web_search { "ON" } else { "OFF" };
+        if let Some(ref mut cm) = self.config_modal {
+            cm.update_item_value(
+                ConfigItemKind::WebSearch,
+                if self.enable_web_search {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+                .to_string(),
+            );
+        }
+        self.chat_entries.push(ChatEntry::SystemNotice {
+            text: format!("Native web search is now {status}"),
+        });
+    }
+
+    /// 切换思考过程展示模式（/thinking 命令与 Config 弹窗共用）
+    pub fn toggle_thinking_display(&mut self) {
+        self.thinking_concise = !self.thinking_concise;
+        let mode_str = if self.thinking_concise {
+            "concise (1 line)"
+        } else {
+            "full"
+        };
+        if let Some(ref mut cm) = self.config_modal {
+            cm.update_item_value(
+                ConfigItemKind::ThinkingDisplay,
+                if self.thinking_concise {
+                    "Concise (1 line)"
+                } else {
+                    "Full"
+                }
+                .to_string(),
+            );
+        }
+        self.chat_entries.push(ChatEntry::SystemNotice {
+            text: format!("Thinking display mode set to {mode_str}."),
+        });
+    }
+
     /// 处理斜杠命令分发
     async fn handle_slash_command(&mut self, cmd_line: &str) {
         let mut parts = cmd_line.split_whitespace();
@@ -72,49 +123,17 @@ impl App {
                 self.open_config_modal().await;
             }
             "/search" | "/web" => {
-                if arg.eq_ignore_ascii_case("on") {
-                    self.enable_web_search = true;
+                let target = if arg.eq_ignore_ascii_case("on") {
+                    Some(true)
                 } else if arg.eq_ignore_ascii_case("off") {
-                    self.enable_web_search = false;
+                    Some(false)
                 } else {
-                    self.enable_web_search = !self.enable_web_search;
-                }
-                {
-                    let mut s = self.active_session.session.write().await;
-                    s.set_web_search(self.enable_web_search);
-                }
-                if self.active_session.is_persisted() {
-                    let s_ref = self.active_session.session.read().await;
-                    let _ = self.session_mgr.store().save_header(&s_ref).await;
-                }
-
-                let status = if self.enable_web_search { "ON" } else { "OFF" };
-                if let Some(ref mut cm) = self.config_modal {
-                    cm.update_item_value(
-                        ConfigItemKind::WebSearch,
-                        if self.enable_web_search { "Enabled" } else { "Disabled" }.to_string(),
-                    );
-                }
-                self.chat_entries.push(ChatEntry::SystemNotice {
-                    text: format!("Native web search is now {status}"),
-                });
+                    None
+                };
+                self.set_web_search(target).await;
             }
             "/thinking" | "/think" | "/th" => {
-                self.thinking_concise = !self.thinking_concise;
-                let mode_str = if self.thinking_concise {
-                    "concise (1 line)"
-                } else {
-                    "full"
-                };
-                if let Some(ref mut cm) = self.config_modal {
-                    cm.update_item_value(
-                        ConfigItemKind::ThinkingDisplay,
-                        if self.thinking_concise { "Concise (1 line)" } else { "Full" }.to_string(),
-                    );
-                }
-                self.chat_entries.push(ChatEntry::SystemNotice {
-                    text: format!("Thinking display mode set to {mode_str}."),
-                });
+                self.toggle_thinking_display();
             }
             "/clear" | "/c" => {
                 let (model, variant, web_search) = {
@@ -216,7 +235,20 @@ impl App {
                     citations.push((title, url));
                 }
             }
+            AgentEvent::Notice(text) => {
+                self.chat_entries.push(ChatEntry::SystemNotice { text });
+            }
             AgentEvent::Finished => {
+                let s_clone = {
+                    let s = self.active_session.session.read().await;
+                    s.clone()
+                };
+                self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+            }
+            AgentEvent::Aborted => {
+                self.chat_entries.push(ChatEntry::SystemNotice {
+                    text: "Turn aborted.".to_string(),
+                });
                 let s_clone = {
                     let s = self.active_session.session.read().await;
                     s.clone()

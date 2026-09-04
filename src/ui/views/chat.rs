@@ -344,7 +344,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
         app.scroll_offset.min(max_scroll)
     };
 
-    if let Some(ref sel) = app.text_selection {
+    if let Some(sel) = app.text_selection.get() {
         apply_selection_highlight(&mut lines, sel);
     }
 

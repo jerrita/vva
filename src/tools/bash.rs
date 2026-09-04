@@ -49,34 +49,10 @@ impl Tool for BashTool {
         let args: BashArgs = serde_json::from_str(arguments)
             .map_err(|e| format!("Invalid arguments for bash tool: {e}"))?;
 
-        let output = Command::new("bash")
-            .arg("-c")
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c")
             .arg(&args.command)
-            .current_dir(&self.working_dir)
-            .output()
-            .await
-            .map_err(|e| format!("Failed to run command: {e}"))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str("STDERR:\n");
-            result.push_str(&stderr);
-        }
-
-        if !output.status.success() {
-            let code = output.status.code().unwrap_or(-1);
-            return Err(format!("Command exited with status code {code}:\n{result}"));
-        }
-
-        Ok(result)
+            .current_dir(&self.working_dir);
+        super::shell::run_shell_command(cmd).await
     }
 }
