@@ -1,4 +1,4 @@
-use super::fuzzy_matches;
+use super::{FilterableModal, fuzzy_matches};
 
 /// /variant 模态弹窗展示的推理强度档位条目
 #[derive(Debug, Clone)]
@@ -6,6 +6,15 @@ pub struct VariantItem {
     pub id: Option<String>,
     pub display_name: String,
     pub is_default: bool,
+}
+
+/// 判断档位条目是否与当前激活档位匹配
+fn is_active_variant(item: &VariantItem, active: Option<&str>) -> bool {
+    match (&item.id, active) {
+        (Some(id), Some(cur)) => id == cur,
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// /variant 模态弹窗状态机
@@ -25,32 +34,20 @@ impl VariantsModalState {
         active_variant: Option<String>,
         variants: Vec<VariantItem>,
     ) -> Self {
-        let selected_index = variants
-            .iter()
-            .position(|v| match (&v.id, &active_variant) {
-                (Some(id), Some(cur)) => id == cur,
-                (None, None) => true,
-                _ => false,
-            })
-            .unwrap_or(0);
-
         let mut state = Self {
             current_model,
             active_variant,
             variants,
             filtered_variants: Vec::new(),
-            selected_index,
+            selected_index: 0,
             query: String::new(),
         };
         state.apply_filter();
+        // 初始光标定位到当前激活档位
         state.selected_index = state
             .filtered_variants
             .iter()
-            .position(|v| match (&v.id, &state.active_variant) {
-                (Some(id), Some(cur)) => id == cur,
-                (None, None) => true,
-                _ => false,
-            })
+            .position(|v| is_active_variant(v, state.active_variant.as_deref()))
             .unwrap_or(0);
         state
     }
@@ -72,34 +69,30 @@ impl VariantsModalState {
         self.selected_index = 0;
     }
 
-    pub fn push_query(&mut self, c: char) {
-        self.query.push(c);
-        self.apply_filter();
-    }
-
-    pub fn pop_query(&mut self) {
-        self.query.pop();
-        self.apply_filter();
-    }
-
-    pub fn next(&mut self) {
-        if !self.filtered_variants.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.filtered_variants.len();
-        }
-    }
-
-    pub fn previous(&mut self) {
-        if !self.filtered_variants.is_empty() {
-            self.selected_index = if self.selected_index == 0 {
-                self.filtered_variants.len() - 1
-            } else {
-                self.selected_index - 1
-            };
-        }
-    }
-
     pub fn selected_variant(&self) -> Option<&VariantItem> {
         self.filtered_variants.get(self.selected_index)
+    }
+}
+
+impl FilterableModal for VariantsModalState {
+    fn filtered_len(&self) -> usize {
+        self.filtered_variants.len()
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    fn selected_index_mut(&mut self) -> &mut usize {
+        &mut self.selected_index
+    }
+
+    fn query_mut(&mut self) -> &mut String {
+        &mut self.query
+    }
+
+    fn refilter(&mut self) {
+        self.apply_filter();
     }
 }
 

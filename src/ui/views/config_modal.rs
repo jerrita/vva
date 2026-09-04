@@ -2,9 +2,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
-use crate::ui::app::App;
+use crate::ui::app::{App, ConfigItemKind};
+use crate::ui::views::modal_shell::{
+    centered_rect, filter_line, footer_hints, modal_block, selected_row_style, visible_window,
+};
 
 /// 渲染 /config 模态弹窗，支持上下键或 j/k 浏览与调整各项会话配置（模型、推理档位、网络搜索等）
 pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
@@ -13,27 +16,13 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         None => return,
     };
 
-    let modal_width = 80.min(area.width.saturating_sub(4));
-    let modal_height = 16.min(area.height.saturating_sub(4));
-
-    let modal_rect = Rect {
-        x: (area.width - modal_width) / 2,
-        y: (area.height - modal_height) / 2,
-        width: modal_width,
-        height: modal_height,
-    };
-
+    let modal_rect = centered_rect(area, 80, 16);
     frame.render_widget(Clear, modal_rect);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(
-            " Configuration & Session Settings (↑/↓ navigate, Enter/Space to adjust) ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = modal_block(
+        " Configuration & Session Settings (↑/↓ navigate, Enter/Space to adjust) ",
+        Color::Cyan,
+    );
 
     let inner = block.inner(modal_rect);
     frame.render_widget(block, modal_rect);
@@ -56,12 +45,10 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    let search_line = Line::from(vec![
-        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&state.query, Style::default().fg(Color::Cyan)),
-        Span::styled("_", Style::default().fg(Color::Cyan)),
-    ]);
-    frame.render_widget(Paragraph::new(vec![top_line, search_line]), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(vec![top_line, filter_line(&state.query, Color::Cyan)]),
+        chunks[0],
+    );
 
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
@@ -77,24 +64,29 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Action", Style::default().fg(Color::DarkGray)),
     ]));
 
-    for (i, item) in state.filtered_items.iter().enumerate() {
+    let (start_idx, visible) = visible_window(
+        state.selected_index,
+        chunks[1].height.saturating_sub(1) as usize,
+    );
+
+    for (i, item) in state
+        .filtered_items
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(visible)
+    {
         let is_selected = i == state.selected_index;
         let prefix = if is_selected { "> " } else { "  " };
 
         let row_style = if is_selected {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            selected_row_style(Color::Cyan)
         } else {
             Style::default().fg(Color::White)
         };
 
         let val_style = if is_selected {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            selected_row_style(Color::Cyan)
         } else {
             Style::default()
                 .fg(Color::Yellow)
@@ -102,10 +94,10 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         };
 
         let action_str = match item.kind {
-            crate::ui::app::ConfigItemKind::Model => "Enter to select model",
-            crate::ui::app::ConfigItemKind::Variant => "Enter to select variant",
-            crate::ui::app::ConfigItemKind::WebSearch => "Enter/Space to toggle",
-            crate::ui::app::ConfigItemKind::ThinkingDisplay => "Enter/Space to toggle",
+            ConfigItemKind::Model => "Enter to select model",
+            ConfigItemKind::Variant => "Enter to select variant",
+            ConfigItemKind::WebSearch => "Enter/Space to toggle",
+            ConfigItemKind::ThinkingDisplay => "Enter/Space to toggle",
         };
 
         lines.push(Line::from(vec![
@@ -123,23 +115,17 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         ]));
     }
 
-    let list_p = Paragraph::new(lines);
-    frame.render_widget(list_p, chunks[1]);
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
 
-    let footer_line = Line::from(vec![
-        Span::styled(" [↑/↓/j/k] ", Style::default().fg(Color::Cyan)),
-        Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
+    let footer = footer_hints(&[
+        (" [↑/↓/j/k] ", Style::default().fg(Color::Cyan), "Navigate  "),
+        (
             " [Enter/Space] ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            "Modify / Toggle  ",
         ),
-        Span::styled("Modify / Toggle  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [type] ", Style::default().fg(Color::Cyan)),
-        Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
-        Span::styled("Close", Style::default().fg(Color::DarkGray)),
+        (" [type] ", Style::default().fg(Color::Cyan), "Filter  "),
+        (" [Esc] ", Style::default().fg(Color::Yellow), "Close"),
     ]);
-    frame.render_widget(Paragraph::new(footer_line), chunks[2]);
+    frame.render_widget(Paragraph::new(footer), chunks[2]);
 }

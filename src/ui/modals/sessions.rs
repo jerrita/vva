@@ -1,6 +1,7 @@
-use super::fuzzy_matches;
+use std::path::{Path, PathBuf};
+
+use super::{FilterableModal, fuzzy_matches};
 use crate::model::SessionSummary;
-use std::path::Path;
 
 /// /sessions 会话列表筛选作用域
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +18,11 @@ pub struct SessionsModalState {
     pub selected_index: usize,
     pub scope: ProjectScope,
     pub query: String,
+    /// 当前工程在全部会话中的数量（渲染 Tab 计数用，避免每帧重复统计）
+    pub current_project_count: usize,
+    current_workspace: PathBuf,
+    /// 构造时缓存一次的规范化工作空间路径
+    canonical_current: Option<PathBuf>,
 }
 
 impl SessionsModalState {
@@ -27,37 +33,36 @@ impl SessionsModalState {
             selected_index: 0,
             scope: ProjectScope::CurrentProject,
             query: String::new(),
+            current_project_count: 0,
+            current_workspace: current_workspace.to_path_buf(),
+            canonical_current: current_workspace.canonicalize().ok(),
         };
-        state.apply_filter(current_workspace);
+        state.apply_filter();
         state
     }
 
     /// 切换作用域（当前项目 <-> 全量历史项目）
-    pub fn toggle_scope(&mut self, current_workspace: &Path) {
+    pub fn toggle_scope(&mut self) {
         self.scope = match self.scope {
             ProjectScope::CurrentProject => ProjectScope::AllProjects,
             ProjectScope::AllProjects => ProjectScope::CurrentProject,
         };
-        self.apply_filter(current_workspace);
+        self.apply_filter();
     }
 
     /// 应用过滤规则并重新定位光标
-    pub fn apply_filter(&mut self, current_workspace: &Path) {
-        let canonical_cur = current_workspace.canonicalize().ok();
+    pub fn apply_filter(&mut self) {
+        self.current_project_count = self
+            .all_sessions
+            .iter()
+            .filter(|s| self.in_current_project(s))
+            .count();
 
         self.filtered_sessions = match self.scope {
             ProjectScope::CurrentProject => self
                 .all_sessions
                 .iter()
-                .filter(|s| {
-                    if let (Some(c_cur), Ok(c_s)) =
-                        (&canonical_cur, s.workspace_root.canonicalize())
-                    {
-                        &c_s == c_cur
-                    } else {
-                        s.workspace_root == current_workspace
-                    }
-                })
+                .filter(|s| self.in_current_project(s))
                 .filter(|s| self.matches_query(s))
                 .cloned()
                 .collect(),
@@ -74,14 +79,14 @@ impl SessionsModalState {
         }
     }
 
-    pub fn push_query(&mut self, c: char, current_workspace: &Path) {
-        self.query.push(c);
-        self.apply_filter(current_workspace);
-    }
-
-    pub fn pop_query(&mut self, current_workspace: &Path) {
-        self.query.pop();
-        self.apply_filter(current_workspace);
+    /// 会话是否属于当前工作空间（优先规范化路径比对，失败时退回字面比对）
+    fn in_current_project(&self, session: &SessionSummary) -> bool {
+        if let (Some(c_cur), Ok(c_s)) = (&self.canonical_current, session.workspace_root.canonicalize())
+        {
+            &c_s == c_cur
+        } else {
+            session.workspace_root == self.current_workspace
+        }
     }
 
     fn matches_query(&self, session: &SessionSummary) -> bool {
@@ -95,24 +100,30 @@ impl SessionsModalState {
             || fuzzy_matches(&self.query, &session.workspace_root.to_string_lossy())
     }
 
-    pub fn next(&mut self) {
-        if !self.filtered_sessions.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.filtered_sessions.len();
-        }
-    }
-
-    pub fn previous(&mut self) {
-        if !self.filtered_sessions.is_empty() {
-            self.selected_index = if self.selected_index == 0 {
-                self.filtered_sessions.len() - 1
-            } else {
-                self.selected_index - 1
-            };
-        }
-    }
-
     pub fn selected_session(&self) -> Option<&SessionSummary> {
         self.filtered_sessions.get(self.selected_index)
+    }
+}
+
+impl FilterableModal for SessionsModalState {
+    fn filtered_len(&self) -> usize {
+        self.filtered_sessions.len()
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    fn selected_index_mut(&mut self) -> &mut usize {
+        &mut self.selected_index
+    }
+
+    fn query_mut(&mut self) -> &mut String {
+        &mut self.query
+    }
+
+    fn refilter(&mut self) {
+        self.apply_filter();
     }
 }
 
@@ -171,21 +182,21 @@ mod tests {
         modal.next();
         assert_eq!(modal.selected_session().unwrap().id, "sess_2");
 
-        modal.push_query('a', &ws_a);
-        modal.push_query('2', &ws_a);
+        modal.push_query('a');
+        modal.push_query('2');
         assert_eq!(modal.filtered_sessions.len(), 1);
         assert_eq!(modal.selected_session().unwrap().id, "sess_2");
 
-        modal.pop_query(&ws_a);
-        modal.pop_query(&ws_a);
+        modal.pop_query();
+        modal.pop_query();
 
         // 切换到 All Projects
-        modal.toggle_scope(&ws_a);
+        modal.toggle_scope();
         assert_eq!(modal.scope, ProjectScope::AllProjects);
         assert_eq!(modal.filtered_sessions.len(), 3);
 
         // 再次切换回 Current Project
-        modal.toggle_scope(&ws_a);
+        modal.toggle_scope();
         assert_eq!(modal.scope, ProjectScope::CurrentProject);
         assert_eq!(modal.filtered_sessions.len(), 2);
     }

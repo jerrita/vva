@@ -2,9 +2,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::ui::app::App;
+use crate::ui::views::modal_shell::{
+    centered_rect, filter_line, footer_hints, modal_block, selected_row_style, visible_window,
+};
 
 /// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位
 pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
@@ -13,29 +16,13 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         None => return,
     };
 
-    // 居中计算弹出框尺寸
-    let modal_width = 60.min(area.width.saturating_sub(4));
-    let modal_height = 16.min(area.height.saturating_sub(4));
-
-    let modal_rect = Rect {
-        x: (area.width - modal_width) / 2,
-        y: (area.height - modal_height) / 2,
-        width: modal_width,
-        height: modal_height,
-    };
-
-    // 清空背景
+    let modal_rect = centered_rect(area, 60, 16);
     frame.render_widget(Clear, modal_rect);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta))
-        .title(Span::styled(
-            " Select Reasoning Variant (↑/↓ to navigate, Enter to switch) ",
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = modal_block(
+        " Select Reasoning Variant (↑/↓ to navigate, Enter to switch) ",
+        Color::Magenta,
+    );
 
     let inner = block.inner(modal_rect);
     frame.render_widget(block, modal_rect);
@@ -81,12 +68,10 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    let search_line = Line::from(vec![
-        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&state.query, Style::default().fg(Color::Magenta)),
-        Span::styled("_", Style::default().fg(Color::Magenta)),
-    ]);
-    frame.render_widget(Paragraph::new(vec![top_line, search_line]), chunks[0]);
+    frame.render_widget(
+        Paragraph::new(vec![top_line, filter_line(&state.query, Color::Magenta)]),
+        chunks[0],
+    );
 
     // 2. 档位列表渲染
     if state.filtered_variants.is_empty() {
@@ -113,19 +98,17 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled("Status", Style::default().fg(Color::DarkGray)),
         ]));
 
-        let list_visible_height = chunks[1].height.saturating_sub(1) as usize;
-        let start_idx = if state.selected_index >= list_visible_height {
-            state.selected_index - list_visible_height + 1
-        } else {
-            0
-        };
+        let (start_idx, visible) = visible_window(
+            state.selected_index,
+            chunks[1].height.saturating_sub(1) as usize,
+        );
 
         for (i, item) in state
             .filtered_variants
             .iter()
             .enumerate()
             .skip(start_idx)
-            .take(list_visible_height)
+            .take(visible)
         {
             let is_selected = i == state.selected_index;
             let is_active = item.id.as_ref() == state.active_variant.as_ref();
@@ -139,10 +122,7 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
             };
 
             let row_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD)
+                selected_row_style(Color::Magenta)
             } else if is_active {
                 Style::default()
                     .fg(Color::Yellow)
@@ -154,10 +134,7 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
             let status_str = if is_active { "[active]" } else { "-" };
 
             let status_style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Magenta)
-                    .add_modifier(Modifier::BOLD)
+                selected_row_style(Color::Magenta)
             } else if is_active {
                 Style::default()
                     .fg(Color::Yellow)
@@ -173,25 +150,19 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
             ]));
         }
 
-        let list_p = Paragraph::new(lines);
-        frame.render_widget(list_p, chunks[1]);
+        frame.render_widget(Paragraph::new(lines), chunks[1]);
     }
 
     // 3. 底部操作指引
-    let footer_line = Line::from(vec![
-        Span::styled(" [↑/↓/j/k] ", Style::default().fg(Color::Magenta)),
-        Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
+    let footer = footer_hints(&[
+        (" [↑/↓/j/k] ", Style::default().fg(Color::Magenta), "Navigate  "),
+        (
             " [Enter] ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            "Set Variant  ",
         ),
-        Span::styled("Set Variant  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [type] ", Style::default().fg(Color::Magenta)),
-        Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
-        Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
+        (" [type] ", Style::default().fg(Color::Magenta), "Filter  "),
+        (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
     ]);
-    frame.render_widget(Paragraph::new(footer_line), chunks[2]);
+    frame.render_widget(Paragraph::new(footer), chunks[2]);
 }

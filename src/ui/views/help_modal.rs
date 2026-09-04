@@ -2,33 +2,17 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::ui::command::COMMANDS;
+use crate::ui::views::modal_shell::{centered_rect, modal_block};
 
 /// 渲染帮助与快捷键弹窗
 pub fn render_help_modal(frame: &mut Frame, area: Rect) {
-    let modal_width = 74.min(area.width.saturating_sub(4));
-    let modal_height = 22.min(area.height.saturating_sub(4));
-
-    let modal_rect = Rect {
-        x: (area.width - modal_width) / 2,
-        y: (area.height - modal_height) / 2,
-        width: modal_width,
-        height: modal_height,
-    };
-
+    let modal_rect = centered_rect(area, 74, 22);
     frame.render_widget(Clear, modal_rect);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(
-            " Help & Keyboard Shortcuts ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = modal_block(" Help & Keyboard Shortcuts ", Color::Cyan);
 
     let inner = block.inner(modal_rect);
     frame.render_widget(block, modal_rect);

@@ -1,4 +1,4 @@
-use super::fuzzy_matches;
+use super::{FilterableModal, fuzzy_matches};
 
 /// /model 模态选择框展示的模型条目
 #[derive(Debug, Clone)]
@@ -24,18 +24,14 @@ pub struct ModelsModalState {
 
 impl ModelsModalState {
     pub fn new(models: Vec<ModelItem>, current_model: &str) -> Self {
-        let selected_index = models
-            .iter()
-            .position(|m| m.full_id == current_model || m.model_id == current_model)
-            .unwrap_or(0);
-
         let mut state = Self {
             models,
             filtered_models: Vec::new(),
-            selected_index,
+            selected_index: 0,
             query: String::new(),
         };
         state.apply_filter();
+        // 初始光标定位到当前活跃模型
         state.selected_index = state
             .filtered_models
             .iter()
@@ -59,34 +55,30 @@ impl ModelsModalState {
         self.selected_index = 0;
     }
 
-    pub fn push_query(&mut self, c: char) {
-        self.query.push(c);
-        self.apply_filter();
-    }
-
-    pub fn pop_query(&mut self) {
-        self.query.pop();
-        self.apply_filter();
-    }
-
-    pub fn next(&mut self) {
-        if !self.filtered_models.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.filtered_models.len();
-        }
-    }
-
-    pub fn previous(&mut self) {
-        if !self.filtered_models.is_empty() {
-            self.selected_index = if self.selected_index == 0 {
-                self.filtered_models.len() - 1
-            } else {
-                self.selected_index - 1
-            };
-        }
-    }
-
     pub fn selected_model(&self) -> Option<&ModelItem> {
         self.filtered_models.get(self.selected_index)
+    }
+}
+
+impl FilterableModal for ModelsModalState {
+    fn filtered_len(&self) -> usize {
+        self.filtered_models.len()
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    fn selected_index_mut(&mut self) -> &mut usize {
+        &mut self.selected_index
+    }
+
+    fn query_mut(&mut self) -> &mut String {
+        &mut self.query
+    }
+
+    fn refilter(&mut self) {
+        self.apply_filter();
     }
 }
 

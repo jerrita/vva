@@ -30,7 +30,10 @@ impl App {
         };
         self.enable_web_search = session_web_search;
         if let Some(ref mut cm) = self.config_modal {
-            cm.update_web_search(session_web_search);
+            cm.update_item_value(
+                ConfigItemKind::WebSearch,
+                if session_web_search { "Enabled" } else { "Disabled" }.to_string(),
+            );
         }
 
         self.reload_active_session_history().await;

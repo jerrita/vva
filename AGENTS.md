@@ -63,6 +63,7 @@
 ```
 src/
 ├── lib.rs                  # 核心模块导出
+├── event.rs                # AgentEvent 统一事件流词汇表 (Provider 流式增量 + Harness 工具事件)
 ├── main.rs                 # CLI 命令行入口 (vva run, vva session list/inspect)
 ├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
 │   ├── mod.rs              # load_config 自动寻址与分层合并
@@ -81,10 +82,11 @@ src/
 │   ├── mod.rs              # SessionStore Trait
 │   └── jsonl.rs            # JsonlSessionStore 行级追加写引擎
 ├── provider/               # 供应商适配器层 (原生协议直通)
-│   ├── mod.rs              # Provider Trait 与能力声明
+│   ├── mod.rs              # Provider Trait、能力声明与共享 HTTP Client
+│   ├── http.rs             # 共享传输封装 (post_json/post_sse + SSE 事件循环 SseEventHandler)
 │   ├── response.rs         # OpenAI Responses API (previous_response_id + 原生搜索)
 │   ├── anthropic.rs        # Anthropic Messages API (Prompt Caching + Thinking 签名)
-│   ├── gemini.rs           # Google Gemini API (Grounding 投影 + 代码沙盒)
+│   ├── gemini.rs           # Google Gemini API (Grounding 投影 + 代码沙盒 + 共享累积器)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
@@ -106,8 +108,9 @@ src/
     ├── command.rs          # 斜杠命令系统与 Claude Code 风格前缀自动补全
     ├── history.rs          # ChatEntry 对话流与 SidebarStats 纯函数视图投影
     ├── input.rs            # InputBuffer 多行文本编辑、光标计算与 CJK 对齐算法
+    ├── text.rs             # 文本展示工具 (多字节安全截断 truncate)
     ├── modals/             # 独立的模态弹窗状态机与单测
-    │   ├── mod.rs          # ActiveModal 枚举及子模块导出
+    │   ├── mod.rs          # ActiveModal 枚举、FilterableModal Trait 与通用按键归一化
     │   ├── sessions.rs     # SessionsModalState (按工程过滤与会话切换)
     │   ├── models.rs       # ModelsModalState (模型清单筛选)
     │   ├── variants.rs     # VariantsModalState (推理档位切换)
@@ -120,6 +123,7 @@ src/
         ├── header.rs       # 顶部标题栏
         ├── help_modal.rs   # 帮助弹窗视图
         ├── input_area.rs   # 复合输入区视图
+        ├── modal_shell.rs  # 模态弹窗公共外壳 (居中布局/边框/过滤行/滚动窗口/提示行)
         ├── models_modal.rs # 模型选择弹窗视图
         ├── sessions_modal.rs # 会话选择弹窗视图
         ├── sidebar.rs      # 右侧统计看板

@@ -1,4 +1,4 @@
-use super::fuzzy_matches;
+use super::{FilterableModal, fuzzy_matches};
 
 /// /config 模态弹窗中的设置项类别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,48 +98,13 @@ impl ConfigModalState {
         self.selected_index = 0;
     }
 
-    pub fn push_query(&mut self, c: char) {
-        self.query.push(c);
-        self.apply_filter();
-    }
-
-    pub fn pop_query(&mut self) {
-        self.query.pop();
-        self.apply_filter();
-    }
-
-    pub fn update_web_search(&mut self, web_search: bool) {
+    /// 更新指定设置项的展示值，并保持光标停留在该项上
+    pub fn update_item_value(&mut self, kind: ConfigItemKind, value: String) {
         let selected_kind = self.selected_item().map(|item| item.kind);
-        if let Some(item) = self
-            .items
-            .iter_mut()
-            .find(|it| it.kind == ConfigItemKind::WebSearch)
-        {
-            item.current_value = if web_search { "Enabled" } else { "Disabled" }.to_string();
+        if let Some(item) = self.items.iter_mut().find(|it| it.kind == kind) {
+            item.current_value = value;
         }
         self.apply_filter();
-        self.restore_selected_kind(selected_kind);
-    }
-
-    pub fn update_thinking_display(&mut self, thinking_concise: bool) {
-        let selected_kind = self.selected_item().map(|item| item.kind);
-        if let Some(item) = self
-            .items
-            .iter_mut()
-            .find(|it| it.kind == ConfigItemKind::ThinkingDisplay)
-        {
-            item.current_value = if thinking_concise {
-                "Concise (1 line)"
-            } else {
-                "Full"
-            }
-            .to_string();
-        }
-        self.apply_filter();
-        self.restore_selected_kind(selected_kind);
-    }
-
-    fn restore_selected_kind(&mut self, selected_kind: Option<ConfigItemKind>) {
         if let Some(kind) = selected_kind {
             self.selected_index = self
                 .filtered_items
@@ -149,24 +114,30 @@ impl ConfigModalState {
         }
     }
 
-    pub fn next(&mut self) {
-        if !self.filtered_items.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.filtered_items.len();
-        }
-    }
-
-    pub fn previous(&mut self) {
-        if !self.filtered_items.is_empty() {
-            self.selected_index = if self.selected_index == 0 {
-                self.filtered_items.len() - 1
-            } else {
-                self.selected_index - 1
-            };
-        }
-    }
-
     pub fn selected_item(&self) -> Option<&ConfigSettingItem> {
         self.filtered_items.get(self.selected_index)
+    }
+}
+
+impl FilterableModal for ConfigModalState {
+    fn filtered_len(&self) -> usize {
+        self.filtered_items.len()
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected_index
+    }
+
+    fn selected_index_mut(&mut self) -> &mut usize {
+        &mut self.selected_index
+    }
+
+    fn query_mut(&mut self) -> &mut String {
+        &mut self.query
+    }
+
+    fn refilter(&mut self) {
+        self.apply_filter();
     }
 }
 
@@ -183,13 +154,19 @@ mod tests {
         cm.next();
         cm.next();
         assert_eq!(cm.selected_index, 2);
-        cm.update_web_search(true);
+        cm.update_item_value(
+            ConfigItemKind::WebSearch,
+            "Enabled".to_string(),
+        );
         assert_eq!(cm.items[2].current_value, "Enabled");
 
         // toggle 内部会重建过滤列表，选中项应被恢复而非重置，后续导航仍指向下一项
         cm.next();
         assert_eq!(cm.selected_index, 3);
-        cm.update_thinking_display(true);
+        cm.update_item_value(
+            ConfigItemKind::ThinkingDisplay,
+            "Concise (1 line)".to_string(),
+        );
         assert_eq!(cm.items[3].current_value, "Concise (1 line)");
     }
 }

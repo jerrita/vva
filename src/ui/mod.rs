@@ -35,6 +35,7 @@ use tracing::error;
 use crate::config::AppConfig;
 use crate::storage::SessionStore;
 use app::{ActiveModal, App};
+use modals::{ModalInput, classify_modal_key};
 use session_manager::{ManagedSession, SessionManager};
 use views::chat::render_chat;
 use views::config_modal::render_config_modal;
@@ -312,145 +313,12 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if app.modal == ActiveModal::None {
-                    let in_input_x = mouse.column >= app.input_inner_area.x
-                        && mouse.column < app.input_inner_area.x + app.input_inner_area.width;
-                    let in_input_y = mouse.row >= app.input_inner_area.y
-                        && mouse.row < app.input_inner_area.y + app.input_inner_area.height;
-
-                    if in_input_x && in_input_y {
-                        let rel_row = (mouse.row - app.input_inner_area.y) as usize
-                            + app.input.scroll_y.get();
-                        let rel_col = (mouse.column - app.input_inner_area.x) as usize
-                            + app.input.scroll_x.get();
-                        let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
-                        app.start_input_selection(char_pos);
-                        app.clear_text_selection();
-                        app.clear_sidebar_selection();
-                        app.is_dragging_scrollbar = false;
-                        return;
-                    } else {
-                        app.clear_input_selection();
-                    }
-                }
-
-                if app.modal == ActiveModal::None
-                    && app.sidebar_area.width > 0
-                    && mouse.column >= app.sidebar_area.x
-                    && mouse.column < app.sidebar_area.x + app.sidebar_area.width
-                    && mouse.row >= app.sidebar_area.y
-                    && mouse.row < app.sidebar_area.y + app.sidebar_area.height
-                {
-                    let row_offset = (mouse.row - app.sidebar_area.y) as usize;
-                    let col_offset = (mouse.column - app.sidebar_area.x) as usize;
-                    app.start_sidebar_selection(row_offset, col_offset);
-                    app.clear_text_selection();
-                    app.is_dragging_scrollbar = false;
-                    return;
-                }
-
-                if app.modal == ActiveModal::None && app.chat_area.height > 0 {
-                    let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
-                    let in_scrollbar_col = mouse.column >= scrollbar_col.saturating_sub(1)
-                        && mouse.column <= scrollbar_col;
-                    let in_chat_rows = mouse.row >= app.chat_area.y
-                        && mouse.row < app.chat_area.y + app.chat_area.height;
-
-                    if in_scrollbar_col && in_chat_rows && app.max_scroll > 0 {
-                        app.is_dragging_scrollbar = true;
-                        let track_height = app.chat_area.height as usize;
-                        let row_offset =
-                            (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
-                        let ratio =
-                            row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
-                        app.scroll_to_ratio(ratio);
-                    } else if in_chat_rows
-                        && mouse.column >= app.chat_area.x
-                        && mouse.column < scrollbar_col
-                    {
-                        app.is_dragging_scrollbar = false;
-                        let row_offset =
-                            (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
-                        let col_offset =
-                            (mouse.column as usize).saturating_sub(app.chat_area.x as usize);
-                        let scroll = if app.auto_scroll {
-                            app.max_scroll
-                        } else {
-                            app.scroll_offset.min(app.max_scroll)
-                        };
-                        let line = scroll + row_offset;
-                        app.start_text_selection(line, col_offset);
-                        app.clear_sidebar_selection();
-                    } else {
-                        app.is_dragging_scrollbar = false;
-                        app.clear_text_selection();
-                        app.clear_sidebar_selection();
-                    }
+                    handle_mouse_left_down(app, mouse);
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if app.is_dragging_scrollbar && app.max_scroll > 0 && app.chat_area.height > 0 {
-                    let track_height = app.chat_area.height as usize;
-                    let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
-                        0
-                    } else {
-                        (mouse.row as usize - app.chat_area.y as usize)
-                            .min(track_height.saturating_sub(1))
-                    };
-                    let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
-                    app.scroll_to_ratio(ratio);
-                } else if app.is_selecting_input && app.input_inner_area.height > 0 {
-                    let rel_row = if mouse.row < app.input_inner_area.y {
-                        app.input.scroll_y.get().saturating_sub(1)
-                    } else {
-                        (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get()
-                    };
-                    let rel_col = if mouse.column < app.input_inner_area.x {
-                        0
-                    } else {
-                        (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get()
-                    };
-                    let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
-                    app.update_input_selection(char_pos);
-                } else if app.is_selecting_text && app.chat_area.height > 0 {
-                    if mouse.row < app.chat_area.y {
-                        app.scroll_up(1);
-                    } else if mouse.row >= app.chat_area.y + app.chat_area.height {
-                        app.scroll_down(1);
-                    }
-                    let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
-                    let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
-                        0
-                    } else {
-                        (mouse.row as usize - app.chat_area.y as usize)
-                            .min(app.chat_area.height.saturating_sub(1) as usize)
-                    };
-                    let col_offset = if (mouse.column as usize) < app.chat_area.x as usize {
-                        0
-                    } else {
-                        (mouse.column as usize - app.chat_area.x as usize)
-                            .min(scrollbar_col.saturating_sub(app.chat_area.x) as usize)
-                    };
-                    let scroll = if app.auto_scroll {
-                        app.max_scroll
-                    } else {
-                        app.scroll_offset.min(app.max_scroll)
-                    };
-                    let line = scroll + row_offset;
-                    app.update_text_selection(line, col_offset);
-                } else if app.is_selecting_sidebar && app.sidebar_area.height > 0 {
-                    let row_offset = if mouse.row < app.sidebar_area.y {
-                        0
-                    } else {
-                        ((mouse.row - app.sidebar_area.y) as usize)
-                            .min(app.sidebar_area.height.saturating_sub(1) as usize)
-                    };
-                    let col_offset = if mouse.column < app.sidebar_area.x {
-                        0
-                    } else {
-                        ((mouse.column - app.sidebar_area.x) as usize)
-                            .min(app.sidebar_area.width.saturating_sub(1) as usize)
-                    };
-                    app.update_sidebar_selection(row_offset, col_offset);
+                if app.modal == ActiveModal::None {
+                    handle_mouse_left_drag(app, mouse);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
@@ -466,16 +334,10 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                 }
             }
             MouseEventKind::Down(MouseButton::Right) => {
-                if app.input.selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_input_selection();
-                } else if app.text_selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_text_selection();
-                } else if app.sidebar_selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_sidebar_selection();
-                } else if app.modal == ActiveModal::None {
+                if copy_active_selection(app) {
+                    return;
+                }
+                if app.modal == ActiveModal::None {
                     app.paste_from_clipboard();
                 }
             }
@@ -496,42 +358,18 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
             return;
         }
 
-        // 优先处理模态框交互
+        // 优先处理模态框交互（Esc/Backspace/j/k/↑/↓/Enter 的通用语义 + 各模态 Activate 动作）
         match &app.modal {
             ActiveModal::Sessions => {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.modal = ActiveModal::None;
+                if matches!(key.code, KeyCode::Tab | KeyCode::Char('p')) {
+                    if let Some(ref mut sm) = app.sessions_modal {
+                        sm.toggle_scope();
                     }
-                    KeyCode::Backspace => {
-                        let ws = app.session_mgr.workspace().to_path_buf();
-                        if let Some(ref mut sm) = app.sessions_modal {
-                            sm.pop_query(&ws);
-                        }
-                    }
-                    KeyCode::Char(c) if !matches!(c, 'p' | 'j' | 'k') => {
-                        let ws = app.session_mgr.workspace().to_path_buf();
-                        if let Some(ref mut sm) = app.sessions_modal {
-                            sm.push_query(c, &ws);
-                        }
-                    }
-                    KeyCode::Tab | KeyCode::Char('p') => {
-                        let ws = app.session_mgr.workspace().to_path_buf();
-                        if let Some(ref mut sm) = app.sessions_modal {
-                            sm.toggle_scope(&ws);
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if let Some(ref mut sm) = app.sessions_modal {
-                            sm.previous();
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if let Some(ref mut sm) = app.sessions_modal {
-                            sm.next();
-                        }
-                    }
-                    KeyCode::Enter => {
+                    return;
+                }
+                match classify_modal_key(key.code, &[]) {
+                    ModalInput::Close => app.modal = ActiveModal::None,
+                    ModalInput::Activate => {
                         let selected_id = app
                             .sessions_modal
                             .as_ref()
@@ -542,36 +380,18 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                             let _ = app.switch_to_session(&sid).await;
                         }
                     }
-                    _ => {}
+                    input => {
+                        if let Some(ref mut sm) = app.sessions_modal {
+                            input.apply(sm);
+                        }
+                    }
                 }
                 return;
             }
             ActiveModal::Models => {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.modal = ActiveModal::None;
-                    }
-                    KeyCode::Backspace => {
-                        if let Some(ref mut mm) = app.models_modal {
-                            mm.pop_query();
-                        }
-                    }
-                    KeyCode::Char(c) if !matches!(c, 'j' | 'k') => {
-                        if let Some(ref mut mm) = app.models_modal {
-                            mm.push_query(c);
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if let Some(ref mut mm) = app.models_modal {
-                            mm.previous();
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if let Some(ref mut mm) = app.models_modal {
-                            mm.next();
-                        }
-                    }
-                    KeyCode::Enter => {
+                match classify_modal_key(key.code, &[]) {
+                    ModalInput::Close => app.modal = ActiveModal::None,
+                    ModalInput::Activate => {
                         let selected_spec = app
                             .models_modal
                             .as_ref()
@@ -582,36 +402,18 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                             app.switch_model(&spec).await;
                         }
                     }
-                    _ => {}
+                    input => {
+                        if let Some(ref mut mm) = app.models_modal {
+                            input.apply(mm);
+                        }
+                    }
                 }
                 return;
             }
             ActiveModal::Variants => {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.modal = ActiveModal::None;
-                    }
-                    KeyCode::Backspace => {
-                        if let Some(ref mut vm) = app.variants_modal {
-                            vm.pop_query();
-                        }
-                    }
-                    KeyCode::Char(c) if !matches!(c, 'j' | 'k') => {
-                        if let Some(ref mut vm) = app.variants_modal {
-                            vm.push_query(c);
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if let Some(ref mut vm) = app.variants_modal {
-                            vm.previous();
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if let Some(ref mut vm) = app.variants_modal {
-                            vm.next();
-                        }
-                    }
-                    KeyCode::Enter => {
+                match classify_modal_key(key.code, &[]) {
+                    ModalInput::Close => app.modal = ActiveModal::None,
+                    ModalInput::Activate => {
                         let selected = app
                             .variants_modal
                             .as_ref()
@@ -622,36 +424,24 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                             app.switch_variant(item.id.as_deref()).await;
                         }
                     }
-                    _ => {}
+                    input => {
+                        if let Some(ref mut vm) = app.variants_modal {
+                            input.apply(vm);
+                        }
+                    }
                 }
                 return;
             }
             ActiveModal::Config => {
-                match key.code {
-                    KeyCode::Esc => {
-                        app.modal = ActiveModal::None;
-                    }
-                    KeyCode::Backspace => {
-                        if let Some(ref mut cm) = app.config_modal {
-                            cm.pop_query();
-                        }
-                    }
-                    KeyCode::Char(c) if !matches!(c, 'j' | 'k' | ' ') => {
-                        if let Some(ref mut cm) = app.config_modal {
-                            cm.push_query(c);
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if let Some(ref mut cm) = app.config_modal {
-                            cm.previous();
-                        }
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if let Some(ref mut cm) = app.config_modal {
-                            cm.next();
-                        }
-                    }
-                    KeyCode::Enter | KeyCode::Char(' ') => {
+                // 设置弹窗中 Enter 与空格均为激活键
+                let input = if matches!(key.code, KeyCode::Char(' ')) {
+                    ModalInput::Activate
+                } else {
+                    classify_modal_key(key.code, &[])
+                };
+                match input {
+                    ModalInput::Close => app.modal = ActiveModal::None,
+                    ModalInput::Activate => {
                         let selected_kind = app
                             .config_modal
                             .as_ref()
@@ -683,7 +473,15 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                                         text: format!("Native web search is now {status}"),
                                     });
                                     if let Some(ref mut cm) = app.config_modal {
-                                        cm.update_web_search(app.enable_web_search);
+                                        cm.update_item_value(
+                                            kind,
+                                            if app.enable_web_search {
+                                                "Enabled"
+                                            } else {
+                                                "Disabled"
+                                            }
+                                            .to_string(),
+                                        );
                                     }
                                 }
                                 app::ConfigItemKind::ThinkingDisplay => {
@@ -697,13 +495,25 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                                         text: format!("Thinking display mode set to {mode_str}."),
                                     });
                                     if let Some(ref mut cm) = app.config_modal {
-                                        cm.update_thinking_display(app.thinking_concise);
+                                        cm.update_item_value(
+                                            kind,
+                                            if app.thinking_concise {
+                                                "Concise (1 line)"
+                                            } else {
+                                                "Full"
+                                            }
+                                            .to_string(),
+                                        );
                                     }
                                 }
                             }
                         }
                     }
-                    _ => {}
+                    input => {
+                        if let Some(ref mut cm) = app.config_modal {
+                            input.apply(cm);
+                        }
+                    }
                 }
                 return;
             }
@@ -769,79 +579,23 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
 
         // 2. 普通按键处理
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if app.input.selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_input_selection();
-                } else if app.text_selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_text_selection();
-                } else if app.sidebar_selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_sidebar_selection();
-                } else if !app.input.is_empty() {
-                    app.clear_input();
-                } else if app.active_session.is_running() {
-                    app.active_session.abort_current().await;
-                    app.chat_entries.push(app::ChatEntry::SystemNotice {
-                        text: "Aborted current turn.".into(),
-                    });
-                } else {
-                    app.should_quit = true;
-                }
-            }
-            KeyCode::Char('\x03') => {
-                if app.input.selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_input_selection();
-                } else if app.text_selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_text_selection();
-                } else if app.sidebar_selection.is_some() {
-                    app.copy_selection_to_clipboard();
-                    app.clear_sidebar_selection();
-                } else if !app.input.is_empty() {
-                    app.clear_input();
-                } else if app.active_session.is_running() {
-                    app.active_session.abort_current().await;
-                    app.chat_entries.push(app::ChatEntry::SystemNotice {
-                        text: "Aborted current turn.".into(),
-                    });
-                } else {
-                    app.should_quit = true;
-                }
+            // Ctrl+C 语义级联：复制选区 → 清空输入 → 中止当前轮 → 退出
+            KeyCode::Char(_) if is_ctrl_key(&key, 'c') => {
+                handle_abort_or_quit(app).await;
             }
             // Ctrl+A / Ctrl+E 光标首尾移动
-            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(_) if is_ctrl_key(&key, 'a') => {
                 app.move_cursor_home();
             }
-            KeyCode::Char('\x01') => {
-                app.move_cursor_home();
-            }
-            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.move_cursor_end();
-            }
-            KeyCode::Char('\x05') => {
+            KeyCode::Char(_) if is_ctrl_key(&key, 'e') => {
                 app.move_cursor_end();
             }
             // Ctrl+K / Ctrl+U 清空输入框内容
-            KeyCode::Char('k') | KeyCode::Char('u')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                app.clear_input();
-            }
-            KeyCode::Char('\x0b') | KeyCode::Char('\x15') => {
+            KeyCode::Char(_) if is_ctrl_key(&key, 'k') || is_ctrl_key(&key, 'u') => {
                 app.clear_input();
             }
             // 剪贴板粘贴快捷键 (Ctrl+V / Ctrl+Shift+V / Shift+Insert / ASCII 0x16)
-            KeyCode::Char('v') | KeyCode::Char('V')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                if app.modal == ActiveModal::None {
-                    app.paste_from_clipboard();
-                }
-            }
-            KeyCode::Char('\x16') => {
+            KeyCode::Char(_) if is_ctrl_key(&key, 'v') => {
                 if app.modal == ActiveModal::None {
                     app.paste_from_clipboard();
                 }
@@ -888,10 +642,8 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                     }
                 }
             }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                app.insert_char('\n');
-            }
-            KeyCode::Char('\n') => {
+            // Ctrl+J / 部分终端将 Enter 发送为裸 '\n' 控制字符
+            KeyCode::Char(_) if is_ctrl_key(&key, 'j') => {
                 app.insert_char('\n');
             }
             KeyCode::Tab => {
@@ -963,17 +715,211 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                 app.scroll_down(step);
             }
             KeyCode::Esc => {
-                if app.input.selection.is_some() {
-                    app.clear_input_selection();
-                } else if !app.input.is_empty() {
-                    app.clear_input();
-                } else if app.text_selection.is_some() {
-                    app.clear_text_selection();
-                } else if app.sidebar_selection.is_some() {
-                    app.clear_sidebar_selection();
-                }
+                escape_clear(app);
             }
             _ => {}
         }
+    }
+}
+
+/// 判定是否为指定字母的 Ctrl 组合键（兼容未携带 CONTROL 修饰符、
+/// 直接发送原始控制字符 0x01-0x1a 的终端）
+fn is_ctrl_key(key: &crossterm::event::KeyEvent, canonical: char) -> bool {
+    match key.code {
+        KeyCode::Char(c) => {
+            (c == canonical && key.modifiers.contains(KeyModifiers::CONTROL))
+                || c == (canonical as u8 & 0x1f) as char
+        }
+        _ => false,
+    }
+}
+
+/// 级联复制当前活跃选区（输入框 → 聊天流 → 侧边栏），无选区时返回 false
+fn copy_active_selection(app: &mut App) -> bool {
+    if app.input.selection.is_some() {
+        app.copy_selection_to_clipboard();
+        app.clear_input_selection();
+        true
+    } else if app.text_selection.is_some() {
+        app.copy_selection_to_clipboard();
+        app.clear_text_selection();
+        true
+    } else if app.sidebar_selection.is_some() {
+        app.copy_selection_to_clipboard();
+        app.clear_sidebar_selection();
+        true
+    } else {
+        false
+    }
+}
+
+/// Esc 级联：清除输入选区 → 清空输入 → 清除聊天选区 → 清除侧边栏选区
+fn escape_clear(app: &mut App) {
+    if app.input.selection.is_some() {
+        app.clear_input_selection();
+    } else if !app.input.is_empty() {
+        app.clear_input();
+    } else if app.text_selection.is_some() {
+        app.clear_text_selection();
+    } else if app.sidebar_selection.is_some() {
+        app.clear_sidebar_selection();
+    }
+}
+
+/// Ctrl+C 级联：复制活跃选区 → 清空输入 → 中止当前轮 → 退出应用
+async fn handle_abort_or_quit(app: &mut App) {
+    if copy_active_selection(app) {
+        return;
+    }
+    if !app.input.is_empty() {
+        app.clear_input();
+    } else if app.active_session.is_running() {
+        app.active_session.abort_current().await;
+        app.chat_entries.push(app::ChatEntry::SystemNotice {
+            text: "Aborted current turn.".into(),
+        });
+    } else {
+        app.should_quit = true;
+    }
+}
+
+/// 鼠标左键按下：按命中区域启动输入框 / 侧边栏 / 聊天流选区或滚动条拖拽
+fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    // 1. 输入框区域：定位光标并启动输入选区
+    let in_input_x = mouse.column >= app.input_inner_area.x
+        && mouse.column < app.input_inner_area.x + app.input_inner_area.width;
+    let in_input_y = mouse.row >= app.input_inner_area.y
+        && mouse.row < app.input_inner_area.y + app.input_inner_area.height;
+
+    if in_input_x && in_input_y {
+        let rel_row =
+            (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
+        let rel_col =
+            (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
+        let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
+        app.start_input_selection(char_pos);
+        app.clear_text_selection();
+        app.clear_sidebar_selection();
+        app.is_dragging_scrollbar = false;
+        return;
+    } else {
+        app.clear_input_selection();
+    }
+
+    // 2. 侧边栏区域：启动侧边栏文本选区
+    if app.sidebar_area.width > 0
+        && mouse.column >= app.sidebar_area.x
+        && mouse.column < app.sidebar_area.x + app.sidebar_area.width
+        && mouse.row >= app.sidebar_area.y
+        && mouse.row < app.sidebar_area.y + app.sidebar_area.height
+    {
+        let row_offset = (mouse.row - app.sidebar_area.y) as usize;
+        let col_offset = (mouse.column - app.sidebar_area.x) as usize;
+        app.start_sidebar_selection(row_offset, col_offset);
+        app.clear_text_selection();
+        app.is_dragging_scrollbar = false;
+        return;
+    }
+
+    // 3. 聊天流区域：滚动条列启动拖拽，正文区启动文本选区
+    if app.chat_area.height > 0 {
+        let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
+        let in_scrollbar_col =
+            mouse.column >= scrollbar_col.saturating_sub(1) && mouse.column <= scrollbar_col;
+        let in_chat_rows = mouse.row >= app.chat_area.y
+            && mouse.row < app.chat_area.y + app.chat_area.height;
+
+        if in_scrollbar_col && in_chat_rows && app.max_scroll > 0 {
+            app.is_dragging_scrollbar = true;
+            let track_height = app.chat_area.height as usize;
+            let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
+            let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
+            app.scroll_to_ratio(ratio);
+        } else if in_chat_rows && mouse.column >= app.chat_area.x && mouse.column < scrollbar_col {
+            app.is_dragging_scrollbar = false;
+            let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
+            let col_offset = (mouse.column as usize).saturating_sub(app.chat_area.x as usize);
+            let scroll = if app.auto_scroll {
+                app.max_scroll
+            } else {
+                app.scroll_offset.min(app.max_scroll)
+            };
+            let line = scroll + row_offset;
+            app.start_text_selection(line, col_offset);
+            app.clear_sidebar_selection();
+        } else {
+            app.is_dragging_scrollbar = false;
+            app.clear_text_selection();
+            app.clear_sidebar_selection();
+        }
+    }
+}
+
+/// 鼠标左键拖拽：按当前拖拽模式更新滚动条、输入选区、聊天选区或侧边栏选区
+fn handle_mouse_left_drag(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    if app.is_dragging_scrollbar && app.max_scroll > 0 && app.chat_area.height > 0 {
+        let track_height = app.chat_area.height as usize;
+        let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
+            0
+        } else {
+            (mouse.row as usize - app.chat_area.y as usize).min(track_height.saturating_sub(1))
+        };
+        let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
+        app.scroll_to_ratio(ratio);
+    } else if app.is_selecting_input && app.input_inner_area.height > 0 {
+        let rel_row = if mouse.row < app.input_inner_area.y {
+            app.input.scroll_y.get().saturating_sub(1)
+        } else {
+            (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get()
+        };
+        let rel_col = if mouse.column < app.input_inner_area.x {
+            0
+        } else {
+            (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get()
+        };
+        let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
+        app.update_input_selection(char_pos);
+    } else if app.is_selecting_text && app.chat_area.height > 0 {
+        // 拖拽越过聊天区边界时自动滚动
+        if mouse.row < app.chat_area.y {
+            app.scroll_up(1);
+        } else if mouse.row >= app.chat_area.y + app.chat_area.height {
+            app.scroll_down(1);
+        }
+        let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
+        let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
+            0
+        } else {
+            (mouse.row as usize - app.chat_area.y as usize)
+                .min(app.chat_area.height.saturating_sub(1) as usize)
+        };
+        let col_offset = if (mouse.column as usize) < app.chat_area.x as usize {
+            0
+        } else {
+            (mouse.column as usize)
+                .saturating_sub(app.chat_area.x as usize)
+                .min(scrollbar_col.saturating_sub(app.chat_area.x) as usize)
+        };
+        let scroll = if app.auto_scroll {
+            app.max_scroll
+        } else {
+            app.scroll_offset.min(app.max_scroll)
+        };
+        let line = scroll + row_offset;
+        app.update_text_selection(line, col_offset);
+    } else if app.is_selecting_sidebar && app.sidebar_area.height > 0 {
+        let row_offset = if mouse.row < app.sidebar_area.y {
+            0
+        } else {
+            ((mouse.row - app.sidebar_area.y) as usize)
+                .min(app.sidebar_area.height.saturating_sub(1) as usize)
+        };
+        let col_offset = if mouse.column < app.sidebar_area.x {
+            0
+        } else {
+            ((mouse.column - app.sidebar_area.x) as usize)
+                .min(app.sidebar_area.width.saturating_sub(1) as usize)
+        };
+        app.update_sidebar_selection(row_offset, col_offset);
     }
 }

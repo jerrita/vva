@@ -1,7 +1,7 @@
 use super::App;
 use crate::harness::agent::AgentEvent;
 use crate::ui::history::{ChatEntry, compute_stats};
-use crate::ui::modals::ActiveModal;
+use crate::ui::modals::{ActiveModal, ConfigItemKind};
 
 impl App {
     pub async fn submit_input(&mut self) {
@@ -90,7 +90,10 @@ impl App {
 
                 let status = if self.enable_web_search { "ON" } else { "OFF" };
                 if let Some(ref mut cm) = self.config_modal {
-                    cm.update_web_search(self.enable_web_search);
+                    cm.update_item_value(
+                        ConfigItemKind::WebSearch,
+                        if self.enable_web_search { "Enabled" } else { "Disabled" }.to_string(),
+                    );
                 }
                 self.chat_entries.push(ChatEntry::SystemNotice {
                     text: format!("Native web search is now {status}"),
@@ -104,7 +107,10 @@ impl App {
                     "full"
                 };
                 if let Some(ref mut cm) = self.config_modal {
-                    cm.update_thinking_display(self.thinking_concise);
+                    cm.update_item_value(
+                        ConfigItemKind::ThinkingDisplay,
+                        if self.thinking_concise { "Concise (1 line)" } else { "Full" }.to_string(),
+                    );
                 }
                 self.chat_entries.push(ChatEntry::SystemNotice {
                     text: format!("Thinking display mode set to {mode_str}."),
