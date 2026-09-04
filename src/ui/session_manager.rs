@@ -229,12 +229,16 @@ impl SessionManager {
                     AgentEvent::Finished => {
                         *fwd_status.write().await = String::new();
                     }
+                    AgentEvent::Error(_) => {
+                        *fwd_status.write().await = String::new();
+                    }
                 }
                 let _ = event_tx.send(event);
             }
         });
 
         // 启动主 Agent 驱动任务
+        let task_event_tx = managed.event_tx.clone();
         let task = tokio::spawn(async move {
             let res = {
                 let mut session_guard = session_lock.write().await;
@@ -243,6 +247,7 @@ impl SessionManager {
 
             if let Err(e) = res {
                 error!("Agent run_turn failed: {e}");
+                let _ = task_event_tx.send(AgentEvent::Error(format!("Agent error: {e}")));
             }
 
             is_running.store(false, Ordering::SeqCst);
@@ -275,7 +280,19 @@ pub fn resolve_provider(
                 } = resolved;
                 Ok((provider, model_id, selected_variant))
             }
-            Err(err) => Err(format!("Error resolving model '{current_model}': {err}")),
+            Err(err) => {
+                // 如果历史会话中记录的模型在当前配置中已不存在，尝试优雅回退到默认模型
+                if current_model != cfg.settings.default
+                    && let Ok(fallback) = cfg.resolve_model(&cfg.settings.default, None)
+                {
+                    tracing::warn!(
+                        "Model '{current_model}' not found in current config; falling back to default '{}'",
+                        cfg.settings.default
+                    );
+                    return Ok((fallback.provider, fallback.model_id, fallback.selected_variant));
+                }
+                Err(format!("Error resolving model '{current_model}': {err}"))
+            }
         }
     } else {
         // 无配置文件时的环境变数备用路由

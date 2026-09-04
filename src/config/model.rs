@@ -15,24 +15,60 @@ impl Default for ProviderType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub settings: GlobalSettings,
+    #[serde(default)]
     pub providers: HashMap<String, ProviderConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl AppConfig {
+    /// 合并配置：以 self 为基础（全局配置），叠加 project（项目配置），项目配置优先级高于全局配置
+    pub fn merge(mut self, project: AppConfig) -> Self {
+        if !project.settings.default.is_empty() {
+            self.settings.default = project.settings.default;
+        }
+        if project.settings.small_model.is_some() {
+            self.settings.small_model = project.settings.small_model;
+        }
+
+        for (p_id, p_cfg) in project.providers {
+            if let Some(base_prov) = self.providers.get_mut(&p_id) {
+                if !p_cfg.base_url.is_empty() {
+                    base_prov.base_url = p_cfg.base_url;
+                }
+                if !p_cfg.api_key.is_empty() {
+                    base_prov.api_key = p_cfg.api_key;
+                }
+                base_prov.provider_type = p_cfg.provider_type;
+                for (m_id, m_cfg) in p_cfg.models {
+                    base_prov.models.insert(m_id, m_cfg);
+                }
+            } else {
+                self.providers.insert(p_id, p_cfg);
+            }
+        }
+
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GlobalSettings {
+    #[serde(default)]
     pub default: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub small_model: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderConfig {
     #[serde(rename = "type", default)]
     pub provider_type: ProviderType,
+    #[serde(default)]
     pub base_url: String,
+    #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub models: HashMap<String, ModelConfig>,

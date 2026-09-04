@@ -328,6 +328,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AgentEvent::Finished => {
                         println!("\n✨ Turn completed successfully.");
                     }
+                    AgentEvent::Error(err) => {
+                        eprintln!("\n❌ [Error] {}", err);
+                    }
                 }
             }
 

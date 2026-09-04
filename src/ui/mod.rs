@@ -264,15 +264,12 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                     return;
                 }
                 KeyCode::Enter => {
-                    // 如果刚好选中了 /sessions 或 /clear 等无参数命令，直接补全并提交
-                    if let Some(cmd) = app.matched_commands.get(app.selected_command_index)
-                        && cmd.example.split_whitespace().count() == 1
-                    {
+                    if let Some(cmd) = app.matched_commands.get(app.selected_command_index) {
                         app.input = cmd.name.to_string();
-                        app.submit_input().await;
-                        return;
                     }
-                    app.complete_selected_command();
+                    app.matched_commands.clear();
+                    app.selected_command_index = 0;
+                    app.submit_input().await;
                     return;
                 }
                 KeyCode::Esc => {

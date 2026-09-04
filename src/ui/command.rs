@@ -51,15 +51,19 @@ pub static COMMANDS: &[SlashCommand] = &[
     },
 ];
 
-/// 匹配当前输入前缀的可用斜杠命令
+/// 匹配当前输入前缀的可用斜杠命令（仅在输入命令名且尚未输入参数空格时触发）
 pub fn match_commands(input: &str) -> Vec<&'static SlashCommand> {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') {
         return Vec::new();
     }
 
-    let token = trimmed.split_whitespace().next().unwrap_or(trimmed);
-    let lower_token = token.to_lowercase();
+    // 若已经输入了空格，说明正在输入参数，不再显示命令选单
+    if trimmed.contains(' ') {
+        return Vec::new();
+    }
+
+    let lower_token = trimmed.to_lowercase();
 
     COMMANDS
         .iter()
@@ -88,6 +92,10 @@ mod tests {
         let q_matches = match_commands("/q");
         assert_eq!(q_matches.len(), 1);
         assert_eq!(q_matches[0].name, "/quit");
+
+        // 带空格或参数时不显示命令选单
+        assert_eq!(match_commands("/model ").len(), 0);
+        assert_eq!(match_commands("/model gpt-5").len(), 0);
     }
 }
 

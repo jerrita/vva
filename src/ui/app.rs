@@ -356,9 +356,27 @@ impl App {
                         let s = self.active_session.session.read().await;
                         s.current_model.clone()
                     };
-                    self.chat_entries.push(ChatEntry::SystemNotice {
-                        text: format!("Current model: {curr}. Usage: /model <model_id>"),
-                    });
+                    let mut msg = format!("Current model: {curr}\n\nAvailable models:");
+                    if let Some(cfg) = self.session_mgr.app_config() {
+                        let mut models: Vec<String> = Vec::new();
+                        for (p_id, p_cfg) in &cfg.providers {
+                            for m_id in p_cfg.models.keys() {
+                                models.push(format!("{p_id}/{m_id}"));
+                            }
+                        }
+                        models.sort();
+                        if models.is_empty() {
+                            msg.push_str("\n  (None configured)");
+                        } else {
+                            for m in models {
+                                msg.push_str(&format!("\n  • {m}"));
+                            }
+                        }
+                    } else {
+                        msg.push_str("\n  (No config loaded)");
+                    }
+                    msg.push_str("\n\nUsage: /model <provider>/<model_id>");
+                    self.chat_entries.push(ChatEntry::SystemNotice { text: msg });
                 } else {
                     let (sid, current_var) = {
                         let s = self.active_session.session.read().await;
@@ -484,6 +502,11 @@ impl App {
                     s.clone()
                 };
                 self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+            }
+            AgentEvent::Error(err_msg) => {
+                self.chat_entries.push(ChatEntry::SystemNotice {
+                    text: err_msg,
+                });
             }
         }
         if self.auto_scroll {
@@ -700,5 +723,35 @@ mod tests {
         modal.toggle_scope(&ws_a);
         assert_eq!(modal.scope, ProjectScope::CurrentProject);
         assert_eq!(modal.filtered_sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_model_execution() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr.create_session("init_model".into(), None, None).await.unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 无参 /model 展示当前模型
+        app.input = "/model".into();
+        app.submit_input().await;
+        assert!(app.chat_entries.iter().any(|e| match e {
+            ChatEntry::SystemNotice { text } => text.contains("Current model: init_model"),
+            _ => false,
+        }));
+
+        // 2. 带参 /model 切换模型
+        app.input = "/model target_model".into();
+        app.submit_input().await;
+        let curr = app.active_session.session.read().await.current_model.clone();
+        assert_eq!(curr, "target_model");
+        assert!(app.chat_entries.iter().any(|e| match e {
+            ChatEntry::SystemNotice { text } => text.contains("Switched model to 'target_model'"),
+            _ => false,
+        }));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

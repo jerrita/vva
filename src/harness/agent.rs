@@ -29,6 +29,7 @@ pub enum AgentEvent {
     ToolFinished { name: String, result: String, is_error: bool },
     Text(String),
     Finished,
+    Error(String),
 }
 
 pub struct AgentEngine {
