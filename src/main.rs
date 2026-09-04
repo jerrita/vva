@@ -17,6 +17,7 @@ use vva::storage::SessionStore;
 use vva::tools::bash::BashTool;
 use vva::tools::file::{FileEditTool, FileViewTool};
 use vva::tools::ToolRegistry;
+use vva::ui::run_tui;
 
 #[derive(Parser)]
 #[command(name = "vva", author, version, about = "Vendor-Versatile Agent Harness for Coding")]
@@ -26,12 +27,12 @@ struct Cli {
     config: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 执行一次 Coding Agent 任务交互
+    /// 执行 Coding Agent 任务交互 (若未传入 prompt 则启动交互式 TUI)
     Run {
         /// 目标模型规格标识 (例如 a/gpt-5.6-terra, a/claude-sonnet-4-6, gemini-2.5-pro)
         #[arg(short, long)]
@@ -53,8 +54,31 @@ enum Commands {
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// 用户输入 Prompt 指令
-        prompt: String,
+        /// 用户输入 Prompt 指令 (省略则启动交互式终端界面)
+        prompt: Option<String>,
+    },
+
+    /// 启动交互式终端用户界面 (Ratatui TUI)
+    Ui {
+        /// 目标模型规格标识
+        #[arg(short, long)]
+        model: Option<String>,
+
+        /// 推理强度档位
+        #[arg(short, long)]
+        variant: Option<String>,
+
+        /// 开启原生网络搜索 / 实时 Grounding
+        #[arg(long, default_value_t = false)]
+        web_search: bool,
+
+        /// 继存现有 Session ID
+        #[arg(short, long)]
+        session_id: Option<String>,
+
+        /// 工作空间目录路径 (默认为当前目录)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
     },
 
     /// 管理和查看历史 Session
@@ -76,14 +100,37 @@ enum SessionAction {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
     let cli = Cli::parse();
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let sessions_dir = PathBuf::from(home_dir).join(".vva").join("sessions");
+    let vva_dir = PathBuf::from(&home_dir).join(".vva");
+    let sessions_dir = vva_dir.join("sessions");
     let store = Arc::new(JsonlSessionStore::new(&sessions_dir)?);
+
+    // 判断是否启动全屏 TUI 模式，避免 tracing 输出污染终端屏幕
+    let is_tui = match &cli.command {
+        None => true,
+        Some(Commands::Ui { .. }) => true,
+        Some(Commands::Run { prompt, .. }) => prompt.is_none(),
+        _ => false,
+    };
+
+    if is_tui {
+        // TUI 模式下日志写入文件
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(vva_dir.join("vva.log"));
+        if let Ok(file) = log_file {
+            let _ = tracing_subscriber::fmt()
+                .with_writer(Arc::new(file))
+                .with_env_filter(EnvFilter::from_default_env())
+                .try_init();
+        }
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
+    }
 
     // 尝试读取配置 (支持 JSON 与 JSONC)
     let app_config: Option<AppConfig> = match load_config(cli.config.as_deref()) {
@@ -94,43 +141,93 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let default_model = app_config
+        .as_ref()
+        .map(|c| c.settings.default.clone())
+        .unwrap_or_else(|| "response/gpt-4.5-preview".to_string());
+
     match cli.command {
-        Commands::Run {
+        None => {
+            // 默认无参数启动 TUI
+            let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            run_tui(
+                store,
+                app_config,
+                None,
+                workspace,
+                default_model,
+                None,
+                false,
+            )
+            .await?;
+        }
+
+        Some(Commands::Ui {
+            model,
+            variant,
+            web_search,
+            session_id,
+            workspace,
+        }) => {
+            let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let target_model = model.unwrap_or(default_model);
+            run_tui(
+                store,
+                app_config,
+                session_id,
+                workspace,
+                target_model,
+                variant,
+                web_search,
+            )
+            .await?;
+        }
+
+        Some(Commands::Run {
             model,
             variant,
             web_search,
             session_id,
             workspace,
             prompt,
-        } => {
+        }) => {
             let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let target_model = model.unwrap_or(default_model);
 
-            // 加载或创建 Session，确定 session-level model 与 variant
+            // 如果没有提供 prompt，直接进入 TUI 交互
+            let prompt = match prompt {
+                Some(p) => p,
+                None => {
+                    return run_tui(
+                        store,
+                        app_config,
+                        session_id,
+                        workspace,
+                        target_model,
+                        variant,
+                        web_search,
+                    )
+                    .await;
+                }
+            };
+
+            // CLI 单次非交互运行流程
             let mut session = if let Some(sid) = session_id {
                 let mut s = store
                     .load_session(&sid)
                     .await?
                     .ok_or_else(|| format!("Session not found: {sid}"))?;
 
-                // 若 CLI 显式指定了 model 或 variant，则热切换 Session 的配置
-                let new_model = model.unwrap_or_else(|| s.current_model.clone());
+                let new_model = target_model;
                 let new_variant = variant.or_else(|| s.current_variant.clone());
                 s.set_model(new_model, new_variant);
                 s
             } else {
-                let default_model = app_config
-                    .as_ref()
-                    .map(|c| c.settings.default.clone())
-                    .unwrap_or_else(|| "response/gpt-4.5-preview".to_string());
-
-                let target_model = model.unwrap_or(default_model);
-                let target_variant = variant;
-
                 let s = Session::with_model(
                     &workspace,
                     Some(prompt.chars().take(40).collect()),
                     target_model,
-                    target_variant,
+                    variant,
                 );
                 store.save_header(&s).await?;
                 s
@@ -161,7 +258,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
-                // 无配置文件时的环境变数备用路由
                 let (provider_inst, model_id): (Arc<dyn Provider>, String) = match session.current_model.to_lowercase().as_str() {
                     m if m.contains("anthropic") || m.contains("claude") => {
                         let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
@@ -191,14 +287,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tools.register(Arc::new(FileViewTool::new(&workspace)));
             tools.register(Arc::new(FileEditTool::new(&workspace)));
 
-            // 用户新一轮提问
             let user_msg = Message::user(&prompt);
             let parent_turn_id = session.last_turn_id();
             let user_turn = Turn::user_turn(user_msg, parent_turn_id);
             store.append_turn(&session.id, &user_turn).await?;
             session.append_turn(user_turn);
 
-            // 配置驱动循环
             let agent_config = AgentConfig {
                 max_iterations: 15,
                 completion_options: CompletionOptions {
@@ -210,7 +304,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             let engine = AgentEngine::new(provider_inst, store.clone(), tools, agent_config);
-
             let (tx, mut rx) = mpsc::channel::<AgentEvent>(32);
 
             let run_handle = tokio::spawn(async move {
@@ -241,7 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             run_handle.await??;
         }
 
-        Commands::Session { action } => match action {
+        Some(Commands::Session { action }) => match action {
             SessionAction::List => {
                 let sessions = store.list_sessions().await?;
                 println!(
@@ -350,7 +443,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        },
+        }
     }
 
     Ok(())

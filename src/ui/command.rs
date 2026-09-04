@@ -1,0 +1,93 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashCommand {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub description: &'static str,
+    pub example: &'static str,
+}
+
+pub static COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        name: "/sessions",
+        aliases: &["/session"],
+        description: "Select and resume a session (per project)",
+        example: "/sessions",
+    },
+    SlashCommand {
+        name: "/model",
+        aliases: &["/m"],
+        description: "Switch current model (e.g. /model a/claude-sonnet-4-6)",
+        example: "/model <model_id>",
+    },
+    SlashCommand {
+        name: "/variant",
+        aliases: &["/v", "/effort"],
+        description: "Set reasoning variant (minimal, low, medium, high, max)",
+        example: "/variant <effort>",
+    },
+    SlashCommand {
+        name: "/search",
+        aliases: &["/web"],
+        description: "Toggle native web search grounding",
+        example: "/search [on|off]",
+    },
+    SlashCommand {
+        name: "/clear",
+        aliases: &["/c"],
+        description: "Clear message scrollback view",
+        example: "/clear",
+    },
+    SlashCommand {
+        name: "/help",
+        aliases: &["/h", "/?"],
+        description: "Show command and keyboard shortcuts help",
+        example: "/help",
+    },
+    SlashCommand {
+        name: "/quit",
+        aliases: &["/exit", "/q"],
+        description: "Exit vva application",
+        example: "/quit",
+    },
+];
+
+/// 匹配当前输入前缀的可用斜杠命令
+pub fn match_commands(input: &str) -> Vec<&'static SlashCommand> {
+    let trimmed = input.trim_start();
+    if !trimmed.starts_with('/') {
+        return Vec::new();
+    }
+
+    let token = trimmed.split_whitespace().next().unwrap_or(trimmed);
+    let lower_token = token.to_lowercase();
+
+    COMMANDS
+        .iter()
+        .filter(|cmd| {
+            cmd.name.starts_with(&lower_token)
+                || cmd.aliases.iter().any(|a| a.starts_with(&lower_token))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_match_commands() {
+        assert_eq!(match_commands("hello").len(), 0);
+        let s_matches = match_commands("/s");
+        assert!(s_matches.iter().any(|c| c.name == "/sessions"));
+        assert!(s_matches.iter().any(|c| c.name == "/search"));
+
+        let sess_matches = match_commands("/session");
+        assert_eq!(sess_matches.len(), 1);
+        assert_eq!(sess_matches[0].name, "/sessions");
+
+        let q_matches = match_commands("/q");
+        assert_eq!(q_matches.len(), 1);
+        assert_eq!(q_matches[0].name, "/quit");
+    }
+}
+

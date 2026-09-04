@@ -5,4 +5,5 @@ pub mod provider;
 pub mod search;
 pub mod storage;
 pub mod tools;
+pub mod ui;
 

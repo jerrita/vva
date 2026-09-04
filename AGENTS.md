@@ -114,9 +114,15 @@ src/
 │   ├── mod.rs          # Tool Trait 与 ToolRegistry
 │   ├── bash.rs         # Shell 执行
 │   └── file.rs         # 文件读写与查看
-└── harness/            # 调度引擎
-    ├── mod.rs
-    └── agent.rs        # 多轮 Agent 循环驱动 (AgentEngine)
+├── harness/            # 调度引擎
+│   ├── mod.rs
+│   └── agent.rs        # 多轮 Agent 循环驱动 (AgentEngine)
+└── ui/                 # 现代化 Ratatui 交互式终端用户界面
+    ├── mod.rs          # TUI 启动与事件主循环驱动 (run_tui)
+    ├── app.rs          # App 响应式状态管理、历史加载与侧边栏统计
+    ├── command.rs      # 斜杠命令系统与 Claude Code 风格前缀自动补全
+    ├── session_manager.rs # 全局 Session 单例与并发后台运行管理
+    └── views/          # 模块化渲染组件 (header, chat, sidebar, input_area, sessions_modal, help_modal)
 ```
 
 ---
@@ -132,4 +138,4 @@ src/
    - 读取图片/音视频文件时统一使用 `MediaSource::Path` 或 `MediaSource::Base64`；
    - 适配器负责将通用模态转为目标 API 兼容的 Payload（如 Gemini 的 `inline_data`，Anthropic 的 `base64` image source）。
 3. **保持测试覆盖**：
-   - 每次修改核心模型、解析器或适配器后，必须运行 `cargo test` 确保全量测试（目前 12/12）通过，并保持 0 warning。
+   - 每次修改核心模型、解析器、适配器或 UI 状态后，必须运行 `cargo test` 确保全量测试（目前 15/15）通过，并保持 0 warning。
