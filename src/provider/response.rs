@@ -1396,6 +1396,8 @@ mod tests {
         );
         assert_eq!(input_items[1]["type"], "reasoning");
         assert_eq!(input_items[1]["encrypted_content"], "encrypted-reasoning");
+        // 回传 input 的 reasoning item 必须携带 summary 字段（即使为空数组）
+        assert_eq!(input_items[1]["summary"], serde_json::json!([]));
         assert_eq!(input_items[2]["type"], "web_search_call");
         assert_eq!(input_items[2]["action"]["query"], "coding model value");
         assert_eq!(input_items[3]["role"], "assistant");

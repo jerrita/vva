@@ -86,7 +86,8 @@ pub struct ResponseMessageMeta {
 pub enum ResponseOutputItem {
     Reasoning {
         id: String,
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        /// Responses API 规范：回传 input 中的 reasoning item 必须携带 summary（可为空数组）
+        #[serde(default)]
         summary: Vec<ResponseReasoningSummary>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         content: Vec<ResponseReasoningContent>,
