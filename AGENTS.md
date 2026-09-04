@@ -1,6 +1,6 @@
 # AGENTS.md - vva 项目核心架构与开发指南
 
-本文档记录 **vva (Vendor-Versatile Agent Harness)** 的核心设计原则、领域模型约定与扩展指南，作为后续 Agent 和开发者协作的基础锚定。
+本文档记录 **vva (Vendor-Versatile Agent Harness)** 的核心设计原则、铁律约束、设计文档索引与开发指南，作为后续 Agent 和开发者协作的基础锚定。
 
 ---
 
@@ -18,10 +18,10 @@
 
 ---
 
-## 2. 核心架构锚点
+## 2. 核心架构与开发铁律
 
 ### 2.1 统一存储与“零兜底”铁律 (Unified Storage & Zero Fallback Rule)
-> **核心铁律**：**存储是统一的，不存在任何兜底行为**。每个供应商必须有纯正、独特的原生协议适配转换，以及完整的专属强类型 Meta 存储。
+> **核心铁律**：**存储是统一且纯净的，不存在任何兜底降级行为**。每个供应商必须有纯正、独特的原生协议适配转换，以及完整的专属强类型 Meta 存储。
 
 1. **统一领域存储 (Unified Domain Storage)**：
    - 严格遵循四层级联实体结构：$$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \longrightarrow \text{ContentPart}$$
@@ -36,111 +36,94 @@
 ### 2.2 强类型供应商元数据 (Strict Typed Meta)
 > **铁律**：严禁退化为松散的 `HashMap<String, serde_json::Value>`。必须充分发挥 Rust 编译期类型安全与模式匹配优势。
 
-目前**只支持且深度支持**三大核心供应商：
-1. **OpenAI Responses API (`ResponseTurnMeta`, `ResponseSessionMeta`, `ResponseMessageMeta`)**：
-   - 核心字段：`response_id`、`previous_response_id`、`status`、`system_fingerprint`、`service_tier`、`reasoning_effort`；
-   - 行为：每次请求自动从 Session 提取最近有效的 `response_id` 作为 `previous_response_id` 发回，仅需上传增量消息；助手消息专属 `id` 强类型映射入 `ResponseMessageMeta`。
-2. **Anthropic Messages API (`AnthropicTurnMeta`, `AnthropicMessageMeta`)**：
-   - 核心字段：`cache_creation_input_tokens`、`cache_read_input_tokens`、`stop_reason`、`ephemeral_cache`；
-   - 行为：在系统指令及关键轮次自动注入 `cache_control: {"type": "ephemeral"}`；在多轮往返中严格原样保留 `thinking` 块关联的防篡改 `signature`。
-3. **Google Gemini API (`GeminiTurnMeta`, `GeminiMessageMeta`)**：
-   - 核心字段：`finish_reason`、`safety_ratings`、`code_execution_result`、`thought_signature`；
-   - 行为：原生启用 `tools: [{ "google_search": {} }]`，并将返回的 `groundingMetadata` 投影为统一注脚。
-
-### 2.3 四层级联领域模型与 Session 状态绑定
-$$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \longrightarrow \text{ContentPart}$$
-
-- **`Session` (与 SessionHeader)**：
-  - 会话根实体，除工作空间路径 (`workspace_root`) 外，**强绑定持久化当前选定模型与推理强度**：
-    - `current_model: String`（如 `"a/gpt-5.6-terra"`）；
-    - `current_variant: Option<String>`（如 `Some("high")`，映射至厂商 reasoning effort）；
-  - 断点续跑或会话切换时自动无缝继承，支持 CLI 动态热切换。
-- **`Turn`**：交互轮次与计费/状态锚点，包含 `parent_turn_id`（支持分支树）、角色 (`Role`)、消息流 (`Vec<Message>`)、Token 消耗核算 (`TokenUsage`) 及专属元数据 (`TurnMeta`)。
-- **`Message`**：标准协议消息，角色支持 `System`, `User`, `Assistant`, `Tool`。
-- **`ContentPart` (多模态一等公民)**：
-  - `Text`: 文本内容，内嵌引用注脚 `annotations: Vec<Annotation>`；
-  - `Reasoning`: 深度思考过程，携带可选的数字签名 `signature`；
-  - `Image` / `Document` (PDF) / `Audio` / `Video`: 强类型多模态支持（`Url` / `Base64` / `Path`）；
-  - `ToolCall` / `ToolResult`: Coding 工具调用与返回封装；
-  - `WebSearchCall`: 结构化记录检索意图、状态与数据源。
-
-### 2.4 统一配置系统 (JSON / JSONC + 环境变量展开)
-配置文件（如 `config.example.jsonc` / `~/.vva/config.jsonc`）：
-- **同时支持 JSON 与 JSONC**：词法剥离 `//` 与 `/* */` 注释，保留字符串内部内容；
-- **环境变量插值**：自动将 `"${ENV_VAR}"` 展开为对应系统环境变量；
-- **模型规格寻址 (`{provider_id}/{model_id}`)**：
-  - 支持在具体模型节点覆写协议 `type`（如在 `response` 网关节点下为特定模型声明 `anthropic` 协议）；
-  - 支持声明与校验推理档位 `variants`（如 `["minimal", "low", "medium", "high", "xhigh", "max"]`）；
-  - 自动规范化 URL 端点（自动补全 `/v1` 或 `/v1beta`）。
-
-### 2.5 以 Responses 规范为基准的 Web Search 与注脚
-统一参考 OpenAI Responses 规范：
-- 检索行为统一落地为 `ContentPart::WebSearchCall`（包含 `query`, `status`, `sources`）；
-- 文本内联引用统一使用 `Annotation::UrlCitation`：
-  ```rust
-  Annotation::UrlCitation {
-      url: String,
-      title: String,
-      start_index: usize, // 字符起始偏移
-      end_index: usize,   // 字符结束偏移
-  }
-  ```
-- Gemini 的 `groundingChunks` + `groundingSupports` 在适配器层直接计算字符偏移并投影为 `Annotation::UrlCitation`。
-
-### 2.6 JSONL Append-Only 存储引擎
-文件路径：`~/.vva/sessions/{session_id}.jsonl`
-- **第 1 行**：`JsonlRecord::Header(SessionHeader)`（含 `current_model` 与 `current_variant`）
-- **第 2..N 行**：`JsonlRecord::Turn(Turn)`
-- **特性**：追加写（无需重写整个历史文件）、进程中断容灾、清晰易读的 Git diff 与零拷贝行级流式加载。
+针对三大核心供应商注入专属强类型元数据（见 `src/model/meta.rs`）：
+- **OpenAI Responses API**：`ResponseTurnMeta`, `ResponseSessionMeta`, `ResponseMessageMeta`
+- **Anthropic Messages API**：`AnthropicTurnMeta`, `AnthropicSessionMeta`, `AnthropicMessageMeta`
+- **Google Gemini API**：`GeminiTurnMeta`, `GeminiSessionMeta`, `GeminiMessageMeta`
 
 ---
 
-## 3. 代码目录结构
+## 3. 详细设计文档索引 (Docs Reference)
+
+详细的技术设计方案已全面整理至 `docs/` 目录中：
+
+| 模块 | 设计文档 | 核心内容摘要 |
+|---|---|---|
+| **架构全局** | [docs/architecture.md](docs/architecture.md) | 痛点分析、LCD 陷阱防范、整体数据流与分层调用拓扑 |
+| **领域模型** | [docs/domain_model.md](docs/domain_model.md) | 四层级联实体架构、多模态一等公民、引用注脚系统与强类型元数据 |
+| **持久化存储** | [docs/storage.md](docs/storage.md) | JSONL 追加写存储引擎、`Header` 与 `Turn` 记录规范、抗崩溃容灾 |
+| **供应商适配** | [docs/providers.md](docs/providers.md) | Responses 链式继承、Anthropic 缓存与签名、Gemini 搜索注脚与通用 SSE 解码 |
+| **配置路由** | [docs/configuration.md](docs/configuration.md) | JSON/JSONC 词法注释剥离、`${VAR}` 环境变量展开、模型规格寻址与端点规范化 |
+| **终端交互** | [docs/ui.md](docs/ui.md) | Ratatui TUI 架构、`SessionManager` 单例并发、`InputBuffer` 多行编辑与模态框状态解耦 |
+
+---
+
+## 4. 最新代码目录结构
 
 ```
 src/
-├── lib.rs              # 核心模块导出
-├── main.rs             # CLI 命令行入口 (vva run, vva session list/inspect)
-├── config/             # 配置管理 (JSON/JSONC 解析、环境展开与路由)
-│   ├── mod.rs          # load_config 自动寻址
-│   ├── model.rs        # AppConfig, ProviderConfig, ModelConfig 强类型
-│   ├── parser.rs       # strip_jsonc_comments 与 interpolate_env_vars
-│   └── resolver.rs     # resolve_model 路由与 Provider 动态构造
-├── model/              # 领域模型与强类型体系
-│   ├── meta.rs         # Response, Anthropic, Gemini 专属元数据
-│   ├── content.rs      # 多模态 (Image/PDF/Audio/Video)、搜索与 Annotation
-│   ├── message.rs      # Message 与 Role
-│   ├── turn.rs         # Turn 与 TokenUsage
-│   ├── session.rs      # Session 与 JSONL 记录定义 (含 model 与 variant 绑定)
-│   └── tool.rs         # ToolCall, ToolResult, ToolDefinition
-├── storage/            # 存储抽象与实现
-│   ├── mod.rs          # SessionStore Trait
-│   └── jsonl.rs        # JsonlSessionStore 流式追加引擎
-├── provider/           # 供应商适配器层
-│   ├── mod.rs          # Provider Trait 与能力声明 (含 reasoning_effort)
-│   ├── response.rs     # OpenAI Responses API (previous_response_id + 原生搜索)
-│   ├── anthropic.rs    # Anthropic Messages API (Prompt Caching + Thinking 签名)
-│   └── gemini.rs       # Google Gemini API (Grounding 投影 + 代码沙盒)
-├── search/             # 统一搜索调度 (原生直通 / 外置降级)
+├── lib.rs                  # 核心模块导出
+├── main.rs                 # CLI 命令行入口 (vva run, vva session list/inspect)
+├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
+│   ├── mod.rs              # load_config 自动寻址与分层合并
+│   ├── model.rs            # AppConfig, ProviderConfig, ModelConfig 强类型定义
+│   ├── parser.rs           # strip_jsonc_comments 与 interpolate_env_vars
+│   └── resolver.rs         # resolve_model 寻址路由与 Provider 动态构造
+├── model/                  # 领域模型与强类型体系
+│   ├── mod.rs              # 模块导出与通用类型
+│   ├── meta.rs             # Response, Anthropic, Gemini 专属强类型元数据
+│   ├── content.rs          # 多模态 (Image/PDF/Audio/Video)、搜索与 Annotation
+│   ├── message.rs          # Message 与 Role
+│   ├── turn.rs             # Turn 与 TokenUsage
+│   ├── session.rs          # Session 与 JSONL 记录定义 (含 model 与 variant 绑定)
+│   └── tool.rs             # ToolCall, ToolResult, ToolDefinition
+├── storage/                # 存储抽象与实现
+│   ├── mod.rs              # SessionStore Trait
+│   └── jsonl.rs            # JsonlSessionStore 行级追加写引擎
+├── provider/               # 供应商适配器层 (原生协议直通)
+│   ├── mod.rs              # Provider Trait 与能力声明
+│   ├── response.rs         # OpenAI Responses API (previous_response_id + 原生搜索)
+│   ├── anthropic.rs        # Anthropic Messages API (Prompt Caching + Thinking 签名)
+│   ├── gemini.rs           # Google Gemini API (Grounding 投影 + 代码沙盒)
+│   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器
+├── search/                 # 统一搜索调度 (原生直通 / 外置降级)
 │   └── mod.rs
-├── tools/              # Coding 工具集
-│   ├── mod.rs          # Tool Trait 与 ToolRegistry
-│   ├── bash.rs         # Shell 执行
-│   └── file.rs         # 文件读写与查看
-├── harness/            # 调度引擎
+├── tools/                  # Coding 工具集
+│   ├── mod.rs              # Tool Trait 与 ToolRegistry
+│   ├── bash.rs             # Shell 执行
+│   └── file.rs             # 文件读写与查看
+├── harness/                # 调度引擎
 │   ├── mod.rs
-│   └── agent.rs        # 多轮 Agent 循环驱动 (AgentEngine)
-└── ui/                 # 现代化 Ratatui 交互式终端用户界面
-    ├── mod.rs          # TUI 启动与事件主循环驱动 (run_tui)
-    ├── app.rs          # App 响应式状态管理、历史加载与侧边栏统计
-    ├── command.rs      # 斜杠命令系统与 Claude Code 风格前缀自动补全
-    ├── session_manager.rs # 全局 Session 单例与并发后台运行管理
-    └── views/          # 模块化渲染组件 (header, chat, sidebar, input_area, sessions_modal, help_modal)
+│   └── agent.rs            # 多轮 Agent 循环驱动 (AgentEngine)
+└── ui/                     # 现代化 Ratatui 交互式终端用户界面
+    ├── mod.rs              # TUI 启动与事件主循环驱动 (run_tui)
+    ├── app.rs              # App 响应式控制器、Session 切换调度与斜杠命令执行
+    ├── command.rs          # 斜杠命令系统与 Claude Code 风格前缀自动补全
+    ├── history.rs          # ChatEntry 对话流与 SidebarStats 纯函数视图投影
+    ├── input.rs            # InputBuffer 多行文本编辑、光标计算与 CJK 对齐算法
+    ├── modals/             # 独立的模态弹窗状态机与单测
+    │   ├── mod.rs          # ActiveModal 枚举及子模块导出
+    │   ├── sessions.rs     # SessionsModalState (按工程过滤与会话切换)
+    │   ├── models.rs       # ModelsModalState (模型清单筛选)
+    │   ├── variants.rs     # VariantsModalState (推理档位切换)
+    │   └── config.rs       # ConfigModalState (设置项交互切换)
+    ├── session_manager.rs  # 全局 Session 单例与并发后台运行管理
+    └── views/              # 纯渲染层组件
+        ├── mod.rs          # 视图模块导出
+        ├── chat.rs         # 聊天流渲染
+        ├── config_modal.rs # 设置弹窗视图
+        ├── header.rs       # 顶部标题栏
+        ├── help_modal.rs   # 帮助弹窗视图
+        ├── input_area.rs   # 复合输入区视图
+        ├── models_modal.rs # 模型选择弹窗视图
+        ├── sessions_modal.rs # 会话选择弹窗视图
+        ├── sidebar.rs      # 右侧统计看板
+        └── variants_modal.rs # 推理档位弹窗视图
 ```
 
 ---
 
-## 4. 后续开发与扩展指南
+## 5. 后续开发与扩展指南
 
 1. **新增模型/供应商适配**：
    - 必须先在 `src/model/meta.rs` 中定义强类型结构体，并在 `SessionMeta` / `TurnMeta` / `MessageMeta` 中显式引入字段；
@@ -151,5 +134,5 @@ src/
    - 读取图片/音视频文件时统一使用 `MediaSource::Path` 或 `MediaSource::Base64`；
    - 适配器负责将通用模态转为目标 API 兼容的 Payload（如 Gemini 的 `inline_data`，Anthropic 的 `base64` image source）。
 3. **保持测试覆盖与“零兜底”约束**：
-   - 每次修改核心模型、解析器、适配器或 UI 状态后，必须运行 `cargo test` 确保全量测试（目前 26/26）通过，并保持 `cargo clippy -- -D warnings` 0 warning；
+   - 每次修改核心模型、解析器、适配器或 UI 状态后，必须运行 `cargo test` 确保全量测试（**目前 39/39**）通过，并保持 `cargo clippy -- -D warnings` 0 warning；
    - **严谨编写单测 Mock**：单测数据必须严格按照官方最新规范格式构造；**严禁为了迎合手写错误的测试数据而在生产适配器中妥协增加未经标准定义的兜底逻辑**。

@@ -1,11 +1,11 @@
 pub mod app;
 pub mod command;
+pub mod history;
+pub mod input;
+pub mod modals;
 pub mod session_manager;
 pub mod views;
 
-use std::io::{self, stdout};
-use std::sync::Arc;
-use std::time::Duration;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event as CrosstermEvent, EventStream, KeyCode,
     KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
@@ -13,13 +13,16 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    supports_keyboard_enhancement,
 };
 use futures::StreamExt;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::Terminal;
+use std::io::{self, stdout};
+use std::sync::Arc;
+use std::time::Duration;
 use tracing::error;
 
 use crate::config::AppConfig;
@@ -88,7 +91,11 @@ pub async fn run_tui(
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     }
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -105,7 +112,13 @@ async fn run_app_loop(
     let mut reader = EventStream::new();
     let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
 
-    let (mut session_id, mut session_title, mut session_model, mut session_variant, mut session_workspace) = {
+    let (
+        mut session_id,
+        mut session_title,
+        mut session_model,
+        mut session_variant,
+        mut session_workspace,
+    ) = {
         let s = app.active_session.session.read().await;
         (
             s.id.clone(),
@@ -152,8 +165,8 @@ async fn run_app_loop(
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1), // 顶部栏 (仅 Title)
-                    Constraint::Min(5),    // 对话区
+                    Constraint::Length(1),                 // 顶部栏 (仅 Title)
+                    Constraint::Min(5),                    // 对话区
                     Constraint::Length(input_area_height), // 输入区动态自适应高度
                 ])
                 .split(main_area);
@@ -379,7 +392,11 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                                 }
                                 app::ConfigItemKind::ThinkingDisplay => {
                                     app.thinking_concise = !app.thinking_concise;
-                                    let mode_str = if app.thinking_concise { "concise (1 line)" } else { "full" };
+                                    let mode_str = if app.thinking_concise {
+                                        "concise (1 line)"
+                                    } else {
+                                        "full"
+                                    };
                                     app.chat_entries.push(app::ChatEntry::SystemNotice {
                                         text: format!("Thinking display mode set to {mode_str}."),
                                     });
@@ -438,7 +455,7 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                         return;
                     }
                     if let Some(cmd) = app.matched_commands.get(app.selected_command_index) {
-                        app.input = cmd.name.to_string();
+                        app.set_input(cmd.name);
                     }
                     app.matched_commands.clear();
                     app.selected_command_index = 0;
@@ -530,11 +547,7 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 }
             }
             KeyCode::Esc if !app.input.is_empty() => {
-                app.input.clear();
-                app.cursor_pos = 0;
-                app.input_scroll_y.set(0);
-                app.input_scroll_x.set(0);
-                app.update_command_matches();
+                app.clear_input();
             }
             _ => {}
         }

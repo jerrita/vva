@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::app::App;
 
@@ -37,7 +37,9 @@ pub fn render_input_area(
         vec![
             Span::styled(
                 format!(" {} ", app.spinner_char()),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("Agent: {}", text),
@@ -52,7 +54,10 @@ pub fn render_input_area(
     };
 
     let web_search_span = if app.enable_web_search {
-        Span::styled("🌐 Web Search: Enabled  ", Style::default().fg(Color::Green))
+        Span::styled(
+            "🌐 Web Search: Enabled  ",
+            Style::default().fg(Color::Green),
+        )
     } else {
         Span::styled("🌐 Web Search: Off  ", Style::default().fg(Color::DarkGray))
     };
@@ -78,29 +83,27 @@ pub fn render_input_area(
     let (cursor_row, cursor_col) = app.cursor_line_and_col();
 
     // 视口平滑滚动计算
-    let mut scroll_y = app.input_scroll_y.get();
+    let mut scroll_y = app.input.scroll_y.get();
     if cursor_row < scroll_y {
         scroll_y = cursor_row;
     } else if inner_height > 0 && cursor_row >= scroll_y + inner_height {
         scroll_y = cursor_row + 1 - inner_height;
     }
-    app.input_scroll_y.set(scroll_y);
+    app.input.scroll_y.set(scroll_y);
 
-    let mut scroll_x = app.input_scroll_x.get();
+    let mut scroll_x = app.input.scroll_x.get();
     if cursor_col < scroll_x {
         scroll_x = cursor_col;
     } else if inner_width > 0 && cursor_col >= scroll_x + inner_width {
         scroll_x = cursor_col + 1 - inner_width;
     }
-    app.input_scroll_x.set(scroll_x);
+    app.input.scroll_x.set(scroll_x);
 
     let input_p = if app.input.is_empty() {
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "Type a prompt or / for commands... (Enter to send, Ctrl+Enter for newline)",
-                Style::default().fg(Color::Rgb(100, 100, 105)),
-            ),
-        ]))
+        Paragraph::new(Line::from(vec![Span::styled(
+            "Type a prompt or / for commands... (Enter to send, Ctrl+Enter for newline)",
+            Style::default().fg(Color::Rgb(100, 100, 105)),
+        )]))
         .block(input_block)
     } else {
         Paragraph::new(app.input.as_str())
@@ -187,7 +190,9 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " Commands (↑/↓ to select, Tab to complete, Enter to execute) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let mut lines = Vec::new();
@@ -219,4 +224,3 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
     let p = Paragraph::new(lines).block(block);
     frame.render_widget(p, popup_rect);
 }
-

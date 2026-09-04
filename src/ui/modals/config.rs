@@ -1,0 +1,153 @@
+/// /config 模态弹窗中的设置项类别
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigItemKind {
+    Model,
+    Variant,
+    WebSearch,
+    ThinkingDisplay,
+}
+
+/// /config 模态弹窗中的单个设置项
+#[derive(Debug, Clone)]
+pub struct ConfigSettingItem {
+    pub kind: ConfigItemKind,
+    pub name: String,
+    pub current_value: String,
+    pub description: String,
+}
+
+/// /config 模态弹窗状态机
+#[derive(Debug, Clone)]
+pub struct ConfigModalState {
+    pub items: Vec<ConfigSettingItem>,
+    pub selected_index: usize,
+}
+
+impl ConfigModalState {
+    pub fn new(
+        current_model: String,
+        current_variant: Option<String>,
+        web_search: bool,
+        thinking_concise: bool,
+    ) -> Self {
+        let items = vec![
+            ConfigSettingItem {
+                kind: ConfigItemKind::Model,
+                name: "Active Model".to_string(),
+                current_value: if current_model.is_empty() {
+                    "default".into()
+                } else {
+                    current_model
+                },
+                description: "Select target model from configured providers".to_string(),
+            },
+            ConfigSettingItem {
+                kind: ConfigItemKind::Variant,
+                name: "Reasoning Effort".to_string(),
+                current_value: current_variant.unwrap_or_else(|| "none".into()),
+                description: "Select reasoning variant / thinking effort level".to_string(),
+            },
+            ConfigSettingItem {
+                kind: ConfigItemKind::WebSearch,
+                name: "Web Search Grounding".to_string(),
+                current_value: if web_search {
+                    "Enabled".into()
+                } else {
+                    "Disabled".into()
+                },
+                description: "Toggle native search grounding for models".to_string(),
+            },
+            ConfigSettingItem {
+                kind: ConfigItemKind::ThinkingDisplay,
+                name: "Thinking Display".to_string(),
+                current_value: if thinking_concise {
+                    "Concise (1 line)".into()
+                } else {
+                    "Full".into()
+                },
+                description: "Toggle thinking view (/thinking): concise vs full".to_string(),
+            },
+        ];
+
+        Self {
+            items,
+            selected_index: 0,
+        }
+    }
+
+    pub fn update_web_search(&mut self, web_search: bool) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|it| it.kind == ConfigItemKind::WebSearch)
+        {
+            item.current_value = if web_search { "Enabled" } else { "Disabled" }.to_string();
+        }
+    }
+
+    pub fn update_thinking_display(&mut self, thinking_concise: bool) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|it| it.kind == ConfigItemKind::ThinkingDisplay)
+        {
+            item.current_value = if thinking_concise {
+                "Concise (1 line)"
+            } else {
+                "Full"
+            }
+            .to_string();
+        }
+    }
+
+    pub fn next(&mut self) {
+        if !self.items.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.items.len();
+        }
+    }
+
+    pub fn previous(&mut self) {
+        if !self.items.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.items.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    pub fn selected_item(&self) -> Option<&ConfigSettingItem> {
+        self.items.get(self.selected_index)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_modal_navigation_and_toggle() {
+        let mut cm =
+            ConfigModalState::new("test_model".into(), Some("medium".into()), false, false);
+
+        assert_eq!(cm.items.len(), 4);
+        assert_eq!(cm.items[0].kind, ConfigItemKind::Model);
+        assert_eq!(cm.items[1].kind, ConfigItemKind::Variant);
+        assert_eq!(cm.items[2].kind, ConfigItemKind::WebSearch);
+        assert_eq!(cm.items[2].current_value, "Disabled");
+        assert_eq!(cm.items[3].kind, ConfigItemKind::ThinkingDisplay);
+        assert_eq!(cm.items[3].current_value, "Full");
+
+        // 导航
+        cm.next();
+        assert_eq!(cm.selected_index, 1);
+        cm.next();
+        assert_eq!(cm.selected_index, 2);
+        cm.update_web_search(true);
+        assert_eq!(cm.items[2].current_value, "Enabled");
+        cm.next();
+        assert_eq!(cm.selected_index, 3);
+        cm.update_thinking_display(true);
+        assert_eq!(cm.items[3].current_value, "Concise (1 line)");
+    }
+}
