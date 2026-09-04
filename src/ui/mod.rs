@@ -7,11 +7,12 @@ pub mod modals;
 pub mod session_manager;
 pub mod views;
 
+#[cfg(not(windows))]
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -53,7 +54,10 @@ pub async fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = stdout();
+    #[cfg(not(windows))]
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    #[cfg(windows)]
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
     let keyboard_enhancement = supports_keyboard_enhancement().unwrap_or(false);
     if keyboard_enhancement {
@@ -131,11 +135,14 @@ pub async fn run_tui(
     }
     let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
+    #[cfg(not(windows))]
     execute!(
         terminal.backend_mut(),
         DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
+    #[cfg(windows)]
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -268,7 +275,7 @@ async fn run_app_loop(
 
             maybe_event = reader.next() => {
                 if let Some(Ok(crossterm_event)) = maybe_event {
-                    handle_crossterm_event(app, crossterm_event).await;
+                    handle_crossterm_event(app, crossterm_event, &mut reader).await;
                 }
             }
         }
@@ -277,7 +284,11 @@ async fn run_app_loop(
     Ok(())
 }
 
-async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
+async fn handle_crossterm_event(
+    app: &mut App,
+    event: CrosstermEvent,
+    reader: &mut EventStream,
+) {
     if let CrosstermEvent::Mouse(mouse) = event {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -287,6 +298,25 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 app.scroll_down(3);
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                if app.modal == ActiveModal::None {
+                    let in_input_x = mouse.column >= app.input_inner_area.x
+                        && mouse.column < app.input_inner_area.x + app.input_inner_area.width;
+                    let in_input_y = mouse.row >= app.input_inner_area.y
+                        && mouse.row < app.input_inner_area.y + app.input_inner_area.height;
+
+                    if in_input_x && in_input_y {
+                        let rel_row = (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
+                        let rel_col = (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
+                        let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
+                        app.start_input_selection(char_pos);
+                        app.clear_text_selection();
+                        app.is_dragging_scrollbar = false;
+                        return;
+                    } else {
+                        app.clear_input_selection();
+                    }
+                }
+
                 if app.modal == ActiveModal::None && app.chat_area.height > 0 {
                     let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
                     let in_scrollbar_col = mouse.column >= scrollbar_col.saturating_sub(1)
@@ -330,6 +360,19 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                     };
                     let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
                     app.scroll_to_ratio(ratio);
+                } else if app.is_selecting_input && app.input_inner_area.height > 0 {
+                    let rel_row = if mouse.row < app.input_inner_area.y {
+                        app.input.scroll_y.get().saturating_sub(1)
+                    } else {
+                        (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get()
+                    };
+                    let rel_col = if mouse.column < app.input_inner_area.x {
+                        0
+                    } else {
+                        (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get()
+                    };
+                    let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
+                    app.update_input_selection(char_pos);
                 } else if app.is_selecting_text && app.chat_area.height > 0 {
                     if mouse.row < app.chat_area.y {
                         app.scroll_up(1);
@@ -360,13 +403,23 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 app.is_dragging_scrollbar = false;
+                if app.is_selecting_input {
+                    app.finish_input_selection();
+                }
                 if app.is_selecting_text {
                     app.finish_text_selection();
                 }
             }
-            MouseEventKind::Down(MouseButton::Right) if app.text_selection.is_some() => {
-                app.copy_selection_to_clipboard();
-                app.clear_text_selection();
+            MouseEventKind::Down(MouseButton::Right) => {
+                if app.input.selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_input_selection();
+                } else if app.text_selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_text_selection();
+                } else if app.modal == ActiveModal::None {
+                    app.paste_from_clipboard();
+                }
             }
             _ => {}
         }
@@ -617,13 +670,79 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
         // 2. 普通按键处理
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if app.active_session.is_running() {
+                if app.input.selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_input_selection();
+                } else if app.text_selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_text_selection();
+                } else if !app.input.is_empty() {
+                    app.clear_input();
+                } else if app.active_session.is_running() {
                     app.active_session.abort_current().await;
                     app.chat_entries.push(app::ChatEntry::SystemNotice {
                         text: "Aborted current turn.".into(),
                     });
                 } else {
                     app.should_quit = true;
+                }
+            }
+            KeyCode::Char('\x03') => {
+                if app.input.selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_input_selection();
+                } else if app.text_selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_text_selection();
+                } else if !app.input.is_empty() {
+                    app.clear_input();
+                } else if app.active_session.is_running() {
+                    app.active_session.abort_current().await;
+                    app.chat_entries.push(app::ChatEntry::SystemNotice {
+                        text: "Aborted current turn.".into(),
+                    });
+                } else {
+                    app.should_quit = true;
+                }
+            }
+            // Ctrl+A / Ctrl+E 光标首尾移动
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.move_cursor_home();
+            }
+            KeyCode::Char('\x01') => {
+                app.move_cursor_home();
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.move_cursor_end();
+            }
+            KeyCode::Char('\x05') => {
+                app.move_cursor_end();
+            }
+            // Ctrl+K / Ctrl+U 清空输入框内容
+            KeyCode::Char('k') | KeyCode::Char('u')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                app.clear_input();
+            }
+            KeyCode::Char('\x0b') | KeyCode::Char('\x15') => {
+                app.clear_input();
+            }
+            // 剪贴板粘贴快捷键 (Ctrl+V / Ctrl+Shift+V / Shift+Insert / ASCII 0x16)
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                if app.modal == ActiveModal::None {
+                    app.paste_from_clipboard();
+                }
+            }
+            KeyCode::Char('\x16') => {
+                if app.modal == ActiveModal::None {
+                    app.paste_from_clipboard();
+                }
+            }
+            KeyCode::Insert if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if app.modal == ActiveModal::None {
+                    app.paste_from_clipboard();
                 }
             }
             KeyCode::Enter => {
@@ -633,7 +752,34 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 {
                     app.insert_char('\n');
                 } else {
-                    app.submit_input().await;
+                    let is_rapid_paste = app
+                        .last_key_input_time
+                        .map(|t| t.elapsed() < Duration::from_millis(40))
+                        .unwrap_or(false);
+
+                    if is_rapid_paste {
+                        app.insert_char('\n');
+                    } else {
+                        let upcoming_event = tokio::select! {
+                            next_ev = reader.next() => {
+                                if let Some(Ok(ev)) = next_ev {
+                                    Some(ev)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ = tokio::time::sleep(Duration::from_millis(15)) => {
+                                None
+                            }
+                        };
+
+                        if let Some(next_ev) = upcoming_event {
+                            app.insert_char('\n');
+                            Box::pin(handle_crossterm_event(app, next_ev, reader)).await;
+                        } else {
+                            app.submit_input().await;
+                        }
+                    }
                 }
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -666,16 +812,25 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 app.move_cursor_right();
             }
             KeyCode::Up => {
-                if app.input.is_empty() {
-                    app.scroll_up(2);
+                let (row, _) = app.cursor_line_and_col();
+                if app.input.is_empty() || app.history_index.is_some() || row == 0 {
+                    if !app.prompt_history.is_empty() {
+                        app.history_previous();
+                    } else if app.input.is_empty() {
+                        app.scroll_up(2);
+                    }
                 } else {
                     app.move_cursor_up();
                 }
             }
             KeyCode::Down => {
-                if app.input.is_empty() {
+                let (row, _) = app.cursor_line_and_col();
+                let line_count = app.input_line_count();
+                if app.history_index.is_some() {
+                    app.history_next();
+                } else if app.input.is_empty() {
                     app.scroll_down(2);
-                } else {
+                } else if row + 1 < line_count {
                     app.move_cursor_down();
                 }
             }
@@ -702,7 +857,9 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 app.scroll_down(step);
             }
             KeyCode::Esc => {
-                if !app.input.is_empty() {
+                if app.input.selection.is_some() {
+                    app.clear_input_selection();
+                } else if !app.input.is_empty() {
                     app.clear_input();
                 } else if app.text_selection.is_some() {
                     app.clear_text_selection();

@@ -74,6 +74,12 @@ pub struct App {
     pub selected_command_index: usize,
     pub stats: SidebarStats,
     pub thinking_concise: bool,
+    pub last_key_input_time: Option<std::time::Instant>,
+    pub input_inner_area: Rect,
+    pub prompt_history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub saved_draft: String,
+    pub is_selecting_input: bool,
 }
 
 impl App {
@@ -114,6 +120,12 @@ impl App {
             selected_command_index: 0,
             stats: SidebarStats::default(),
             thinking_concise: false,
+            last_key_input_time: None,
+            input_inner_area: Rect::default(),
+            prompt_history: Vec::new(),
+            history_index: None,
+            saved_draft: String::new(),
+            is_selecting_input: false,
         };
 
         app.reload_active_session_history().await;
@@ -551,6 +563,12 @@ impl App {
     }
 
     pub fn copy_selection_to_clipboard(&mut self) -> bool {
+        if let Some(text) = self.input.selected_text()
+            && !text.is_empty()
+        {
+            let _ = set_clipboard_text(&text);
+            return true;
+        }
         let max_width = (self.chat_area.width as usize).saturating_sub(1).max(20);
         let lines = crate::ui::views::chat::build_chat_lines(self, max_width);
         if let Some(ref sel) = self.text_selection
@@ -566,23 +584,110 @@ impl App {
     // --- 输入框代理方法 ---
 
     pub fn insert_char(&mut self, c: char) {
+        self.history_index = None;
         self.input.insert_char(c);
+        self.last_key_input_time = Some(std::time::Instant::now());
         self.update_command_matches();
     }
 
     pub fn insert_str(&mut self, s: &str) {
+        self.history_index = None;
         self.input.insert_str(s);
+        self.last_key_input_time = Some(std::time::Instant::now());
         self.update_command_matches();
     }
 
+    /// 从系统剪贴板粘贴文本到当前输入框 (保留多行格式，不提前提交)
+    pub fn paste_from_clipboard(&mut self) -> bool {
+        if let Some(text) = get_clipboard_text() {
+            self.insert_str(&text);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn backspace(&mut self) {
+        self.history_index = None;
         self.input.backspace();
         self.update_command_matches();
     }
 
     pub fn delete(&mut self) {
+        self.history_index = None;
         self.input.delete();
         self.update_command_matches();
+    }
+
+    pub fn set_cursor_from_mouse(&mut self, target_row: usize, target_visual_col: usize) -> usize {
+        self.input.set_cursor_from_visual_coord(target_row, target_visual_col)
+    }
+
+    pub fn start_input_selection(&mut self, char_idx: usize) {
+        self.input.selection = Some((char_idx, char_idx));
+        self.is_selecting_input = true;
+    }
+
+    pub fn update_input_selection(&mut self, char_idx: usize) {
+        if let Some((anchor, _)) = self.input.selection {
+            self.input.selection = Some((anchor, char_idx));
+        } else {
+            self.input.selection = Some((char_idx, char_idx));
+        }
+    }
+
+    pub fn finish_input_selection(&mut self) {
+        self.is_selecting_input = false;
+        if let Some((anchor, head)) = self.input.selection
+            && anchor == head
+        {
+            self.input.selection = None;
+        }
+    }
+
+    pub fn clear_input_selection(&mut self) {
+        self.is_selecting_input = false;
+        self.input.clear_selection();
+    }
+
+    /// 向上轮换历史 Prompt
+    pub fn history_previous(&mut self) {
+        if self.prompt_history.is_empty() {
+            return;
+        }
+
+        match self.history_index {
+            None => {
+                self.saved_draft = self.input.text.clone();
+                let last_idx = self.prompt_history.len() - 1;
+                self.history_index = Some(last_idx);
+                let text = self.prompt_history[last_idx].clone();
+                self.set_input(&text);
+            }
+            Some(idx) if idx > 0 => {
+                let prev_idx = idx - 1;
+                self.history_index = Some(prev_idx);
+                let text = self.prompt_history[prev_idx].clone();
+                self.set_input(&text);
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// 向下轮换历史 Prompt
+    pub fn history_next(&mut self) {
+        if let Some(idx) = self.history_index {
+            if idx + 1 < self.prompt_history.len() {
+                let next_idx = idx + 1;
+                self.history_index = Some(next_idx);
+                let text = self.prompt_history[next_idx].clone();
+                self.set_input(&text);
+            } else {
+                self.history_index = None;
+                let draft = std::mem::take(&mut self.saved_draft);
+                self.set_input(&draft);
+            }
+        }
     }
 
     pub fn move_cursor_left(&mut self) {
@@ -623,6 +728,7 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
+        self.clear_input_selection();
         self.input.clear();
         self.matched_commands.clear();
         self.selected_command_index = 0;
@@ -673,6 +779,13 @@ impl App {
         if input_text.is_empty() {
             return;
         }
+
+        // 记录非重复历史 Prompt
+        if self.prompt_history.last() != Some(&input_text) {
+            self.prompt_history.push(input_text.clone());
+        }
+        self.history_index = None;
+        self.saved_draft.clear();
 
         self.clear_input();
         self.clear_text_selection();
@@ -886,6 +999,18 @@ pub fn set_clipboard_text(text: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("Failed to set system clipboard".to_string())
+    }
+}
+
+/// 从系统剪贴板读取文本
+pub fn get_clipboard_text() -> Option<String> {
+    if let Ok(mut clipboard) = arboard::Clipboard::new()
+        && let Ok(text) = clipboard.get_text()
+        && !text.is_empty()
+    {
+        Some(text)
+    } else {
+        None
     }
 }
 
@@ -1239,6 +1364,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
+    #[tokio::test]
+    async fn test_input_selection_state_and_deletion() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_input_sel_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("init_model".into(), None, None, false)
+            .await
+            .unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 设置输入内容与初始状态
+        app.set_input("Hello, 世界!");
+        assert!(app.input.selection.is_none());
+        assert!(!app.is_selecting_input);
+
+        // 2. 拖拽选区
+        app.start_input_selection(2);
+        assert!(app.is_selecting_input);
+        app.update_input_selection(7);
+        app.finish_input_selection();
+        assert!(!app.is_selecting_input);
+        assert_eq!(app.input.selected_text(), Some("llo, ".to_string()));
+
+        // 3. Backspace 删除选区
+        app.backspace();
+        assert_eq!(app.input.as_str(), "He世界!");
+        assert!(app.input.selection.is_none());
+
+        // 4. 单击（起止点相同）释放时自动清空选区
+        app.start_input_selection(2);
+        app.finish_input_selection();
+        assert!(!app.is_selecting_input);
+        assert!(app.input.selection.is_none());
+
+        // 5. 键入字符串替换选区
+        app.set_input("foo bar baz");
+        app.start_input_selection(4);
+        app.update_input_selection(7);
+        app.finish_input_selection();
+        app.insert_str("qux");
+        assert_eq!(app.input.as_str(), "foo qux baz");
+        assert!(app.input.selection.is_none());
+
+        // 6. Delete 键删除选区
+        app.start_input_selection(4);
+        app.update_input_selection(7);
+        app.finish_input_selection();
+        app.delete();
+        assert_eq!(app.input.as_str(), "foo  baz");
+        assert!(app.input.selection.is_none());
+
+        // 7. 手动清空输入选区
+        app.start_input_selection(0);
+        app.update_input_selection(3);
+        app.finish_input_selection();
+        assert!(app.input.selection.is_some());
+        app.clear_input_selection();
+        assert!(app.input.selection.is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
     #[test]
     fn test_base64_encode() {
         assert_eq!(base64_encode(b""), "");
@@ -1246,5 +1435,106 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"Hello World"), "SGVsbG8gV29ybGQ=");
+    }
+
+    #[tokio::test]
+    async fn test_paste_multiline_into_input_buffer_preserves_lines() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_paste_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("test_model".into(), None, None, false)
+            .await
+            .unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        assert!(app.last_key_input_time.is_none());
+
+        // 模拟粘贴一段多行代码
+        let multiline_code = "fn main() {\r\n    println!(\"hello\");\r\n}\n";
+        app.insert_str(multiline_code);
+
+        // 验证多行完整保留在输入框中，行数正确，末尾规范化为 \n
+        assert_eq!(app.input.as_str(), "fn main() {\n    println!(\"hello\");\n}\n");
+        assert_eq!(app.input_line_count(), 4);
+        assert!(app.last_key_input_time.is_some());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_input_time_updated_on_char_insert() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_time_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("test_model".into(), None, None, false)
+            .await
+            .unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        assert!(app.last_key_input_time.is_none());
+        app.insert_char('a');
+        let t1 = app.last_key_input_time;
+        assert!(t1.is_some());
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        app.insert_char('b');
+        let t2 = app.last_key_input_time;
+        assert!(t2 > t1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_prompt_history_rotation_and_draft_restore() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_history_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("test_model".into(), None, None, false)
+            .await
+            .unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 提交两次 Prompt
+        app.set_input("first prompt");
+        app.submit_input().await;
+
+        app.set_input("second prompt");
+        app.submit_input().await;
+
+        assert_eq!(app.prompt_history.len(), 2);
+        assert_eq!(app.prompt_history[0], "first prompt");
+        assert_eq!(app.prompt_history[1], "second prompt");
+
+        // 2. 当前输入半句草稿
+        app.set_input("my draft");
+
+        // 3. 按 Up：轮换到上一条历史 (second prompt)，且当前草稿保存
+        app.history_previous();
+        assert_eq!(app.input.as_str(), "second prompt");
+        assert_eq!(app.saved_draft, "my draft");
+
+        // 4. 再按 Up：轮换到更早的历史 (first prompt)
+        app.history_previous();
+        assert_eq!(app.input.as_str(), "first prompt");
+
+        // 5. 按 Down：回到 second prompt
+        app.history_next();
+        assert_eq!(app.input.as_str(), "second prompt");
+
+        // 6. 再按 Down：超出历史范围，恢复草稿 "my draft"
+        app.history_next();
+        assert_eq!(app.input.as_str(), "my draft");
+        assert!(app.history_index.is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

@@ -8,6 +8,7 @@ pub struct InputBuffer {
     pub cursor_pos: usize, // 字符索引偏移（0..chars().count()）
     pub scroll_y: Cell<usize>,
     pub scroll_x: Cell<usize>,
+    pub selection: Option<(usize, usize)>, // 选区起止字符索引 (anchor, head)
 }
 
 impl Deref for InputBuffer {
@@ -23,20 +24,61 @@ impl InputBuffer {
         Self::default()
     }
 
-    /// 重置输入内容并归零光标与视口滚动
+    /// 重置输入内容并归零光标与视口滚动，并清空选区
     pub fn set(&mut self, s: &str) {
         self.text = s.to_string();
         self.cursor_pos = self.text.chars().count();
         self.scroll_y.set(0);
         self.scroll_x.set(0);
+        self.selection = None;
     }
 
-    /// 清空输入框内容并归零光标与视口滚动
+    /// 清空输入框内容并归零光标与视口滚动，并清空选区
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor_pos = 0;
         self.scroll_y.set(0);
         self.scroll_x.set(0);
+        self.selection = None;
+    }
+
+    /// 返回规范化后的选区字符索引区间 [start, end)，满足 start < end
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.selection.and_then(|(anchor, head)| {
+            if anchor != head {
+                Some((anchor.min(head), anchor.max(head)))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// 清空选区
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    /// 删除当前选区中的文本内容；若存在有效选区并删除成功返回 true
+    pub fn delete_selection(&mut self) -> bool {
+        if let Some((start, end)) = self.selection_range() {
+            let start_byte = self.text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(self.text.len());
+            let end_byte = self.text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(self.text.len());
+            self.text.drain(start_byte..end_byte);
+            self.cursor_pos = start;
+            self.selection = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 获取选区选中的文本字符串
+    pub fn selected_text(&self) -> Option<String> {
+        self.selection_range().map(|(start, end)| {
+            let start_byte = self.text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(self.text.len());
+            let end_byte = self.text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(self.text.len());
+            self.text[start_byte..end_byte].to_string()
+        })
     }
 
     pub fn as_str(&self) -> &str {
@@ -72,8 +114,9 @@ impl InputBuffer {
         (cursor_line, cursor_col)
     }
 
-    /// 插入单字符 (支持多字节 Unicode/中文字符)
+    /// 插入单字符 (支持多字节 Unicode/中文字符，自动替换选区)
     pub fn insert_char(&mut self, c: char) {
+        self.delete_selection();
         let byte_offset = self
             .text
             .char_indices()
@@ -84,8 +127,9 @@ impl InputBuffer {
         self.cursor_pos += 1;
     }
 
-    /// 粘贴或批量插入字符串 (支持多行与多字节 Unicode，自动归一化 CRLF/CR 为 \n)
+    /// 粘贴或批量插入字符串 (支持多行与多字节 Unicode，自动归一化 CRLF/CR 为 \n，自动替换选区)
     pub fn insert_str(&mut self, s: &str) {
+        self.delete_selection();
         let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
         let byte_offset = self
             .text
@@ -97,8 +141,11 @@ impl InputBuffer {
         self.cursor_pos += normalized.chars().count();
     }
 
-    /// 退格删除字符 (Backspace)
+    /// 退格删除字符 (Backspace，优先删除选区)
     pub fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.cursor_pos > 0 && !self.text.is_empty() {
             self.cursor_pos -= 1;
             if let Some((byte_offset, _)) = self.text.char_indices().nth(self.cursor_pos) {
@@ -107,8 +154,11 @@ impl InputBuffer {
         }
     }
 
-    /// 删除光标后字符 (Delete)
+    /// 删除光标后字符 (Delete，优先删除选区)
     pub fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         let char_count = self.text.chars().count();
         if self.cursor_pos < char_count
             && let Some((byte_offset, _)) = self.text.char_indices().nth(self.cursor_pos)
@@ -118,12 +168,14 @@ impl InputBuffer {
     }
 
     pub fn move_cursor_left(&mut self) {
+        self.clear_selection();
         if self.cursor_pos > 0 {
             self.cursor_pos -= 1;
         }
     }
 
     pub fn move_cursor_right(&mut self) {
+        self.clear_selection();
         if self.cursor_pos < self.text.chars().count() {
             self.cursor_pos += 1;
         }
@@ -131,6 +183,7 @@ impl InputBuffer {
 
     /// 光标向上移动一行，在上一行中尽量对齐当前列的视觉显示宽度
     pub fn move_cursor_up(&mut self) {
+        self.clear_selection();
         if self.text.is_empty() {
             return;
         }
@@ -162,6 +215,7 @@ impl InputBuffer {
 
     /// 光标向下移动一行，在下一行中尽量对齐当前列的视觉显示宽度
     pub fn move_cursor_down(&mut self) {
+        self.clear_selection();
         if self.text.is_empty() {
             return;
         }
@@ -193,6 +247,7 @@ impl InputBuffer {
 
     /// 光标移动到当前行行首；若已在当前行行首，则移动到整个文本最开头
     pub fn move_cursor_home(&mut self) {
+        self.clear_selection();
         if self.text.is_empty() || self.cursor_pos == 0 {
             self.cursor_pos = 0;
             return;
@@ -218,6 +273,7 @@ impl InputBuffer {
 
     /// 光标移动到当前行行尾；若已在当前行行尾，则移动到整个文本最末尾
     pub fn move_cursor_end(&mut self) {
+        self.clear_selection();
         let total_chars = self.text.chars().count();
         if self.text.is_empty() || self.cursor_pos >= total_chars {
             self.cursor_pos = total_chars;
@@ -240,6 +296,29 @@ impl InputBuffer {
         } else {
             self.cursor_pos = line_end;
         }
+    }
+
+    /// 根据文本行号与目标视觉列宽度设置光标位置 (支持视口滚动、多行及 CJK 字符)，并返回字符偏移
+    pub fn set_cursor_from_visual_coord(&mut self, target_row: usize, target_visual_col: usize) -> usize {
+        if self.text.is_empty() {
+            self.cursor_pos = 0;
+            return 0;
+        }
+
+        let all_lines: Vec<&str> = self.text.split('\n').collect();
+        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
+        let mut cur_char = 0;
+        for l in &all_lines {
+            line_starts.push(cur_char);
+            cur_char += l.chars().count() + 1;
+        }
+
+        let row = target_row.min(all_lines.len().saturating_sub(1));
+        let line = all_lines[row];
+        let char_col = char_idx_for_visual_width(line, target_visual_col);
+        let pos = line_starts[row] + char_col;
+        self.cursor_pos = pos;
+        pos
     }
 }
 
@@ -386,5 +465,48 @@ mod tests {
         assert_eq!(buf.cursor_pos, 0);
         assert_eq!(buf.scroll_y.get(), 0);
         assert_eq!(buf.scroll_x.get(), 0);
+    }
+
+    #[test]
+    fn test_set_cursor_from_visual_coord() {
+        let mut buf = InputBuffer::new();
+        buf.set("你好世界\nHello World");
+
+        // 点击第 0 行视觉宽度 4 (字符 "好" 之后，索引 2)
+        buf.set_cursor_from_visual_coord(0, 4);
+        assert_eq!(buf.cursor_pos, 2);
+
+        // 点击第 1 行视觉宽度 5 (字符 "Hello" 之后，第 1 行起始为 5，5 + 5 = 10)
+        buf.set_cursor_from_visual_coord(1, 5);
+        assert_eq!(buf.cursor_pos, 10);
+
+        // 点击超出范围的行号，自动限制到最后一行
+        buf.set_cursor_from_visual_coord(5, 0);
+        assert_eq!(buf.cursor_pos, 5); // 第 1 行行首
+    }
+
+    #[test]
+    fn test_selection_and_deletion() {
+        let mut buf = InputBuffer::new();
+        buf.set("Hello 世界 World");
+
+        // 1. 设置选区选择 "世界" (索引 6..8)
+        buf.selection = Some((6, 8));
+        assert_eq!(buf.selection_range(), Some((6, 8)));
+        assert_eq!(buf.selected_text(), Some("世界".to_string()));
+
+        // 2. 按 Backspace 删除选区
+        buf.backspace();
+        assert_eq!(buf.text, "Hello  World");
+        assert_eq!(buf.cursor_pos, 6);
+        assert!(buf.selection_range().is_none());
+
+        // 3. 选择 "World" 并输入字符替换
+        buf.selection = Some((7, 12));
+        assert_eq!(buf.selected_text(), Some("World".to_string()));
+        buf.insert_str("Rust!");
+        assert_eq!(buf.text, "Hello  Rust!");
+        assert_eq!(buf.cursor_pos, 12);
+        assert!(buf.selection_range().is_none());
     }
 }

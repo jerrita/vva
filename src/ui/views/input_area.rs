@@ -8,7 +8,7 @@ use crate::ui::app::App;
 
 /// 复合输入区：状态指示条 + 命令浮层 + 输入框 + 底部元数据栏
 pub fn render_input_area(
-    app: &App,
+    app: &mut App,
     frame: &mut Frame,
     area: Rect,
     model: &str,
@@ -80,6 +80,12 @@ pub fn render_input_area(
 
     let inner_width = chunks[1].width.saturating_sub(2) as usize;
     let inner_height = chunks[1].height.saturating_sub(2) as usize;
+    app.input_inner_area = Rect {
+        x: chunks[1].x + 1,
+        y: chunks[1].y + 1,
+        width: inner_width as u16,
+        height: inner_height as u16,
+    };
     let (cursor_row, cursor_col) = app.cursor_line_and_col();
 
     // 视口平滑滚动计算
@@ -105,6 +111,55 @@ pub fn render_input_area(
             Style::default().fg(Color::Rgb(100, 100, 105)),
         )]))
         .block(input_block)
+    } else if let Some((sel_start, sel_end)) = app.input.selection_range() {
+        let text_lines: Vec<&str> = app.input.text.split('\n').collect();
+        let mut rendered_lines = Vec::with_capacity(text_lines.len());
+        let mut global_char_idx = 0;
+        let sel_style = Style::default()
+            .bg(Color::Rgb(45, 80, 140))
+            .fg(Color::White);
+        let normal_style = Style::default().fg(Color::White);
+
+        for line_str in text_lines {
+            let mut spans = Vec::new();
+            let mut cur_chunk = String::new();
+            let mut cur_in_sel = None;
+
+            for c in line_str.chars() {
+                let in_sel = global_char_idx >= sel_start && global_char_idx < sel_end;
+                if cur_in_sel == Some(in_sel) {
+                    cur_chunk.push(c);
+                } else {
+                    if !cur_chunk.is_empty() {
+                        let style = if cur_in_sel == Some(true) {
+                            sel_style
+                        } else {
+                            normal_style
+                        };
+                        spans.push(Span::styled(std::mem::take(&mut cur_chunk), style));
+                    }
+                    cur_chunk.push(c);
+                    cur_in_sel = Some(in_sel);
+                }
+                global_char_idx += 1;
+            }
+
+            if !cur_chunk.is_empty() {
+                let style = if cur_in_sel == Some(true) {
+                    sel_style
+                } else {
+                    normal_style
+                };
+                spans.push(Span::styled(cur_chunk, style));
+            }
+
+            rendered_lines.push(Line::from(spans));
+            global_char_idx += 1; // 对应换行符 '\n'
+        }
+
+        Paragraph::new(ratatui::text::Text::from(rendered_lines))
+            .block(input_block)
+            .scroll((scroll_y as u16, scroll_x as u16))
     } else {
         Paragraph::new(app.input.as_str())
             .block(input_block)
