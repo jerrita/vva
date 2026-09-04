@@ -7,7 +7,7 @@ use ratatui::widgets::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::ui::app::{App, ChatEntry, TextSelection};
+use crate::ui::app::{App, ChatEntry, TextSelection, char_in_column_range};
 use crate::ui::markdown::{render_markdown, wrap_spans_to_lines};
 
 /// 构建对话流的 Ratatui 文本行列表（支持 Markdown 渲染、CJK 安全折行与多级缩进）
@@ -224,39 +224,20 @@ pub fn extract_selected_text(lines: &[Line], selection: &TextSelection) -> Optio
 
     let end_idx = end.line.min(lines.len().saturating_sub(1));
     for (line_idx, line) in lines.iter().enumerate().take(end_idx + 1).skip(start.line) {
-        let (sel_start_col, sel_end_col) = if start.line == end.line {
-            (start.col, end.col)
-        } else if line_idx == start.line {
-            (start.col, usize::MAX)
-        } else if line_idx == end.line {
-            (0, end.col)
-        } else {
-            (0, usize::MAX)
-        };
-
-        if sel_start_col >= sel_end_col {
+        let Some(range) = selection.line_column_range(line_idx) else {
             result_lines.push(String::new());
             continue;
-        }
+        };
 
         let mut line_text = String::new();
         let mut col = 0;
 
         for span in &line.spans {
             for ch in span.content.chars() {
-                let w = ch.width().unwrap_or(0);
-                let char_start = col;
-                let char_end = col + w;
-                let is_selected = if w == 0 {
-                    char_start >= sel_start_col && char_start < sel_end_col
-                } else {
-                    char_end > sel_start_col && char_start < sel_end_col
-                };
-
-                if is_selected {
+                if char_in_column_range(ch, col, range) {
                     line_text.push(ch);
                 }
-                col += w;
+                col += ch.width().unwrap_or(0);
             }
         }
 
@@ -299,19 +280,9 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
         .take(max_line + 1)
         .skip(start.line)
     {
-        let (sel_start_col, sel_end_col) = if start.line == end.line {
-            (start.col, end.col)
-        } else if line_idx == start.line {
-            (start.col, usize::MAX)
-        } else if line_idx == end.line {
-            (0, end.col)
-        } else {
-            (0, usize::MAX)
-        };
-
-        if sel_start_col >= sel_end_col {
+        let Some(range) = selection.line_column_range(line_idx) else {
             continue;
-        }
+        };
 
         let old_spans = std::mem::take(&mut line.spans);
         let mut new_spans: Vec<Span<'static>> = Vec::new();
@@ -322,14 +293,7 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
             let mut cur_is_selected: Option<bool> = None;
 
             for ch in span.content.chars() {
-                let w = ch.width().unwrap_or(0);
-                let char_start = col;
-                let char_end = col + w;
-                let is_selected = if w == 0 {
-                    char_start >= sel_start_col && char_start < sel_end_col
-                } else {
-                    char_end > sel_start_col && char_start < sel_end_col
-                };
+                let is_selected = char_in_column_range(ch, col, range);
 
                 match cur_is_selected {
                     Some(sel) if sel == is_selected => {
@@ -346,7 +310,7 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
                         cur_is_selected = Some(is_selected);
                     }
                 }
-                col += w;
+                col += ch.width().unwrap_or(0);
             }
 
             if let Some(sel) = cur_is_selected

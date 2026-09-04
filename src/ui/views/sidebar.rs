@@ -17,6 +17,21 @@ pub struct SidebarInfo<'a> {
     pub variant: Option<&'a str>,
 }
 
+/// 标签值行：`Label: value`（标签固定 DarkGray，值样式由调用方给定）
+fn label_value(label: &str, value: String, value_style: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(value, value_style),
+    ])
+}
+
+/// 上下文窗口占用：(context_limit, 占用比例 0.0-1.0, 百分比)
+fn context_usage(stats: &crate::ui::history::SidebarStats) -> (u64, f64, u16) {
+    let context_limit = stats.context_limit.unwrap_or(200_000);
+    let ratio = (stats.total_tokens as f64 / context_limit as f64).clamp(0.0, 1.0);
+    (context_limit, ratio, (ratio * 100.0) as u16)
+}
+
 /// 构建侧边栏可见文本行，供渲染与复制共用。
 pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> {
     let title_display = if info.session_title.trim().is_empty() {
@@ -38,9 +53,7 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         truncate(info.model, 20)
     };
 
-    let context_limit = app.stats.context_limit.unwrap_or(200_000);
-    let ratio = (app.stats.total_tokens as f64 / context_limit as f64).clamp(0.0, 1.0);
-    let percent = (ratio * 100.0) as u16;
+    let (context_limit, _ratio, percent) = context_usage(&app.stats);
     let cost_str = if app.stats.estimated_cost_usd > 0.0 {
         format!("${:.4}", app.stats.estimated_cost_usd)
     } else {
@@ -48,86 +61,58 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
     };
 
     let mut lines = vec![Line::from(""); 22];
-    lines[0] = Line::from(vec![
-        Span::styled("Title: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            title_display,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+    lines[0] = label_value(
+        "Title",
+        title_display,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+    lines[1] = label_value("Session", short_id, Style::default().fg(Color::Cyan));
+    lines[2] = label_value("Workspace", ws_display.to_string(), Style::default().fg(Color::White));
+    lines[3] = label_value(
+        "Turns",
+        app.stats.total_turns.to_string(),
+        Style::default().fg(Color::Yellow),
+    );
+    lines[6] = label_value("Model", model_display, Style::default().fg(Color::Green));
+    lines[7] = label_value(
+        "Variant",
+        info.variant.unwrap_or("none").to_string(),
+        Style::default().fg(Color::Magenta),
+    );
+    lines[10] = label_value(
+        "Tokens",
+        format!(
+            "{}/{}k ({}%)",
+            app.stats.total_tokens,
+            context_limit / 1000,
+            percent
         ),
-    ]);
-    lines[1] = Line::from(vec![
-        Span::styled("Session: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(short_id, Style::default().fg(Color::Cyan)),
-    ]);
-    lines[2] = Line::from(vec![
-        Span::styled("Workspace: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(ws_display.to_string(), Style::default().fg(Color::White)),
-    ]);
-    lines[3] = Line::from(vec![
-        Span::styled("Turns: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            app.stats.total_turns.to_string(),
-            Style::default().fg(Color::Yellow),
-        ),
-    ]);
-    lines[6] = Line::from(vec![
-        Span::styled("Model: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(model_display, Style::default().fg(Color::Green)),
-    ]);
-    lines[7] = Line::from(vec![
-        Span::styled("Variant: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            info.variant.unwrap_or("none").to_string(),
-            Style::default().fg(Color::Magenta),
-        ),
-    ]);
-    lines[10] = Line::from(vec![
-        Span::styled("Tokens: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!(
-                "{}/{}k ({}%)",
-                app.stats.total_tokens,
-                context_limit / 1000,
-                percent
-            ),
-            Style::default().fg(Color::White),
-        ),
-    ]);
-    lines[11] = Line::from(vec![
-        Span::styled("In/Out: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!(
-                "{} / {}",
-                app.stats.prompt_tokens, app.stats.completion_tokens
-            ),
-            Style::default().fg(Color::Rgb(170, 170, 170)),
-        ),
-    ]);
-    lines[15] = Line::from(vec![
-        Span::styled("Cache Read: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            app.stats.cache_read_tokens.to_string(),
-            Style::default().fg(Color::Cyan),
-        ),
-    ]);
-    lines[16] = Line::from(vec![
-        Span::styled("Cache Write: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            app.stats.cache_write_tokens.to_string(),
-            Style::default().fg(Color::LightBlue),
-        ),
-    ]);
-    lines[19] = Line::from(vec![
-        Span::styled("Est. Cost: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            cost_str,
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
+        Style::default().fg(Color::White),
+    );
+    lines[11] = label_value(
+        "In/Out",
+        format!("{} / {}", app.stats.prompt_tokens, app.stats.completion_tokens),
+        Style::default().fg(Color::Rgb(170, 170, 170)),
+    );
+    lines[15] = label_value(
+        "Cache Read",
+        app.stats.cache_read_tokens.to_string(),
+        Style::default().fg(Color::Cyan),
+    );
+    lines[16] = label_value(
+        "Cache Write",
+        app.stats.cache_write_tokens.to_string(),
+        Style::default().fg(Color::LightBlue),
+    );
+    lines[19] = label_value(
+        "Est. Cost",
+        cost_str,
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD),
+    );
     lines
 }
 
@@ -171,9 +156,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
         ])
         .split(inner);
 
-    let context_limit = app.stats.context_limit.unwrap_or(200_000);
-    let ratio = (app.stats.total_tokens as f64 / context_limit as f64).clamp(0.0, 1.0);
-    let percent = (ratio * 100.0) as u16;
+    let (_context_limit, ratio, percent) = context_usage(&app.stats);
     let mut lines = build_sidebar_lines(app, info);
     if let Some(selection) = &app.sidebar_selection {
         apply_selection_highlight(&mut lines, selection);

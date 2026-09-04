@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 
-use crate::ui::command::COMMANDS;
+use crate::ui::command::{COMMANDS, command_row};
 use crate::ui::views::modal_shell::{centered_rect, modal_block};
 
 /// 渲染帮助与快捷键弹窗
@@ -31,18 +31,16 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
     )));
 
     for cmd in COMMANDS {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {:<14}", cmd.name),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("- {}", cmd.description),
-                Style::default().fg(Color::White),
-            ),
-        ]));
+        lines.push(command_row(
+            cmd.name,
+            cmd.description,
+            "  ",
+            14,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::White),
+        ));
     }
 
     lines.push(Line::from(""));

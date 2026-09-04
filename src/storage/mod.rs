@@ -15,6 +15,8 @@ pub enum StoreError {
     NotFound(String),
     #[error("Invalid session format: {0}")]
     InvalidFormat(String),
+    #[error("Blocking storage task failed: {0}")]
+    TaskJoin(String),
 }
 
 #[async_trait]

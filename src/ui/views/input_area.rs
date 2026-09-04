@@ -5,6 +5,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::ui::app::App;
+use crate::ui::command::command_row;
+use crate::ui::views::modal_shell::selected_row_style;
 
 /// 复合输入区：状态指示条 + 命令浮层 + 输入框 + 底部元数据栏
 pub fn render_input_area(
@@ -113,48 +115,22 @@ pub fn render_input_area(
         .block(input_block)
     } else if let Some((sel_start, sel_end)) = app.input.selection_range() {
         let text_lines: Vec<&str> = app.input.text.split('\n').collect();
-        let mut rendered_lines = Vec::with_capacity(text_lines.len());
-        let mut global_char_idx = 0;
         let sel_style = Style::default()
             .bg(Color::Rgb(45, 80, 140))
             .fg(Color::White);
         let normal_style = Style::default().fg(Color::White);
 
+        let mut rendered_lines = Vec::with_capacity(text_lines.len());
+        let mut char_offset = 0;
         for line_str in text_lines {
-            let mut spans = Vec::new();
-            let mut cur_chunk = String::new();
-            let mut cur_in_sel = None;
-
-            for c in line_str.chars() {
-                let in_sel = global_char_idx >= sel_start && global_char_idx < sel_end;
-                if cur_in_sel == Some(in_sel) {
-                    cur_chunk.push(c);
-                } else {
-                    if !cur_chunk.is_empty() {
-                        let style = if cur_in_sel == Some(true) {
-                            sel_style
-                        } else {
-                            normal_style
-                        };
-                        spans.push(Span::styled(std::mem::take(&mut cur_chunk), style));
-                    }
-                    cur_chunk.push(c);
-                    cur_in_sel = Some(in_sel);
-                }
-                global_char_idx += 1;
-            }
-
-            if !cur_chunk.is_empty() {
-                let style = if cur_in_sel == Some(true) {
-                    sel_style
-                } else {
-                    normal_style
-                };
-                spans.push(Span::styled(cur_chunk, style));
-            }
-
-            rendered_lines.push(Line::from(spans));
-            global_char_idx += 1; // 对应换行符 '\n'
+            rendered_lines.push(Line::from(line_selection_spans(
+                line_str,
+                char_offset,
+                (sel_start, sel_end),
+                normal_style,
+                sel_style,
+            )));
+            char_offset += line_str.chars().count() + 1; // +1 对应换行符 '\n'
         }
 
         Paragraph::new(ratatui::text::Text::from(rendered_lines))
@@ -218,6 +194,41 @@ pub fn render_input_area(
     }
 }
 
+/// 按选区命中将单行文本切分为 normal / selected 两种样式的 span 序列
+/// （以全局字符下标判定，`char_offset` 为该行首字符的全局下标）
+fn line_selection_spans(
+    line_str: &str,
+    char_offset: usize,
+    selection: (usize, usize),
+    normal: Style,
+    selected: Style,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut chunk = String::new();
+    let mut in_sel: Option<bool> = None;
+
+    for (local_idx, c) in line_str.chars().enumerate() {
+        let global_idx = char_offset + local_idx;
+        let hit = global_idx >= selection.0 && global_idx < selection.1;
+        if in_sel == Some(hit) {
+            chunk.push(c);
+        } else {
+            if !chunk.is_empty() {
+                let style = if in_sel == Some(true) { selected } else { normal };
+                spans.push(Span::styled(std::mem::take(&mut chunk), style));
+            }
+            chunk.push(c);
+            in_sel = Some(hit);
+        }
+    }
+
+    if !chunk.is_empty() {
+        let style = if in_sel == Some(true) { selected } else { normal };
+        spans.push(Span::styled(chunk, style));
+    }
+    spans
+}
+
 /// 渲染命令建议浮层（置于输入框上方，支持上下键高亮、Tab 快速补全）
 fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
     let count = app.matched_commands.len().min(8);
@@ -256,10 +267,7 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
         let prefix = if is_selected { "> " } else { "  " };
 
         let style = if is_selected {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            selected_row_style(Color::Cyan)
         } else {
             Style::default().fg(Color::White)
         };
@@ -270,10 +278,14 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
             Style::default().fg(Color::DarkGray)
         };
 
-        lines.push(Line::from(vec![
-            Span::styled(format!("{}{:<12}", prefix, cmd.name), style),
-            Span::styled(format!(" - {}", cmd.description), desc_style),
-        ]));
+        lines.push(command_row(
+            cmd.name,
+            cmd.description,
+            prefix,
+            12,
+            style,
+            desc_style,
+        ));
     }
 
     let p = Paragraph::new(lines).block(block);

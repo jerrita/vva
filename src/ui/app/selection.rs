@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthChar;
+
 use super::App;
 
 /// 文本区域中的绝对行列坐标
@@ -33,6 +35,35 @@ impl TextSelection {
     /// 判断选区是否为空（起止点重合）
     pub fn is_empty(&self) -> bool {
         self.anchor == self.head
+    }
+
+    /// 指定行落在选区内的列区间 (start_col, end_col)；不在选区内或区间为空时返回 None。
+    /// 首行从 start.col 起、尾行至 end.col 止、中间行为整行。
+    pub fn line_column_range(&self, line_idx: usize) -> Option<(usize, usize)> {
+        let (start, end) = self.normalized();
+        if line_idx < start.line || line_idx > end.line {
+            return None;
+        }
+        let range = if start.line == end.line {
+            (start.col, end.col)
+        } else if line_idx == start.line {
+            (start.col, usize::MAX)
+        } else if line_idx == end.line {
+            (0, end.col)
+        } else {
+            (0, usize::MAX)
+        };
+        (range.0 < range.1).then_some(range)
+    }
+}
+
+/// 字符在列区间内的命中判定（按显示列坐标；零宽字符以起始列判定）
+pub fn char_in_column_range(ch: char, col: usize, range: (usize, usize)) -> bool {
+    let width = ch.width().unwrap_or(0);
+    if width == 0 {
+        col >= range.0 && col < range.1
+    } else {
+        col + width > range.0 && col < range.1
     }
 }
 

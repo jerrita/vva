@@ -1,6 +1,15 @@
 use super::*;
 use crate::storage::SessionStore;
+use crate::ui::session_manager::ManagedSession;
 use crate::ui::test_support::create_test_app;
+
+/// 等待会话后台轮次结束，避免 App::new 的 try_read 与引擎写锁产生调度竞争
+async fn wait_until_idle(session: &std::sync::Arc<ManagedSession>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while session.is_running() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
 
 #[tokio::test]
 async fn test_slash_command_model_execution() {
@@ -242,6 +251,10 @@ async fn test_session_resume_preserves_web_search_state() {
         .await
         .unwrap();
     let s2_id = s2.id.clone();
+
+    // 等待两个会话的后台轮次结束，再构造 App 读取会话状态
+    wait_until_idle(&s1).await;
+    wait_until_idle(&s2).await;
 
     // 3. 启动 App，以 Session 1 为初始会话
     let mut app = App::new(session_mgr.clone(), s1, false).await;

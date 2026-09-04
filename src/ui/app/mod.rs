@@ -12,7 +12,8 @@ pub use super::history::{ChatEntry, SidebarStats, compute_stats, entries_from_tu
 pub use super::input::InputBuffer;
 pub use super::modals::*;
 pub use selection::{
-    TextCoord, TextSelection, base64_encode, get_clipboard_text, set_clipboard_text,
+    TextCoord, TextSelection, base64_encode, char_in_column_range, get_clipboard_text,
+    set_clipboard_text,
 };
 
 pub mod dispatch;

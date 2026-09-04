@@ -151,6 +151,24 @@ impl From<&Session> for SessionHeader {
     }
 }
 
+impl SessionHeader {
+    /// 由持久化 Header 与已加载的轮次重建运行时会话（updated_at 以加载时刻计）
+    pub fn into_session(self, turns: Vec<Turn>) -> Session {
+        Session {
+            id: self.id,
+            title: self.title,
+            workspace_root: self.workspace_root,
+            created_at: self.created_at,
+            updated_at: Utc::now(),
+            current_model: self.current_model,
+            current_variant: self.current_variant,
+            web_search: self.web_search,
+            turns,
+            meta: self.meta,
+        }
+    }
+}
+
 /// JSONL 记录条目（用于单行流式序列化）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]

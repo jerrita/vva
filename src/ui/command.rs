@@ -6,6 +6,9 @@ pub struct SlashCommand {
     pub example: &'static str,
 }
 
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
+
 pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/sessions",
@@ -84,6 +87,24 @@ pub fn match_commands(input: &str) -> Vec<&'static SlashCommand> {
                 || cmd.aliases.iter().any(|a| a.starts_with(&lower_token))
         })
         .collect()
+}
+
+/// 命令列表行：`prefix + 名称(定宽) + 描述`，帮助弹窗与命令浮层共用
+pub fn command_row(
+    name: &str,
+    description: &str,
+    prefix: &str,
+    name_width: usize,
+    name_style: Style,
+    desc_style: Style,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{prefix}{:<name_width$}", name),
+            name_style,
+        ),
+        Span::styled(format!(" - {description}"), desc_style),
+    ])
 }
 
 #[cfg(test)]
