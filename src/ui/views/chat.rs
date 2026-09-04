@@ -199,6 +199,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
 
 /// 对话与工具消息流视图（支持 Thinking 思考块、Tool 动作与结果、Assistant 最终回复 Markdown 渲染）
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
+    app.chat_area = area;
     let block = Block::default()
         .borders(Borders::NONE);
 
@@ -224,14 +225,19 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 
     // 当内容超出可视区时，在右侧渲染半透明优雅的滚动条
     if max_scroll > 0 {
-        let mut scrollbar_state = ScrollbarState::new(total_lines)
-            .position(scroll)
-            .viewport_content_length(viewport_height);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll)
+            .position(scroll);
+
+        let thumb_color = if app.is_dragging_scrollbar {
+            Color::Rgb(150, 180, 225)
+        } else {
+            Color::Rgb(100, 110, 130)
+        };
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
-            .thumb_style(Style::default().fg(Color::Rgb(100, 110, 130)))
+            .thumb_style(Style::default().fg(thumb_color))
             .track_style(Style::default().fg(Color::Rgb(35, 38, 46)));
 
         frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
@@ -378,11 +384,25 @@ def stream_test():
             render_chat(&mut app, f, f.area());
         }).unwrap();
 
-        // 验证视口和滚动状态已自动计算，并且 max_scroll > 0
+        // 验证视口和滚动状态已自动计算，并且处于底部
         assert!(app.max_scroll > 0);
         assert_eq!(app.viewport_height, 10);
         assert!(app.auto_scroll);
         assert_eq!(app.scroll_offset, app.max_scroll);
+        assert_eq!(app.chat_area, Rect::new(0, 0, 80, 10));
+
+        // 验证滚到底时，滚动条滑块位于最底部行 (y=9)
+        let buffer = terminal.backend().buffer();
+        let last_cell = buffer.cell((79, 9)).unwrap();
+        assert_eq!(last_cell.symbol(), "█");
+
+        // 滚到顶时，滚动条滑块位于最顶部行 (y=0)
+        app.scroll_to_top();
+        terminal.draw(|f| {
+            render_chat(&mut app, f, f.area());
+        }).unwrap();
+        let top_cell = terminal.backend().buffer().cell((79, 0)).unwrap();
+        assert_eq!(top_cell.symbol(), "█");
     }
 }
 

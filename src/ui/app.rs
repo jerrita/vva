@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use ratatui::layout::Rect;
 use tokio::sync::broadcast;
 
 use crate::harness::agent::AgentEvent;
@@ -22,6 +23,8 @@ pub struct App {
     pub auto_scroll: bool,
     pub max_scroll: usize,
     pub viewport_height: usize,
+    pub chat_area: Rect,
+    pub is_dragging_scrollbar: bool,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
@@ -53,6 +56,8 @@ impl App {
             auto_scroll: true,
             max_scroll: 0,
             viewport_height: 0,
+            chat_area: Rect::default(),
+            is_dragging_scrollbar: false,
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,
@@ -438,6 +443,22 @@ impl App {
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_offset = self.max_scroll;
         self.auto_scroll = true;
+    }
+
+    /// 根据比例 (0.0 ..= 1.0) 精确设置滚动条与视口偏移量（用于滚动条点击或平滑拖拽）
+    pub fn scroll_to_ratio(&mut self, ratio: f64) {
+        if self.max_scroll == 0 {
+            return;
+        }
+        let clamped = ratio.clamp(0.0, 1.0);
+        let target = (clamped * self.max_scroll as f64).round() as usize;
+        if target >= self.max_scroll {
+            self.scroll_offset = self.max_scroll;
+            self.auto_scroll = true;
+        } else {
+            self.scroll_offset = target;
+            self.auto_scroll = false;
+        }
     }
 
     // --- 输入框代理方法 ---
@@ -915,6 +936,27 @@ mod tests {
 
         // 一键到底
         app.scroll_to_bottom();
+        assert_eq!(app.scroll_offset, 50);
+        assert!(app.auto_scroll);
+
+        // 滚动条比例点击与拖拽测试
+        app.scroll_to_ratio(0.0);
+        assert_eq!(app.scroll_offset, 0);
+        assert!(!app.auto_scroll);
+
+        app.scroll_to_ratio(0.5);
+        assert_eq!(app.scroll_offset, 25);
+        assert!(!app.auto_scroll);
+
+        app.scroll_to_ratio(1.0);
+        assert_eq!(app.scroll_offset, 50);
+        assert!(app.auto_scroll);
+
+        // 越界拖拽安全测试
+        app.scroll_to_ratio(-0.5);
+        assert_eq!(app.scroll_offset, 0);
+
+        app.scroll_to_ratio(2.0);
         assert_eq!(app.scroll_offset, 50);
         assert!(app.auto_scroll);
 

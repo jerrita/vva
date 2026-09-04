@@ -10,7 +10,7 @@ pub mod views;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
     Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+    KeyboardEnhancementFlags, MouseButton, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -248,6 +248,40 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
             }
             MouseEventKind::ScrollDown => {
                 app.scroll_down(3);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if app.modal == ActiveModal::None && app.max_scroll > 0 && app.chat_area.height > 0 {
+                    let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
+                    let in_scrollbar_col = mouse.column >= scrollbar_col.saturating_sub(1)
+                        && mouse.column <= scrollbar_col;
+                    let in_chat_rows = mouse.row >= app.chat_area.y
+                        && mouse.row < app.chat_area.y + app.chat_area.height;
+
+                    if in_scrollbar_col && in_chat_rows {
+                        app.is_dragging_scrollbar = true;
+                        let track_height = app.chat_area.height as usize;
+                        let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
+                        let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
+                        app.scroll_to_ratio(ratio);
+                    } else {
+                        app.is_dragging_scrollbar = false;
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if app.is_dragging_scrollbar && app.max_scroll > 0 && app.chat_area.height > 0 {
+                    let track_height = app.chat_area.height as usize;
+                    let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
+                        0
+                    } else {
+                        (mouse.row as usize - app.chat_area.y as usize).min(track_height.saturating_sub(1))
+                    };
+                    let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
+                    app.scroll_to_ratio(ratio);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                app.is_dragging_scrollbar = false;
             }
             _ => {}
         }
