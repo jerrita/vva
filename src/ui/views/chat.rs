@@ -257,7 +257,7 @@ mod tests {
         let store = Arc::new(JsonlSessionStore::new(&temp_dir).unwrap());
         let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
         let session = session_mgr
-            .create_session("init_model".into(), None, None)
+            .create_session("init_model".into(), None, None, false)
             .await
             .unwrap();
         App::new(session_mgr, session, false).await

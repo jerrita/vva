@@ -43,8 +43,8 @@ enum Commands {
         variant: Option<String>,
 
         /// 开启原生网络搜索 / 实时 Grounding
-        #[arg(long, default_value_t = false)]
-        web_search: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        web_search: Option<bool>,
 
         /// 继存现有 Session ID (若不指定则自动新建)
         #[arg(short, long)]
@@ -69,8 +69,8 @@ enum Commands {
         variant: Option<String>,
 
         /// 开启原生网络搜索 / 实时 Grounding
-        #[arg(long, default_value_t = false)]
-        web_search: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        web_search: Option<bool>,
 
         /// 继存现有 Session ID
         #[arg(short, long)]
@@ -155,9 +155,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app_config,
                 None,
                 workspace,
-                default_model,
                 None,
-                false,
+                None,
+                None,
             )
             .await?;
         }
@@ -170,13 +170,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace,
         }) => {
             let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-            let target_model = model.unwrap_or(default_model);
             run_tui(
                 store,
                 app_config,
                 session_id,
                 workspace,
-                target_model,
+                model,
                 variant,
                 web_search,
             )
@@ -192,7 +191,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             prompt,
         }) => {
             let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-            let target_model = model.unwrap_or(default_model);
 
             // 如果没有提供 prompt，直接进入 TUI 交互
             let prompt = match prompt {
@@ -203,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app_config,
                         session_id,
                         workspace,
-                        target_model,
+                        model,
                         variant,
                         web_search,
                     )
@@ -218,16 +216,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await?
                     .ok_or_else(|| format!("Session not found: {sid}"))?;
 
-                let new_model = target_model;
-                let new_variant = variant.or_else(|| s.current_variant.clone());
-                s.set_model(new_model, new_variant);
+                let mut changed = false;
+                if let Some(m) = model {
+                    s.current_model = m;
+                    changed = true;
+                }
+                if variant.is_some() {
+                    s.current_variant = variant;
+                    changed = true;
+                }
+                if let Some(w) = web_search {
+                    s.web_search = w;
+                    changed = true;
+                }
+                if changed {
+                    s.updated_at = chrono::Utc::now();
+                    store.save_header(&s).await?;
+                }
                 s
             } else {
+                let target_model = model.unwrap_or(default_model);
+                let target_search = web_search.unwrap_or(false);
                 let s = Session::with_model(
                     &workspace,
                     Some(prompt.chars().take(40).collect()),
                     target_model,
                     variant,
+                    target_search,
                 );
                 store.save_header(&s).await?;
                 s
@@ -277,7 +292,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             println!("🤖 Active Provider: {} (API Model: {})", provider_inst.name(), effective_model_name);
-            if web_search {
+            if session.web_search {
                 println!("🌐 Native Web Search: Enabled");
             }
 
@@ -297,7 +312,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 max_iterations: 15,
                 completion_options: CompletionOptions {
                     model: effective_model_name,
-                    enable_web_search: web_search,
+                    enable_web_search: session.web_search,
                     reasoning_effort,
                     ..Default::default()
                 },

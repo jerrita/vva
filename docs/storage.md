@@ -24,7 +24,7 @@ vva 默认采用 **JSONL (JSON Lines) 追加写存储引擎**（[`JsonlSessionSt
 每个 `.jsonl` 文件严格遵循以下两段式结构：
 
 ```
-Line 1:      {"type":"header","data":{"id":"sess_xxx","title":"Refactor","workspace_root":"/path","created_at":"...","updated_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","meta":{}}}
+Line 1:      {"type":"header","data":{"id":"sess_xxx","title":"Refactor","workspace_root":"/path","created_at":"...","updated_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true,"meta":{}}}
 Line 2:      {"type":"turn","data":{"id":"turn_001","role":"user","messages":[...],"usage":null,"meta":{}}}
 Line 3:      {"type":"turn","data":{"id":"turn_002","role":"assistant","messages":[...],"usage":{...},"meta":{"response":{"response_id":"resp_123",...}}}}
 Line 4..N:   {"type":"turn","data":{...}}
@@ -32,8 +32,8 @@ Line 4..N:   {"type":"turn","data":{...}}
 
 - **第 1 行 (`JsonlRecord::Header`)**：
   - 存储全局会话头信息 [`SessionHeader`](../src/model/session.rs)；
-  - 绑定当前会话的 `current_model`、`current_variant` 与 `workspace_root`；
-  - 仅在会话创建或发生模型/标题配置变更时覆写更新第 1 行。
+  - 绑定当前会话的 `current_model`、`current_variant`、`web_search` 与 `workspace_root`；
+  - 仅在会话创建或发生模型/标题/网络搜索配置变更时覆写更新第 1 行。
 - **第 2..N 行 (`JsonlRecord::Turn`)**：
   - 每完成一轮交互（用户提问、模型响应或工具执行返回），直接向文件尾部执行标准 `O_APPEND` 追加写；
   - 独立记录该轮的全部 `messages`、`usage` 及专属 `meta`。

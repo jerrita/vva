@@ -16,6 +16,7 @@ classDiagram
         +DateTime updated_at
         +String current_model
         +Option~String~ current_variant
+        +bool web_search
         +Vec~Turn~ turns
         +SessionMeta meta
     }
@@ -55,10 +56,11 @@ classDiagram
 - **代码位置**：[`src/model/session.rs`](../src/model/session.rs)
 - **核心职责**：
   - 作为交互的历史上下文边界；
-  - **强绑定当前生效模型与推理强度**：
+  - **强绑定当前生效模型、推理强度与网络搜索开启状态**：
     - `current_model: String`（如 `"openai/gpt-5-terra"` 或 `"anthropic/claude-3-7-sonnet"`）；
     - `current_variant: Option<String>`（如 `Some("high")` 或 `None`）；
-  - 无论何时断点恢复、切换会话，都能自动继承历史记录中最近保存的模型与推理强度；
+    - `web_search: bool`（保持工具/函数挂载与 prompt cache 一致）；
+  - 无论何时断点恢复、切换会话，都能自动继承历史记录中最近保存的模型、推理强度与网络搜索状态；
   - 携带工作空间路径 `workspace_root: PathBuf`，支持基于工程的工作空间会话过滤。
 
 ### 1.2 Turn（轮次实体）

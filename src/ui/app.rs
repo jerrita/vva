@@ -45,13 +45,18 @@ impl App {
         enable_web_search: bool,
     ) -> Self {
         let event_rx = initial_session.event_tx.subscribe();
+        let effective_web_search = if let Ok(s) = initial_session.session.try_read() {
+            s.web_search
+        } else {
+            enable_web_search
+        };
         let mut app = Self {
             session_mgr,
             active_session: initial_session,
             event_rx,
             chat_entries: Vec::new(),
             input: InputBuffer::new(),
-            enable_web_search,
+            enable_web_search: effective_web_search,
             scroll_offset: 0,
             auto_scroll: true,
             max_scroll: 0,
@@ -93,6 +98,16 @@ impl App {
         let target = self.session_mgr.get_or_load(session_id).await?;
         self.active_session = target;
         self.event_rx = self.active_session.event_tx.subscribe();
+
+        let session_web_search = {
+            let s = self.active_session.session.read().await;
+            s.web_search
+        };
+        self.enable_web_search = session_web_search;
+        if let Some(ref mut cm) = self.config_modal {
+            cm.update_web_search(session_web_search);
+        }
+
         self.reload_active_session_history().await;
         self.chat_entries.push(ChatEntry::SystemNotice {
             text: format!("Resumed session {}", session_id),
@@ -591,7 +606,6 @@ impl App {
             .submit_prompt(
                 self.active_session.clone(),
                 &input_text,
-                self.enable_web_search,
             )
             .await
         {
@@ -636,6 +650,13 @@ impl App {
                 } else {
                     self.enable_web_search = !self.enable_web_search;
                 }
+                {
+                    let mut s = self.active_session.session.write().await;
+                    s.set_web_search(self.enable_web_search);
+                }
+                let s_ref = self.active_session.session.read().await;
+                let _ = self.session_mgr.store().save_header(&s_ref).await;
+
                 let status = if self.enable_web_search { "ON" } else { "OFF" };
                 if let Some(ref mut cm) = self.config_modal {
                     cm.update_web_search(self.enable_web_search);
@@ -758,6 +779,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::SessionStore;
 
     #[tokio::test]
     async fn test_slash_command_model_execution() {
@@ -766,7 +788,7 @@ mod tests {
         let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
         let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
         let session = session_mgr
-            .create_session("init_model".into(), None, None)
+            .create_session("init_model".into(), None, None, false)
             .await
             .unwrap();
         let mut app = App::new(session_mgr, session, false).await;
@@ -804,7 +826,7 @@ mod tests {
         let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
         let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
         let session = session_mgr
-            .create_session("init_model".into(), None, None)
+            .create_session("init_model".into(), None, None, false)
             .await
             .unwrap();
         let mut app = App::new(session_mgr, session, false).await;
@@ -857,7 +879,7 @@ mod tests {
         let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
         let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
         let session = session_mgr
-            .create_session("test_model".into(), None, None)
+            .create_session("test_model".into(), None, None, false)
             .await
             .unwrap();
         let mut app = App::new(session_mgr, session, false).await;
@@ -894,7 +916,7 @@ mod tests {
         let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
         let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
         let session = session_mgr
-            .create_session("test_model".into(), None, None)
+            .create_session("test_model".into(), None, None, false)
             .await
             .unwrap();
         let mut app = App::new(session_mgr, session, false).await;
@@ -959,6 +981,63 @@ mod tests {
         app.scroll_to_ratio(2.0);
         assert_eq!(app.scroll_offset, 50);
         assert!(app.auto_scroll);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_session_resume_preserves_web_search_state() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_app_resume_search_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store.clone(), None, temp_dir.clone()));
+
+        // 1. 创建 Session 1，初始开启 web_search
+        let s1 = session_mgr
+            .create_session("model_1".into(), None, Some("Session 1".into()), true)
+            .await
+            .unwrap();
+        let s1_id = s1.id.clone();
+
+        // 2. 创建 Session 2，初始关闭 web_search
+        let s2 = session_mgr
+            .create_session("model_2".into(), None, Some("Session 2".into()), false)
+            .await
+            .unwrap();
+        let s2_id = s2.id.clone();
+
+        // 3. 启动 App，以 Session 1 为初始会话
+        let mut app = App::new(session_mgr.clone(), s1, false).await;
+        // App 必须继承 Session 1 的 web_search: true
+        assert!(app.enable_web_search);
+
+        // 4. 切换到 Session 2
+        app.switch_to_session(&s2_id).await.unwrap();
+        // App 状态必须切换为 Session 2 的 web_search: false
+        assert!(!app.enable_web_search);
+
+        // 5. 切换回 Session 1
+        app.switch_to_session(&s1_id).await.unwrap();
+        // 恢复 Session 1 时，状态必须与上一次保持一致为 true，防止 prompt cache 失效
+        assert!(app.enable_web_search);
+
+        // 6. 执行 /web off 显式关闭 Session 1 的网络搜索
+        app.set_input("/web off");
+        app.submit_input().await;
+        assert!(!app.enable_web_search);
+
+        // 校验 Session 1 持久化存储中的 web_search 已同步更新为 false
+        let loaded_s1 = store.load_session(&s1_id).await.unwrap().unwrap();
+        assert!(!loaded_s1.web_search);
+
+        // 7. 再次执行 /web on 开启 Session 1 的网络搜索
+        app.set_input("/web on");
+        app.submit_input().await;
+        assert!(app.enable_web_search);
+
+        let loaded_s1_again = store.load_session(&s1_id).await.unwrap().unwrap();
+        assert!(loaded_s1_again.web_search);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

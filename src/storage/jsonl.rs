@@ -106,6 +106,7 @@ impl SessionStore for JsonlSessionStore {
             updated_at: Utc::now(),
             current_model: header.current_model,
             current_variant: header.current_variant,
+            web_search: header.web_search,
             turns,
             meta: header.meta,
         };
@@ -139,11 +140,13 @@ impl SessionStore for JsonlSessionStore {
                                 turn_count,
                                 current_model: header.current_model,
                                 current_variant: header.current_variant,
+                                web_search: header.web_search,
                             });
                         }
                 }
         }
 
+        // 按创建时间倒序排列
         summaries.sort_by_key(|b| std::cmp::Reverse(b.created_at));
         Ok(summaries)
     }
@@ -165,6 +168,7 @@ mod tests {
             Some("Bugfix task".into()),
             "a/gpt-5.6-terra",
             Some("high".into()),
+            true,
         );
         session.meta.response = Some(ResponseSessionMeta {
             model: Some("gpt-5.6-terra".into()),
@@ -201,6 +205,7 @@ mod tests {
         assert_eq!(loaded.title, Some("Bugfix task".into()));
         assert_eq!(loaded.current_model, "a/gpt-5.6-terra");
         assert_eq!(loaded.current_variant.as_deref(), Some("high"));
+        assert!(loaded.web_search);
         assert_eq!(loaded.turns.len(), 2);
         assert_eq!(loaded.latest_openai_response_id(), Some("resp_001xyz"));
 
@@ -210,6 +215,7 @@ mod tests {
         assert_eq!(summaries[0].id, session.id);
         assert_eq!(summaries[0].current_model, "a/gpt-5.6-terra");
         assert_eq!(summaries[0].current_variant.as_deref(), Some("high"));
+        assert!(summaries[0].web_search);
         assert_eq!(summaries[0].turn_count, 2);
 
         // 清理临时目录

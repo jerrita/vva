@@ -105,6 +105,7 @@ mod tests {
             turn_count: 2,
             current_model: "model_a".into(),
             current_variant: None,
+            web_search: false,
         };
 
         let s2 = SessionSummary {
@@ -115,6 +116,7 @@ mod tests {
             turn_count: 5,
             current_model: "model_a".into(),
             current_variant: None,
+            web_search: false,
         };
 
         let s3 = SessionSummary {
@@ -125,6 +127,7 @@ mod tests {
             turn_count: 1,
             current_model: "model_b".into(),
             current_variant: None,
+            web_search: false,
         };
 
         let mut modal = SessionsModalState::new(vec![s1, s2, s3], &ws_a);

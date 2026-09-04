@@ -125,8 +125,9 @@ impl SessionManager {
         model: String,
         variant: Option<String>,
         title: Option<String>,
+        web_search: bool,
     ) -> Result<Arc<ManagedSession>, String> {
-        let session = Session::with_model(&self.workspace, title, model, variant);
+        let session = Session::with_model(&self.workspace, title, model, variant, web_search);
         self.store
             .save_header(&session)
             .await
@@ -144,7 +145,6 @@ impl SessionManager {
         &self,
         managed: Arc<ManagedSession>,
         prompt: &str,
-        web_search: bool,
     ) -> Result<(), String> {
         if managed.is_running() {
             return Err("Session is currently running another prompt".to_string());
@@ -184,9 +184,9 @@ impl SessionManager {
         }
 
         // 2. 解析 Provider 与参数
-        let (current_model, current_variant, session_workspace) = {
+        let (current_model, current_variant, session_workspace, session_web_search) = {
             let s = managed.session.read().await;
-            (s.current_model.clone(), s.current_variant.clone(), s.workspace_root.clone())
+            (s.current_model.clone(), s.current_variant.clone(), s.workspace_root.clone(), s.web_search)
         };
 
         let (provider, effective_model, reasoning_effort) =
@@ -201,7 +201,7 @@ impl SessionManager {
             max_iterations: 15,
             completion_options: CompletionOptions {
                 model: effective_model,
-                enable_web_search: web_search,
+                enable_web_search: session_web_search,
                 reasoning_effort,
                 ..Default::default()
             },
@@ -423,7 +423,7 @@ mod tests {
         let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
         let mgr = SessionManager::new(store.clone(), None, "/tmp/project");
 
-        let s1 = mgr.create_session("model_a".into(), Some("high".into()), Some("Title 1".into())).await.expect("create s1");
+        let s1 = mgr.create_session("model_a".into(), Some("high".into()), Some("Title 1".into()), false).await.expect("create s1");
         let sid = s1.id.clone();
 
         // 再次加载同一个 session，必须返回相同单例指针
@@ -439,7 +439,7 @@ mod tests {
         let temp_dir = std::env::temp_dir().join(format!("vva_test_title_{}", uuid::Uuid::new_v4().simple()));
         let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
 
-        let session = Session::with_model(&temp_dir, None, "test_model", None);
+        let session = Session::with_model(&temp_dir, None, "test_model", None, false);
         store.save_header(&session).await.expect("save header");
 
         let session_lock = Arc::new(RwLock::new(session));

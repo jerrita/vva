@@ -20,6 +20,9 @@ pub struct Session {
     /// 当前选定的推理强度档位 (例如 Some("high"))
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_variant: Option<String>,
+    /// 是否开启原生网络搜索 / 实时 Grounding (保持工具挂载与 prompt cache 一致)
+    #[serde(default)]
+    pub web_search: bool,
     pub turns: Vec<Turn>,
     #[serde(default)]
     pub meta: SessionMeta,
@@ -27,7 +30,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(workspace_root: impl Into<PathBuf>, title: Option<String>) -> Self {
-        Self::with_model(workspace_root, title, String::new(), None)
+        Self::with_model(workspace_root, title, String::new(), None, false)
     }
 
     pub fn with_model(
@@ -35,6 +38,7 @@ impl Session {
         title: Option<String>,
         current_model: impl Into<String>,
         current_variant: Option<String>,
+        web_search: bool,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -45,6 +49,7 @@ impl Session {
             updated_at: now,
             current_model: current_model.into(),
             current_variant,
+            web_search,
             turns: Vec::new(),
             meta: SessionMeta::default(),
         }
@@ -70,6 +75,12 @@ impl Session {
         self.updated_at = Utc::now();
     }
 
+    /// 更新会话原生网络搜索开启状态
+    pub fn set_web_search(&mut self, web_search: bool) {
+        self.web_search = web_search;
+        self.updated_at = Utc::now();
+    }
+
     /// 提取最近一次成功的 OpenAI response_id
     pub fn latest_openai_response_id(&self) -> Option<&str> {
         self.turns
@@ -92,6 +103,8 @@ pub struct SessionHeader {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_variant: Option<String>,
     #[serde(default)]
+    pub web_search: bool,
+    #[serde(default)]
     pub meta: SessionMeta,
 }
 
@@ -104,6 +117,7 @@ impl From<&Session> for SessionHeader {
             created_at: s.created_at,
             current_model: s.current_model.clone(),
             current_variant: s.current_variant.clone(),
+            web_search: s.web_search,
             meta: s.meta.clone(),
         }
     }
@@ -127,4 +141,5 @@ pub struct SessionSummary {
     pub turn_count: usize,
     pub current_model: String,
     pub current_variant: Option<String>,
+    pub web_search: bool,
 }

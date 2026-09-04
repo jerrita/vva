@@ -47,9 +47,9 @@ pub async fn run_tui(
     app_config: Option<AppConfig>,
     initial_session_id: Option<String>,
     workspace: std::path::PathBuf,
-    default_model: String,
+    default_model: Option<String>,
     default_variant: Option<String>,
-    enable_web_search: bool,
+    enable_web_search: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = stdout();
@@ -65,26 +65,63 @@ pub async fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let session_mgr = Arc::new(SessionManager::new(store.clone(), app_config, workspace));
+    let session_mgr = Arc::new(SessionManager::new(store.clone(), app_config.clone(), workspace));
 
     // 加载或创建初始 Session 单例
     let initial_session: Arc<ManagedSession> = if let Some(sid) = initial_session_id {
         match session_mgr.get_or_load(&sid).await {
-            Ok(s) => s,
+            Ok(s) => {
+                let mut changed = false;
+                {
+                    let mut guard = s.session.write().await;
+                    if let Some(m) = default_model {
+                        guard.current_model = m;
+                        changed = true;
+                    }
+                    if default_variant.is_some() {
+                        guard.current_variant = default_variant;
+                        changed = true;
+                    }
+                    if let Some(w) = enable_web_search {
+                        guard.web_search = w;
+                        changed = true;
+                    }
+                    if changed {
+                        guard.updated_at = chrono::Utc::now();
+                    }
+                }
+                if changed {
+                    let s_ref = s.session.read().await;
+                    let _ = store.save_header(&s_ref).await;
+                }
+                s
+            }
             Err(e) => {
                 error!("Failed to load session {sid}: {e}. Creating new session.");
+                let fallback_model = default_model
+                    .or_else(|| app_config.as_ref().map(|c| c.settings.default.clone()))
+                    .unwrap_or_else(|| "openai/gpt-5.6-terra".to_string());
+                let fallback_search = enable_web_search.unwrap_or(false);
                 session_mgr
-                    .create_session(default_model, default_variant, None)
+                    .create_session(fallback_model, default_variant, None, fallback_search)
                     .await?
             }
         }
     } else {
+        let effective_model = default_model
+            .or_else(|| app_config.as_ref().map(|c| c.settings.default.clone()))
+            .unwrap_or_else(|| "openai/gpt-5.6-terra".to_string());
+        let effective_search = enable_web_search.unwrap_or(false);
         session_mgr
-            .create_session(default_model, default_variant, None)
+            .create_session(effective_model, default_variant, None, effective_search)
             .await?
     };
 
-    let mut app = App::new(session_mgr, initial_session, enable_web_search).await;
+    let session_web_search = {
+        let s = initial_session.session.read().await;
+        s.web_search
+    };
+    let mut app = App::new(session_mgr, initial_session, session_web_search).await;
 
     let res = run_app_loop(&mut terminal, &mut app).await;
 
@@ -431,6 +468,13 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                                 }
                                 app::ConfigItemKind::WebSearch => {
                                     app.enable_web_search = !app.enable_web_search;
+                                    {
+                                        let mut s = app.active_session.session.write().await;
+                                        s.set_web_search(app.enable_web_search);
+                                    }
+                                    let s_ref = app.active_session.session.read().await;
+                                    let _ = app.session_mgr.store().save_header(&s_ref).await;
+
                                     let status = if app.enable_web_search { "ON" } else { "OFF" };
                                     app.chat_entries.push(app::ChatEntry::SystemNotice {
                                         text: format!("Native web search is now {status}"),
