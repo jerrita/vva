@@ -22,6 +22,7 @@ pub struct ManagedSession {
     pub id: String,
     pub session: Arc<RwLock<Session>>,
     pub is_running: Arc<AtomicBool>,
+    pub is_persisted: Arc<AtomicBool>,
     pub status_text: Arc<RwLock<String>>,
     pub event_tx: broadcast::Sender<AgentEvent>,
     pub task_abort_handle: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
@@ -29,16 +30,29 @@ pub struct ManagedSession {
 
 impl ManagedSession {
     pub fn new(session: Session) -> Self {
+        Self::new_with_persisted(session, true)
+    }
+
+    pub fn new_unpersisted(session: Session) -> Self {
+        Self::new_with_persisted(session, false)
+    }
+
+    fn new_with_persisted(session: Session, persisted: bool) -> Self {
         let (event_tx, _) = broadcast::channel(256);
         let id = session.id.clone();
         Self {
             id,
             session: Arc::new(RwLock::new(session)),
             is_running: Arc::new(AtomicBool::new(false)),
+            is_persisted: Arc::new(AtomicBool::new(persisted)),
             status_text: Arc::new(RwLock::new(String::new())),
             event_tx,
             task_abort_handle: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn is_persisted(&self) -> bool {
+        self.is_persisted.load(Ordering::SeqCst)
     }
 
     pub fn is_running(&self) -> bool {
@@ -119,7 +133,7 @@ impl SessionManager {
         Ok(entry.clone())
     }
 
-    /// 创建并持久化新 Session
+    /// 创建内存中待持久化的新 Session（发送首条消息时真正写入存储）
     pub async fn create_session(
         &self,
         model: String,
@@ -128,12 +142,7 @@ impl SessionManager {
         web_search: bool,
     ) -> Result<Arc<ManagedSession>, String> {
         let session = Session::with_model(&self.workspace, title, model, variant, web_search);
-        self.store
-            .save_header(&session)
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let managed = Arc::new(ManagedSession::new(session));
+        let managed = Arc::new(ManagedSession::new_unpersisted(session));
         let mut map = self.sessions.write().await;
         map.insert(managed.id.clone(), managed.clone());
         Ok(managed)
@@ -150,12 +159,35 @@ impl SessionManager {
             return Err("Session is currently running another prompt".to_string());
         }
 
-        // 1. 追加 User Turn
-        let user_msg = Message::user(prompt);
-        let parent_turn_id = {
+        // 1. 如果尚未持久化（新会话第一条消息），固定生成系统提示词并写入 Header
+        let mut should_generate_title = false;
+        let parent_turn_id = if !managed.is_persisted() {
+            let mut s = managed.session.write().await;
+
+            let sys_prompt = crate::system::build_system_prompt(&s.workspace_root);
+            let sys_turn = Turn::new(crate::model::Role::System, vec![Message::system(sys_prompt)], None);
+            let sys_turn_id = sys_turn.id.clone();
+            s.append_turn(sys_turn);
+
+            if s.title.is_none() {
+                s.title = Some(prompt.chars().take(40).collect());
+                should_generate_title = true;
+            }
+
+            self.store
+                .save_header(&s)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            managed.is_persisted.store(true, Ordering::SeqCst);
+            Some(sys_turn_id)
+        } else {
             let s = managed.session.read().await;
             s.last_turn_id()
         };
+
+        // 2. 追加 User Turn
+        let user_msg = Message::user(prompt);
         let user_turn = Turn::user_turn(user_msg, parent_turn_id);
 
         self.store
@@ -163,15 +195,14 @@ impl SessionManager {
             .await
             .map_err(|e| e.to_string())?;
 
-        let should_generate_title = {
+        {
             let mut s = managed.session.write().await;
-            let needs_title = s.title.is_none();
-            if needs_title {
+            if s.title.is_none() {
                 s.title = Some(prompt.chars().take(40).collect());
+                should_generate_title = true;
             }
             s.append_turn(user_turn);
-            needs_title
-        };
+        }
 
         if should_generate_title {
             let cfg_clone = self.app_config.clone();
@@ -452,6 +483,36 @@ mod tests {
             "How to write a fast web server in Rust?".into(),
         )
         .await;
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_lazy_session_creation_persists_only_on_first_prompt() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_test_lazy_{}", uuid::Uuid::new_v4().simple()));
+        let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
+        let mgr = SessionManager::new(store.clone(), None, &temp_dir);
+
+        // 1. 创建 Session 时不落盘
+        let s = mgr.create_session("response/gpt-4.5".into(), None, None, false).await.expect("create s");
+        assert!(!s.is_persisted());
+
+        let session_file = temp_dir.join(format!("{}.jsonl", s.id));
+        assert!(!session_file.exists(), "Session file should not exist before first message");
+
+        let sessions = store.list_sessions().await.expect("list sessions");
+        assert_eq!(sessions.len(), 0, "Store should have 0 sessions before first message");
+
+        // 2. 提交第一条消息后真正落盘，并生成 Turn 0 (System) 与 Turn 1 (User)
+        mgr.submit_prompt(s.clone(), "First prompt").await.expect("submit prompt");
+        assert!(s.is_persisted());
+        assert!(session_file.exists(), "Session file should exist after first prompt");
+
+        let loaded = store.load_session(&s.id).await.expect("load").expect("must exist");
+        assert_eq!(loaded.turns.len(), 2);
+        assert_eq!(loaded.turns[0].role, crate::model::Role::System);
+        assert_eq!(loaded.turns[1].role, crate::model::Role::User);
+        assert!(loaded.turns[0].messages[0].text_content().contains("## Environment Context"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

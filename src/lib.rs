@@ -4,6 +4,7 @@ pub mod model;
 pub mod provider;
 pub mod search;
 pub mod storage;
+pub mod system;
 pub mod tools;
 pub mod ui;
 

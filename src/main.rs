@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
-use vva::config::{load_config, AppConfig, ResolvedModel};
+use vva::config::{home_dir, load_config, AppConfig, ResolvedModel};
 use vva::harness::{AgentConfig, AgentEngine, AgentEvent};
 use vva::model::{Annotation, ContentPart, Message, Session, Turn};
 use vva::provider::anthropic::AnthropicProvider;
@@ -101,8 +101,8 @@ enum SessionAction {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    let vva_dir = PathBuf::from(&home_dir).join(".vva");
+    let home_dir = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let vva_dir = home_dir.join(".vva");
     let sessions_dir = vva_dir.join("sessions");
     let store = Arc::new(JsonlSessionStore::new(&sessions_dir)?);
 
@@ -237,13 +237,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let target_model = model.unwrap_or(default_model);
                 let target_search = web_search.unwrap_or(false);
-                let s = Session::with_model(
+                let mut s = Session::with_model(
                     &workspace,
                     Some(prompt.chars().take(40).collect()),
                     target_model,
                     variant,
                     target_search,
                 );
+                let sys_prompt = vva::system::build_system_prompt(&workspace);
+                let sys_turn = Turn::new(vva::model::Role::System, vec![Message::system(sys_prompt)], None);
+                s.append_turn(sys_turn);
                 store.save_header(&s).await?;
                 s
             };

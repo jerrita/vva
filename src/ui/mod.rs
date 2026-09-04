@@ -472,8 +472,10 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                                         let mut s = app.active_session.session.write().await;
                                         s.set_web_search(app.enable_web_search);
                                     }
-                                    let s_ref = app.active_session.session.read().await;
-                                    let _ = app.session_mgr.store().save_header(&s_ref).await;
+                                    if app.active_session.is_persisted() {
+                                        let s_ref = app.active_session.session.read().await;
+                                        let _ = app.session_mgr.store().save_header(&s_ref).await;
+                                    }
 
                                     let status = if app.enable_web_search { "ON" } else { "OFF" };
                                     app.chat_entries.push(app::ChatEntry::SystemNotice {

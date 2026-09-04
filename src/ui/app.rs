@@ -195,7 +195,9 @@ impl App {
 
         let s_clone = {
             let s_ref = self.active_session.session.read().await;
-            let _ = self.session_mgr.store().save_header(&s_ref).await;
+            if self.active_session.is_persisted() {
+                let _ = self.session_mgr.store().save_header(&s_ref).await;
+            }
             s_ref.clone()
         };
 
@@ -376,7 +378,9 @@ impl App {
 
         let s_clone = {
             let s_ref = self.active_session.session.read().await;
-            let _ = self.session_mgr.store().save_header(&s_ref).await;
+            if self.active_session.is_persisted() {
+                let _ = self.session_mgr.store().save_header(&s_ref).await;
+            }
             s_ref.clone()
         };
 
@@ -654,8 +658,10 @@ impl App {
                     let mut s = self.active_session.session.write().await;
                     s.set_web_search(self.enable_web_search);
                 }
-                let s_ref = self.active_session.session.read().await;
-                let _ = self.session_mgr.store().save_header(&s_ref).await;
+                if self.active_session.is_persisted() {
+                    let s_ref = self.active_session.session.read().await;
+                    let _ = self.session_mgr.store().save_header(&s_ref).await;
+                }
 
                 let status = if self.enable_web_search { "ON" } else { "OFF" };
                 if let Some(ref mut cm) = self.config_modal {
@@ -993,18 +999,20 @@ mod tests {
         let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
         let session_mgr = Arc::new(SessionManager::new(store.clone(), None, temp_dir.clone()));
 
-        // 1. 创建 Session 1，初始开启 web_search
+        // 1. 创建 Session 1 并发送首条消息落盘，初始开启 web_search
         let s1 = session_mgr
             .create_session("model_1".into(), None, Some("Session 1".into()), true)
             .await
             .unwrap();
+        session_mgr.submit_prompt(s1.clone(), "init s1").await.unwrap();
         let s1_id = s1.id.clone();
 
-        // 2. 创建 Session 2，初始关闭 web_search
+        // 2. 创建 Session 2 并发送首条消息落盘，初始关闭 web_search
         let s2 = session_mgr
             .create_session("model_2".into(), None, Some("Session 2".into()), false)
             .await
             .unwrap();
+        session_mgr.submit_prompt(s2.clone(), "init s2").await.unwrap();
         let s2_id = s2.id.clone();
 
         // 3. 启动 App，以 Session 1 为初始会话

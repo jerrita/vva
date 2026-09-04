@@ -8,6 +8,38 @@ pub use model::{AppConfig, GlobalSettings, ModelConfig, ProviderConfig, Provider
 pub use parser::{load_config_file, parse_config_str, strip_jsonc_comments, ConfigError};
 pub use resolver::ResolvedModel;
 
+/// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
+pub fn home_dir() -> Option<PathBuf> {
+    if let Ok(home) = std::env::var("HOME")
+        && !home.trim().is_empty()
+    {
+        return Some(PathBuf::from(home));
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE")
+        && !profile.trim().is_empty()
+    {
+        return Some(PathBuf::from(profile));
+    }
+    if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+        let combined = format!("{}{}", drive, path);
+        if !combined.trim().is_empty() {
+            return Some(PathBuf::from(combined));
+        }
+    }
+    None
+}
+
+/// 展开路径中的 `~` 前缀为用户主目录
+pub fn expand_tilde<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+    if let Ok(stripped) = path.strip_prefix("~")
+        && let Some(home) = home_dir()
+    {
+        return home.join(stripped);
+    }
+    path.to_path_buf()
+}
+
 /// 自动寻址并合并加载全局配置与项目配置（支持 JSON 和 JSONC，项目配置优先级高于全局配置）
 pub fn load_config(custom_path: Option<&Path>) -> Result<AppConfig, ConfigError> {
     load_config_with_workspace(custom_path, None)
@@ -21,8 +53,8 @@ pub fn load_config_with_workspace(
     // 1. 加载全局配置 (~/.vva/config.jsonc 或 ~/.vva/config.json)
     let global_config = {
         let mut global_paths = Vec::new();
-        if let Ok(home) = std::env::var("HOME") {
-            let home_vva = PathBuf::from(home).join(".vva");
+        if let Some(home) = home_dir() {
+            let home_vva = home.join(".vva");
             global_paths.push(home_vva.join("config.jsonc"));
             global_paths.push(home_vva.join("config.json"));
         }
@@ -39,9 +71,10 @@ pub fn load_config_with_workspace(
     // 2. 加载项目配置 (custom_path, VVA_CONFIG, 或 workspace/cwd 目录下的 vva.jsonc/config.jsonc 等)
     let project_config = {
         if let Some(p) = custom_path {
-            Some(load_config_file(p)?)
+            let p = expand_tilde(p);
+            Some(load_config_file(&p)?)
         } else if let Ok(env_path) = std::env::var("VVA_CONFIG") {
-            let p = PathBuf::from(env_path);
+            let p = expand_tilde(Path::new(&env_path));
             if p.exists() {
                 Some(load_config_file(&p)?)
             } else {
@@ -78,8 +111,8 @@ pub fn load_config_with_workspace(
         (Some(global), None) => Ok(global),
         (None, None) => {
             let mut searched = Vec::new();
-            if let Ok(home) = std::env::var("HOME") {
-                let home_vva = PathBuf::from(home).join(".vva");
+            if let Some(home) = home_dir() {
+                let home_vva = home.join(".vva");
                 searched.push(home_vva.join("config.jsonc").display().to_string());
                 searched.push(home_vva.join("config.json").display().to_string());
             }
@@ -220,6 +253,23 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&temp_ws);
+    }
+
+    #[test]
+    fn test_home_dir_resolution() {
+        let home = home_dir();
+        assert!(home.is_some());
+    }
+
+    #[test]
+    fn test_expand_tilde() {
+        if let Some(home) = home_dir() {
+            let path = Path::new("~/.vva/config.jsonc");
+            let expanded = expand_tilde(path);
+            assert_eq!(expanded, home.join(".vva").join("config.jsonc"));
+        }
+        let rel_path = Path::new("relative/config.json");
+        assert_eq!(expand_tilde(rel_path), rel_path);
     }
 }
 
