@@ -46,7 +46,7 @@ pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/clear",
         aliases: &["/c"],
-        description: "Clear message scrollback view",
+        description: "Delete current session and start a new one",
         example: "/clear",
     },
     SlashCommand {

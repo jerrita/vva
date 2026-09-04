@@ -39,6 +39,39 @@ async fn test_slash_command_model_execution() {
 }
 
 #[tokio::test]
+async fn test_clear_deletes_current_session_and_creates_new_one() {
+    let temp_dir = std::env::temp_dir().join(format!("vva_clear_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+    let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+    let session = session_mgr
+        .create_session("init_model".into(), Some("high".into()), None, true)
+        .await
+        .unwrap();
+    let previous_id = session.id.clone();
+    let mut app = App::new(session_mgr.clone(), session, true).await;
+
+    app.set_input("/clear");
+    app.submit_input().await;
+
+    assert_ne!(app.active_session.id, previous_id);
+    assert!(app.chat_entries.is_empty());
+    assert!(app.active_session.session.read().await.web_search);
+    assert_eq!(
+        app.active_session
+            .session
+            .read()
+            .await
+            .current_variant
+            .as_deref(),
+        Some("high")
+    );
+    assert!(session_mgr.get_or_load(&previous_id).await.is_err());
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn test_slash_command_variant_execution() {
     let temp_dir =
         std::env::temp_dir().join(format!("vva_app_variant_test_{}", uuid::Uuid::new_v4()));

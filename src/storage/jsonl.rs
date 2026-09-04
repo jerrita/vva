@@ -115,6 +115,14 @@ impl SessionStore for JsonlSessionStore {
         Ok(Some(session))
     }
 
+    async fn delete_session(&self, session_id: &str) -> Result<(), StoreError> {
+        let path = self.session_path(session_id);
+        if path.exists() {
+            fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError> {
         let mut summaries = Vec::new();
 

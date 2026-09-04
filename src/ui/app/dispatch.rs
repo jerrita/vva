@@ -111,10 +111,45 @@ impl App {
                 });
             }
             "/clear" | "/c" => {
+                let (model, variant, web_search) = {
+                    let session = self.active_session.session.read().await;
+                    (
+                        session.current_model.clone(),
+                        session.current_variant.clone(),
+                        session.web_search,
+                    )
+                };
+
+                if let Err(error) = self.session_mgr.delete_session(&self.active_session).await {
+                    self.chat_entries.push(ChatEntry::SystemNotice {
+                        text: format!("Failed to clear session: {error}"),
+                    });
+                    return;
+                }
+
+                match self
+                    .session_mgr
+                    .create_session(model, variant, None, web_search)
+                    .await
+                {
+                    Ok(session) => {
+                        self.active_session = session;
+                        self.event_rx = self.active_session.event_tx.subscribe();
+                        self.enable_web_search = web_search;
+                    }
+                    Err(error) => {
+                        self.chat_entries.push(ChatEntry::SystemNotice {
+                            text: format!("Failed to create new session: {error}"),
+                        });
+                        return;
+                    }
+                }
                 self.chat_entries.clear();
                 self.scroll_offset = 0;
                 self.max_scroll = 0;
                 self.auto_scroll = true;
+                let session = self.active_session.session.read().await.clone();
+                self.stats = compute_stats(&session, self.session_mgr.app_config());
             }
             "/help" | "/h" | "/?" => {
                 self.modal = ActiveModal::Help;

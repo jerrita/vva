@@ -28,6 +28,9 @@ pub trait SessionStore: Send + Sync {
     /// 加载完整会话数据
     async fn load_session(&self, session_id: &str) -> Result<Option<Session>, StoreError>;
 
+    /// 删除会话及其持久化数据
+    async fn delete_session(&self, session_id: &str) -> Result<(), StoreError>;
+
     /// 列出所有存储的会话概要
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError>;
 }

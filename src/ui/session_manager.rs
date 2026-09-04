@@ -26,6 +26,7 @@ pub struct ManagedSession {
     pub session: Arc<RwLock<Session>>,
     pub is_running: Arc<AtomicBool>,
     pub is_persisted: Arc<AtomicBool>,
+    is_deleted: Arc<AtomicBool>,
     pub status_text: Arc<RwLock<String>>,
     pub event_tx: broadcast::Sender<AgentEvent>,
     pub task_abort_handle: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
@@ -48,6 +49,7 @@ impl ManagedSession {
             session: Arc::new(RwLock::new(session)),
             is_running: Arc::new(AtomicBool::new(false)),
             is_persisted: Arc::new(AtomicBool::new(persisted)),
+            is_deleted: Arc::new(AtomicBool::new(false)),
             status_text: Arc::new(RwLock::new(String::new())),
             event_tx,
             task_abort_handle: Arc::new(Mutex::new(None)),
@@ -153,6 +155,25 @@ impl SessionManager {
         Ok(managed)
     }
 
+    /// 终止并删除一个 Session，防止后台任务在删除后重新写入数据。
+    pub async fn delete_session(&self, managed: &Arc<ManagedSession>) -> Result<(), String> {
+        managed.is_deleted.store(true, Ordering::SeqCst);
+        managed.abort_current().await;
+
+        // 等待执行与标题生成任务释放 Session 写锁，避免删除后继续落盘。
+        let session_guard = managed.session.write().await;
+        if managed.is_persisted() {
+            self.store
+                .delete_session(&managed.id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        drop(session_guard);
+
+        self.sessions.write().await.remove(&managed.id);
+        Ok(())
+    }
+
     /// 为指定 Session 启动一轮后台执行任务
     /// 后台任务在独立任务中运行，与当前 UI 聚焦状态解耦
     pub async fn submit_prompt(
@@ -160,6 +181,9 @@ impl SessionManager {
         managed: Arc<ManagedSession>,
         prompt: &str,
     ) -> Result<(), String> {
+        if managed.is_deleted.load(Ordering::SeqCst) {
+            return Err("Session has been deleted".to_string());
+        }
         if managed.is_running() {
             return Err("Session is currently running another prompt".to_string());
         }
@@ -217,10 +241,17 @@ impl SessionManager {
             let cfg_clone = self.app_config.clone();
             let store_clone = self.store.clone();
             let session_clone = managed.session.clone();
+            let is_deleted = managed.is_deleted.clone();
             let prompt_str = prompt.to_string();
             tokio::spawn(async move {
-                generate_title_with_small_model(&cfg_clone, store_clone, session_clone, prompt_str)
-                    .await;
+                generate_title_with_small_model(
+                    &cfg_clone,
+                    store_clone,
+                    session_clone,
+                    is_deleted,
+                    prompt_str,
+                )
+                .await;
             });
         }
 
@@ -394,6 +425,7 @@ pub async fn generate_title_with_small_model(
     app_config: &Option<AppConfig>,
     store: Arc<dyn SessionStore>,
     session_lock: Arc<RwLock<Session>>,
+    is_deleted: Arc<AtomicBool>,
     user_prompt: String,
 ) {
     let small_model_spec = app_config
@@ -464,7 +496,13 @@ pub async fn generate_title_with_small_model(
                 .trim();
 
             if !cleaned.is_empty() {
+                if is_deleted.load(Ordering::SeqCst) {
+                    return;
+                }
                 let mut s = session_lock.write().await;
+                if is_deleted.load(Ordering::SeqCst) {
+                    return;
+                }
                 s.title = Some(cleaned.to_string());
                 if let Err(e) = store.save_header(&s).await {
                     tracing::warn!("Failed to persist generated session title: {e}");
@@ -524,6 +562,7 @@ mod tests {
             &None,
             store.clone(),
             session_lock.clone(),
+            Arc::new(AtomicBool::new(false)),
             "How to write a fast web server in Rust?".into(),
         )
         .await;
