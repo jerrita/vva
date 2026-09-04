@@ -20,13 +20,26 @@
 
 ## 2. 核心架构锚点
 
-### 2.1 强类型供应商元数据 (Strict Typed Meta)
+### 2.1 统一存储与“零兜底”铁律 (Unified Storage & Zero Fallback Rule)
+> **核心铁律**：**存储是统一的，不存在任何兜底行为**。每个供应商必须有纯正、独特的原生协议适配转换，以及完整的专属强类型 Meta 存储。
+
+1. **统一领域存储 (Unified Domain Storage)**：
+   - 严格遵循四层级联实体结构：$$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \longrightarrow \text{ContentPart}$$
+   - 底层持久化（JSONL）只保存纯净的领域模型实体与强类型元数据，与各厂商特定的私有请求/响应报文彻底解耦。
+2. **严禁任何形式的兜底与降级 (Zero Fallback & Zero LCD Degradation)**：
+   - **适配器层零兜底**：每个 Provider 严格且仅实现该厂商官方原生协议规范。
+     - **禁止协议退化**：严禁在 Responses API 适配器中退化检查 Chat Completions 的 `choices` 字段，严禁伪造或猜测；
+     - **禁止非标字段别名容错**：严禁出现类似 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等多重猜测链。**如果厂商官方标准规范没有该字段，绝对严禁在代码中臆造和编写！**
+   - **UI / Harness 调度层零兜底**：UI 纯粹由标准事件流（`AgentEvent`）驱动渲染，严禁在 `AgentEvent::Finished` 中编写强行从会话历史覆盖聊天记录的“兜底同步”补丁。发现界面未展示必须直接排查适配器转换根因。
+   - **单测 Mock 真实性铁律**：单元测试的 Mock 报文必须 100% 严谨对照官方标准文档构造，**严禁为了迎合手写错误的测试数据而在生产代码中妥协添加容错分支**。
+
+### 2.2 强类型供应商元数据 (Strict Typed Meta)
 > **铁律**：严禁退化为松散的 `HashMap<String, serde_json::Value>`。必须充分发挥 Rust 编译期类型安全与模式匹配优势。
 
 目前**只支持且深度支持**三大核心供应商：
 1. **OpenAI Responses API (`ResponseTurnMeta`, `ResponseSessionMeta`, `ResponseMessageMeta`)**：
    - 核心字段：`response_id`、`previous_response_id`、`status`、`system_fingerprint`、`service_tier`、`reasoning_effort`；
-   - 行为：每次请求自动从 Session 提取最近有效的 `response_id` 作为 `previous_response_id` 发回，仅需上传增量消息。
+   - 行为：每次请求自动从 Session 提取最近有效的 `response_id` 作为 `previous_response_id` 发回，仅需上传增量消息；助手消息专属 `id` 强类型映射入 `ResponseMessageMeta`。
 2. **Anthropic Messages API (`AnthropicTurnMeta`, `AnthropicMessageMeta`)**：
    - 核心字段：`cache_creation_input_tokens`、`cache_read_input_tokens`、`stop_reason`、`ephemeral_cache`；
    - 行为：在系统指令及关键轮次自动注入 `cache_control: {"type": "ephemeral"}`；在多轮往返中严格原样保留 `thinking` 块关联的防篡改 `signature`。
@@ -34,7 +47,7 @@
    - 核心字段：`finish_reason`、`safety_ratings`、`code_execution_result`、`thought_signature`；
    - 行为：原生启用 `tools: [{ "google_search": {} }]`，并将返回的 `groundingMetadata` 投影为统一注脚。
 
-### 2.2 四层级联领域模型与 Session 状态绑定
+### 2.3 四层级联领域模型与 Session 状态绑定
 $$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \longrightarrow \text{ContentPart}$$
 
 - **`Session` (与 SessionHeader)**：
@@ -51,7 +64,7 @@ $$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \lon
   - `ToolCall` / `ToolResult`: Coding 工具调用与返回封装；
   - `WebSearchCall`: 结构化记录检索意图、状态与数据源。
 
-### 2.3 统一配置系统 (JSON / JSONC + 环境变量展开)
+### 2.4 统一配置系统 (JSON / JSONC + 环境变量展开)
 配置文件（如 `config.example.jsonc` / `~/.vva/config.jsonc`）：
 - **同时支持 JSON 与 JSONC**：词法剥离 `//` 与 `/* */` 注释，保留字符串内部内容；
 - **环境变量插值**：自动将 `"${ENV_VAR}"` 展开为对应系统环境变量；
@@ -60,7 +73,7 @@ $$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \lon
   - 支持声明与校验推理档位 `variants`（如 `["minimal", "low", "medium", "high", "xhigh", "max"]`）；
   - 自动规范化 URL 端点（自动补全 `/v1` 或 `/v1beta`）。
 
-### 2.4 以 Responses 规范为基准的 Web Search 与注脚
+### 2.5 以 Responses 规范为基准的 Web Search 与注脚
 统一参考 OpenAI Responses 规范：
 - 检索行为统一落地为 `ContentPart::WebSearchCall`（包含 `query`, `status`, `sources`）；
 - 文本内联引用统一使用 `Annotation::UrlCitation`：
@@ -74,7 +87,7 @@ $$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \lon
   ```
 - Gemini 的 `groundingChunks` + `groundingSupports` 在适配器层直接计算字符偏移并投影为 `Annotation::UrlCitation`。
 
-### 2.5 JSONL Append-Only 存储引擎
+### 2.6 JSONL Append-Only 存储引擎
 文件路径：`~/.vva/sessions/{session_id}.jsonl`
 - **第 1 行**：`JsonlRecord::Header(SessionHeader)`（含 `current_model` 与 `current_variant`）
 - **第 2..N 行**：`JsonlRecord::Turn(Turn)`
@@ -137,5 +150,6 @@ src/
 2. **多模态扩展**：
    - 读取图片/音视频文件时统一使用 `MediaSource::Path` 或 `MediaSource::Base64`；
    - 适配器负责将通用模态转为目标 API 兼容的 Payload（如 Gemini 的 `inline_data`，Anthropic 的 `base64` image source）。
-3. **保持测试覆盖**：
-   - 每次修改核心模型、解析器、适配器或 UI 状态后，必须运行 `cargo test` 确保全量测试（目前 15/15）通过，并保持 0 warning。
+3. **保持测试覆盖与“零兜底”约束**：
+   - 每次修改核心模型、解析器、适配器或 UI 状态后，必须运行 `cargo test` 确保全量测试（目前 26/26）通过，并保持 `cargo clippy -- -D warnings` 0 warning；
+   - **严谨编写单测 Mock**：单测数据必须严格按照官方最新规范格式构造；**严禁为了迎合手写错误的测试数据而在生产适配器中妥协增加未经标准定义的兜底逻辑**。
