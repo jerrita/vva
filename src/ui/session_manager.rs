@@ -140,7 +140,7 @@ impl SessionManager {
     }
 
     /// 为指定 Session 启动一轮后台执行任务
-    /// 无论当前 UI 是否正在观察此 Session，后台任务均独立运行
+    /// 后台任务在独立任务中运行，与当前 UI 聚焦状态解耦
     pub async fn submit_prompt(
         &self,
         managed: Arc<ManagedSession>,
@@ -293,7 +293,7 @@ pub fn resolve_provider(
                 Ok((provider, model_id, selected_variant))
             }
             Err(err) => {
-                // 如果历史会话中记录的模型在当前配置中已不存在，尝试优雅回退到默认模型
+                // 如果历史会话中记录的模型在当前配置中不存在，回退到默认模型
                 if current_model != cfg.settings.default
                     && let Ok(fallback) = cfg.resolve_model(&cfg.settings.default, None)
                 {
@@ -426,7 +426,7 @@ mod tests {
         let s1 = mgr.create_session("model_a".into(), Some("high".into()), Some("Title 1".into()), false).await.expect("create s1");
         let sid = s1.id.clone();
 
-        // 再次加载同一个 session，必须返回相同单例指针
+        // 再次加载同一个 session，返回相同单例指针
         let s2 = mgr.get_or_load(&sid).await.expect("get s1");
         assert!(Arc::ptr_eq(&s1, &s2));
 

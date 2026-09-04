@@ -129,11 +129,11 @@ fn is_cjk_or_ascii_punct(ch: char) -> bool {
 
 /// 对 Markdown 文本进行 CJK 标点强调边界预处理
 ///
-/// 解决 CommonMark 规范在 CJK 语境下的缺陷：
+/// 处理 CommonMark 规范在 CJK 语境下的边界条件：
 /// 当加粗块以标点结尾且紧随汉字时（例如 `**标题：**内容` 或 `**提示！**请注意`），
-/// CommonMark 规范规定“紧随标点且后继为非空白非标点字符的分隔符不能作为右侧闭合标记”（不是 right-flanking），
-/// 导致 `pulldown-cmark` 无法闭合 Strong 标签，原样吐出丑陋的字面量 `**`。
-/// 本函数智能识别闭合标记并在其后注入空格，使其成为合法的 right-flanking 分隔符。
+/// CommonMark 规范要求右侧闭合标记满足 right-flanking 条件（紧随标点且后继为非空白非标点字符的分隔符不满足该条件），
+/// 导致 `pulldown-cmark` 无法闭合 Strong 标签并输出原始 `**` 标记。
+/// 本函数在闭合标记后注入空格，使其满足 right-flanking 分隔符条件。
 pub fn preprocess_cjk_markdown(input: &str) -> String {
     let mut result = String::with_capacity(input.len() + 64);
     let mut in_code_block = false;
@@ -602,7 +602,7 @@ mod tests {
         let md = "# Title 1\n## Title 2\n### 国内新闻";
         let lines = render_markdown(md, 80);
         let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-        // 绝对不能出现原样暴露的 ###
+        // 校验不包含未解析的 ###
         assert!(!text.contains("###"));
         assert!(text.contains("国内新闻"));
         assert!(text.contains("Title 1"));
@@ -617,11 +617,11 @@ mod tests {
         // 验证 bullet 与中文在同一行开头连接，不产生孤立 bullet 独占一行
         for line in &lines {
             let row_str: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            // 不得出现只有 "   • " 后面为空的孤立行
+            // 校验不存在仅包含 "•" 的孤立行
             assert_ne!(row_str.trim(), "•");
         }
 
-        // 验证链接不重复展开为丑陋的 `(url)` 形式
+        // 验证链接不重复展开为 `(url)` 形式
         let full_text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
         assert!(full_text.contains("finance.eastmoney.com"));
         assert!(!full_text.contains("(https://finance.eastmoney.com"));

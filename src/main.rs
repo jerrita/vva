@@ -22,7 +22,7 @@ use vva::ui::run_tui;
 #[derive(Parser)]
 #[command(name = "vva", author, version, about = "Vendor-Versatile Agent Harness for Coding")]
 struct Cli {
-    /// 显式指定配置文件路径 (.json 或 .jsonc)
+    /// 配置文件路径 (.json 或 .jsonc)
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
@@ -32,9 +32,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 执行 Coding Agent 任务交互 (若未传入 prompt 则启动交互式 TUI)
+    /// 执行 Coding Agent 任务交互 (未传入 prompt 则启动终端界面)
     Run {
-        /// 目标模型规格标识 (例如 a/gpt-5.6-terra, a/claude-sonnet-4-6, gemini-2.5-pro)
+        /// 目标模型标识 (例如 a/gpt-5.6-terra, a/claude-sonnet-4-6, gemini-2.5-pro)
         #[arg(short, long)]
         model: Option<String>,
 
@@ -42,11 +42,11 @@ enum Commands {
         #[arg(short, long)]
         variant: Option<String>,
 
-        /// 开启原生网络搜索 / 实时 Grounding
+        /// 开启网络搜索
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         web_search: Option<bool>,
 
-        /// 继存现有 Session ID (若不指定则自动新建)
+        /// 恢复指定 Session ID (省略则自动新建)
         #[arg(short, long)]
         session_id: Option<String>,
 
@@ -54,13 +54,13 @@ enum Commands {
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// 用户输入 Prompt 指令 (省略则启动交互式终端界面)
+        /// 用户 Prompt 指令 (省略则启动终端界面)
         prompt: Option<String>,
     },
 
-    /// 启动交互式终端用户界面 (Ratatui TUI)
+    /// 启动终端用户界面 (Ratatui TUI)
     Ui {
-        /// 目标模型规格标识
+        /// 目标模型标识
         #[arg(short, long)]
         model: Option<String>,
 
@@ -68,11 +68,11 @@ enum Commands {
         #[arg(short, long)]
         variant: Option<String>,
 
-        /// 开启原生网络搜索 / 实时 Grounding
+        /// 开启网络搜索
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         web_search: Option<bool>,
 
-        /// 继存现有 Session ID
+        /// 恢复指定 Session ID
         #[arg(short, long)]
         session_id: Option<String>,
 
@@ -90,9 +90,9 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SessionAction {
-    /// 列出所有已持久化的会话记录
+    /// 列出所有会话记录
     List,
-    /// 检查指定会话详情、轮次与供应商元数据
+    /// 查看指定会话详情、轮次与元数据
     Inspect {
         session_id: String,
     },
@@ -106,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sessions_dir = vva_dir.join("sessions");
     let store = Arc::new(JsonlSessionStore::new(&sessions_dir)?);
 
-    // 判断是否启动全屏 TUI 模式，避免 tracing 输出污染终端屏幕
+    // 判断是否启动全屏 TUI 模式，避免 tracing 输出干扰终端屏幕
     let is_tui = match &cli.command {
         None => true,
         Some(Commands::Ui { .. }) => true,
@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .try_init();
     }
 
-    // 尝试读取配置 (支持 JSON 与 JSONC)
+    // 读取配置 (支持 JSON 与 JSONC)
     let app_config: Option<AppConfig> = match load_config(cli.config.as_deref()) {
         Ok(cfg) => Some(cfg),
         Err(err) => {
@@ -148,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match cli.command {
         None => {
-            // 默认无参数启动 TUI
+            // 启动 TUI
             let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
             run_tui(
                 store,
@@ -192,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
-            // 如果没有提供 prompt，直接进入 TUI 交互
+            // 未提供 prompt 时启动 TUI 交互
             let prompt = match prompt {
                 Some(p) => p,
                 None => {

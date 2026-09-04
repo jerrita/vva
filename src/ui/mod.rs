@@ -201,17 +201,17 @@ async fn run_app_loop(
             let text_rows = input_lines.clamp(1, max_text_rows);
             let input_area_height = (text_rows as u16) + 4;
 
-            // 主工作区垂直三段切分：顶部极简 Title + 中间对话流 + 底部复合输入区
+            // 主工作区垂直三段切分：顶部 Title + 中间对话流 + 底部输入区
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(1),                 // 顶部栏 (仅 Title)
+                    Constraint::Length(1),                 // 顶部栏 (Title)
                     Constraint::Min(5),                    // 对话区
-                    Constraint::Length(input_area_height), // 输入区动态自适应高度
+                    Constraint::Length(input_area_height), // 输入区动态高度
                 ])
                 .split(main_area);
 
-            // 1. 顶部栏 (无 branding，仅 Title)
+            // 1. 顶部栏 (Title)
             render_header(app, frame, main_chunks[0], &session_title);
 
             // 2. 中间对话流

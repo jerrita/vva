@@ -277,7 +277,7 @@ mod tests {
     fn test_unicode_chinese_input_and_editing() {
         let mut buf = InputBuffer::new();
 
-        // 1. 连续输入中文字符，严禁触发 byte index not a char boundary panic
+        // 1. 连续输入中文字符，确保不触发 byte index not a char boundary panic
         buf.insert_char('你');
         buf.insert_char('好');
         buf.insert_char('世');

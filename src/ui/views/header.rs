@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::ui::app::App;
 
-/// 顶部栏仅展示当前 Session Title，极简且无任何 branding 干扰
+/// 渲染顶部标题栏，展示当前 Session 标题
 pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
     let title_display = if title.trim().is_empty() {
         "Untitled Session"

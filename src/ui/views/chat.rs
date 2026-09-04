@@ -223,7 +223,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(paragraph, area);
 
-    // 当内容超出可视区时，在右侧渲染半透明优雅的滚动条
+    // 当内容超出可视区时，在右侧渲染滚动条
     if max_scroll > 0 {
         let mut scrollbar_state = ScrollbarState::new(max_scroll)
             .position(scroll);

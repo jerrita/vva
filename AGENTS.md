@@ -1,51 +1,51 @@
 # AGENTS.md - vva 项目核心架构与开发指南
 
-本文档记录 **vva (Vendor-Versatile Agent Harness)** 的核心设计原则、铁律约束、设计文档索引与开发指南，作为后续 Agent 和开发者协作的基础锚定。
+本文档记录 **vva (Vendor-Versatile Agent Harness)** 的核心设计原则、设计文档索引与开发指南，作为 Agent 与开发者协作规范。
 
 ---
 
-## 1. 项目定位与核心价值观
+## 1. 项目定位与核心原则
 
-### 痛点与使命
-现有通用 coding harness 存在共同弊端：**“最小公分母”（Lowest Common Denominator, LCD）问题**。
-- 将所有模型强行退化为无状态的 `/v1/chat/completions`；
-- 丢弃 OpenAI Responses API 的服务端链式 `response_id`，造成海量重复上下文上传；
-- 丢弃 Anthropic 的 Prompt Caching (`cache_control`) 与 Thinking 块签名 (`signature`)；
-- 将 Gemini 原生 Google Search Grounding 降级为外部搜索，丢失高质量网页引用（Citation token offset）；
-- 跨供应商切换时上下文格式割裂。
+### 痛点与目标
+通用 coding harness 存在“最小公分母”（Lowest Common Denominator, LCD）问题：
+- 将模型退化为无状态的 `/v1/chat/completions`；
+- 丢弃 OpenAI Responses API 服务端链式 `response_id`，增加重复上下文上传；
+- 丢弃 Anthropic Prompt Caching (`cache_control`) 与 Thinking 签名 (`signature`)；
+- 将 Gemini 原生 Google Search Grounding 降级为外部搜索，丢失网页引用（Citation token offset）；
+- 切换供应商时上下文格式割裂。
 
-**vva 的使命**：构建一个在保持统一 Session 抽象的同时，**最大化激发各供应商原生优势**的现代化 Coding Harness。
+**vva 的目标**：在保持统一 Session 抽象的同时，支持各供应商原生特性的 Coding Harness。
 
 ---
 
-## 2. 核心架构与开发铁律
+## 2. 核心架构与设计约束
 
-### 2.1 统一存储与“零兜底”铁律 (Unified Storage & Zero Fallback Rule)
-> **核心铁律**：**存储是统一且纯净的，不存在任何兜底降级行为**。每个供应商必须有纯正、独特的原生协议适配转换，以及完整的专属强类型 Meta 存储。
+### 2.1 统一存储与“零兜底”约束 (Unified Storage & Zero Fallback Rule)
+> **核心原则**：统一领域存储，不进行兜底降级。各供应商实现原生协议适配转换与专属强类型 Meta 存储。
 
 1. **统一领域存储 (Unified Domain Storage)**：
-   - 严格遵循四层级联实体结构：$$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \longrightarrow \text{ContentPart}$$
-   - 底层持久化（JSONL）只保存纯净的领域模型实体与强类型元数据，与各厂商特定的私有请求/响应报文彻底解耦。
-2. **严禁任何形式的兜底与降级 (Zero Fallback & Zero LCD Degradation)**：
-   - **适配器层零兜底**：每个 Provider 严格且仅实现该厂商官方原生协议规范。
-     - **禁止协议退化**：严禁在 Responses API 适配器中退化检查 Chat Completions 的 `choices` 字段，严禁伪造或猜测；
-     - **禁止非标字段别名容错**：严禁出现类似 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等多重猜测链。**如果厂商官方标准规范没有该字段，绝对严禁在代码中臆造和编写！**
-   - **UI / Harness 调度层零兜底**：UI 纯粹由标准事件流（`AgentEvent`）驱动渲染，严禁在 `AgentEvent::Finished` 中编写强行从会话历史覆盖聊天记录的“兜底同步”补丁。发现界面未展示必须直接排查适配器转换根因。
-   - **单测 Mock 真实性铁律**：单元测试的 Mock 报文必须 100% 严谨对照官方标准文档构造，**严禁为了迎合手写错误的测试数据而在生产代码中妥协添加容错分支**。
+   - 遵循四层级联实体结构：$$\text{Session} \longrightarrow \text{Turn} \longrightarrow \text{Message} \longrightarrow \text{ContentPart}$$
+   - 底层持久化（JSONL）保存领域模型实体与强类型元数据，与厂商私有请求/响应报文解耦。
+2. **零兜底与零降级约束 (Zero Fallback & Zero LCD Degradation)**：
+   - **适配器层零兜底**：Provider 仅实现厂商官方原生协议规范。
+     - **禁止协议退化**：Responses API 适配器不检查 Chat Completions 的 `choices` 字段，不进行数据伪造与猜测；
+     - **禁止非标字段别名猜测**：不编写 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等猜测链。厂商官方规范未定义的字段，不在代码中臆造；
+   - **UI / Harness 调度层零兜底**：UI 由标准事件流（`AgentEvent`）驱动渲染，不编写从会话历史覆盖聊天记录的同步补丁。界面未展示时排查适配器转换逻辑；
+   - **单测 Mock 真实性约束**：单元测试 Mock 报文对照官方标准文档构造，不在生产代码中为错误测试数据添加容错分支。
 
 ### 2.2 强类型供应商元数据 (Strict Typed Meta)
-> **铁律**：严禁退化为松散的 `HashMap<String, serde_json::Value>`。必须充分发挥 Rust 编译期类型安全与模式匹配优势。
+> **类型系统约束**：使用强类型结构体，不使用松散的 `HashMap<String, serde_json::Value>`。
 
-针对三大核心供应商注入专属强类型元数据（见 `src/model/meta.rs`）：
+为核心供应商定义专属强类型元数据（见 `src/model/meta.rs`）：
 - **OpenAI Responses API**：`ResponseTurnMeta`, `ResponseSessionMeta`, `ResponseMessageMeta`
 - **Anthropic Messages API**：`AnthropicTurnMeta`, `AnthropicSessionMeta`, `AnthropicMessageMeta`
 - **Google Gemini API**：`GeminiTurnMeta`, `GeminiSessionMeta`, `GeminiMessageMeta`
 
 ---
 
-## 3. 详细设计文档索引 (Docs Reference)
+## 3. 设计文档索引 (Docs Reference)
 
-详细的技术设计方案已全面整理至 `docs/` 目录中：
+技术设计方案参见 `docs/` 目录：
 
 | 模块 | 设计文档 | 核心内容摘要 |
 |---|---|---|
@@ -126,13 +126,13 @@ src/
 ## 5. 后续开发与扩展指南
 
 1. **新增模型/供应商适配**：
-   - 必须先在 `src/model/meta.rs` 中定义强类型结构体，并在 `SessionMeta` / `TurnMeta` / `MessageMeta` 中显式引入字段；
+   - 在 `src/model/meta.rs` 中定义强类型结构体，并在 `SessionMeta` / `TurnMeta` / `MessageMeta` 中引入字段；
    - 在 `src/config/model.rs` 与 `src/config/resolver.rs` 中注册对应的 ProviderType 路由；
-   - 在 `src/provider/` 中实现 `Provider` trait，显式在 `capabilities()` 中声明支持的原生能力；
+   - 在 `src/provider/` 中实现 `Provider` trait，在 `capabilities()` 中声明支持的原生能力；
    - 编写单测验证供应商专属特性（如 cache、signature、response_id、reasoning_effort）的双向转换保真性。
 2. **多模态扩展**：
-   - 读取图片/音视频文件时统一使用 `MediaSource::Path` 或 `MediaSource::Base64`；
-   - 适配器负责将通用模态转为目标 API 兼容的 Payload（如 Gemini 的 `inline_data`，Anthropic 的 `base64` image source）。
-3. **保持测试覆盖与“零兜底”约束**：
-   - 每次修改核心模型、解析器、适配器或 UI 状态后，必须运行 `cargo test` 确保全量测试（**目前 39/39**）通过，并保持 `cargo clippy -- -D warnings` 0 warning；
-   - **严谨编写单测 Mock**：单测数据必须严格按照官方最新规范格式构造；**严禁为了迎合手写错误的测试数据而在生产适配器中妥协增加未经标准定义的兜底逻辑**。
+   - 读取图片/音视频文件时使用 `MediaSource::Path` 或 `MediaSource::Base64`；
+   - 适配器将通用模态转为目标 API 兼容的 Payload（如 Gemini 的 `inline_data`，Anthropic 的 `base64` image source）。
+3. **测试覆盖与规范约束**：
+   - 修改核心模型、解析器、适配器或 UI 状态后，运行 `cargo test` 确保全量测试通过，并保持 `cargo clippy -- -D warnings` 零告警；
+   - **单测 Mock 规范**：单测数据按照官方最新规范格式构造，不在生产适配器中增加未定义的兜底逻辑。

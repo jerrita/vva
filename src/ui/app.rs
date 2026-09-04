@@ -937,7 +937,7 @@ mod tests {
         assert!(!app.auto_scroll);
         assert_eq!(app.scroll_offset, 45);
 
-        // 大步向上滚动超过顶部，必须在 0 处安全截断，不得下溢或失控
+        // 向上滚动超过顶部时在 0 处截断
         app.scroll_up(100);
         assert_eq!(app.scroll_offset, 0);
 
@@ -1009,17 +1009,17 @@ mod tests {
 
         // 3. 启动 App，以 Session 1 为初始会话
         let mut app = App::new(session_mgr.clone(), s1, false).await;
-        // App 必须继承 Session 1 的 web_search: true
+        // App 继承 Session 1 的 web_search: true
         assert!(app.enable_web_search);
 
         // 4. 切换到 Session 2
         app.switch_to_session(&s2_id).await.unwrap();
-        // App 状态必须切换为 Session 2 的 web_search: false
+        // App 状态切换为 Session 2 的 web_search: false
         assert!(!app.enable_web_search);
 
         // 5. 切换回 Session 1
         app.switch_to_session(&s1_id).await.unwrap();
-        // 恢复 Session 1 时，状态必须与上一次保持一致为 true，防止 prompt cache 失效
+        // 恢复 Session 1 时，状态与上一次保持一致为 true，避免 prompt cache 失效
         assert!(app.enable_web_search);
 
         // 6. 执行 /web off 显式关闭 Session 1 的网络搜索

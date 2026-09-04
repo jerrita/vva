@@ -60,7 +60,7 @@ impl AnthropicProvider {
         }
 
         let total_msgs = flattened_msgs.len();
-        // Anthropic 要求 messages 中 user 与 assistant 必须严格交替出现
+        // Anthropic 要求 messages 中 user 与 assistant 交替出现
         let mut append_blocks = |role: &str, blocks: Vec<serde_json::Value>| {
             if blocks.is_empty() {
                 return;
