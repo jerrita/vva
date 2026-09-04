@@ -227,6 +227,7 @@ pub enum ConfigItemKind {
     Model,
     Variant,
     WebSearch,
+    ThinkingDisplay,
 }
 
 #[derive(Debug, Clone)]
@@ -244,7 +245,12 @@ pub struct ConfigModalState {
 }
 
 impl ConfigModalState {
-    pub fn new(current_model: String, current_variant: Option<String>, web_search: bool) -> Self {
+    pub fn new(
+        current_model: String,
+        current_variant: Option<String>,
+        web_search: bool,
+        thinking_concise: bool,
+    ) -> Self {
         let items = vec![
             ConfigSettingItem {
                 kind: ConfigItemKind::Model,
@@ -264,6 +270,12 @@ impl ConfigModalState {
                 current_value: if web_search { "Enabled".into() } else { "Disabled".into() },
                 description: "Toggle native search grounding for models".to_string(),
             },
+            ConfigSettingItem {
+                kind: ConfigItemKind::ThinkingDisplay,
+                name: "Thinking Display".to_string(),
+                current_value: if thinking_concise { "Concise (1 line)".into() } else { "Full".into() },
+                description: "Toggle thinking view (/thinking): concise vs full".to_string(),
+            },
         ];
 
         Self {
@@ -275,6 +287,12 @@ impl ConfigModalState {
     pub fn update_web_search(&mut self, web_search: bool) {
         if let Some(item) = self.items.iter_mut().find(|it| it.kind == ConfigItemKind::WebSearch) {
             item.current_value = if web_search { "Enabled".into() } else { "Disabled".into() };
+        }
+    }
+
+    pub fn update_thinking_display(&mut self, thinking_concise: bool) {
+        if let Some(item) = self.items.iter_mut().find(|it| it.kind == ConfigItemKind::ThinkingDisplay) {
+            item.current_value = if thinking_concise { "Concise (1 line)".into() } else { "Full".into() };
         }
     }
 
@@ -342,6 +360,7 @@ pub struct App {
     pub matched_commands: Vec<&'static SlashCommand>,
     pub selected_command_index: usize,
     pub stats: SidebarStats,
+    pub thinking_concise: bool,
 }
 
 impl App {
@@ -371,6 +390,7 @@ impl App {
             matched_commands: Vec::new(),
             selected_command_index: 0,
             stats: SidebarStats::default(),
+            thinking_concise: false,
         };
 
         app.reload_active_session_history().await;
@@ -650,15 +670,35 @@ impl App {
             current_model,
             current_variant,
             self.enable_web_search,
+            self.thinking_concise,
         );
         self.config_modal = Some(state);
         self.modal = ActiveModal::Config;
     }
 
-    /// 用户键盘输入字符
+    /// 用户键盘输入字符 (支持多字节 Unicode/中文字符)
     pub fn insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor_pos, c);
+        let byte_offset = self
+            .input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(self.cursor_pos)
+            .unwrap_or(self.input.len());
+        self.input.insert(byte_offset, c);
         self.cursor_pos += 1;
+        self.update_command_matches();
+    }
+
+    /// 用户粘贴或批量插入字符串 (支持多字节 Unicode/中文字符)
+    pub fn insert_str(&mut self, s: &str) {
+        let byte_offset = self
+            .input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(self.cursor_pos)
+            .unwrap_or(self.input.len());
+        self.input.insert_str(byte_offset, s);
+        self.cursor_pos += s.chars().count();
         self.update_command_matches();
     }
 
@@ -666,15 +706,20 @@ impl App {
     pub fn backspace(&mut self) {
         if self.cursor_pos > 0 && !self.input.is_empty() {
             self.cursor_pos -= 1;
-            self.input.remove(self.cursor_pos);
+            if let Some((byte_offset, _)) = self.input.char_indices().nth(self.cursor_pos) {
+                self.input.remove(byte_offset);
+            }
             self.update_command_matches();
         }
     }
 
     /// 删除字符 (Delete)
     pub fn delete(&mut self) {
-        if self.cursor_pos < self.input.len() {
-            self.input.remove(self.cursor_pos);
+        let char_count = self.input.chars().count();
+        if self.cursor_pos < char_count {
+            if let Some((byte_offset, _)) = self.input.char_indices().nth(self.cursor_pos) {
+                self.input.remove(byte_offset);
+            }
             self.update_command_matches();
         }
     }
@@ -686,7 +731,7 @@ impl App {
     }
 
     pub fn move_cursor_right(&mut self) {
-        if self.cursor_pos < self.input.len() {
+        if self.cursor_pos < self.input.chars().count() {
             self.cursor_pos += 1;
         }
     }
@@ -696,7 +741,7 @@ impl App {
     }
 
     pub fn move_cursor_end(&mut self) {
-        self.cursor_pos = self.input.len();
+        self.cursor_pos = self.input.chars().count();
     }
 
     /// 检查并更新输入框对应的斜杠命令匹配
@@ -735,7 +780,7 @@ impl App {
     pub fn complete_selected_command(&mut self) {
         if let Some(cmd) = self.matched_commands.get(self.selected_command_index) {
             self.input = format!("{} ", cmd.name);
-            self.cursor_pos = self.input.len();
+            self.cursor_pos = self.input.chars().count();
             self.update_command_matches();
         }
     }
@@ -811,8 +856,21 @@ impl App {
                     self.enable_web_search = !self.enable_web_search;
                 }
                 let status = if self.enable_web_search { "ON" } else { "OFF" };
+                if let Some(ref mut cm) = self.config_modal {
+                    cm.update_web_search(self.enable_web_search);
+                }
                 self.chat_entries.push(ChatEntry::SystemNotice {
                     text: format!("Native web search is now {status}"),
+                });
+            }
+            "/thinking" | "/think" | "/th" => {
+                self.thinking_concise = !self.thinking_concise;
+                let mode_str = if self.thinking_concise { "concise (1 line)" } else { "full" };
+                if let Some(ref mut cm) = self.config_modal {
+                    cm.update_thinking_display(self.thinking_concise);
+                }
+                self.chat_entries.push(ChatEntry::SystemNotice {
+                    text: format!("Thinking display mode set to {mode_str}."),
                 });
             }
             "/clear" | "/c" => {
@@ -838,11 +896,10 @@ impl App {
         match event {
             AgentEvent::Thought(thought) => {
                 if let Some(ChatEntry::Thinking { content }) = self.chat_entries.last_mut() {
-                    content.push('\n');
-                    content.push_str(thought.trim());
+                    content.push_str(&thought);
                 } else {
                     self.chat_entries.push(ChatEntry::Thinking {
-                        content: thought.trim().to_string(),
+                        content: thought,
                     });
                 }
             }
@@ -858,13 +915,19 @@ impl App {
             }
             AgentEvent::Text(text) => {
                 if let Some(ChatEntry::AssistantMessage { text: existing, .. }) = self.chat_entries.last_mut() {
-                    existing.push('\n');
                     existing.push_str(&text);
                 } else {
                     self.chat_entries.push(ChatEntry::AssistantMessage {
                         text,
                         citations: Vec::new(),
                     });
+                }
+            }
+            AgentEvent::Citation { title, url } => {
+                if let Some(ChatEntry::AssistantMessage { citations, .. }) = self.chat_entries.last_mut()
+                    && !citations.iter().any(|(t, u)| t == &title && u == &url)
+                {
+                    citations.push((title, url));
                 }
             }
             AgentEvent::Finished => {
@@ -1256,11 +1319,13 @@ mod tests {
         assert!(app.config_modal.is_some());
 
         let cm = app.config_modal.as_mut().unwrap();
-        assert_eq!(cm.items.len(), 3);
+        assert_eq!(cm.items.len(), 4);
         assert_eq!(cm.items[0].kind, ConfigItemKind::Model);
         assert_eq!(cm.items[1].kind, ConfigItemKind::Variant);
         assert_eq!(cm.items[2].kind, ConfigItemKind::WebSearch);
         assert_eq!(cm.items[2].current_value, "Disabled");
+        assert_eq!(cm.items[3].kind, ConfigItemKind::ThinkingDisplay);
+        assert_eq!(cm.items[3].current_value, "Full");
 
         // 导航
         cm.next();
@@ -1269,6 +1334,93 @@ mod tests {
         assert_eq!(cm.selected_index, 2);
         cm.update_web_search(true);
         assert_eq!(cm.items[2].current_value, "Enabled");
+        cm.next();
+        assert_eq!(cm.selected_index, 3);
+        cm.update_thinking_display(true);
+        assert_eq!(cm.items[3].current_value, "Concise (1 line)");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_slash_command_thinking_execution() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_thinking_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr.create_session("test_model".into(), None, None).await.unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        assert!(!app.thinking_concise);
+
+        // 执行 /thinking 切换为 concise
+        app.input = "/thinking".into();
+        app.submit_input().await;
+        assert!(app.thinking_concise);
+        assert!(app.chat_entries.iter().any(|e| match e {
+            ChatEntry::SystemNotice { text } => text.contains("Thinking display mode set to concise"),
+            _ => false,
+        }));
+
+        // 再次执行 /think 切换回 full
+        app.input = "/think".into();
+        app.submit_input().await;
+        assert!(!app.thinking_concise);
+        assert!(app.chat_entries.iter().any(|e| match e {
+            ChatEntry::SystemNotice { text } => text.contains("Thinking display mode set to full"),
+            _ => false,
+        }));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_unicode_chinese_input_and_editing() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_chinese_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr.create_session("test_model".into(), None, None).await.unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 连续输入中文字符，严禁触发 byte index not a char boundary panic
+        app.insert_char('你');
+        app.insert_char('好');
+        app.insert_char('世');
+        app.insert_char('界');
+        assert_eq!(app.input, "你好世界");
+        assert_eq!(app.cursor_pos, 4);
+
+        // 2. 光标向左移动到 "你好" 与 "世界" 之间
+        app.move_cursor_left();
+        app.move_cursor_left();
+        assert_eq!(app.cursor_pos, 2);
+
+        // 3. 在中间插入中文字符
+        app.insert_char('，');
+        assert_eq!(app.input, "你好，世界");
+        assert_eq!(app.cursor_pos, 3);
+
+        // 4. Backspace 删除逗号
+        app.backspace();
+        assert_eq!(app.input, "你好世界");
+        assert_eq!(app.cursor_pos, 2);
+
+        // 5. Delete 删除后面的 "世"
+        app.delete();
+        assert_eq!(app.input, "你好界");
+        assert_eq!(app.cursor_pos, 2);
+
+        // 6. 光标 Home 与 End
+        app.move_cursor_home();
+        assert_eq!(app.cursor_pos, 0);
+        app.move_cursor_end();
+        assert_eq!(app.cursor_pos, 3);
+
+        // 7. 批量粘贴中文字符串
+        app.insert_str("！欢迎使用");
+        assert_eq!(app.input, "你好界！欢迎使用");
+        assert_eq!(app.cursor_pos, 8);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

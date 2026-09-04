@@ -1,11 +1,20 @@
 pub mod anthropic;
 pub mod gemini;
 pub mod response;
+pub mod sse;
 
 use async_trait::async_trait;
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 use crate::model::{Message, Session, TokenUsage, ToolDefinition, TurnMeta};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderDelta {
+    Thought(String),
+    Text(String),
+    Citation { title: String, url: String },
+}
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -66,12 +75,21 @@ pub trait Provider: Send + Sync {
     /// 供应商原生能力声明
     fn capabilities(&self) -> ProviderCapabilities;
 
-    /// 执行会话交互补全
+    /// 执行会话交互补全 (非流式，如 session 标题生成)
     async fn complete(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
+    ) -> Result<ProviderResponse, ProviderError>;
+
+    /// 执行流式会话交互补全，并通过 delta_sender 实时发送增量事件 (Thought / Text)
+    async fn complete_stream(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
     ) -> Result<ProviderResponse, ProviderError>;
 }
 

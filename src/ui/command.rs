@@ -38,6 +38,12 @@ pub static COMMANDS: &[SlashCommand] = &[
         example: "/search [on|off]",
     },
     SlashCommand {
+        name: "/thinking",
+        aliases: &["/think", "/th"],
+        description: "Toggle thinking display between concise (one line) and full",
+        example: "/thinking",
+    },
+    SlashCommand {
         name: "/clear",
         aliases: &["/c"],
         description: "Clear message scrollback view",
@@ -106,6 +112,14 @@ mod tests {
         let cfg_matches = match_commands("/conf");
         assert_eq!(cfg_matches.len(), 1);
         assert_eq!(cfg_matches[0].name, "/config");
+
+        let th_matches = match_commands("/th");
+        assert_eq!(th_matches.len(), 1);
+        assert_eq!(th_matches[0].name, "/thinking");
+
+        let think_matches = match_commands("/think");
+        assert_eq!(think_matches.len(), 1);
+        assert_eq!(think_matches[0].name, "/thinking");
 
         // 带空格或参数时不显示命令选单
         assert_eq!(match_commands("/model ").len(), 0);

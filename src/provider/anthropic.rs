@@ -1,11 +1,16 @@
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE};
+use tokio::sync::mpsc;
 
 use crate::model::{
     AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall,
     ToolDefinition, TurnMeta,
 };
-use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
+use super::{
+    sse::SseDecoder, CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
+    ProviderResponse,
+};
 
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -329,6 +334,226 @@ impl Provider for AnthropicProvider {
         let json_resp: serde_json::Value = res.json().await?;
         self.parse_response(json_resp)
     }
+
+    async fn complete_stream(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let base = self.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/messages") {
+            base.to_string()
+        } else {
+            format!("{base}/messages")
+        };
+        let mut body = self.build_request_body(session, tools, options);
+        body["stream"] = serde_json::json!(true);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&self.api_key).map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+
+        let res = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let body_text = res.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let mut stream = res.bytes_stream();
+        let mut decoder = SseDecoder::new();
+
+        enum AnthropicBlock {
+            Thinking { content: String, signature: Option<String> },
+            Text { text: String },
+            ToolUse { id: String, name: String, arguments_buf: String },
+        }
+
+        let mut blocks: Vec<AnthropicBlock> = Vec::new();
+        let mut prompt_tokens: u32 = 0;
+        let mut completion_tokens: u32 = 0;
+        let mut cache_creation: Option<u32> = None;
+        let mut cache_read: Option<u32> = None;
+        let mut stop_reason: Option<String> = None;
+
+        let mut process_event = |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
+            let ev_type = json["type"].as_str().unwrap_or_default();
+            match ev_type {
+                "message_start" => {
+                    if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
+                        prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+                        cache_creation = u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
+                        cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
+                    }
+                }
+                "content_block_start" => {
+                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
+                    let cb = &json["content_block"];
+                    let block_type = cb["type"].as_str().unwrap_or_default();
+                    let block = match block_type {
+                        "thinking" => AnthropicBlock::Thinking {
+                            content: String::new(),
+                            signature: None,
+                        },
+                        "text" => AnthropicBlock::Text {
+                            text: cb["text"].as_str().unwrap_or_default().to_string(),
+                        },
+                        "tool_use" => AnthropicBlock::ToolUse {
+                            id: cb["id"].as_str().unwrap_or_default().to_string(),
+                            name: cb["name"].as_str().unwrap_or_default().to_string(),
+                            arguments_buf: String::new(),
+                        },
+                        _ => AnthropicBlock::Text {
+                            text: String::new(),
+                        },
+                    };
+                    while blocks.len() <= idx {
+                        blocks.push(AnthropicBlock::Text {
+                            text: String::new(),
+                        });
+                    }
+                    blocks[idx] = block;
+                }
+                "content_block_delta" => {
+                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
+                    let delta = &json["delta"];
+                    let delta_type = delta["type"].as_str().unwrap_or_default();
+                    match delta_type {
+                        "thinking_delta" => {
+                            if let Some(t) = delta["thinking"].as_str() {
+                                if let Some(AnthropicBlock::Thinking { content, .. }) = blocks.get_mut(idx) {
+                                    content.push_str(t);
+                                }
+                                if let Some(tx) = tx_opt {
+                                    let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                }
+                            }
+                        }
+                        "text_delta" => {
+                            if let Some(t) = delta["text"].as_str() {
+                                if let Some(AnthropicBlock::Text { text }) = blocks.get_mut(idx) {
+                                    text.push_str(t);
+                                }
+                                if let Some(tx) = tx_opt {
+                                    let _ = tx.try_send(ProviderDelta::Text(t.to_string()));
+                                }
+                            }
+                        }
+                        "signature_delta" => {
+                            if let Some(sig) = delta["signature"].as_str()
+                                && let Some(AnthropicBlock::Thinking { signature, .. }) = blocks.get_mut(idx)
+                            {
+                                *signature = Some(sig.to_string());
+                            }
+                        }
+                        "input_json_delta" => {
+                            if let Some(pj) = delta["partial_json"].as_str()
+                                && let Some(AnthropicBlock::ToolUse { arguments_buf, .. }) = blocks.get_mut(idx)
+                            {
+                                arguments_buf.push_str(pj);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                "message_delta" => {
+                    if let Some(sr) = json["delta"]["stop_reason"].as_str() {
+                        stop_reason = Some(sr.to_string());
+                    }
+                    if let Some(u) = json.get("usage")
+                        && let Some(out) = u["output_tokens"].as_u64()
+                    {
+                        completion_tokens = out as u32;
+                    }
+                }
+                _ => {}
+            }
+        };
+
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res?;
+            let events = decoder.decode(&chunk);
+
+            for ev in events {
+                if ev.data == "[DONE]" {
+                    break;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
+                    process_event(&json, &delta_sender);
+                }
+            }
+        }
+
+        if let Some(ev) = decoder.flush()
+            && ev.data != "[DONE]"
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
+        {
+            process_event(&json, &delta_sender);
+        }
+
+        let mut parts = Vec::new();
+        for b in blocks {
+            match b {
+                AnthropicBlock::Thinking { content, signature } => {
+                    parts.push(ContentPart::Reasoning { content, signature });
+                }
+                AnthropicBlock::Text { text } => {
+                    if !text.is_empty() {
+                        parts.push(ContentPart::text(text));
+                    }
+                }
+                AnthropicBlock::ToolUse { id, name, arguments_buf } => {
+                    parts.push(ContentPart::ToolCall(ToolCall {
+                        id,
+                        name,
+                        arguments: arguments_buf,
+                    }));
+                }
+            }
+        }
+
+        let usage = Some(TokenUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            cached_tokens: cache_read,
+            reasoning_tokens: None,
+        });
+
+        let turn_meta = TurnMeta {
+            anthropic: Some(AnthropicTurnMeta {
+                cache_creation_input_tokens: cache_creation,
+                cache_read_input_tokens: cache_read,
+                stop_reason,
+            }),
+            ..Default::default()
+        };
+
+        let message = Message::assistant(parts);
+
+        Ok(ProviderResponse {
+            messages: vec![message],
+            usage,
+            meta: turn_meta,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -450,5 +675,52 @@ mod tests {
         assert_eq!(tool_blocks.len(), 2);
         assert_eq!(tool_blocks[0]["type"], "tool_result");
         assert_eq!(tool_blocks[1]["type"], "tool_result");
+    }
+
+    #[tokio::test]
+    async fn test_anthropic_provider_stream_events_flow() {
+        let (tx, mut rx) = mpsc::channel::<ProviderDelta>(10);
+
+        let sse_data = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":25,\"cache_creation_input_tokens\":10,\"cache_read_input_tokens\":5}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Reasoning about code...\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_xyz\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the solution.\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":40}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+
+        let mut decoder = SseDecoder::new();
+        let events = decoder.decode(sse_data.as_bytes());
+
+        for ev in events {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
+                if json["type"] == "content_block_delta" {
+                    let delta = &json["delta"];
+                    if delta["type"] == "thinking_delta" {
+                        let _ = tx.send(ProviderDelta::Thought(delta["thinking"].as_str().unwrap().to_string())).await;
+                    } else if delta["type"] == "text_delta" {
+                        let _ = tx.send(ProviderDelta::Text(delta["text"].as_str().unwrap().to_string())).await;
+                    }
+                }
+            }
+        }
+
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Thought("Reasoning about code...".into())));
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("Here is the solution.".into())));
     }
 }

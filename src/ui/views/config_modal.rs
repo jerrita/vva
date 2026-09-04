@@ -85,6 +85,7 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
             crate::ui::app::ConfigItemKind::Model => "Enter to select model",
             crate::ui::app::ConfigItemKind::Variant => "Enter to select variant",
             crate::ui::app::ConfigItemKind::WebSearch => "Enter/Space to toggle",
+            crate::ui::app::ConfigItemKind::ThinkingDisplay => "Enter/Space to toggle",
         };
 
         lines.push(Line::from(vec![

@@ -28,6 +28,7 @@ pub enum AgentEvent {
     ToolExecuting { name: String, args: String },
     ToolFinished { name: String, result: String, is_error: bool },
     Text(String),
+    Citation { title: String, url: String },
     Finished,
     Error(String),
 }
@@ -68,35 +69,44 @@ impl AgentEngine {
                 iteration,
                 provider = self.provider.name(),
                 model = %self.config.completion_options.model,
-                "Calling provider complete"
+                "Calling provider complete_stream"
             );
 
             let tool_defs = self.tools.definitions();
             let parent_turn_id = session.last_turn_id();
 
-            let response = self
-                .provider
-                .complete(session, &tool_defs, &self.config.completion_options)
-                .await?;
-
-            // 派发事件
-            for msg in &response.messages {
-                for part in &msg.parts {
-                    match part {
-                        ContentPart::Reasoning { content, .. } => {
-                            if let Some(tx) = &event_sender {
-                                let _ = tx.send(AgentEvent::Thought(content.clone())).await;
+            // 构造实时流式增量转发通道
+            let (delta_tx, mut delta_rx) = mpsc::channel::<crate::provider::ProviderDelta>(64);
+            let fwd_tx = event_sender.clone();
+            let fwd_task = tokio::spawn(async move {
+                if let Some(tx) = fwd_tx {
+                    while let Some(delta) = delta_rx.recv().await {
+                        match delta {
+                            crate::provider::ProviderDelta::Thought(t) => {
+                                let _ = tx.send(AgentEvent::Thought(t)).await;
+                            }
+                            crate::provider::ProviderDelta::Text(t) => {
+                                let _ = tx.send(AgentEvent::Text(t)).await;
+                            }
+                            crate::provider::ProviderDelta::Citation { title, url } => {
+                                let _ = tx.send(AgentEvent::Citation { title, url }).await;
                             }
                         }
-                        ContentPart::Text { text, .. } => {
-                            if let Some(tx) = &event_sender {
-                                let _ = tx.send(AgentEvent::Text(text.clone())).await;
-                            }
-                        }
-                        _ => {}
                     }
                 }
-            }
+            });
+
+            let response = self
+                .provider
+                .complete_stream(
+                    session,
+                    &tool_defs,
+                    &self.config.completion_options,
+                    Some(delta_tx),
+                )
+                .await?;
+
+            let _ = fwd_task.await;
 
             // 检查是否有待执行的工具调用
             let mut tool_calls = Vec::new();

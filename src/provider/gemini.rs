@@ -1,12 +1,17 @@
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE};
+use tokio::sync::mpsc;
 
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
     Message, Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta,
     WebSearchCall, WebSearchSource,
 };
-use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
+use super::{
+    sse::SseDecoder, CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
+    ProviderResponse,
+};
 
 pub struct GeminiProvider {
     client: reqwest::Client,
@@ -439,6 +444,262 @@ impl Provider for GeminiProvider {
         let json_resp: serde_json::Value = res.json().await?;
         self.parse_response(json_resp)
     }
+
+    async fn complete_stream(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let base = self.base_url.trim().trim_end_matches('/');
+        let model_name = options.model.strip_prefix("models/").unwrap_or(&options.model);
+        let path = if base.ends_with("/models") {
+            format!("{base}/{model_name}:streamGenerateContent")
+        } else {
+            format!("{base}/models/{model_name}:streamGenerateContent")
+        };
+        let url = if path.contains('?') {
+            format!("{path}&alt=sse&key={}", self.api_key)
+        } else {
+            format!("{path}?alt=sse&key={}", self.api_key)
+        };
+        let body = self.build_request_body(session, tools, options);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        if let Ok(key_val) = HeaderValue::from_str(&self.api_key) {
+            headers.insert("x-goog-api-key", key_val);
+        }
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+
+        let res = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let body_text = res.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let mut stream = res.bytes_stream();
+        let mut decoder = SseDecoder::new();
+
+        let mut accumulated_thought = String::new();
+        let mut accumulated_text = String::new();
+        let mut tool_calls = Vec::new();
+        let mut search_call: Option<WebSearchCall> = None;
+        let mut citations: Vec<Annotation> = Vec::new();
+        let mut finish_reason: Option<String> = None;
+        let mut safety_ratings = Vec::new();
+        let mut code_execution_result: Option<GeminiCodeExecutionResult> = None;
+        let mut usage: Option<TokenUsage> = None;
+
+        let mut process_chunk = |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
+            if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
+                if let Some(fr) = candidate["finishReason"].as_str() {
+                    finish_reason = Some(fr.to_string());
+                }
+
+                if let Some(sr_arr) = candidate["safetyRatings"].as_array() {
+                    for sr in sr_arr {
+                        safety_ratings.push(GeminiSafetyRating {
+                            category: sr["category"].as_str().unwrap_or_default().to_string(),
+                            probability: sr["probability"].as_str().unwrap_or_default().to_string(),
+                        });
+                    }
+                }
+
+                if let Some(ce) = candidate.get("codeExecutionResult") {
+                    code_execution_result = Some(GeminiCodeExecutionResult {
+                        outcome: ce["outcome"].as_str().unwrap_or_default().to_string(),
+                        output: ce["output"].as_str().unwrap_or_default().to_string(),
+                    });
+                }
+
+                // 处理 GroundingMetadata
+                if let Some(gm) = candidate.get("groundingMetadata") {
+                    let mut search_sources = Vec::new();
+                    if let Some(chunks) = gm["groundingChunks"].as_array() {
+                        for chunk in chunks {
+                            if let Some(web) = chunk.get("web") {
+                                search_sources.push(WebSearchSource {
+                                    url: web["uri"].as_str().unwrap_or_default().to_string(),
+                                    title: web["title"].as_str().unwrap_or_default().to_string(),
+                                    snippet: None,
+                                });
+                            }
+                        }
+                    }
+
+                    let queries: Vec<String> = gm["webSearchQueries"]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|q| q.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    let combined_query = queries.join(" | ");
+                    if !search_sources.is_empty() || !queries.is_empty() {
+                        search_call = Some(WebSearchCall {
+                            id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
+                            query: combined_query,
+                            status: SearchStatus::Completed,
+                            sources: search_sources.clone(),
+                        });
+                    }
+
+                    if let Some(supports) = gm["groundingSupports"].as_array() {
+                        for sup in supports {
+                            let seg = &sup["segment"];
+                            let start_idx = seg["startIndex"].as_u64().unwrap_or(0) as usize;
+                            let end_idx = seg["endIndex"].as_u64().unwrap_or(0) as usize;
+
+                            if let Some(indices) = sup["groundingChunkIndices"].as_array() {
+                                for idx_val in indices {
+                                    if let Some(idx) = idx_val.as_u64().map(|v| v as usize)
+                                        && let Some(src) = search_sources.get(idx) {
+                                            let ann = Annotation::UrlCitation {
+                                                url: src.url.clone(),
+                                                title: src.title.clone(),
+                                                start_index: start_idx,
+                                                end_index: end_idx,
+                                            };
+                                            if !citations.contains(&ann) {
+                                                if let Some(tx) = tx_opt {
+                                                    let _ = tx.try_send(ProviderDelta::Citation {
+                                                        title: src.title.clone(),
+                                                        url: src.url.clone(),
+                                                    });
+                                                }
+                                                citations.push(ann);
+                                            }
+                                        }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 处理 Parts (Thought / Text / ToolCall)
+                if let Some(raw_parts) = candidate["content"]["parts"].as_array() {
+                    for p in raw_parts {
+                        if p["thought"].as_bool() == Some(true) {
+                            if let Some(t) = p["text"].as_str() {
+                                accumulated_thought.push_str(t);
+                                if let Some(tx) = tx_opt {
+                                    let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                }
+                            }
+                        } else if let Some(text) = p["text"].as_str() {
+                            accumulated_text.push_str(text);
+                            if let Some(tx) = tx_opt {
+                                let _ = tx.try_send(ProviderDelta::Text(text.to_string()));
+                            }
+                        } else if let Some(fc) = p.get("functionCall") {
+                            let call_name = fc["name"].as_str().unwrap_or_default().to_string();
+                            let args_str = fc["args"].to_string();
+                            let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                            tool_calls.push(ToolCall {
+                                id: call_id,
+                                name: call_name,
+                                arguments: args_str,
+                            });
+                        }
+                    }
+                }
+            }
+
+            if let Some(um) = json.get("usageMetadata") {
+                let prompt = um["promptTokenCount"].as_u64().unwrap_or(0) as u32;
+                let completion = um["candidatesTokenCount"].as_u64().unwrap_or(0) as u32;
+                let total = um["totalTokenCount"].as_u64().unwrap_or(0) as u32;
+                let cached = um["cachedContentTokenCount"].as_u64().map(|v| v as u32);
+                let reasoning = um["candidatesTokensDetails"]
+                    .as_array()
+                    .and_then(|arr| arr.iter().find(|d| d["modality"] == "THOUGHT"))
+                    .and_then(|d| d["tokenCount"].as_u64())
+                    .map(|v| v as u32);
+                usage = Some(TokenUsage {
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    total_tokens: total,
+                    cached_tokens: cached,
+                    reasoning_tokens: reasoning,
+                });
+            }
+        };
+
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res?;
+            let events = decoder.decode(&chunk);
+
+            for ev in events {
+                if ev.data == "[DONE]" {
+                    break;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
+                    process_chunk(&json, &delta_sender);
+                }
+            }
+        }
+
+        if let Some(ev) = decoder.flush()
+            && ev.data != "[DONE]"
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
+        {
+            process_chunk(&json, &delta_sender);
+        }
+
+        let mut parts = Vec::new();
+        if let Some(sc) = search_call {
+            parts.push(ContentPart::WebSearchCall(sc));
+        }
+        if !accumulated_thought.is_empty() {
+            parts.push(ContentPart::Reasoning {
+                content: accumulated_thought,
+                signature: None,
+            });
+        }
+        if !accumulated_text.is_empty() {
+            parts.push(ContentPart::Text {
+                text: accumulated_text,
+                annotations: citations,
+            });
+        }
+        for call in tool_calls {
+            parts.push(ContentPart::ToolCall(call));
+        }
+
+        let gemini_turn_meta = GeminiTurnMeta {
+            finish_reason,
+            safety_ratings,
+            code_execution_result,
+        };
+
+        let turn_meta = TurnMeta {
+            gemini: Some(gemini_turn_meta),
+            ..Default::default()
+        };
+
+        let message = Message::assistant(parts);
+
+        Ok(ProviderResponse {
+            messages: vec![message],
+            usage,
+            meta: turn_meta,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -602,5 +863,37 @@ mod tests {
         let fr = &contents[2]["parts"][0]["functionResponse"];
         assert_eq!(fr["name"], "bash");
         assert_eq!(fr["response"]["content"], "file1.txt\nfile2.txt");
+    }
+
+    #[tokio::test]
+    async fn test_gemini_provider_stream_events_flow() {
+        let (tx, mut rx) = mpsc::channel::<ProviderDelta>(10);
+
+        let sse_data = concat!(
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Analyzing question...\",\"thought\":true}]},\"finishReason\":\"\"}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is the result.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":15,\"totalTokenCount\":25}}\n\n"
+        );
+
+        let mut decoder = SseDecoder::new();
+        let events = decoder.decode(sse_data.as_bytes());
+
+        for ev in events {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
+                if let Some(candidate) = json["candidates"].as_array().and_then(|c| c.first())
+                    && let Some(parts) = candidate["content"]["parts"].as_array()
+                {
+                    for p in parts {
+                        if p["thought"].as_bool() == Some(true) {
+                            let _ = tx.send(ProviderDelta::Thought(p["text"].as_str().unwrap().to_string())).await;
+                        } else if let Some(t) = p["text"].as_str() {
+                            let _ = tx.send(ProviderDelta::Text(t.to_string())).await;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Thought("Analyzing question...".into())));
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("Here is the result.".into())));
     }
 }

@@ -201,6 +201,13 @@ async fn run_app_loop(
 }
 
 async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
+    if let CrosstermEvent::Paste(text) = event {
+        if app.modal == ActiveModal::None {
+            app.insert_str(&text);
+        }
+        return;
+    }
+
     if let CrosstermEvent::Key(key) = event {
         if key.kind != KeyEventKind::Press {
             return;
@@ -343,6 +350,16 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                                     });
                                     if let Some(ref mut cm) = app.config_modal {
                                         cm.update_web_search(app.enable_web_search);
+                                    }
+                                }
+                                app::ConfigItemKind::ThinkingDisplay => {
+                                    app.thinking_concise = !app.thinking_concise;
+                                    let mode_str = if app.thinking_concise { "concise (1 line)" } else { "full" };
+                                    app.chat_entries.push(app::ChatEntry::SystemNotice {
+                                        text: format!("Thinking display mode set to {mode_str}."),
+                                    });
+                                    if let Some(ref mut cm) = app.config_modal {
+                                        cm.update_thinking_display(app.thinking_concise);
                                     }
                                 }
                             }

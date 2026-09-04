@@ -52,24 +52,51 @@ pub fn render_chat(app: &App, frame: &mut Frame, area: Rect) {
             }
             ChatEntry::Thinking { content } => {
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "🧠 Thinking",
-                        Style::default()
-                            .fg(Color::Rgb(140, 140, 140))
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]));
-                for l in content.lines() {
+                if app.thinking_concise {
+                    let first_line = content
+                        .lines()
+                        .map(str::trim)
+                        .find(|l| !l.is_empty())
+                        .unwrap_or("Thinking...");
+                    let short_preview = if first_line.chars().count() > 80 {
+                        format!("{}...", first_line.chars().take(77).collect::<String>())
+                    } else {
+                        first_line.to_string()
+                    };
                     lines.push(Line::from(vec![
-                        Span::raw("   "),
                         Span::styled(
-                            l,
+                            "🧠 Thinking: ",
+                            Style::default()
+                                .fg(Color::Rgb(140, 140, 140))
+                                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                        ),
+                        Span::styled(
+                            short_preview,
                             Style::default()
                                 .fg(Color::Rgb(120, 120, 120))
                                 .add_modifier(Modifier::ITALIC),
                         ),
                     ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "🧠 Thinking",
+                            Style::default()
+                                .fg(Color::Rgb(140, 140, 140))
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                    for l in content.lines() {
+                        lines.push(Line::from(vec![
+                            Span::raw("   "),
+                            Span::styled(
+                                l,
+                                Style::default()
+                                    .fg(Color::Rgb(120, 120, 120))
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]));
+                    }
                 }
             }
             ChatEntry::ToolCall { name, args } => {

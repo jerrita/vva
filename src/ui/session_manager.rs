@@ -7,7 +7,7 @@ use tracing::error;
 
 use crate::config::{AppConfig, ResolvedModel};
 use crate::harness::{AgentConfig, AgentEngine, AgentEvent};
-use crate::model::{Message, Session, Turn};
+use crate::model::{ContentPart, Message, Session, Turn};
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::response::ResponseProvider;
@@ -163,13 +163,24 @@ impl SessionManager {
             .await
             .map_err(|e| e.to_string())?;
 
-        {
+        let should_generate_title = {
             let mut s = managed.session.write().await;
-            // 若 session 尚无 title，用前 40 字符填充
-            if s.title.is_none() {
+            let needs_title = s.title.is_none();
+            if needs_title {
                 s.title = Some(prompt.chars().take(40).collect());
             }
             s.append_turn(user_turn);
+            needs_title
+        };
+
+        if should_generate_title {
+            let cfg_clone = self.app_config.clone();
+            let store_clone = self.store.clone();
+            let session_clone = managed.session.clone();
+            let prompt_str = prompt.to_string();
+            tokio::spawn(async move {
+                generate_title_with_small_model(&cfg_clone, store_clone, session_clone, prompt_str).await;
+            });
         }
 
         // 2. 解析 Provider 与参数
@@ -226,6 +237,7 @@ impl SessionManager {
                     AgentEvent::Text(_) => {
                         *fwd_status.write().await = "Responding...".to_string();
                     }
+                    AgentEvent::Citation { .. } => {}
                     AgentEvent::Finished => {
                         *fwd_status.write().await = String::new();
                     }
@@ -314,6 +326,92 @@ pub fn resolve_provider(
     }
 }
 
+/// 使用 small_model 为 Session 生成精简标题（非流式调用）
+pub async fn generate_title_with_small_model(
+    app_config: &Option<AppConfig>,
+    store: Arc<dyn SessionStore>,
+    session_lock: Arc<RwLock<Session>>,
+    user_prompt: String,
+) {
+    let small_model_spec = app_config
+        .as_ref()
+        .and_then(|c| c.settings.small_model.as_deref());
+
+    let (provider, effective_model) = match small_model_spec {
+        Some(spec) => match resolve_provider(app_config, spec, None) {
+            Ok((p, m, _)) => (p, m),
+            Err(e) => {
+                tracing::warn!("Failed to resolve small_model '{spec}' for title generation: {e}");
+                return;
+            }
+        },
+        None => {
+            let current_model = {
+                let s = session_lock.read().await;
+                s.current_model.clone()
+            };
+            if current_model.is_empty() {
+                return;
+            }
+            match resolve_provider(app_config, &current_model, None) {
+                Ok((p, m, _)) => (p, m),
+                Err(e) => {
+                    tracing::warn!("Failed to resolve model '{current_model}' for title generation: {e}");
+                    return;
+                }
+            }
+        }
+    };
+
+    let title_system = "You are a concise title generator. Generate a very brief title (3-6 words, plain text, no markdown, no quotes, no trailing punctuation) summarizing the user's prompt. Return ONLY the title text.";
+    let mut title_session = Session::new(".", None);
+    title_session.append_turn(Turn::user_turn(
+        Message::user(format!("{title_system}\n\nUser prompt:\n{user_prompt}")),
+        None,
+    ));
+
+    let options = CompletionOptions {
+        model: effective_model,
+        temperature: Some(0.3),
+        max_tokens: Some(30),
+        enable_web_search: false,
+        reasoning_effort: None,
+    };
+
+    // 非流式调用 (标题生成除外)
+    match provider.complete(&title_session, &[], &options).await {
+        Ok(resp) => {
+            let mut title_candidate = String::new();
+            for msg in resp.messages {
+                for part in msg.parts {
+                    if let ContentPart::Text { text, .. } = part {
+                        title_candidate.push_str(&text);
+                    }
+                }
+            }
+
+            let cleaned = title_candidate
+                .trim()
+                .trim_matches(|c| c == '"' || c == '\'' || c == '`' || c == '#' || c == '*')
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim();
+
+            if !cleaned.is_empty() {
+                let mut s = session_lock.write().await;
+                s.title = Some(cleaned.to_string());
+                if let Err(e) = store.save_header(&s).await {
+                    tracing::warn!("Failed to persist generated session title: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("small_model title generation failed: {e}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +431,28 @@ mod tests {
         assert!(Arc::ptr_eq(&s1, &s2));
 
         // 清理临时目录
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_small_model_title_generation_flow() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_test_title_{}", uuid::Uuid::new_v4().simple()));
+        let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
+
+        let session = Session::with_model(&temp_dir, None, "test_model", None);
+        store.save_header(&session).await.expect("save header");
+
+        let session_lock = Arc::new(RwLock::new(session));
+        assert_eq!(session_lock.read().await.title, None);
+
+        generate_title_with_small_model(
+            &None,
+            store.clone(),
+            session_lock.clone(),
+            "How to write a fast web server in Rust?".into(),
+        )
+        .await;
+
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

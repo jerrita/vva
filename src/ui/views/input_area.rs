@@ -86,9 +86,17 @@ pub fn render_input_area(
 
     frame.render_widget(input_p, chunks[1]);
 
-    // 绘制光标
+    // 绘制光标 (基于字符实际显示宽度定位，正确支持中文字符等全角字符)
     if !is_running {
-        let cursor_x = chunks[1].x + 1 + app.cursor_pos as u16;
+        let byte_offset = app
+            .input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(app.cursor_pos)
+            .unwrap_or(app.input.len());
+        let prefix = &app.input[..byte_offset];
+        let prefix_width = Span::raw(prefix).width() as u16;
+        let cursor_x = chunks[1].x + 1 + prefix_width;
         let cursor_y = chunks[1].y + 1;
         if cursor_x < chunks[1].x + chunks[1].width - 1 {
             frame.set_cursor_position((cursor_x, cursor_y));

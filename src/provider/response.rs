@@ -1,11 +1,16 @@
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use futures::StreamExt;
+use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use tokio::sync::mpsc;
 
 use crate::model::{
     Annotation, ContentPart, Message, ResponseTurnMeta, Role, SearchStatus, Session, TokenUsage,
     ToolCall, ToolDefinition, TurnMeta, WebSearchCall, WebSearchSource,
 };
-use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
+use super::{
+    sse::SseDecoder, CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
+    ProviderResponse,
+};
 
 pub struct ResponseProvider {
     client: reqwest::Client,
@@ -415,6 +420,121 @@ impl Provider for ResponseProvider {
         let json_resp: serde_json::Value = res.json().await?;
         self.parse_response(json_resp)
     }
+
+    async fn complete_stream(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let base = self.base_url.trim_end_matches('/');
+        let url = if base.ends_with("/responses") {
+            base.to_string()
+        } else {
+            format!("{base}/responses")
+        };
+        let mut body = self.build_request_body(session, tools, options);
+        body["stream"] = serde_json::json!(true);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
+
+        let res = self
+            .client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = res.status();
+        if !status.is_success() {
+            let body_text = res.text().await.unwrap_or_default();
+            return Err(ProviderError::ApiError {
+                status,
+                body: body_text,
+            });
+        }
+
+        let mut stream = res.bytes_stream();
+        let mut decoder = SseDecoder::new();
+        let mut completed_response: Option<ProviderResponse> = None;
+
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res?;
+            let events = decoder.decode(&chunk);
+
+            for ev in events {
+                if ev.data == "[DONE]" {
+                    break;
+                }
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
+                    let ev_type = json["type"].as_str().unwrap_or_default();
+                    match ev_type {
+                        "response.output_text.delta" => {
+                            if let Some(delta) = json["delta"].as_str()
+                                && let Some(tx) = &delta_sender
+                            {
+                                let _ = tx.send(ProviderDelta::Text(delta.to_string())).await;
+                            }
+                        }
+                        "response.reasoning_text.delta" => {
+                            if let Some(delta) = json["delta"].as_str()
+                                && let Some(tx) = &delta_sender
+                            {
+                                let _ = tx.send(ProviderDelta::Thought(delta.to_string())).await;
+                            }
+                        }
+                        "response.completed" => {
+                            if let Some(resp_obj) = json.get("response") {
+                                let parsed = self.parse_response(resp_obj.clone())?;
+                                if let Some(tx) = &delta_sender {
+                                    for msg in &parsed.messages {
+                                        for part in &msg.parts {
+                                            if let ContentPart::Text { annotations, .. } = part {
+                                                for ann in annotations {
+                                                    if let Annotation::UrlCitation { title, url, .. } = ann {
+                                                        let _ = tx.send(ProviderDelta::Citation {
+                                                            title: title.clone(),
+                                                            url: url.clone(),
+                                                        }).await;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                completed_response = Some(parsed);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if let Some(ev) = decoder.flush()
+            && ev.data != "[DONE]"
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
+            && json["type"] == "response.completed"
+            && let Some(resp_obj) = json.get("response")
+        {
+            completed_response = Some(self.parse_response(resp_obj.clone())?);
+        }
+
+        if let Some(resp) = completed_response {
+            Ok(resp)
+        } else {
+            Err(ProviderError::Protocol("Stream ended without response.completed".into()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -677,6 +797,63 @@ mod tests {
             }
             _ => panic!("Expected ToolCall part"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_response_provider_stream_events_flow() {
+        let provider = ResponseProvider::new("test-key");
+        let (tx, mut rx) = mpsc::channel::<ProviderDelta>(10);
+
+        let sse_stream_data = concat!(
+            "event: response.reasoning_text.delta\n",
+            "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"Thinking deeply...\"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello \"}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world!\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_1\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"r1\",\"summary\":\"Thinking deeply...\"},{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world!\"}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":10,\"total_tokens\":15}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+
+        let mut decoder = SseDecoder::new();
+        let events = decoder.decode(sse_stream_data.as_bytes());
+
+        let mut completed_response = None;
+        for ev in events {
+            if ev.data == "[DONE]" {
+                break;
+            }
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
+                let ev_type = json["type"].as_str().unwrap_or_default();
+                match ev_type {
+                    "response.output_text.delta" => {
+                        if let Some(delta) = json["delta"].as_str() {
+                            let _ = tx.send(ProviderDelta::Text(delta.to_string())).await;
+                        }
+                    }
+                    "response.reasoning_text.delta" => {
+                        if let Some(delta) = json["delta"].as_str() {
+                            let _ = tx.send(ProviderDelta::Thought(delta.to_string())).await;
+                        }
+                    }
+                    "response.completed" => {
+                        if let Some(resp_obj) = json.get("response") {
+                            completed_response = Some(provider.parse_response(resp_obj.clone()).unwrap());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Thought("Thinking deeply...".into())));
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("Hello ".into())));
+        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("world!".into())));
+
+        let resp = completed_response.expect("completed response");
+        assert_eq!(resp.messages.len(), 1);
+        assert_eq!(resp.usage.unwrap().total_tokens, 15);
     }
 }
 

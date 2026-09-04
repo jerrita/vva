@@ -310,15 +310,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 engine.run_turn(&mut session, Some(tx)).await
             });
 
+            let mut in_thought = false;
+            let mut in_text = false;
+
             while let Some(event) = rx.recv().await {
                 match event {
                     AgentEvent::Thought(thought) => {
-                        println!("\n🧠 [Thinking]\n{}", thought.trim());
+                        if !in_thought {
+                            println!("\n🧠 [Thinking]");
+                            in_thought = true;
+                        }
+                        print!("{}", thought);
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
                     }
                     AgentEvent::Text(text) => {
-                        println!("\n💬 [Assistant]\n{}", text);
+                        in_thought = false;
+                        if !in_text {
+                            println!("\n💬 [Assistant]");
+                            in_text = true;
+                        }
+                        print!("{}", text);
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                    }
+                    AgentEvent::Citation { title, url } => {
+                        println!("\n🔗 [Citation] {} ({})", title, url);
                     }
                     AgentEvent::ToolExecuting { name, args } => {
+                        in_thought = false;
+                        in_text = false;
                         println!("\n⚙️ [Tool Calling] {}({})", name, args);
                     }
                     AgentEvent::ToolFinished { name, result, is_error } => {
@@ -326,6 +347,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("{} [{}] output:\n{}", status_sym, name, result.trim());
                     }
                     AgentEvent::Finished => {
+                        in_thought = false;
+                        in_text = false;
                         println!("\n✨ Turn completed successfully.");
                     }
                     AgentEvent::Error(err) => {
