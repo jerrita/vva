@@ -1,16 +1,15 @@
 use async_trait::async_trait;
-use futures::StreamExt;
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
-    sse::SseDecoder,
-};
+use super::http::{SseEventHandler, consume_sse, post_json, post_sse};
+use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
 use crate::event::AgentEvent;
 use crate::model::{
-    Annotation, ContentPart, Message, ResponseOutputItem, ResponseTurnMeta, Role, SearchStatus,
-    Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchCall, WebSearchSource,
+    Annotation, ContentPart, Message, ResponseMessageContent, ResponseOutputItem,
+    ResponseReasoningContent, ResponseReasoningSummary, ResponseTurnMeta, ResponseWebSearchAction,
+    Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchCall,
+    WebSearchSource,
 };
 
 pub struct ResponseProvider {
@@ -31,6 +30,25 @@ impl ResponseProvider {
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
+    }
+
+    /// 规范化请求端点：base_url 无论是否携带 /responses 后缀，均收敛到唯一端点
+    fn endpoint_url(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/responses").unwrap_or(base);
+        format!("{base}/responses")
+    }
+
+    /// Bearer 鉴权与 JSON Content-Type 头
+    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        Ok(headers)
     }
 
     /// 将 Session 与当前上下文转换为 Responses API 请求体
@@ -245,8 +263,8 @@ impl ResponseProvider {
         body
     }
 
-    /// 解析 Responses API 响应体
-    /// 解析 Responses API 响应体
+    /// 解析 Responses API 响应体：先反序列化为强类型 output items，
+    /// 再投影为领域 ContentPart（解析失败即报协议错误，不做字段兜底）
     pub fn parse_response(
         &self,
         json: serde_json::Value,
@@ -291,9 +309,6 @@ impl ResponseProvider {
         let service_tier = json["service_tier"].as_str().map(|s| s.to_string());
         let reasoning_effort = json["reasoning"]["effort"].as_str().map(|s| s.to_string());
 
-        let mut parts = Vec::new();
-        let mut last_msg_item_id = None;
-
         let output_items = json["output"].as_array().ok_or_else(|| {
             ProviderError::Protocol("Missing 'output' in Responses API output".into())
         })?;
@@ -305,128 +320,64 @@ impl ResponseProvider {
                     ProviderError::Protocol(format!("Invalid Responses API output item: {e}"))
                 })?;
             native_output_items.push(native_item);
+        }
 
-            let item_type = item["type"]
-                .as_str()
-                .ok_or_else(|| ProviderError::Protocol("Missing 'type' in output item".into()))?;
+        let mut parts = Vec::new();
+        let mut last_msg_item_id = None;
 
-            match item_type {
-                "web_search_call" => {
-                    let search_id = item["id"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            ProviderError::Protocol("Missing 'id' in web_search_call".into())
-                        })?
-                        .to_string();
-                    let _search_status = item["status"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'status' in web_search_call".into())
-                    })?;
-                    let action = item["action"].as_object().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'action' in web_search_call".into())
-                    })?;
-                    let action_type = action["type"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'type' in web_search_call action".into())
-                    })?;
-
-                    let (query, sources) = match action_type {
-                        "search" => {
-                            let q = if let Some(q) = action.get("query").and_then(|v| v.as_str()) {
-                                q.to_string()
-                            } else if let Some(queries) =
-                                action.get("queries").and_then(|v| v.as_array())
-                            {
-                                queries
-                                    .iter()
-                                    .filter_map(|v| v.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            } else {
-                                String::new()
-                            };
-
-                            let mut srcs = Vec::new();
-                            if let Some(sources_arr) =
-                                action.get("sources").and_then(|v| v.as_array())
-                            {
-                                for src in sources_arr {
-                                    let url = src["url"]
-                                        .as_str()
-                                        .ok_or_else(|| {
-                                            ProviderError::Protocol(
-                                                "Missing 'url' in web search source".into(),
-                                            )
-                                        })?
-                                        .to_string();
-                                    srcs.push(WebSearchSource {
-                                        url: url.clone(),
-                                        title: url,
-                                        snippet: None,
-                                    });
-                                }
-                            }
+        for item in &native_output_items {
+            match item {
+                ResponseOutputItem::WebSearchCall { id, action, .. } => {
+                    let (query, sources) = match action {
+                        ResponseWebSearchAction::Search {
+                            query,
+                            queries,
+                            sources,
+                        } => {
+                            let q = query
+                                .clone()
+                                .unwrap_or_else(|| queries.join(", "));
+                            let srcs = sources
+                                .iter()
+                                .map(|src| WebSearchSource {
+                                    url: src.url.clone(),
+                                    title: src.url.clone(),
+                                    snippet: None,
+                                })
+                                .collect();
                             (q, srcs)
                         }
-                        "open_page" => {
-                            let url = action["url"]
-                                .as_str()
-                                .ok_or_else(|| {
-                                    ProviderError::Protocol(
-                                        "Missing 'url' in open_page action".into(),
-                                    )
-                                })?
-                                .to_string();
-                            (
-                                url.clone(),
-                                vec![WebSearchSource {
-                                    url: url.clone(),
-                                    title: url,
-                                    snippet: None,
-                                }],
-                            )
+                        ResponseWebSearchAction::OpenPage { url } => (
+                            url.clone(),
+                            vec![WebSearchSource {
+                                url: url.clone(),
+                                title: url.clone(),
+                                snippet: None,
+                            }],
+                        ),
+                        ResponseWebSearchAction::FindInPage { .. } => {
+                            (String::new(), Vec::new())
                         }
-                        _ => (String::new(), Vec::new()),
                     };
 
                     parts.push(ContentPart::WebSearchCall(WebSearchCall {
-                        id: search_id,
+                        id: id.clone(),
                         query,
                         status: SearchStatus::Completed,
                         sources,
                     }));
                 }
-                "reasoning" => {
-                    let _reasoning_id = item["id"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'id' in reasoning output item".into())
-                    })?;
-                    let summary_arr = item["summary"].as_array().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'summary' in reasoning output item".into())
-                    })?;
-
-                    let mut reasoning_text = String::new();
-                    for c in summary_arr {
-                        let t = c["text"].as_str().ok_or_else(|| {
-                            ProviderError::Protocol("Missing 'text' in summary_text item".into())
-                        })?;
-                        if !reasoning_text.is_empty() {
-                            reasoning_text.push('\n');
-                        }
-                        reasoning_text.push_str(t);
+                ResponseOutputItem::Reasoning { summary, content, .. } => {
+                    let mut texts = Vec::new();
+                    for s in summary {
+                        let ResponseReasoningSummary::SummaryText { text } = s;
+                        texts.push(text.clone());
                     }
-
-                    if let Some(contents) = item.get("content").and_then(|v| v.as_array()) {
-                        for c in contents {
-                            let t = c["text"].as_str().ok_or_else(|| {
-                                ProviderError::Protocol(
-                                    "Missing 'text' in reasoning_text item".into(),
-                                )
-                            })?;
-                            if !reasoning_text.is_empty() {
-                                reasoning_text.push('\n');
-                            }
-                            reasoning_text.push_str(t);
-                        }
+                    for c in content {
+                        let ResponseReasoningContent::ReasoningText { text } = c;
+                        texts.push(text.clone());
                     }
-
+                    let reasoning_text = texts.join("\n");
                     if !reasoning_text.is_empty() {
                         parts.push(ContentPart::Reasoning {
                             content: reasoning_text,
@@ -434,141 +385,37 @@ impl ResponseProvider {
                         });
                     }
                 }
-                "message" => {
-                    let id = item["id"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'id' in message output item".into())
-                    })?;
+                ResponseOutputItem::Message { id, content, .. } => {
                     if is_stored {
-                        last_msg_item_id = Some(id.to_string());
+                        last_msg_item_id = Some(id.clone());
                     }
 
-                    let role = item["role"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'role' in message output item".into())
-                    })?;
-                    if role != "assistant" {
-                        return Err(ProviderError::Protocol(format!(
-                            "Unexpected role in output message: {role}"
-                        )));
-                    }
-
-                    let _msg_status = item["status"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'status' in message output item".into())
-                    })?;
-
-                    let contents = item["content"].as_array().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'content' in message output item".into())
-                    })?;
-
-                    for c in contents {
-                        let c_type = c["type"].as_str().ok_or_else(|| {
-                            ProviderError::Protocol("Missing 'type' in message content part".into())
-                        })?;
-                        match c_type {
-                            "output_text" => {
-                                let text = c["text"]
-                                    .as_str()
-                                    .ok_or_else(|| {
-                                        ProviderError::Protocol(
-                                            "Missing 'text' in output_text content part".into(),
-                                        )
-                                    })?
-                                    .to_string();
-                                let ann_arr = c["annotations"].as_array().ok_or_else(|| {
-                                    ProviderError::Protocol(
-                                        "Missing 'annotations' in output_text content part".into(),
-                                    )
-                                })?;
-
-                                let mut annotations = Vec::new();
-                                for ann in ann_arr {
-                                    let ann_type = ann["type"].as_str().ok_or_else(|| {
-                                        ProviderError::Protocol(
-                                            "Missing 'type' in annotation".into(),
-                                        )
-                                    })?;
-                                    if ann_type == "url_citation" {
-                                        let url = ann["url"]
-                                            .as_str()
-                                            .ok_or_else(|| {
-                                                ProviderError::Protocol(
-                                                    "Missing 'url' in url_citation annotation"
-                                                        .into(),
-                                                )
-                                            })?
-                                            .to_string();
-                                        let title = ann["title"]
-                                            .as_str()
-                                            .ok_or_else(|| {
-                                                ProviderError::Protocol(
-                                                    "Missing 'title' in url_citation annotation"
-                                                        .into(),
-                                                )
-                                            })?
-                                            .to_string();
-                                        let start_index = ann["start_index"]
-                                            .as_u64()
-                                            .ok_or_else(|| ProviderError::Protocol("Missing 'start_index' in url_citation annotation".into()))? as usize;
-                                        let end_index = ann["end_index"]
-                                            .as_u64()
-                                            .ok_or_else(|| ProviderError::Protocol("Missing 'end_index' in url_citation annotation".into()))? as usize;
-                                        annotations.push(Annotation::UrlCitation {
-                                            url,
-                                            title,
-                                            start_index,
-                                            end_index,
-                                        });
-                                    }
-                                }
-                                parts.push(ContentPart::Text { text, annotations });
+                    for c in content {
+                        match c {
+                            ResponseMessageContent::OutputText { text, annotations } => {
+                                parts.push(ContentPart::Text {
+                                    text: text.clone(),
+                                    annotations: annotations.clone(),
+                                });
                             }
-                            "refusal" => {
-                                let refusal = c["refusal"]
-                                    .as_str()
-                                    .ok_or_else(|| {
-                                        ProviderError::Protocol(
-                                            "Missing 'refusal' in refusal content part".into(),
-                                        )
-                                    })?
-                                    .to_string();
-                                parts.push(ContentPart::text(refusal));
+                            ResponseMessageContent::Refusal { refusal } => {
+                                parts.push(ContentPart::text(refusal.clone()));
                             }
-                            _ => {}
                         }
                     }
                 }
-                "function_call" => {
-                    let call_id = item["call_id"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            ProviderError::Protocol(
-                                "Missing 'call_id' in function_call output item".into(),
-                            )
-                        })?
-                        .to_string();
-                    let name = item["name"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            ProviderError::Protocol(
-                                "Missing 'name' in function_call output item".into(),
-                            )
-                        })?
-                        .to_string();
-                    let arguments = item["arguments"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            ProviderError::Protocol(
-                                "Missing 'arguments' in function_call output item".into(),
-                            )
-                        })?
-                        .to_string();
-
+                ResponseOutputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => {
                     parts.push(ContentPart::ToolCall(ToolCall {
-                        id: call_id,
-                        name,
-                        arguments,
+                        id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
                     }));
                 }
-                _ => {}
             }
         }
 
@@ -663,40 +510,9 @@ impl Provider for ResponseProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
-        let base = self.base_url.trim_end_matches('/');
-        let url = if base.ends_with("/responses") {
-            base.to_string()
-        } else {
-            format!("{base}/responses")
-        };
         let body = self.build_request_body(session, tools, options);
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
-        );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let res = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
+        let json_resp = post_json(&self.client, &self.endpoint_url(), self.auth_headers()?, &body)
             .await?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body_text = res.text().await.unwrap_or_default();
-            return Err(ProviderError::ApiError {
-                status,
-                body: body_text,
-            });
-        }
-
-        let json_resp: serde_json::Value = res.json().await?;
         self.parse_response(json_resp)
     }
 
@@ -707,151 +523,107 @@ impl Provider for ResponseProvider {
         options: &CompletionOptions,
         event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
-        let base = self.base_url.trim_end_matches('/');
-        let url = if base.ends_with("/responses") {
-            base.to_string()
-        } else {
-            format!("{base}/responses")
-        };
         let mut body = self.build_request_body(session, tools, options);
         body["stream"] = serde_json::json!(true);
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
-        );
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let mut headers = self.auth_headers()?;
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
 
-        let res = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?;
+        let res = post_sse(&self.client, &self.endpoint_url(), headers, &body).await?;
 
-        let status = res.status();
-        if !status.is_success() {
-            let body_text = res.text().await.unwrap_or_default();
-            return Err(ProviderError::ApiError {
-                status,
-                body: body_text,
-            });
-        }
+        let mut handler = ResponseStreamHandler {
+            provider: self,
+            sender: event_sender,
+            completed: None,
+        };
+        consume_sse(res, &mut handler).await?;
 
-        let mut stream = res.bytes_stream();
-        let mut decoder = SseDecoder::new();
-        let mut completed_response: Option<ProviderResponse> = None;
+        handler.completed.ok_or_else(|| {
+            ProviderError::Protocol("Stream ended without response.completed".into())
+        })
+    }
+}
 
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res?;
-            let events = decoder.decode(&chunk);
+/// Responses API 流式事件累积处理器
+struct ResponseStreamHandler<'a> {
+    provider: &'a ResponseProvider,
+    sender: Option<mpsc::Sender<AgentEvent>>,
+    completed: Option<ProviderResponse>,
+}
 
-            for ev in events {
-                if ev.data == "[DONE]" {
-                    break;
+#[async_trait]
+impl SseEventHandler for ResponseStreamHandler<'_> {
+    async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError> {
+        let ev_type = json["type"]
+            .as_str()
+            .ok_or_else(|| ProviderError::Protocol("Missing 'type' in SSE event data".into()))?;
+        match ev_type {
+            "error" => {
+                let msg = json["message"].as_str().ok_or_else(|| {
+                    ProviderError::Protocol("Missing 'message' in error event".into())
+                })?;
+                Err(ProviderError::Protocol(format!("Stream error: {msg}")))
+            }
+            "response.failed" => {
+                let resp_obj = json.get("response").ok_or_else(|| {
+                    ProviderError::Protocol("Missing 'response' in response.failed event".into())
+                })?;
+                let err_msg = resp_obj
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("Response generation failed");
+                Err(ProviderError::Protocol(format!(
+                    "Response generation failed: {err_msg}"
+                )))
+            }
+            "response.output_text.delta" => {
+                let delta = json["delta"].as_str().ok_or_else(|| {
+                    ProviderError::Protocol(
+                        "Missing 'delta' in response.output_text.delta event".into(),
+                    )
+                })?;
+                if let Some(tx) = &self.sender {
+                    let _ = tx.send(AgentEvent::Text(delta.to_string())).await;
                 }
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                    let ev_type = json["type"].as_str().ok_or_else(|| {
-                        ProviderError::Protocol("Missing 'type' in SSE event data".into())
-                    })?;
-                    match ev_type {
-                        "error" => {
-                            let msg = json["message"].as_str().ok_or_else(|| {
-                                ProviderError::Protocol("Missing 'message' in error event".into())
-                            })?;
-                            return Err(ProviderError::Protocol(format!("Stream error: {msg}")));
-                        }
-                        "response.failed" => {
-                            let resp_obj = json.get("response").ok_or_else(|| {
-                                ProviderError::Protocol(
-                                    "Missing 'response' in response.failed event".into(),
-                                )
-                            })?;
-                            let err_msg = resp_obj
-                                .get("error")
-                                .and_then(|e| e.get("message"))
-                                .and_then(|m| m.as_str())
-                                .unwrap_or("Response generation failed");
-                            return Err(ProviderError::Protocol(format!(
-                                "Response generation failed: {err_msg}"
-                            )));
-                        }
-                        "response.output_text.delta" => {
-                            let delta = json["delta"].as_str().ok_or_else(|| {
-                                ProviderError::Protocol(
-                                    "Missing 'delta' in response.output_text.delta event".into(),
-                                )
-                            })?;
-                            if let Some(tx) = &event_sender {
-                                let _ = tx.send(AgentEvent::Text(delta.to_string())).await;
-                            }
-                        }
-                        "response.reasoning_text.delta"
-                        | "response.reasoning_summary_text.delta" => {
-                            let delta = json["delta"].as_str().ok_or_else(|| {
-                                ProviderError::Protocol(
-                                    "Missing 'delta' in reasoning delta event".into(),
-                                )
-                            })?;
-                            if let Some(tx) = &event_sender {
-                                let _ = tx.send(AgentEvent::Thought(delta.to_string())).await;
-                            }
-                        }
-                        "response.completed" => {
-                            let resp_obj = json.get("response").ok_or_else(|| {
-                                ProviderError::Protocol(
-                                    "Missing 'response' in response.completed event".into(),
-                                )
-                            })?;
-                            let parsed = self.parse_response(resp_obj.clone())?;
-                            if let Some(tx) = &event_sender {
-                                for msg in &parsed.messages {
-                                    for part in &msg.parts {
-                                        if let ContentPart::Text { annotations, .. } = part {
-                                            for ann in annotations {
-                                                if let Annotation::UrlCitation {
-                                                    title, url, ..
-                                                } = ann
-                                                {
-                                                    let _ = tx
-                                                        .send(AgentEvent::Citation {
-                                                            title: title.clone(),
-                                                            url: url.clone(),
-                                                        })
-                                                        .await;
-                                                }
-                                            }
-                                        }
+                Ok(())
+            }
+            "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+                let delta = json["delta"].as_str().ok_or_else(|| {
+                    ProviderError::Protocol("Missing 'delta' in reasoning delta event".into())
+                })?;
+                if let Some(tx) = &self.sender {
+                    let _ = tx.send(AgentEvent::Thought(delta.to_string())).await;
+                }
+                Ok(())
+            }
+            "response.completed" => {
+                let resp_obj = json.get("response").ok_or_else(|| {
+                    ProviderError::Protocol("Missing 'response' in response.completed event".into())
+                })?;
+                let parsed = self.provider.parse_response(resp_obj.clone())?;
+                if let Some(tx) = &self.sender {
+                    for msg in &parsed.messages {
+                        for part in &msg.parts {
+                            if let ContentPart::Text { annotations, .. } = part {
+                                for ann in annotations {
+                                    if let Annotation::UrlCitation { title, url, .. } = ann {
+                                        let _ = tx
+                                            .send(AgentEvent::Citation {
+                                                title: title.clone(),
+                                                url: url.clone(),
+                                            })
+                                            .await;
                                     }
                                 }
                             }
-                            completed_response = Some(parsed);
                         }
-                        _ => {}
                     }
                 }
+                self.completed = Some(parsed);
+                Ok(())
             }
-        }
-
-        if let Some(ev) = decoder.flush()
-            && ev.data != "[DONE]"
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
-            && json["type"] == "response.completed"
-            && let Some(resp_obj) = json.get("response")
-        {
-            completed_response = Some(self.parse_response(resp_obj.clone())?);
-        }
-
-        if let Some(resp) = completed_response {
-            Ok(resp)
-        } else {
-            Err(ProviderError::Protocol(
-                "Stream ended without response.completed".into(),
-            ))
+            _ => Ok(()),
         }
     }
 }

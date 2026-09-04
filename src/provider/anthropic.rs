@@ -1,12 +1,9 @@
 use async_trait::async_trait;
-use futures::StreamExt;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
-    sse::SseDecoder,
-};
+use super::http::{SseEventHandler, consume_sse, post_json, post_sse};
+use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
 use crate::event::AgentEvent;
 use crate::model::{
     AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall, ToolDefinition,
@@ -31,6 +28,26 @@ impl AnthropicProvider {
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = base_url.into();
         self
+    }
+
+    /// 规范化请求端点：base_url 无论是否携带 /messages 后缀，均收敛到唯一端点
+    fn endpoint_url(&self) -> String {
+        let base = self.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/messages").unwrap_or(base);
+        format!("{base}/messages")
+    }
+
+    /// x-api-key 鉴权、协议版本与 JSON Content-Type 头
+    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&self.api_key)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        Ok(headers)
     }
 
     /// 将 Session 转换为符合 Anthropic Messages API 的请求体（保留 thinking 签名并注入缓存断点）
@@ -227,49 +244,45 @@ impl AnthropicProvider {
         &self,
         json: serde_json::Value,
     ) -> Result<ProviderResponse, ProviderError> {
-        let mut parts = Vec::new();
+        let dto: AnthropicResponseDto = serde_json::from_value(json).map_err(|e| {
+            ProviderError::Protocol(format!("Invalid Anthropic Messages API response: {e}"))
+        })?;
 
-        if let Some(contents) = json["content"].as_array() {
-            for c in contents {
-                let block_type = c["type"].as_str().unwrap_or_default();
-                match block_type {
-                    "thinking" => {
-                        let content = c["thinking"].as_str().unwrap_or_default().to_string();
-                        let signature = c["signature"].as_str().map(|s| s.to_string());
-                        parts.push(ContentPart::Reasoning { content, signature });
-                    }
-                    "text" => {
-                        let text = c["text"].as_str().unwrap_or_default().to_string();
-                        parts.push(ContentPart::text(text));
-                    }
-                    "tool_use" => {
-                        let id = c["id"].as_str().unwrap_or_default().to_string();
-                        let name = c["name"].as_str().unwrap_or_default().to_string();
-                        let arguments = c["input"].to_string();
-                        parts.push(ContentPart::ToolCall(ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        }));
-                    }
-                    _ => {}
+        let mut parts = Vec::new();
+        for block in dto.content {
+            match block {
+                AnthropicContentBlockDto::Thinking { thinking, signature } => {
+                    parts.push(ContentPart::Reasoning {
+                        content: thinking,
+                        signature,
+                    });
                 }
+                AnthropicContentBlockDto::Text { text } => {
+                    parts.push(ContentPart::text(text));
+                }
+                AnthropicContentBlockDto::ToolUse { id, name, input } => {
+                    parts.push(ContentPart::ToolCall(ToolCall {
+                        id,
+                        name,
+                        arguments: input.to_string(),
+                    }));
+                }
+                // 安全脱敏的 thinking 块：无明文内容可投影，按官方语义跳过
+                AnthropicContentBlockDto::RedactedThinking {} => {}
             }
         }
 
         let mut usage = None;
         let mut turn_meta = TurnMeta::default();
 
-        if let Some(u) = json.get("usage") {
-            let prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-            let completion_tokens = u["output_tokens"].as_u64().unwrap_or(0) as u32;
-            let cache_creation = u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
-            let cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
+        if let Some(u) = dto.usage {
+            let cache_creation = u.cache_creation_input_tokens;
+            let cache_read = u.cache_read_input_tokens;
 
             usage = Some(TokenUsage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
+                prompt_tokens: u.input_tokens as u32,
+                completion_tokens: u.output_tokens as u32,
+                total_tokens: (u.input_tokens + u.output_tokens) as u32,
                 cached_tokens: cache_read,
                 reasoning_tokens: None,
             });
@@ -277,7 +290,7 @@ impl AnthropicProvider {
             turn_meta.anthropic = Some(AnthropicTurnMeta {
                 cache_creation_input_tokens: cache_creation,
                 cache_read_input_tokens: cache_read,
-                stop_reason: json["stop_reason"].as_str().map(|s| s.to_string()),
+                stop_reason: dto.stop_reason,
             });
         }
 
@@ -289,6 +302,47 @@ impl AnthropicProvider {
             meta: turn_meta,
         })
     }
+}
+
+/// Anthropic Messages API 响应报文（serde 严格校验，字段缺失即协议错误）
+#[derive(serde::Deserialize)]
+struct AnthropicResponseDto {
+    content: Vec<AnthropicContentBlockDto>,
+    #[serde(default)]
+    usage: Option<AnthropicUsageDto>,
+    #[serde(default)]
+    stop_reason: Option<String>,
+}
+
+/// Anthropic Messages API 内容块
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum AnthropicContentBlockDto {
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
+    },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    RedactedThinking {},
+}
+
+/// Anthropic Messages API usage 统计
+#[derive(serde::Deserialize)]
+struct AnthropicUsageDto {
+    input_tokens: u64,
+    output_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u32>,
 }
 
 #[async_trait]
@@ -312,41 +366,9 @@ impl Provider for AnthropicProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
-        let base = self.base_url.trim_end_matches('/');
-        let url = if base.ends_with("/messages") {
-            base.to_string()
-        } else {
-            format!("{base}/messages")
-        };
         let body = self.build_request_body(session, tools, options);
-
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&self.api_key)
-                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
-        );
-        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-
-        let res = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
+        let json_resp = post_json(&self.client, &self.endpoint_url(), self.auth_headers()?, &body)
             .await?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body_text = res.text().await.unwrap_or_default();
-            return Err(ProviderError::ApiError {
-                status,
-                body: body_text,
-            });
-        }
-
-        let json_resp: serde_json::Value = res.json().await?;
         self.parse_response(json_resp)
     }
 
@@ -357,188 +379,34 @@ impl Provider for AnthropicProvider {
         options: &CompletionOptions,
         event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
-        let base = self.base_url.trim_end_matches('/');
-        let url = if base.ends_with("/messages") {
-            base.to_string()
-        } else {
-            format!("{base}/messages")
-        };
         let mut body = self.build_request_body(session, tools, options);
         body["stream"] = serde_json::json!(true);
 
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&self.api_key)
-                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
-        );
-        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let mut headers = self.auth_headers()?;
         headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
 
-        let res = self
-            .client
-            .post(&url)
-            .headers(headers)
-            .json(&body)
-            .send()
-            .await?;
+        let res = post_sse(&self.client, &self.endpoint_url(), headers, &body).await?;
 
-        let status = res.status();
-        if !status.is_success() {
-            let body_text = res.text().await.unwrap_or_default();
-            return Err(ProviderError::ApiError {
-                status,
-                body: body_text,
-            });
-        }
+        let mut handler = AnthropicStreamHandler {
+            blocks: Vec::new(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cache_creation: None,
+            cache_read: None,
+            stop_reason: None,
+            sender: event_sender,
+        };
+        consume_sse(res, &mut handler).await?;
 
-        let mut stream = res.bytes_stream();
-        let mut decoder = SseDecoder::new();
-
-        enum AnthropicBlock {
-            Thinking {
-                content: String,
-                signature: Option<String>,
-            },
-            Text {
-                text: String,
-            },
-            ToolUse {
-                id: String,
-                name: String,
-                arguments_buf: String,
-            },
-        }
-
-        let mut blocks: Vec<AnthropicBlock> = Vec::new();
-        let mut prompt_tokens: u32 = 0;
-        let mut completion_tokens: u32 = 0;
-        let mut cache_creation: Option<u32> = None;
-        let mut cache_read: Option<u32> = None;
-        let mut stop_reason: Option<String> = None;
-
-        let mut process_event =
-            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<AgentEvent>>| {
-                let ev_type = json["type"].as_str().unwrap_or_default();
-                match ev_type {
-                    "message_start" => {
-                        if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
-                            prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-                            cache_creation =
-                                u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
-                            cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
-                        }
-                    }
-                    "content_block_start" => {
-                        let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                        let cb = &json["content_block"];
-                        let block_type = cb["type"].as_str().unwrap_or_default();
-                        let block = match block_type {
-                            "thinking" => AnthropicBlock::Thinking {
-                                content: String::new(),
-                                signature: None,
-                            },
-                            "text" => AnthropicBlock::Text {
-                                text: cb["text"].as_str().unwrap_or_default().to_string(),
-                            },
-                            "tool_use" => AnthropicBlock::ToolUse {
-                                id: cb["id"].as_str().unwrap_or_default().to_string(),
-                                name: cb["name"].as_str().unwrap_or_default().to_string(),
-                                arguments_buf: String::new(),
-                            },
-                            _ => AnthropicBlock::Text {
-                                text: String::new(),
-                            },
-                        };
-                        while blocks.len() <= idx {
-                            blocks.push(AnthropicBlock::Text {
-                                text: String::new(),
-                            });
-                        }
-                        blocks[idx] = block;
-                    }
-                    "content_block_delta" => {
-                        let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                        let delta = &json["delta"];
-                        let delta_type = delta["type"].as_str().unwrap_or_default();
-                        match delta_type {
-                            "thinking_delta" => {
-                                if let Some(t) = delta["thinking"].as_str() {
-                                    if let Some(AnthropicBlock::Thinking { content, .. }) =
-                                        blocks.get_mut(idx)
-                                    {
-                                        content.push_str(t);
-                                    }
-                                    if let Some(tx) = tx_opt {
-                                        let _ = tx.try_send(AgentEvent::Thought(t.to_string()));
-                                    }
-                                }
-                            }
-                            "text_delta" => {
-                                if let Some(t) = delta["text"].as_str() {
-                                    if let Some(AnthropicBlock::Text { text }) = blocks.get_mut(idx)
-                                    {
-                                        text.push_str(t);
-                                    }
-                                    if let Some(tx) = tx_opt {
-                                        let _ = tx.try_send(AgentEvent::Text(t.to_string()));
-                                    }
-                                }
-                            }
-                            "signature_delta" => {
-                                if let Some(sig) = delta["signature"].as_str()
-                                    && let Some(AnthropicBlock::Thinking { signature, .. }) =
-                                        blocks.get_mut(idx)
-                                {
-                                    *signature = Some(sig.to_string());
-                                }
-                            }
-                            "input_json_delta" => {
-                                if let Some(pj) = delta["partial_json"].as_str()
-                                    && let Some(AnthropicBlock::ToolUse { arguments_buf, .. }) =
-                                        blocks.get_mut(idx)
-                                {
-                                    arguments_buf.push_str(pj);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                    "message_delta" => {
-                        if let Some(sr) = json["delta"]["stop_reason"].as_str() {
-                            stop_reason = Some(sr.to_string());
-                        }
-                        if let Some(u) = json.get("usage")
-                            && let Some(out) = u["output_tokens"].as_u64()
-                        {
-                            completion_tokens = out as u32;
-                        }
-                    }
-                    _ => {}
-                }
-            };
-
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res?;
-            let events = decoder.decode(&chunk);
-
-            for ev in events {
-                if ev.data == "[DONE]" {
-                    break;
-                }
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                    process_event(&json, &event_sender);
-                }
-            }
-        }
-
-        if let Some(ev) = decoder.flush()
-            && ev.data != "[DONE]"
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
-        {
-            process_event(&json, &event_sender);
-        }
+        let AnthropicStreamHandler {
+            blocks,
+            prompt_tokens,
+            completion_tokens,
+            cache_creation,
+            cache_read,
+            stop_reason,
+            ..
+        } = handler;
 
         let mut parts = Vec::new();
         for b in blocks {
@@ -589,6 +457,136 @@ impl Provider for AnthropicProvider {
             usage,
             meta: turn_meta,
         })
+    }
+}
+
+/// Anthropic Messages API 流式内容块的累积模型
+enum AnthropicBlock {
+    Thinking {
+        content: String,
+        signature: Option<String>,
+    },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        arguments_buf: String,
+    },
+}
+
+/// Anthropic 流式事件累积处理器：还原 content blocks 与 usage / stop_reason 元数据
+struct AnthropicStreamHandler {
+    blocks: Vec<AnthropicBlock>,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    cache_creation: Option<u32>,
+    cache_read: Option<u32>,
+    stop_reason: Option<String>,
+    sender: Option<mpsc::Sender<AgentEvent>>,
+}
+
+#[async_trait]
+impl SseEventHandler for AnthropicStreamHandler {
+    async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError> {
+        let ev_type = json["type"].as_str().unwrap_or_default();
+        match ev_type {
+            "message_start" => {
+                if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
+                    self.prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+                    self.cache_creation =
+                        u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
+                    self.cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
+                }
+            }
+            "content_block_start" => {
+                let idx = json["index"].as_u64().unwrap_or(0) as usize;
+                let cb = &json["content_block"];
+                let block_type = cb["type"].as_str().unwrap_or_default();
+                let block = match block_type {
+                    "thinking" => AnthropicBlock::Thinking {
+                        content: String::new(),
+                        signature: None,
+                    },
+                    "text" => AnthropicBlock::Text {
+                        text: cb["text"].as_str().unwrap_or_default().to_string(),
+                    },
+                    "tool_use" => AnthropicBlock::ToolUse {
+                        id: cb["id"].as_str().unwrap_or_default().to_string(),
+                        name: cb["name"].as_str().unwrap_or_default().to_string(),
+                        arguments_buf: String::new(),
+                    },
+                    _ => AnthropicBlock::Text {
+                        text: String::new(),
+                    },
+                };
+                while self.blocks.len() <= idx {
+                    self.blocks.push(AnthropicBlock::Text {
+                        text: String::new(),
+                    });
+                }
+                self.blocks[idx] = block;
+            }
+            "content_block_delta" => {
+                let idx = json["index"].as_u64().unwrap_or(0) as usize;
+                let delta = &json["delta"];
+                let delta_type = delta["type"].as_str().unwrap_or_default();
+                match delta_type {
+                    "thinking_delta" => {
+                        if let Some(t) = delta["thinking"].as_str() {
+                            if let Some(AnthropicBlock::Thinking { content, .. }) =
+                                self.blocks.get_mut(idx)
+                            {
+                                content.push_str(t);
+                            }
+                            if let Some(tx) = &self.sender {
+                                let _ = tx.try_send(AgentEvent::Thought(t.to_string()));
+                            }
+                        }
+                    }
+                    "text_delta" => {
+                        if let Some(t) = delta["text"].as_str() {
+                            if let Some(AnthropicBlock::Text { text }) = self.blocks.get_mut(idx) {
+                                text.push_str(t);
+                            }
+                            if let Some(tx) = &self.sender {
+                                let _ = tx.try_send(AgentEvent::Text(t.to_string()));
+                            }
+                        }
+                    }
+                    "signature_delta" => {
+                        if let Some(sig) = delta["signature"].as_str()
+                            && let Some(AnthropicBlock::Thinking { signature, .. }) =
+                                self.blocks.get_mut(idx)
+                        {
+                            *signature = Some(sig.to_string());
+                        }
+                    }
+                    "input_json_delta" => {
+                        if let Some(pj) = delta["partial_json"].as_str()
+                            && let Some(AnthropicBlock::ToolUse { arguments_buf, .. }) =
+                                self.blocks.get_mut(idx)
+                        {
+                            arguments_buf.push_str(pj);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "message_delta" => {
+                if let Some(sr) = json["delta"]["stop_reason"].as_str() {
+                    self.stop_reason = Some(sr.to_string());
+                }
+                if let Some(u) = json.get("usage")
+                    && let Some(out) = u["output_tokens"].as_u64()
+                {
+                    self.completion_tokens = out as u32;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 }
 

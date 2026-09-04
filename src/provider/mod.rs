@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod gemini;
+pub mod http;
 pub mod response;
 pub mod sse;
 
