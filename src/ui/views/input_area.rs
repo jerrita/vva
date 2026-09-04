@@ -169,6 +169,7 @@ pub fn render_input_area(
         .unwrap_or(workspace);
 
     let variant_str = variant.unwrap_or("default");
+    // 命令提示由输入 `/` 触发的命令浮层展示，底部状态栏仅保留会话元信息
     let bottom_line = Line::from(vec![
         Span::styled("🤖 ", Style::default().fg(Color::Cyan)),
         Span::styled(model, Style::default().fg(Color::White)),
@@ -176,14 +177,6 @@ pub fn render_input_area(
         Span::styled(variant_str, Style::default().fg(Color::White)),
         Span::styled("  📂 ", Style::default().fg(Color::DarkGray)),
         Span::styled(ws_name, Style::default().fg(Color::DarkGray)),
-        Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/model", Style::default().fg(Color::Cyan)),
-        Span::styled(" /variant", Style::default().fg(Color::Magenta)),
-        Span::styled(" /config", Style::default().fg(Color::Yellow)),
-        Span::styled(" /sessions", Style::default().fg(Color::Cyan)),
-        Span::styled(" · ", Style::default().fg(Color::DarkGray)),
-        Span::styled("/help", Style::default().fg(Color::Cyan)),
-        Span::styled(" for help", Style::default().fg(Color::DarkGray)),
     ]);
     let bottom_bar = Paragraph::new(bottom_line);
     frame.render_widget(bottom_bar, chunks[2]);
