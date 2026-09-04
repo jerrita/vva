@@ -183,6 +183,7 @@ impl ResponseProvider {
         let mut body = serde_json::json!({
             "model": options.model,
             "input": input_items,
+            "store": true,
         });
 
         if let Some(prev) = prev_id {
@@ -216,137 +217,296 @@ impl ResponseProvider {
     }
 
     /// 解析 Responses API 响应体
+    /// 解析 Responses API 响应体
     pub fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
-        let response_id = json["id"]
+        let is_stored = json["store"]
+            .as_bool()
+            .ok_or_else(|| ProviderError::Protocol("Missing 'store' in Responses API output".into()))?;
+
+        let raw_id = json["id"]
             .as_str()
-            .ok_or_else(|| ProviderError::Protocol("Missing 'id' in Responses API output".into()))?
+            .ok_or_else(|| ProviderError::Protocol("Missing 'id' in Responses API output".into()))?;
+
+        let response_id = if is_stored {
+            Some(raw_id.to_string())
+        } else {
+            None
+        };
+
+        let status = json["status"]
+            .as_str()
+            .ok_or_else(|| ProviderError::Protocol("Missing 'status' in Responses API output".into()))?
             .to_string();
 
-        let status = json["status"].as_str().map(|s| s.to_string());
-        let previous_response_id = json["previous_response_id"].as_str().map(|s| s.to_string());
+        if status == "failed" {
+            let err_msg = json.get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("Response status is failed");
+            return Err(ProviderError::Protocol(format!("Response failed: {err_msg}")));
+        }
+
+        let previous_response_id = if is_stored {
+            json["previous_response_id"].as_str().map(|s| s.to_string())
+        } else {
+            None
+        };
         let service_tier = json["service_tier"].as_str().map(|s| s.to_string());
-        let system_fingerprint = json["system_fingerprint"].as_str().map(|s| s.to_string());
         let reasoning_effort = json["reasoning"]["effort"].as_str().map(|s| s.to_string());
 
         let mut parts = Vec::new();
         let mut last_msg_item_id = None;
 
-        if let Some(output_items) = json["output"].as_array() {
-            for item in output_items {
-                let item_type = item["type"].as_str().unwrap_or_default();
-                match item_type {
-                    "web_search_call" => {
-                        let search_id = item["id"].as_str().unwrap_or_default().to_string();
-                        let call_obj = &item["web_search_call"];
-                        let query = call_obj["query"].as_str().unwrap_or_default().to_string();
+        let output_items = json["output"]
+            .as_array()
+            .ok_or_else(|| ProviderError::Protocol("Missing 'output' in Responses API output".into()))?;
 
-                        let mut sources = Vec::new();
-                        if let Some(srcs) = call_obj["sources"].as_array() {
-                            for src in srcs {
-                                sources.push(WebSearchSource {
-                                    url: src["url"].as_str().unwrap_or_default().to_string(),
-                                    title: src["title"].as_str().unwrap_or_default().to_string(),
-                                    snippet: src["snippet"].as_str().map(|s| s.to_string()),
-                                });
-                            }
-                        }
+        for item in output_items {
+            let item_type = item["type"]
+                .as_str()
+                .ok_or_else(|| ProviderError::Protocol("Missing 'type' in output item".into()))?;
 
-                        parts.push(ContentPart::WebSearchCall(WebSearchCall {
-                            id: search_id,
-                            query,
-                            status: SearchStatus::Completed,
-                            sources,
-                        }));
-                    }
-                    "reasoning" => {
-                        let mut reasoning_text = String::new();
-                        if let Some(sum) = item["summary"].as_str() {
-                            reasoning_text = sum.to_string();
-                        } else if let Some(contents) = item["summary"].as_array() {
-                            for c in contents {
-                                if let Some(t) = c["text"].as_str() {
-                                    if !reasoning_text.is_empty() {
-                                        reasoning_text.push('\n');
-                                    }
-                                    reasoning_text.push_str(t);
+            match item_type {
+                "web_search_call" => {
+                    let search_id = item["id"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'id' in web_search_call".into()))?
+                        .to_string();
+                    let _search_status = item["status"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'status' in web_search_call".into()))?;
+                    let action = item["action"]
+                        .as_object()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'action' in web_search_call".into()))?;
+                    let action_type = action["type"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'type' in web_search_call action".into()))?;
+
+                    let (query, sources) = match action_type {
+                        "search" => {
+                            let q = if let Some(q) = action.get("query").and_then(|v| v.as_str()) {
+                                q.to_string()
+                            } else if let Some(queries) = action.get("queries").and_then(|v| v.as_array()) {
+                                queries
+                                    .iter()
+                                    .filter_map(|v| v.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            } else {
+                                String::new()
+                            };
+
+                            let mut srcs = Vec::new();
+                            if let Some(sources_arr) = action.get("sources").and_then(|v| v.as_array()) {
+                                for src in sources_arr {
+                                    let url = src["url"]
+                                        .as_str()
+                                        .ok_or_else(|| ProviderError::Protocol("Missing 'url' in web search source".into()))?
+                                        .to_string();
+                                    srcs.push(WebSearchSource {
+                                        url: url.clone(),
+                                        title: url,
+                                        snippet: None,
+                                    });
                                 }
                             }
+                            (q, srcs)
                         }
-                        if !reasoning_text.is_empty() {
-                            parts.push(ContentPart::Reasoning {
-                                content: reasoning_text,
-                                signature: None,
-                            });
+                        "open_page" => {
+                            let url = action["url"]
+                                .as_str()
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'url' in open_page action".into()))?
+                                .to_string();
+                            (url.clone(), vec![WebSearchSource {
+                                url: url.clone(),
+                                title: url,
+                                snippet: None,
+                            }])
                         }
-                    }
-                    "message" => {
-                        if let Some(id) = item["id"].as_str() {
-                            last_msg_item_id = Some(id.to_string());
-                        }
-                        if let Some(contents) = item["content"].as_array() {
-                            for c in contents {
-                                let c_type = c["type"].as_str().unwrap_or_default();
-                                match c_type {
-                                    "output_text" => {
-                                        let text = c["text"].as_str().unwrap_or_default().to_string();
-                                        if !text.is_empty() {
-                                            let mut annotations = Vec::new();
-                                            if let Some(ann_arr) = c["annotations"].as_array() {
-                                                for ann in ann_arr {
-                                                    if ann["type"].as_str() == Some("url_citation") {
-                                                        annotations.push(Annotation::UrlCitation {
-                                                            url: ann["url"].as_str().unwrap_or_default().to_string(),
-                                                            title: ann["title"].as_str().unwrap_or_default().to_string(),
-                                                            start_index: ann["start_index"].as_u64().unwrap_or(0) as usize,
-                                                            end_index: ann["end_index"].as_u64().unwrap_or(0) as usize,
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                            parts.push(ContentPart::Text { text, annotations });
-                                        }
-                                    }
-                                    "refusal" => {
-                                        let refusal = c["refusal"].as_str().unwrap_or_default().to_string();
-                                        if !refusal.is_empty() {
-                                            parts.push(ContentPart::text(refusal));
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                    "function_call" => {
-                        let call_id = item["call_id"].as_str().unwrap_or_default().to_string();
-                        let name = item["name"].as_str().unwrap_or_default().to_string();
-                        let arguments = item["arguments"].as_str().unwrap_or("{}").to_string();
+                        _ => (String::new(), Vec::new()),
+                    };
 
-                        parts.push(ContentPart::ToolCall(ToolCall {
-                            id: call_id,
-                            name,
-                            arguments,
-                        }));
-                    }
-                    _ => {}
+                    parts.push(ContentPart::WebSearchCall(WebSearchCall {
+                        id: search_id,
+                        query,
+                        status: SearchStatus::Completed,
+                        sources,
+                    }));
                 }
+                "reasoning" => {
+                    let _reasoning_id = item["id"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'id' in reasoning output item".into()))?;
+                    let summary_arr = item["summary"]
+                        .as_array()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'summary' in reasoning output item".into()))?;
+
+                    let mut reasoning_text = String::new();
+                    for c in summary_arr {
+                        let t = c["text"]
+                            .as_str()
+                            .ok_or_else(|| ProviderError::Protocol("Missing 'text' in summary_text item".into()))?;
+                        if !reasoning_text.is_empty() {
+                            reasoning_text.push('\n');
+                        }
+                        reasoning_text.push_str(t);
+                    }
+
+                    if let Some(contents) = item.get("content").and_then(|v| v.as_array()) {
+                        for c in contents {
+                            let t = c["text"]
+                                .as_str()
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'text' in reasoning_text item".into()))?;
+                            if !reasoning_text.is_empty() {
+                                reasoning_text.push('\n');
+                            }
+                            reasoning_text.push_str(t);
+                        }
+                    }
+
+                    if !reasoning_text.is_empty() {
+                        parts.push(ContentPart::Reasoning {
+                            content: reasoning_text,
+                            signature: None,
+                        });
+                    }
+                }
+                "message" => {
+                    let id = item["id"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'id' in message output item".into()))?;
+                    if is_stored {
+                        last_msg_item_id = Some(id.to_string());
+                    }
+
+                    let role = item["role"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'role' in message output item".into()))?;
+                    if role != "assistant" {
+                        return Err(ProviderError::Protocol(format!("Unexpected role in output message: {role}")));
+                    }
+
+                    let _msg_status = item["status"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'status' in message output item".into()))?;
+
+                    let contents = item["content"]
+                        .as_array()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'content' in message output item".into()))?;
+
+                    for c in contents {
+                        let c_type = c["type"]
+                            .as_str()
+                            .ok_or_else(|| ProviderError::Protocol("Missing 'type' in message content part".into()))?;
+                        match c_type {
+                            "output_text" => {
+                                let text = c["text"]
+                                    .as_str()
+                                    .ok_or_else(|| ProviderError::Protocol("Missing 'text' in output_text content part".into()))?
+                                    .to_string();
+                                let ann_arr = c["annotations"]
+                                    .as_array()
+                                    .ok_or_else(|| ProviderError::Protocol("Missing 'annotations' in output_text content part".into()))?;
+
+                                let mut annotations = Vec::new();
+                                for ann in ann_arr {
+                                    let ann_type = ann["type"]
+                                        .as_str()
+                                        .ok_or_else(|| ProviderError::Protocol("Missing 'type' in annotation".into()))?;
+                                    if ann_type == "url_citation" {
+                                        let url = ann["url"]
+                                            .as_str()
+                                            .ok_or_else(|| ProviderError::Protocol("Missing 'url' in url_citation annotation".into()))?
+                                            .to_string();
+                                        let title = ann["title"]
+                                            .as_str()
+                                            .ok_or_else(|| ProviderError::Protocol("Missing 'title' in url_citation annotation".into()))?
+                                            .to_string();
+                                        let start_index = ann["start_index"]
+                                            .as_u64()
+                                            .ok_or_else(|| ProviderError::Protocol("Missing 'start_index' in url_citation annotation".into()))? as usize;
+                                        let end_index = ann["end_index"]
+                                            .as_u64()
+                                            .ok_or_else(|| ProviderError::Protocol("Missing 'end_index' in url_citation annotation".into()))? as usize;
+                                        annotations.push(Annotation::UrlCitation {
+                                            url,
+                                            title,
+                                            start_index,
+                                            end_index,
+                                        });
+                                    }
+                                }
+                                parts.push(ContentPart::Text { text, annotations });
+                            }
+                            "refusal" => {
+                                let refusal = c["refusal"]
+                                    .as_str()
+                                    .ok_or_else(|| ProviderError::Protocol("Missing 'refusal' in refusal content part".into()))?
+                                    .to_string();
+                                parts.push(ContentPart::text(refusal));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                "function_call" => {
+                    let call_id = item["call_id"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'call_id' in function_call output item".into()))?
+                        .to_string();
+                    let name = item["name"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'name' in function_call output item".into()))?
+                        .to_string();
+                    let arguments = item["arguments"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'arguments' in function_call output item".into()))?
+                        .to_string();
+
+                    parts.push(ContentPart::ToolCall(ToolCall {
+                        id: call_id,
+                        name,
+                        arguments,
+                    }));
+                }
+                _ => {}
             }
         }
 
         let mut usage = None;
-        if let Some(u) = json.get("usage") {
-            let cached = u["input_tokens_details"]["cached_tokens"]
+        if let Some(u) = json.get("usage")
+            && !u.is_null()
+        {
+            let input_tokens = u["input_tokens"]
                 .as_u64()
-                .map(|v| v as u32);
-            let reasoning = u["output_tokens_details"]["reasoning_tokens"]
+                .ok_or_else(|| ProviderError::Protocol("Missing 'input_tokens' in usage".into()))? as u32;
+            let output_tokens = u["output_tokens"]
                 .as_u64()
-                .map(|v| v as u32);
+                .ok_or_else(|| ProviderError::Protocol("Missing 'output_tokens' in usage".into()))? as u32;
+            let total_tokens = u["total_tokens"]
+                .as_u64()
+                .ok_or_else(|| ProviderError::Protocol("Missing 'total_tokens' in usage".into()))? as u32;
+
+            let input_details = u["input_tokens_details"]
+                .as_object()
+                .ok_or_else(|| ProviderError::Protocol("Missing 'input_tokens_details' in usage".into()))?;
+            let cached = input_details["cached_tokens"]
+                .as_u64()
+                .ok_or_else(|| ProviderError::Protocol("Missing 'cached_tokens' in input_tokens_details".into()))? as u32;
+
+            let output_details = u["output_tokens_details"]
+                .as_object()
+                .ok_or_else(|| ProviderError::Protocol("Missing 'output_tokens_details' in usage".into()))?;
+            let reasoning = output_details["reasoning_tokens"]
+                .as_u64()
+                .ok_or_else(|| ProviderError::Protocol("Missing 'reasoning_tokens' in output_tokens_details".into()))? as u32;
+
             usage = Some(TokenUsage {
-                prompt_tokens: u["input_tokens"].as_u64().unwrap_or(0) as u32,
-                completion_tokens: u["output_tokens"].as_u64().unwrap_or(0) as u32,
-                total_tokens: u["total_tokens"].as_u64().unwrap_or(0) as u32,
-                cached_tokens: cached,
-                reasoning_tokens: reasoning,
+                prompt_tokens: input_tokens,
+                completion_tokens: output_tokens,
+                total_tokens,
+                cached_tokens: Some(cached),
+                reasoning_tokens: Some(reasoning),
             });
         }
 
@@ -356,8 +516,8 @@ impl ResponseProvider {
                 previous_response_id,
                 status,
                 service_tier,
-                system_fingerprint,
                 reasoning_effort,
+                store: is_stored,
             }),
             ..Default::default()
         };
@@ -490,43 +650,62 @@ impl Provider for ResponseProvider {
                     break;
                 }
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                    let ev_type = json["type"].as_str().unwrap_or_default();
+                    let ev_type = json["type"]
+                        .as_str()
+                        .ok_or_else(|| ProviderError::Protocol("Missing 'type' in SSE event data".into()))?;
                     match ev_type {
+                        "error" => {
+                            let msg = json["message"]
+                                .as_str()
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'message' in error event".into()))?;
+                            return Err(ProviderError::Protocol(format!("Stream error: {msg}")));
+                        }
+                        "response.failed" => {
+                            let resp_obj = json.get("response")
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'response' in response.failed event".into()))?;
+                            let err_msg = resp_obj.get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("Response generation failed");
+                            return Err(ProviderError::Protocol(format!("Response generation failed: {err_msg}")));
+                        }
                         "response.output_text.delta" => {
-                            if let Some(delta) = json["delta"].as_str()
-                                && let Some(tx) = &delta_sender
-                            {
+                            let delta = json["delta"]
+                                .as_str()
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'delta' in response.output_text.delta event".into()))?;
+                            if let Some(tx) = &delta_sender {
                                 let _ = tx.send(ProviderDelta::Text(delta.to_string())).await;
                             }
                         }
-                        "response.reasoning_text.delta" => {
-                            if let Some(delta) = json["delta"].as_str()
-                                && let Some(tx) = &delta_sender
-                            {
+                        "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
+                            let delta = json["delta"]
+                                .as_str()
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'delta' in reasoning delta event".into()))?;
+                            if let Some(tx) = &delta_sender {
                                 let _ = tx.send(ProviderDelta::Thought(delta.to_string())).await;
                             }
                         }
                         "response.completed" => {
-                            if let Some(resp_obj) = json.get("response") {
-                                let parsed = self.parse_response(resp_obj.clone())?;
-                                if let Some(tx) = &delta_sender {
-                                    for msg in &parsed.messages {
-                                        for part in &msg.parts {
-                                            if let ContentPart::Text { annotations, .. } = part {
-                                                for ann in annotations {
-                                                    if let Annotation::UrlCitation { title, url, .. } = ann {
-                                                        let _ = tx.send(ProviderDelta::Citation {
-                                                            title: title.clone(),
-                                                            url: url.clone(),
-                                                        }).await;
-                                                    }
+                            let resp_obj = json.get("response")
+                                .ok_or_else(|| ProviderError::Protocol("Missing 'response' in response.completed event".into()))?;
+                            let parsed = self.parse_response(resp_obj.clone())?;
+                            if let Some(tx) = &delta_sender {
+                                for msg in &parsed.messages {
+                                    for part in &msg.parts {
+                                        if let ContentPart::Text { annotations, .. } = part {
+                                            for ann in annotations {
+                                                if let Annotation::UrlCitation { title, url, .. } = ann {
+                                                    let _ = tx.send(ProviderDelta::Citation {
+                                                        title: title.clone(),
+                                                        url: url.clone(),
+                                                    }).await;
                                                 }
                                             }
                                         }
                                     }
                                 }
-                                completed_response = Some(parsed);
                             }
+                            completed_response = Some(parsed);
                         }
                         _ => {}
                     }
@@ -656,6 +835,7 @@ mod tests {
         let mock_json = serde_json::json!({
             "id": "resp_98765",
             "status": "completed",
+            "store": true,
             "reasoning": {
                 "effort": "medium"
             },
@@ -663,21 +843,23 @@ mod tests {
                 {
                     "type": "web_search_call",
                     "id": "call_s1",
-                    "web_search_call": {
+                    "status": "completed",
+                    "action": {
+                        "type": "search",
                         "query": "tokyo weather",
-                        "status": "completed",
                         "sources": [
                             {
-                                "url": "https://weather.com/tokyo",
-                                "title": "Tokyo Weather Forecast",
-                                "snippet": "Sunny 22C"
+                                "type": "url",
+                                "url": "https://weather.com/tokyo"
                             }
                         ]
                     }
                 },
                 {
                     "type": "message",
+                    "id": "msg_search_1",
                     "role": "assistant",
+                    "status": "completed",
                     "content": [
                         {
                             "type": "output_text",
@@ -698,13 +880,20 @@ mod tests {
             "usage": {
                 "input_tokens": 150,
                 "output_tokens": 40,
-                "total_tokens": 190
+                "total_tokens": 190,
+                "input_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0
+                },
+                "output_tokens_details": {
+                    "reasoning_tokens": 0
+                }
             }
         });
 
         let parsed = provider.parse_response(mock_json).expect("parse response");
         let resp_meta = parsed.meta.response.as_ref().unwrap();
-        assert_eq!(resp_meta.response_id, "resp_98765");
+        assert_eq!(resp_meta.response_id.as_deref(), Some("resp_98765"));
         assert_eq!(resp_meta.reasoning_effort.as_deref(), Some("medium"));
         let msg = &parsed.messages[0];
         assert_eq!(msg.parts.len(), 2);
@@ -799,20 +988,28 @@ mod tests {
         let json_standard = serde_json::json!({
             "id": "resp_std_001",
             "status": "completed",
+            "store": true,
             "output": [
                 {
                     "type": "reasoning",
                     "id": "rs_1",
-                    "summary": "Analyzing the user query step by step"
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": "Analyzing the user query step by step"
+                        }
+                    ]
                 },
                 {
                     "type": "message",
                     "id": "msg_std_100",
                     "role": "assistant",
+                    "status": "completed",
                     "content": [
                         {
                             "type": "output_text",
-                            "text": "Here is the exact response from the model."
+                            "text": "Here is the exact response from the model.",
+                            "annotations": []
                         }
                     ]
                 },
@@ -826,7 +1023,14 @@ mod tests {
             "usage": {
                 "input_tokens": 10,
                 "output_tokens": 20,
-                "total_tokens": 30
+                "total_tokens": 30,
+                "input_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0
+                },
+                "output_tokens_details": {
+                    "reasoning_tokens": 0
+                }
             }
         });
 
@@ -877,7 +1081,7 @@ mod tests {
             "event: response.output_text.delta\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world!\"}\n\n",
             "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_1\",\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"r1\",\"summary\":\"Thinking deeply...\"},{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world!\"}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":10,\"total_tokens\":15}}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_1\",\"status\":\"completed\",\"store\":true,\"output\":[{\"type\":\"reasoning\",\"id\":\"r1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Thinking deeply...\"}]},{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world!\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":10,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n",
             "data: [DONE]\n\n"
         );
 
@@ -919,6 +1123,121 @@ mod tests {
         let resp = completed_response.expect("completed response");
         assert_eq!(resp.messages.len(), 1);
         assert_eq!(resp.usage.unwrap().total_tokens, 15);
+    }
+
+    #[test]
+    fn test_response_provider_store_false_falls_back_to_full_history() {
+        let provider = ResponseProvider::new("test-key");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+
+        // 1. 用户第一轮提问
+        let user_msg1 = Message::user("我需要做一般轻度 coding 开发");
+        session.append_turn(Turn::user_turn(user_msg1, None));
+
+        // 2. 模拟服务端返回 store: false 的响应报文
+        let mock_unstored_json = serde_json::json!({
+            "id": "resp_unstored_123",
+            "status": "completed",
+            "store": false,
+            "previous_response_id": null,
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_ephemeral_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "建议选择轻量档位。",
+                            "annotations": []
+                        }
+                    ]
+                }
+            ],
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+                "input_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0
+                },
+                "output_tokens_details": {
+                    "reasoning_tokens": 0
+                }
+            }
+        });
+
+        let parsed = provider.parse_response(mock_unstored_json).expect("parse unstored response");
+        let resp_meta = parsed.meta.response.as_ref().unwrap();
+        // 校验：当 store: false 时不记录 response_id、previous_response_id，且 store 为 false
+        assert!(resp_meta.response_id.is_none());
+        assert!(resp_meta.previous_response_id.is_none());
+        assert_eq!(resp_meta.store, false);
+        // 不记录依赖 store 的 message item_id
+        assert!(parsed.messages[0].meta.response.is_none());
+
+        let mut asst_turn = Turn::assistant_turn(parsed.messages, None);
+        asst_turn.meta = parsed.meta;
+        assert!(asst_turn.openai_response_id().is_none());
+        session.append_turn(asst_turn);
+
+        // 会话无法提取有效 response_id
+        assert!(session.latest_openai_response_id().is_none());
+
+        // 3. 用户发起第二轮提问
+        let user_msg2 = Message::user("要考虑性价比");
+        session.append_turn(Turn::user_turn(user_msg2, None));
+
+        let options = CompletionOptions {
+            model: "gpt-5.6-terra".into(),
+            ..Default::default()
+        };
+
+        // 4. 构建第二轮请求体：因未留存，必须回退至全量发送 input，且不传 previous_response_id
+        let body = provider.build_request_body(&session, &[], &options);
+        assert!(body.get("previous_response_id").is_none());
+        assert_eq!(body["store"], true);
+
+        let input_items = body["input"].as_array().unwrap();
+        // 包含第一轮 user、第一轮 assistant 以及第二轮 user
+        assert_eq!(input_items.len(), 3);
+        assert_eq!(input_items[0]["role"], "user");
+        assert_eq!(input_items[0]["content"][0]["text"], "我需要做一般轻度 coding 开发");
+        assert_eq!(input_items[1]["role"], "assistant");
+        assert_eq!(input_items[1]["content"][0]["text"], "建议选择轻量档位。");
+        assert_eq!(input_items[2]["role"], "user");
+        assert_eq!(input_items[2]["content"][0]["text"], "要考虑性价比");
+    }
+
+    #[test]
+    fn test_response_provider_missing_store_returns_protocol_error() {
+        let provider = ResponseProvider::new("test-key");
+        let mock_json_no_store = serde_json::json!({
+            "id": "resp_test_1",
+            "status": "completed",
+            "output": []
+        });
+        let result = provider.parse_response(mock_json_no_store);
+        assert!(matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("Missing 'store'")));
+    }
+
+    #[test]
+    fn test_response_provider_failed_status_returns_protocol_error() {
+        let provider = ResponseProvider::new("test-key");
+        let mock_failed_json = serde_json::json!({
+            "id": "resp_fail_1",
+            "status": "failed",
+            "store": false,
+            "error": {
+                "code": "server_error",
+                "message": "The model failed to generate a response."
+            },
+            "output": []
+        });
+        let result = provider.parse_response(mock_failed_json);
+        assert!(matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("Response failed: The model failed to generate a response.")));
     }
 }
 

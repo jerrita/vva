@@ -48,9 +48,13 @@ impl Turn {
         Self::new(Role::Assistant, messages, parent_turn_id)
     }
 
-    /// 获取 OpenAI Responses 链式调用 ID（如果存在）
+    /// 获取 OpenAI Responses 链式调用 ID（仅在服务端启用 store 时有效）
     pub fn openai_response_id(&self) -> Option<&str> {
-        self.meta.response.as_ref().map(|r| r.response_id.as_str())
+        let meta = self.meta.response.as_ref()?;
+        if !meta.store {
+            return None;
+        }
+        meta.response_id.as_deref()
     }
 }
 

@@ -46,28 +46,27 @@ pub struct ResponseSessionMeta {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponseTurnMeta {
     /// 核心原生优势：服务端的链式状态追踪 ID
-    pub response_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_response_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_fingerprint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    pub store: bool,
 }
 
 impl ResponseTurnMeta {
     pub fn new(response_id: impl Into<String>) -> Self {
         Self {
-            response_id: response_id.into(),
+            response_id: Some(response_id.into()),
             previous_response_id: None,
-            status: None,
+            status: "completed".to_string(),
             service_tier: None,
-            system_fingerprint: None,
             reasoning_effort: None,
+            store: true,
         }
     }
 }

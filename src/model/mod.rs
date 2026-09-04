@@ -47,12 +47,12 @@ mod tests {
     fn test_typed_metadata_integrity() {
         let mut turn_meta = TurnMeta::default();
         turn_meta.response = Some(ResponseTurnMeta {
-            response_id: "resp_abc123xyz".into(),
+            response_id: Some("resp_abc123xyz".into()),
             previous_response_id: Some("resp_root000".into()),
-            status: Some("completed".into()),
+            status: "completed".into(),
             service_tier: Some("default".into()),
-            system_fingerprint: Some("fp_456".into()),
             reasoning_effort: Some("high".into()),
+            store: true,
         });
 
         turn_meta.anthropic = Some(AnthropicTurnMeta {
@@ -78,8 +78,8 @@ mod tests {
 
         assert_eq!(turn_meta, decoded);
         assert_eq!(
-            decoded.response.as_ref().unwrap().response_id,
-            "resp_abc123xyz"
+            decoded.response.as_ref().unwrap().response_id.as_deref(),
+            Some("resp_abc123xyz")
         );
         assert_eq!(
             decoded.anthropic.as_ref().unwrap().cache_read_input_tokens,

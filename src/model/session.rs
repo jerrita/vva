@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::message::Role;
 use super::meta::SessionMeta;
 use super::turn::Turn;
 
@@ -81,12 +82,14 @@ impl Session {
         self.updated_at = Utc::now();
     }
 
-    /// 提取最近一次成功的 OpenAI response_id
+    /// 提取最近一次成功且可链式调用的 OpenAI response_id
     pub fn latest_openai_response_id(&self) -> Option<&str> {
-        self.turns
-            .iter()
-            .rev()
-            .find_map(|t| t.openai_response_id())
+        for turn in self.turns.iter().rev() {
+            if turn.role == Role::Assistant {
+                return turn.openai_response_id();
+            }
+        }
+        None
     }
 
     /// 在历史轮次中按 call_id 查找对应的 ToolCall

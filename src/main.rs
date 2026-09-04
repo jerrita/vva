@@ -437,8 +437,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if let Some(resp) = &turn.meta.response {
                         println!(
-                            "🏷️ [Response Meta] ID: {}, Prev: {:?}, Status: {:?}",
-                            resp.response_id, resp.previous_response_id, resp.status
+                            "🏷️ [Response Meta] ID: {:?}, Prev: {:?}, Status: {:?}, Store: {}",
+                            resp.response_id, resp.previous_response_id, resp.status, resp.store
                         );
                     }
                     if let Some(anthropic) = &turn.meta.anthropic {
