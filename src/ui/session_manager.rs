@@ -5,20 +5,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tracing::error;
 
-use crate::config::{AppConfig, ResolvedModel};
+use crate::config::{AppConfig, resolve_provider};
 use crate::harness::{AgentConfig, AgentEngine, AgentEvent};
 use crate::model::{ContentPart, Message, Session, Turn};
-use crate::provider::anthropic::AnthropicProvider;
-use crate::provider::gemini::GeminiProvider;
-use crate::provider::response::ResponseProvider;
-use crate::provider::{CompletionOptions, Provider};
+use crate::provider::CompletionOptions;
 use crate::storage::SessionStore;
 use crate::tools::ToolRegistry;
-#[cfg(not(windows))]
-use crate::tools::bash::BashTool;
-use crate::tools::file::{FileEditTool, FileViewTool};
-#[cfg(windows)]
-use crate::tools::powershell::PowerShellTool;
 
 /// 单个活跃会话的运行时单例句柄
 pub struct ManagedSession {
@@ -269,13 +261,7 @@ impl SessionManager {
         let (provider, effective_model, reasoning_effort) =
             resolve_provider(&self.app_config, &current_model, current_variant.as_deref())?;
 
-        let mut tools = ToolRegistry::new();
-        #[cfg(windows)]
-        tools.register(Arc::new(PowerShellTool::new(&session_workspace)));
-        #[cfg(not(windows))]
-        tools.register(Arc::new(BashTool::new(&session_workspace)));
-        tools.register(Arc::new(FileViewTool::new(&session_workspace)));
-        tools.register(Arc::new(FileEditTool::new(&session_workspace)));
+        let tools = ToolRegistry::with_workspace_defaults(&session_workspace);
 
         let agent_config = AgentConfig {
             completion_options: CompletionOptions {
@@ -350,73 +336,6 @@ impl SessionManager {
         *abort_handle = Some(task.abort_handle());
 
         Ok(())
-    }
-}
-
-pub type ResolvedProviderInfo = (Arc<dyn Provider>, String, Option<String>);
-
-/// 解析 Provider 实例、模型生效名称及 Variant
-pub fn resolve_provider(
-    app_config: &Option<AppConfig>,
-    current_model: &str,
-    current_variant: Option<&str>,
-) -> Result<ResolvedProviderInfo, String> {
-    if let Some(cfg) = app_config {
-        match cfg.resolve_model(current_model, current_variant) {
-            Ok(resolved) => {
-                let ResolvedModel {
-                    model_id,
-                    provider,
-                    selected_variant,
-                    ..
-                } = resolved;
-                Ok((provider, model_id, selected_variant))
-            }
-            Err(err) => {
-                // 如果历史会话中记录的模型在当前配置中不存在，回退到默认模型
-                if current_model != cfg.settings.default
-                    && let Ok(fallback) = cfg.resolve_model(&cfg.settings.default, None)
-                {
-                    tracing::warn!(
-                        "Model '{current_model}' not found in current config; falling back to default '{}'",
-                        cfg.settings.default
-                    );
-                    return Ok((
-                        fallback.provider,
-                        fallback.model_id,
-                        fallback.selected_variant,
-                    ));
-                }
-                Err(format!("Error resolving model '{current_model}': {err}"))
-            }
-        }
-    } else {
-        // 无配置文件时的环境变数备用路由
-        let (provider_inst, model_id): (Arc<dyn Provider>, String) =
-            match current_model.to_lowercase().as_str() {
-                m if m.contains("anthropic") || m.contains("claude") => {
-                    let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-                    (
-                        Arc::new(AnthropicProvider::new(key)),
-                        current_model.to_string(),
-                    )
-                }
-                m if m.contains("gemini") => {
-                    let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
-                    (
-                        Arc::new(GeminiProvider::new(key)),
-                        current_model.to_string(),
-                    )
-                }
-                _ => {
-                    let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-                    (
-                        Arc::new(ResponseProvider::new(key)),
-                        current_model.to_string(),
-                    )
-                }
-            };
-        Ok((provider_inst, model_id, current_variant.map(String::from)))
     }
 }
 

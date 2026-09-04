@@ -1,4 +1,5 @@
 pub mod config;
+pub mod event;
 pub mod harness;
 pub mod model;
 pub mod provider;

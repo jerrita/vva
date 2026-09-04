@@ -22,26 +22,7 @@ impl Default for AgentConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum AgentEvent {
-    Thought(String),
-    ToolExecuting {
-        name: String,
-        args: String,
-    },
-    ToolFinished {
-        name: String,
-        result: String,
-        is_error: bool,
-    },
-    Text(String),
-    Citation {
-        title: String,
-        url: String,
-    },
-    Finished,
-    Error(String),
-}
+pub use crate::event::AgentEvent;
 
 pub struct AgentEngine {
     provider: Arc<dyn Provider>,
@@ -85,38 +66,15 @@ impl AgentEngine {
             let tool_defs = self.tools.definitions();
             let parent_turn_id = session.last_turn_id();
 
-            // 构造实时流式增量转发通道
-            let (delta_tx, mut delta_rx) = mpsc::channel::<crate::provider::ProviderDelta>(64);
-            let fwd_tx = event_sender.clone();
-            let fwd_task = tokio::spawn(async move {
-                if let Some(tx) = fwd_tx {
-                    while let Some(delta) = delta_rx.recv().await {
-                        match delta {
-                            crate::provider::ProviderDelta::Thought(t) => {
-                                let _ = tx.send(AgentEvent::Thought(t)).await;
-                            }
-                            crate::provider::ProviderDelta::Text(t) => {
-                                let _ = tx.send(AgentEvent::Text(t)).await;
-                            }
-                            crate::provider::ProviderDelta::Citation { title, url } => {
-                                let _ = tx.send(AgentEvent::Citation { title, url }).await;
-                            }
-                        }
-                    }
-                }
-            });
-
             let response = self
                 .provider
                 .complete_stream(
                     session,
                     &tool_defs,
                     &self.config.completion_options,
-                    Some(delta_tx),
+                    event_sender.clone(),
                 )
                 .await?;
-
-            let _ = fwd_task.await;
 
             // 检查是否有待执行的工具调用
             let mut tool_calls = Vec::new();

@@ -5,21 +5,13 @@ use tokio::sync::mpsc;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
-use vva::config::{AppConfig, ResolvedModel, home_dir, load_config};
+use vva::config::{AppConfig, home_dir, load_config};
 use vva::harness::{AgentConfig, AgentEngine, AgentEvent};
 use vva::model::{Annotation, ContentPart, Message, Session, Turn};
-use vva::provider::anthropic::AnthropicProvider;
-use vva::provider::gemini::GeminiProvider;
-use vva::provider::response::ResponseProvider;
-use vva::provider::{CompletionOptions, Provider};
+use vva::provider::CompletionOptions;
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::tools::ToolRegistry;
-#[cfg(not(windows))]
-use vva::tools::bash::BashTool;
-use vva::tools::file::{FileEditTool, FileViewTool};
-#[cfg(windows)]
-use vva::tools::powershell::PowerShellTool;
 use vva::ui::run_tui;
 
 #[derive(Parser)]
@@ -199,6 +191,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
+            // 显式指定的模型严格校验：不可解析时直接报错退出，不静默回退默认模型
+            if let (Some(cfg), Some(m)) = (&app_config, &model)
+                && let Err(err) = cfg.resolve_model(m, variant.as_deref())
+            {
+                eprintln!("Error resolving model '{m}': {err}");
+                std::process::exit(1);
+            }
+
             // CLI 单次非交互运行流程
             let mut session = if let Some(sid) = session_id {
                 let mut s = store
@@ -252,54 +252,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("⚡ Reasoning Variant: {}", v);
             }
 
-            // 解析 Provider 实例
-            let (provider_inst, effective_model_name, reasoning_effort) = if let Some(cfg) =
-                &app_config
-            {
-                match cfg.resolve_model(&session.current_model, session.current_variant.as_deref())
-                {
-                    Ok(resolved) => {
-                        let ResolvedModel {
-                            model_id,
-                            provider,
-                            selected_variant,
-                            ..
-                        } = resolved;
-                        (provider, model_id, selected_variant)
-                    }
+            // 解析 Provider 实例（配置路由单点：历史会话模型失效时回退默认模型）
+            let (provider_inst, effective_model_name, reasoning_effort) =
+                match vva::config::resolve_provider(
+                    &app_config,
+                    &session.current_model,
+                    session.current_variant.as_deref(),
+                ) {
+                    Ok(info) => info,
                     Err(err) => {
-                        eprintln!("Error resolving model '{}': {}", session.current_model, err);
+                        eprintln!("{err}");
                         std::process::exit(1);
                     }
-                }
-            } else {
-                let (provider_inst, model_id): (Arc<dyn Provider>, String) =
-                    match session.current_model.to_lowercase().as_str() {
-                        m if m.contains("anthropic") || m.contains("claude") => {
-                            let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-                            (
-                                Arc::new(AnthropicProvider::new(key)),
-                                session.current_model.clone(),
-                            )
-                        }
-                        m if m.contains("gemini") => {
-                            let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
-                            (
-                                Arc::new(GeminiProvider::new(key)),
-                                session.current_model.clone(),
-                            )
-                        }
-                        _ => {
-                            let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-                            (
-                                Arc::new(ResponseProvider::new(key)),
-                                session.current_model.clone(),
-                            )
-                        }
-                    };
-                let effort = session.current_variant.clone();
-                (provider_inst, model_id, effort)
-            };
+                };
 
             println!(
                 "🤖 Active Provider: {} (API Model: {})",
@@ -311,13 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // 初始化 Coding 工具
-            let mut tools = ToolRegistry::new();
-            #[cfg(windows)]
-            tools.register(Arc::new(PowerShellTool::new(&workspace)));
-            #[cfg(not(windows))]
-            tools.register(Arc::new(BashTool::new(&workspace)));
-            tools.register(Arc::new(FileViewTool::new(&workspace)));
-            tools.register(Arc::new(FileEditTool::new(&workspace)));
+            let tools = ToolRegistry::with_workspace_defaults(&workspace);
 
             let user_msg = Message::user(&prompt);
             let parent_turn_id = session.last_turn_id();

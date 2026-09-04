@@ -34,6 +34,18 @@ impl ToolRegistry {
         }
     }
 
+    /// 注册工作空间默认 Coding 工具集（Shell 执行 + 文件读写）
+    pub fn with_workspace_defaults(workspace: &std::path::Path) -> Self {
+        let mut registry = Self::new();
+        #[cfg(windows)]
+        registry.register(Arc::new(crate::tools::powershell::PowerShellTool::new(workspace)));
+        #[cfg(not(windows))]
+        registry.register(Arc::new(crate::tools::bash::BashTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::file::FileViewTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::file::FileEditTool::new(workspace)));
+        registry
+    }
+
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
     }

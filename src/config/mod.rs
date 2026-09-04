@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 pub use model::{AppConfig, GlobalSettings, ModelConfig, ProviderConfig, ProviderType};
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
-pub use resolver::ResolvedModel;
+pub use resolver::{ResolvedModel, ResolvedProviderInfo, resolve_provider};
 
 /// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
 pub fn home_dir() -> Option<PathBuf> {

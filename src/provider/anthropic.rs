@@ -4,9 +4,10 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
 use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
-    ProviderResponse, sse::SseDecoder,
+    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
+    sse::SseDecoder,
 };
+use crate::event::AgentEvent;
 use crate::model::{
     AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall, ToolDefinition,
     TurnMeta,
@@ -354,7 +355,7 @@ impl Provider for AnthropicProvider {
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
+        event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
         let base = self.base_url.trim_end_matches('/');
         let url = if base.ends_with("/messages") {
@@ -418,7 +419,7 @@ impl Provider for AnthropicProvider {
         let mut stop_reason: Option<String> = None;
 
         let mut process_event =
-            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
+            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<AgentEvent>>| {
                 let ev_type = json["type"].as_str().unwrap_or_default();
                 match ev_type {
                     "message_start" => {
@@ -470,7 +471,7 @@ impl Provider for AnthropicProvider {
                                         content.push_str(t);
                                     }
                                     if let Some(tx) = tx_opt {
-                                        let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                        let _ = tx.try_send(AgentEvent::Thought(t.to_string()));
                                     }
                                 }
                             }
@@ -481,7 +482,7 @@ impl Provider for AnthropicProvider {
                                         text.push_str(t);
                                     }
                                     if let Some(tx) = tx_opt {
-                                        let _ = tx.try_send(ProviderDelta::Text(t.to_string()));
+                                        let _ = tx.try_send(AgentEvent::Text(t.to_string()));
                                     }
                                 }
                             }
@@ -527,7 +528,7 @@ impl Provider for AnthropicProvider {
                     break;
                 }
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                    process_event(&json, &delta_sender);
+                    process_event(&json, &event_sender);
                 }
             }
         }
@@ -536,7 +537,7 @@ impl Provider for AnthropicProvider {
             && ev.data != "[DONE]"
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
         {
-            process_event(&json, &delta_sender);
+            process_event(&json, &event_sender);
         }
 
         let mut parts = Vec::new();

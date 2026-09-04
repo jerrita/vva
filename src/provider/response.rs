@@ -4,9 +4,10 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValu
 use tokio::sync::mpsc;
 
 use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
-    ProviderResponse, sse::SseDecoder,
+    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
+    sse::SseDecoder,
 };
+use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, Message, ResponseOutputItem, ResponseTurnMeta, Role, SearchStatus,
     Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchCall, WebSearchSource,
@@ -704,7 +705,7 @@ impl Provider for ResponseProvider {
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
+        event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
         let base = self.base_url.trim_end_matches('/');
         let url = if base.ends_with("/responses") {
@@ -785,8 +786,8 @@ impl Provider for ResponseProvider {
                                     "Missing 'delta' in response.output_text.delta event".into(),
                                 )
                             })?;
-                            if let Some(tx) = &delta_sender {
-                                let _ = tx.send(ProviderDelta::Text(delta.to_string())).await;
+                            if let Some(tx) = &event_sender {
+                                let _ = tx.send(AgentEvent::Text(delta.to_string())).await;
                             }
                         }
                         "response.reasoning_text.delta"
@@ -796,8 +797,8 @@ impl Provider for ResponseProvider {
                                     "Missing 'delta' in reasoning delta event".into(),
                                 )
                             })?;
-                            if let Some(tx) = &delta_sender {
-                                let _ = tx.send(ProviderDelta::Thought(delta.to_string())).await;
+                            if let Some(tx) = &event_sender {
+                                let _ = tx.send(AgentEvent::Thought(delta.to_string())).await;
                             }
                         }
                         "response.completed" => {
@@ -807,7 +808,7 @@ impl Provider for ResponseProvider {
                                 )
                             })?;
                             let parsed = self.parse_response(resp_obj.clone())?;
-                            if let Some(tx) = &delta_sender {
+                            if let Some(tx) = &event_sender {
                                 for msg in &parsed.messages {
                                     for part in &msg.parts {
                                         if let ContentPart::Text { annotations, .. } = part {
@@ -817,7 +818,7 @@ impl Provider for ResponseProvider {
                                                 } = ann
                                                 {
                                                     let _ = tx
-                                                        .send(ProviderDelta::Citation {
+                                                        .send(AgentEvent::Citation {
                                                             title: title.clone(),
                                                             url: url.clone(),
                                                         })

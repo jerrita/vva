@@ -145,3 +145,72 @@ impl AppConfig {
         })
     }
 }
+
+pub type ResolvedProviderInfo = (Arc<dyn Provider>, String, Option<String>);
+
+/// 解析 Provider 实例、模型生效名称及 Variant。
+/// 配置存在时走配置路由（历史会话模型失效时回退默认模型并记录告警）；
+/// 无配置文件时按模型名与环境变量直连官方端点。
+pub fn resolve_provider(
+    app_config: &Option<AppConfig>,
+    current_model: &str,
+    current_variant: Option<&str>,
+) -> Result<ResolvedProviderInfo, String> {
+    if let Some(cfg) = app_config {
+        match cfg.resolve_model(current_model, current_variant) {
+            Ok(resolved) => {
+                let ResolvedModel {
+                    model_id,
+                    provider,
+                    selected_variant,
+                    ..
+                } = resolved;
+                Ok((provider, model_id, selected_variant))
+            }
+            Err(err) => {
+                // 如果历史会话中记录的模型在当前配置中不存在，回退到默认模型
+                if current_model != cfg.settings.default
+                    && let Ok(fallback) = cfg.resolve_model(&cfg.settings.default, None)
+                {
+                    tracing::warn!(
+                        "Model '{current_model}' not found in current config; falling back to default '{}'",
+                        cfg.settings.default
+                    );
+                    return Ok((
+                        fallback.provider,
+                        fallback.model_id,
+                        fallback.selected_variant,
+                    ));
+                }
+                Err(format!("Error resolving model '{current_model}': {err}"))
+            }
+        }
+    } else {
+        // 无配置文件时的环境变数备用路由
+        let (provider_inst, model_id): (Arc<dyn Provider>, String) =
+            match current_model.to_lowercase().as_str() {
+                m if m.contains("anthropic") || m.contains("claude") => {
+                    let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+                    (
+                        Arc::new(AnthropicProvider::new(key)),
+                        current_model.to_string(),
+                    )
+                }
+                m if m.contains("gemini") => {
+                    let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
+                    (
+                        Arc::new(GeminiProvider::new(key)),
+                        current_model.to_string(),
+                    )
+                }
+                _ => {
+                    let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+                    (
+                        Arc::new(ResponseProvider::new(key)),
+                        current_model.to_string(),
+                    )
+                }
+            };
+        Ok((provider_inst, model_id, current_variant.map(String::from)))
+    }
+}

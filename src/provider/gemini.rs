@@ -4,9 +4,10 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
 use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
-    ProviderResponse, sse::SseDecoder,
+    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
+    sse::SseDecoder,
 };
+use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
     Message, Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta,
@@ -464,7 +465,7 @@ impl Provider for GeminiProvider {
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-        delta_sender: Option<mpsc::Sender<ProviderDelta>>,
+        event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
         let base = self.base_url.trim().trim_end_matches('/');
         let model_name = options
@@ -521,7 +522,7 @@ impl Provider for GeminiProvider {
         let mut usage: Option<TokenUsage> = None;
 
         let mut process_chunk =
-            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
+            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<AgentEvent>>| {
                 if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
                     if let Some(fr) = candidate["finishReason"].as_str() {
                         finish_reason = Some(fr.to_string());
@@ -602,7 +603,7 @@ impl Provider for GeminiProvider {
                                             };
                                             if !citations.contains(&ann) {
                                                 if let Some(tx) = tx_opt {
-                                                    let _ = tx.try_send(ProviderDelta::Citation {
+                                                    let _ = tx.try_send(AgentEvent::Citation {
                                                         title: src.title.clone(),
                                                         url: src.url.clone(),
                                                     });
@@ -623,13 +624,13 @@ impl Provider for GeminiProvider {
                                 if let Some(t) = p["text"].as_str() {
                                     accumulated_thought.push_str(t);
                                     if let Some(tx) = tx_opt {
-                                        let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                        let _ = tx.try_send(AgentEvent::Thought(t.to_string()));
                                     }
                                 }
                             } else if let Some(text) = p["text"].as_str() {
                                 accumulated_text.push_str(text);
                                 if let Some(tx) = tx_opt {
-                                    let _ = tx.try_send(ProviderDelta::Text(text.to_string()));
+                                    let _ = tx.try_send(AgentEvent::Text(text.to_string()));
                                 }
                             } else if let Some(fc) = p.get("functionCall") {
                                 let call_name = fc["name"].as_str().unwrap_or_default().to_string();
@@ -674,7 +675,7 @@ impl Provider for GeminiProvider {
                     break;
                 }
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                    process_chunk(&json, &delta_sender);
+                    process_chunk(&json, &event_sender);
                 }
             }
         }
@@ -683,7 +684,7 @@ impl Provider for GeminiProvider {
             && ev.data != "[DONE]"
             && let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
         {
-            process_chunk(&json, &delta_sender);
+            process_chunk(&json, &event_sender);
         }
 
         let mut parts = Vec::new();
