@@ -55,44 +55,52 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 }
             }
             ChatEntry::Thinking { content } => {
+                // 各思考段落（协议层以空行分隔）独立渲染 markdown 并统一弱化为灰色斜体
+                // （Style::patch 语义下 fg 覆盖、修饰符并集，加粗等强调得以保留）
+                let body_style = Style::default()
+                    .fg(Color::Rgb(120, 120, 120))
+                    .add_modifier(Modifier::ITALIC);
+                let prefix_style = Style::default()
+                    .fg(Color::Rgb(140, 140, 140))
+                    .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+                // "+ Thought: " 前缀占 11 列，渲染时预留
+                let paragraphs: Vec<Vec<Line<'static>>> = content
+                    .split("\n\n")
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| {
+                        let mut ls = render_markdown(p, max_width.saturating_sub(11));
+                        for line in &mut ls {
+                            for span in &mut line.spans {
+                                span.style = span.style.patch(body_style);
+                            }
+                        }
+                        ls
+                    })
+                    .collect();
+
                 lines.push(Line::from(""));
                 if app.thinking_concise {
-                    let first_line = content
-                        .lines()
-                        .map(str::trim)
-                        .find(|l| !l.is_empty())
-                        .unwrap_or("Thinking...");
-                    let short_preview = crate::ui::text::truncate(first_line, 80);
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "🧠 Thinking: ",
-                            Style::default()
-                                .fg(Color::Rgb(140, 140, 140))
-                                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-                        ),
-                        Span::styled(
-                            short_preview,
-                            Style::default()
-                                .fg(Color::Rgb(120, 120, 120))
-                                .add_modifier(Modifier::ITALIC),
-                        ),
-                    ]));
+                    let mut spans = vec![Span::styled("🧠 Thinking: ", prefix_style)];
+                    match paragraphs.first().and_then(|ls| ls.first()) {
+                        Some(first) => spans.extend(first.spans.iter().cloned()),
+                        None => spans.push(Span::styled("Thinking...", body_style)),
+                    }
+                    lines.push(Line::from(spans));
                 } else {
-                    lines.push(Line::from(vec![Span::styled(
-                        "🧠 Thinking",
-                        Style::default()
-                            .fg(Color::Rgb(140, 140, 140))
-                            .add_modifier(Modifier::ITALIC),
-                    )]));
-                    for l in content.lines() {
-                        let spans = vec![Span::styled(
-                            l.to_string(),
-                            Style::default()
-                                .fg(Color::Rgb(120, 120, 120))
-                                .add_modifier(Modifier::ITALIC),
-                        )];
-                        let wrapped = wrap_spans_to_lines(&spans, max_width, "   ", "   ");
-                        lines.extend(wrapped);
+                    // OpenCode 风格：每个思考段落一条独立的 `+ Thought:` 行
+                    let mut any = false;
+                    for para in &paragraphs {
+                        let mut iter = para.iter();
+                        if let Some(first) = iter.next() {
+                            let mut spans = vec![Span::styled("+ Thought: ", prefix_style)];
+                            spans.extend(first.spans.iter().cloned());
+                            lines.push(Line::from(spans));
+                            lines.extend(iter.cloned());
+                            any = true;
+                        }
+                    }
+                    if !any {
+                        lines.push(Line::from(vec![Span::styled("Thinking...", body_style)]));
                     }
                 }
             }
@@ -395,6 +403,53 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(joined.contains("Start typing a prompt"));
+    }
+
+    #[tokio::test]
+    async fn test_thinking_renders_one_thought_line_per_part() {
+        let mut app = create_test_app().await;
+        // 模拟协议层输出：各 summary part 带原始 markdown 标记，以空行（段落边界）分隔
+        app.chat_entries.push(ChatEntry::Thinking {
+            content: "**Requesting Shenzhen weather forecast**\n\n**Drafting cautious forecast**"
+                .to_string(),
+        });
+
+        // full 模式：每个思考段落一条独立的 `+ Thought:` 行
+        let lines = build_chat_lines(&app, 80);
+        let thought_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|s| s.content == "+ Thought: ")
+            })
+            .collect();
+        assert_eq!(thought_lines.len(), 2);
+
+        // markdown 标记被渲染掉，加粗修饰保留，两段分行
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(all_text.contains("Requesting Shenzhen weather forecast"));
+        assert!(all_text.contains("Drafting cautious forecast"));
+        assert!(!all_text.contains("**"));
+        let bold_in_first = thought_lines[0]
+            .spans
+            .iter()
+            .any(|s| s.content.contains("Requesting") && s.style.add_modifier.contains(Modifier::BOLD));
+        assert!(bold_in_first);
+
+        // concise 模式：单行预览展示首个思考段落，同样不含 markdown 标记
+        app.thinking_concise = true;
+        let lines = build_chat_lines(&app, 80);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(all_text.contains("Thinking: "));
+        assert!(all_text.contains("Requesting Shenzhen weather forecast"));
+        assert!(!all_text.contains("**"));
     }
 
     #[tokio::test]
