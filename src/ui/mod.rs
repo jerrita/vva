@@ -114,7 +114,7 @@ pub async fn run_tui(
                 let fallback_model = default_model
                     .or_else(|| app_config.as_ref().map(|c| c.settings.default.clone()))
                     .unwrap_or_else(|| "openai/gpt-5.6-terra".to_string());
-                let fallback_search = enable_web_search.unwrap_or(false);
+                let fallback_search = enable_web_search.unwrap_or(true);
                 session_mgr
                     .create_session(fallback_model, default_variant, None, fallback_search)
                     .await?
@@ -124,7 +124,7 @@ pub async fn run_tui(
         let effective_model = default_model
             .or_else(|| app_config.as_ref().map(|c| c.settings.default.clone()))
             .unwrap_or_else(|| "openai/gpt-5.6-terra".to_string());
-        let effective_search = enable_web_search.unwrap_or(false);
+        let effective_search = enable_web_search.unwrap_or(true);
         session_mgr
             .create_session(effective_model, default_variant, None, effective_search)
             .await?

@@ -133,6 +133,7 @@ mod tests {
             Some("Test Task".into()),
         );
         assert_eq!(session.turns.len(), 0);
+        assert!(session.web_search);
 
         let user_msg = Message::user("Hello world");
         let user_turn = Turn::user_turn(user_msg, None);

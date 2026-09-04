@@ -7,6 +7,10 @@ use super::message::Role;
 use super::meta::SessionMeta;
 use super::turn::Turn;
 
+fn default_web_search() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {
     pub id: String,
@@ -22,7 +26,7 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_variant: Option<String>,
     /// 是否开启原生网络搜索 / 实时 Grounding (保持工具挂载与 prompt cache 一致)
-    #[serde(default)]
+    #[serde(default = "default_web_search")]
     pub web_search: bool,
     pub turns: Vec<Turn>,
     #[serde(default)]
@@ -31,7 +35,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(workspace_root: impl Into<PathBuf>, title: Option<String>) -> Self {
-        Self::with_model(workspace_root, title, String::new(), None, false)
+        Self::with_model(workspace_root, title, String::new(), None, true)
     }
 
     pub fn with_model(
@@ -121,7 +125,7 @@ pub struct SessionHeader {
     pub current_model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_variant: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_web_search")]
     pub web_search: bool,
     #[serde(default)]
     pub meta: SessionMeta,

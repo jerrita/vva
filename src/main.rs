@@ -226,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 s
             } else {
                 let target_model = model.unwrap_or(default_model);
-                let target_search = web_search.unwrap_or(false);
+                let target_search = web_search.unwrap_or(true);
                 let mut s = Session::with_model(
                     &workspace,
                     Some(prompt.chars().take(40).collect()),
