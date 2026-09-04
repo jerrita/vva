@@ -70,8 +70,8 @@ pub fn match_commands(input: &str) -> Vec<&'static SlashCommand> {
         return Vec::new();
     }
 
-    // 若已经输入了空格，说明正在输入参数，不再显示命令选单
-    if trimmed.contains(' ') {
+    // 若已经输入了空格或换行，说明正在输入参数或多行内容，不再显示命令选单
+    if trimmed.contains(' ') || trimmed.contains('\n') {
         return Vec::new();
     }
 
@@ -124,6 +124,10 @@ mod tests {
         // 带空格或参数时不显示命令选单
         assert_eq!(match_commands("/model ").len(), 0);
         assert_eq!(match_commands("/model gpt-5").len(), 0);
+
+        // 多行输入（如粘贴脚本或以 / 开头的多行文本）不触发命令选单
+        assert_eq!(match_commands("/bin/bash\necho 1").len(), 0);
+        assert_eq!(match_commands("/model\ngpt-5").len(), 0);
     }
 }
 

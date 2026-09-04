@@ -361,6 +361,8 @@ pub struct App {
     pub selected_command_index: usize,
     pub stats: SidebarStats,
     pub thinking_concise: bool,
+    pub input_scroll_y: std::cell::Cell<usize>,
+    pub input_scroll_x: std::cell::Cell<usize>,
 }
 
 impl App {
@@ -391,6 +393,8 @@ impl App {
             selected_command_index: 0,
             stats: SidebarStats::default(),
             thinking_concise: false,
+            input_scroll_y: std::cell::Cell::new(0),
+            input_scroll_x: std::cell::Cell::new(0),
         };
 
         app.reload_active_session_history().await;
@@ -689,16 +693,17 @@ impl App {
         self.update_command_matches();
     }
 
-    /// 用户粘贴或批量插入字符串 (支持多字节 Unicode/中文字符)
+    /// 用户粘贴或批量插入字符串 (支持多行与多字节 Unicode/中文字符，自动归一化换行符)
     pub fn insert_str(&mut self, s: &str) {
+        let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
         let byte_offset = self
             .input
             .char_indices()
             .map(|(i, _)| i)
             .nth(self.cursor_pos)
             .unwrap_or(self.input.len());
-        self.input.insert_str(byte_offset, s);
-        self.cursor_pos += s.chars().count();
+        self.input.insert_str(byte_offset, &normalized);
+        self.cursor_pos += normalized.chars().count();
         self.update_command_matches();
     }
 
@@ -736,12 +741,142 @@ impl App {
         }
     }
 
-    pub fn move_cursor_home(&mut self) {
-        self.cursor_pos = 0;
+    /// 计算输入框文本行数
+    pub fn input_line_count(&self) -> usize {
+        if self.input.is_empty() {
+            1
+        } else {
+            self.input.split('\n').count()
+        }
     }
 
+    /// 计算光标当前所在的行号 (0-indexed) 以及在该行中的显示列宽度 (0-indexed，支持全角 CJK 字符)
+    pub fn cursor_line_and_col(&self) -> (usize, usize) {
+        let byte_offset = self
+            .input
+            .char_indices()
+            .map(|(i, _)| i)
+            .nth(self.cursor_pos)
+            .unwrap_or(self.input.len());
+        let prefix = &self.input[..byte_offset];
+        let lines: Vec<&str> = prefix.split('\n').collect();
+        let cursor_line = lines.len().saturating_sub(1);
+        let current_line_prefix = lines.last().copied().unwrap_or("");
+        let cursor_col = ratatui::text::Span::raw(current_line_prefix).width();
+        (cursor_line, cursor_col)
+    }
+
+    /// 光标向上移动一行，在上一行中尽量对齐当前列的视觉显示宽度
+    pub fn move_cursor_up(&mut self) {
+        if self.input.is_empty() {
+            return;
+        }
+        let all_lines: Vec<&str> = self.input.split('\n').collect();
+        if all_lines.len() <= 1 {
+            return;
+        }
+
+        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
+        let mut cur_char = 0;
+        for l in &all_lines {
+            line_starts.push(cur_char);
+            cur_char += l.chars().count() + 1; // +1 对应 '\n'
+        }
+
+        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+
+        if cursor_row > 0 {
+            let target_row = cursor_row - 1;
+            let target_line = all_lines[target_row];
+            let (_, current_visual_col) = self.cursor_line_and_col();
+            let target_char_col = char_idx_for_visual_width(target_line, current_visual_col);
+            self.cursor_pos = line_starts[target_row] + target_char_col;
+        }
+    }
+
+    /// 光标向下移动一行，在下一行中尽量对齐当前列的视觉显示宽度
+    pub fn move_cursor_down(&mut self) {
+        if self.input.is_empty() {
+            return;
+        }
+        let all_lines: Vec<&str> = self.input.split('\n').collect();
+        if all_lines.len() <= 1 {
+            return;
+        }
+
+        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
+        let mut cur_char = 0;
+        for l in &all_lines {
+            line_starts.push(cur_char);
+            cur_char += l.chars().count() + 1; // +1 对应 '\n'
+        }
+
+        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+
+        if cursor_row + 1 < all_lines.len() {
+            let target_row = cursor_row + 1;
+            let target_line = all_lines[target_row];
+            let (_, current_visual_col) = self.cursor_line_and_col();
+            let target_char_col = char_idx_for_visual_width(target_line, current_visual_col);
+            self.cursor_pos = line_starts[target_row] + target_char_col;
+        }
+    }
+
+    /// 光标移动到当前行行首；若已在当前行行首，则移动到整个文本最开头
+    pub fn move_cursor_home(&mut self) {
+        if self.input.is_empty() || self.cursor_pos == 0 {
+            self.cursor_pos = 0;
+            return;
+        }
+        let all_lines: Vec<&str> = self.input.split('\n').collect();
+        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
+        let mut cur_char = 0;
+        for l in &all_lines {
+            line_starts.push(cur_char);
+            cur_char += l.chars().count() + 1;
+        }
+        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let line_start = line_starts[cursor_row];
+        if self.cursor_pos == line_start {
+            self.cursor_pos = 0;
+        } else {
+            self.cursor_pos = line_start;
+        }
+    }
+
+    /// 光标移动到当前行行尾；若已在当前行行尾，则移动到整个文本最末尾
     pub fn move_cursor_end(&mut self) {
-        self.cursor_pos = self.input.chars().count();
+        let total_chars = self.input.chars().count();
+        if self.input.is_empty() || self.cursor_pos >= total_chars {
+            self.cursor_pos = total_chars;
+            return;
+        }
+        let all_lines: Vec<&str> = self.input.split('\n').collect();
+        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
+        let mut cur_char = 0;
+        for l in &all_lines {
+            line_starts.push(cur_char);
+            cur_char += l.chars().count() + 1;
+        }
+        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        };
+        let line_end = line_starts[cursor_row] + all_lines[cursor_row].chars().count();
+        if self.cursor_pos == line_end {
+            self.cursor_pos = total_chars;
+        } else {
+            self.cursor_pos = line_end;
+        }
     }
 
     /// 检查并更新输入框对应的斜杠命令匹配
@@ -781,6 +916,8 @@ impl App {
         if let Some(cmd) = self.matched_commands.get(self.selected_command_index) {
             self.input = format!("{} ", cmd.name);
             self.cursor_pos = self.input.chars().count();
+            self.input_scroll_y.set(0);
+            self.input_scroll_x.set(0);
             self.update_command_matches();
         }
     }
@@ -794,6 +931,8 @@ impl App {
 
         self.input.clear();
         self.cursor_pos = 0;
+        self.input_scroll_y.set(0);
+        self.input_scroll_x.set(0);
         self.matched_commands.clear();
         self.selected_command_index = 0;
 
@@ -1424,5 +1563,98 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    #[tokio::test]
+    async fn test_multiline_paste_and_line_counting() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_ml_test_{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("dummy/model".into(), None, None)
+            .await
+            .unwrap();
+
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 初始单行
+        assert_eq!(app.input_line_count(), 1);
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+
+        // 2. 粘贴包含 CRLF 与 CR 的多行内容，验证统一归一化为 \n
+        app.insert_str("def foo():\r\n    msg = '你好'\r    return msg\n");
+        assert_eq!(app.input, "def foo():\n    msg = '你好'\n    return msg\n");
+        assert_eq!(app.input_line_count(), 4);
+
+        // 3. 验证光标在第 3 行开头 (第四行，空行)
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 3);
+        assert_eq!(col, 0);
+
+        // 4. 测试 Up 向上移动
+        app.move_cursor_up();
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 2);
+        assert_eq!(col, 0);
+
+        // 5. 移到行尾并测试 visual width 对齐
+        app.move_cursor_end();
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 2);
+        assert_eq!(col, 14); // "    return msg" 长度 14
+
+        // 向上移动到第 1 行："    msg = '你好'" (视觉宽度 4 + 7 + 4 = 15)
+        app.move_cursor_up();
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 1);
+        assert!(col >= 13);
+
+        // 向上移动到第 0 行："def foo():" (视觉宽度 10)
+        app.move_cursor_up();
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 0);
+        assert_eq!(col, 10); // 对齐至行尾
+
+        // 测试 Home 行首与文档首
+        app.move_cursor_home();
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 0);
+        assert_eq!(col, 0);
+
+        // 向下移动
+        app.move_cursor_down();
+        let (row, col) = app.cursor_line_and_col();
+        assert_eq!(row, 1);
+        assert_eq!(col, 0);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
+/// 根据目标视觉宽度在给定单行文本中寻找最匹配的字符索引
+fn char_idx_for_visual_width(line: &str, target_width: usize) -> usize {
+    let mut current_width: usize = 0;
+    let mut best_idx = 0;
+    let mut best_diff = target_width;
+
+    for (char_idx, c) in line.chars().enumerate() {
+        let diff = current_width.abs_diff(target_width);
+        if diff < best_diff {
+            best_diff = diff;
+            best_idx = char_idx;
+        }
+        let w = ratatui::text::Span::raw(c.to_string()).width();
+        current_width += w;
+        let diff_after = current_width.abs_diff(target_width);
+        if diff_after < best_diff {
+            best_diff = diff_after;
+            best_idx = char_idx + 1;
+        }
+        if current_width >= target_width {
+            break;
+        }
+    }
+    best_idx
 }
 

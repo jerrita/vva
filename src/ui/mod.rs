@@ -6,9 +6,16 @@ pub mod views;
 use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::Duration;
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableBracketedPaste, EnableBracketedPaste, Event as CrosstermEvent, EventStream, KeyCode,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+    LeaveAlternateScreen,
+};
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -41,7 +48,15 @@ pub async fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+
+    let keyboard_enhancement = supports_keyboard_enhancement().unwrap_or(false);
+    if keyboard_enhancement {
+        let _ = execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -69,8 +84,11 @@ pub async fn run_tui(
     let res = run_app_loop(&mut terminal, &mut app).await;
 
     // 恢复终端
+    if keyboard_enhancement {
+        let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
+    }
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableBracketedPaste, LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     if let Err(err) = res {
@@ -123,13 +141,20 @@ async fn run_app_loop(
                 (size, None)
             };
 
+            let input_lines = app.input_line_count();
+            // 输入区由 3 部分构成：上方状态栏(1行) + 输入框(边框2行 + 文本行) + 下方状态栏(1行)
+            // 文本行数动态自适应，最多不超过 (main_area.height - 8) / 2（在 1 到 12 行之间）
+            let max_text_rows = ((main_area.height.saturating_sub(8)) / 2).clamp(1, 12) as usize;
+            let text_rows = input_lines.clamp(1, max_text_rows);
+            let input_area_height = (text_rows as u16) + 4;
+
             // 主工作区垂直三段切分：顶部极简 Title + 中间对话流 + 底部复合输入区
             let main_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // 顶部栏 (仅 Title)
                     Constraint::Min(5),    // 对话区
-                    Constraint::Length(5), // 输入区
+                    Constraint::Length(input_area_height), // 输入区动态自适应高度
                 ])
                 .split(main_area);
 
@@ -403,6 +428,15 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                     return;
                 }
                 KeyCode::Enter => {
+                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                        || key.modifiers.contains(KeyModifiers::ALT)
+                        || key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        app.matched_commands.clear();
+                        app.selected_command_index = 0;
+                        app.insert_char('\n');
+                        return;
+                    }
                     if let Some(cmd) = app.matched_commands.get(app.selected_command_index) {
                         app.input = cmd.name.to_string();
                     }
@@ -433,7 +467,20 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 }
             }
             KeyCode::Enter => {
-                app.submit_input().await;
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT)
+                    || key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    app.insert_char('\n');
+                } else {
+                    app.submit_input().await;
+                }
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.insert_char('\n');
+            }
+            KeyCode::Char('\n') => {
+                app.insert_char('\n');
             }
             KeyCode::Tab => {
                 if app.input.trim_start().starts_with('/') {
@@ -458,6 +505,12 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
             KeyCode::Right => {
                 app.move_cursor_right();
             }
+            KeyCode::Up => {
+                app.move_cursor_up();
+            }
+            KeyCode::Down => {
+                app.move_cursor_down();
+            }
             KeyCode::Home => {
                 app.move_cursor_home();
             }
@@ -479,6 +532,8 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
             KeyCode::Esc if !app.input.is_empty() => {
                 app.input.clear();
                 app.cursor_pos = 0;
+                app.input_scroll_y.set(0);
+                app.input_scroll_x.set(0);
                 app.update_command_matches();
             }
             _ => {}

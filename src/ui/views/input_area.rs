@@ -16,11 +16,12 @@ pub fn render_input_area(
     workspace: &str,
     status_text: &str,
 ) {
+    let inner_box_height = area.height.saturating_sub(2);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // 输入框上方状态栏 (Agent 运行状态 / 网络搜索)
-            Constraint::Length(3), // 输入框
+            Constraint::Length(inner_box_height), // 输入框
             Constraint::Length(1), // 输入框下方状态栏 (模型/推理档位/提示)
         ])
         .split(area);
@@ -63,7 +64,7 @@ pub fn render_input_area(
     let top_bar = Paragraph::new(Line::from(top_line_spans));
     frame.render_widget(top_bar, chunks[0]);
 
-    // 2. 输入框
+    // 2. 输入框 (支持多行与视口滚动)
     let input_block = Block::default()
         .borders(Borders::ALL)
         .border_style(if is_running {
@@ -72,33 +73,57 @@ pub fn render_input_area(
             Style::default().fg(Color::Rgb(80, 80, 85))
         });
 
+    let inner_width = chunks[1].width.saturating_sub(2) as usize;
+    let inner_height = chunks[1].height.saturating_sub(2) as usize;
+    let (cursor_row, cursor_col) = app.cursor_line_and_col();
+
+    // 视口平滑滚动计算
+    let mut scroll_y = app.input_scroll_y.get();
+    if cursor_row < scroll_y {
+        scroll_y = cursor_row;
+    } else if inner_height > 0 && cursor_row >= scroll_y + inner_height {
+        scroll_y = cursor_row + 1 - inner_height;
+    }
+    app.input_scroll_y.set(scroll_y);
+
+    let mut scroll_x = app.input_scroll_x.get();
+    if cursor_col < scroll_x {
+        scroll_x = cursor_col;
+    } else if inner_width > 0 && cursor_col >= scroll_x + inner_width {
+        scroll_x = cursor_col + 1 - inner_width;
+    }
+    app.input_scroll_x.set(scroll_x);
+
     let input_p = if app.input.is_empty() {
         Paragraph::new(Line::from(vec![
             Span::styled(
-                "Type a prompt or / for commands... (Enter to send, Esc to cancel)",
+                "Type a prompt or / for commands... (Enter to send, Ctrl+Enter for newline)",
                 Style::default().fg(Color::Rgb(100, 100, 105)),
             ),
         ]))
         .block(input_block)
     } else {
-        Paragraph::new(app.input.as_str()).block(input_block)
+        Paragraph::new(app.input.as_str())
+            .block(input_block)
+            .scroll((scroll_y as u16, scroll_x as u16))
     };
 
     frame.render_widget(input_p, chunks[1]);
 
-    // 绘制光标 (基于字符实际显示宽度定位，正确支持中文字符等全角字符)
-    if !is_running {
-        let byte_offset = app
-            .input
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(app.cursor_pos)
-            .unwrap_or(app.input.len());
-        let prefix = &app.input[..byte_offset];
-        let prefix_width = Span::raw(prefix).width() as u16;
-        let cursor_x = chunks[1].x + 1 + prefix_width;
-        let cursor_y = chunks[1].y + 1;
-        if cursor_x < chunks[1].x + chunks[1].width - 1 {
+    // 绘制光标 (基于行号和列显示宽度定位，正确支持多行、视口滚动及全角 CJK 字符)
+    if !is_running
+        && inner_height > 0
+        && inner_width > 0
+        && cursor_row >= scroll_y
+        && cursor_row < scroll_y + inner_height
+    {
+        let row_offset = (cursor_row - scroll_y) as u16;
+        let col_offset = cursor_col.saturating_sub(scroll_x) as u16;
+        let cursor_x = chunks[1].x + 1 + col_offset;
+        let cursor_y = chunks[1].y + 1 + row_offset;
+        if cursor_x < chunks[1].x + chunks[1].width - 1
+            && cursor_y < chunks[1].y + chunks[1].height - 1
+        {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }

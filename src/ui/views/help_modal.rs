@@ -8,8 +8,8 @@ use crate::ui::command::COMMANDS;
 
 /// 渲染帮助与快捷键弹窗
 pub fn render_help_modal(frame: &mut Frame, area: Rect) {
-    let modal_width = 72.min(area.width.saturating_sub(4));
-    let modal_height = 20.min(area.height.saturating_sub(4));
+    let modal_width = 74.min(area.width.saturating_sub(4));
+    let modal_height = 22.min(area.height.saturating_sub(4));
 
     let modal_rect = Rect {
         x: (area.width - modal_width) / 2,
@@ -59,12 +59,16 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
         Span::styled("- Submit prompt / execute selected command", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
+        Span::styled("  Ctrl+Enter   ", Style::default().fg(Color::Green)),
+        Span::styled("- Insert newline in input (also Shift+Enter / Alt+Enter)", Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
         Span::styled("  Tab          ", Style::default().fg(Color::Green)),
         Span::styled("- Autocomplete command in input / toggle project scope in /sessions", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Up / Down    ", Style::default().fg(Color::Green)),
-        Span::styled("- Navigate command suggestions popup (Claude Code style)", Style::default().fg(Color::White)),
+        Span::styled("- Move cursor between lines in input / navigate suggestions", Style::default().fg(Color::White)),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  PgUp / PgDn  ", Style::default().fg(Color::Green)),
