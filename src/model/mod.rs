@@ -5,12 +5,17 @@ pub mod session;
 pub mod tool;
 pub mod turn;
 
-pub use content::{Annotation, ContentPart, ImageDetail, MediaSource, SearchStatus, WebSearchCall, WebSearchSource};
+pub use content::{
+    Annotation, ContentPart, ImageDetail, MediaSource, SearchStatus, WebSearchCall, WebSearchSource,
+};
 pub use message::{Message, Role};
 pub use meta::{
     AnthropicMessageMeta, AnthropicSessionMeta, AnthropicTurnMeta, GeminiCodeExecutionResult,
     GeminiMessageMeta, GeminiSafetyRating, GeminiSessionMeta, GeminiTurnMeta, MessageMeta,
-    ResponseMessageMeta, ResponseSessionMeta, ResponseTurnMeta, SessionMeta, TurnMeta,
+    ResponseMessageContent, ResponseMessageMeta, ResponseMessageRole, ResponseOutputItem,
+    ResponseReasoningContent, ResponseReasoningSummary, ResponseSessionMeta, ResponseTurnMeta,
+    ResponseWebSearchAction, ResponseWebSearchSource, ResponseWebSearchSourceType, SessionMeta,
+    TurnMeta,
 };
 pub use session::{JsonlRecord, Session, SessionHeader, SessionSummary};
 pub use tool::{ToolCall, ToolDefinition, ToolResult};
@@ -33,8 +38,12 @@ mod tests {
             }],
         );
 
-        let image_part = ContentPart::image_url("https://example.com/diag.png", Some(ImageDetail::High));
-        let reasoning_part = ContentPart::reasoning("Analyzing the requirements...", Some("claude_sig_12345".into()));
+        let image_part =
+            ContentPart::image_url("https://example.com/diag.png", Some(ImageDetail::High));
+        let reasoning_part = ContentPart::reasoning(
+            "Analyzing the requirements...",
+            Some("claude_sig_12345".into()),
+        );
 
         let parts = vec![text_part, image_part, reasoning_part];
         let json = serde_json::to_string_pretty(&parts).expect("serialize parts");
@@ -53,6 +62,7 @@ mod tests {
             service_tier: Some("default".into()),
             reasoning_effort: Some("high".into()),
             store: true,
+            output_items: Vec::new(),
         });
 
         turn_meta.anthropic = Some(AnthropicTurnMeta {
@@ -86,7 +96,14 @@ mod tests {
             Some(512)
         );
         assert_eq!(
-            decoded.gemini.as_ref().unwrap().code_execution_result.as_ref().unwrap().output,
+            decoded
+                .gemini
+                .as_ref()
+                .unwrap()
+                .code_execution_result
+                .as_ref()
+                .unwrap()
+                .output,
             "Hello from sandbox"
         );
     }
@@ -111,7 +128,10 @@ mod tests {
 
     #[test]
     fn test_session_creation_and_turns() {
-        let mut session = Session::new(PathBuf::from("/home/user/project"), Some("Test Task".into()));
+        let mut session = Session::new(
+            PathBuf::from("/home/user/project"),
+            Some("Test Task".into()),
+        );
         assert_eq!(session.turns.len(), 0);
 
         let user_msg = Message::user("Hello world");
@@ -132,4 +152,3 @@ mod tests {
         assert_eq!(session.latest_openai_response_id(), Some("resp_001"));
     }
 }
-

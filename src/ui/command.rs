@@ -130,4 +130,3 @@ mod tests {
         assert_eq!(match_commands("/model\ngpt-5").len(), 0);
     }
 }
-

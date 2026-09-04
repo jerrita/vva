@@ -59,4 +59,3 @@ impl Message {
         result
     }
 }
-

@@ -5,7 +5,7 @@ pub mod resolver;
 use std::path::{Path, PathBuf};
 
 pub use model::{AppConfig, GlobalSettings, ModelConfig, ProviderConfig, ProviderType};
-pub use parser::{load_config_file, parse_config_str, strip_jsonc_comments, ConfigError};
+pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::ResolvedModel;
 
 /// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
@@ -177,7 +177,10 @@ mod tests {
 
         // 验证 settings：项目优先，未配置项保留全局
         assert_eq!(merged.settings.default, "prov2/model-c");
-        assert_eq!(merged.settings.small_model.as_deref(), Some("prov1/model-s"));
+        assert_eq!(
+            merged.settings.small_model.as_deref(),
+            Some("prov1/model-s")
+        );
 
         // 验证 prov1：URL 覆盖，API key 保留全局，模型合并
         let p1 = merged.providers.get("prov1").expect("prov1 exists");
@@ -205,13 +208,18 @@ mod tests {
 
         let config = load_config_file(path).expect("parse config.example.jsonc");
         assert_eq!(config.settings.default, "a/gpt-5.6-terra");
-        assert_eq!(config.settings.small_model.as_deref(), Some("a/gpt-5.6-luna"));
+        assert_eq!(
+            config.settings.small_model.as_deref(),
+            Some("a/gpt-5.6-luna")
+        );
 
         let provider_a = config.providers.get("a").expect("provider a exists");
         assert_eq!(provider_a.provider_type, ProviderType::Response);
 
         // 1. 验证默认模型解析与 Variant 校验
-        let resolved = config.resolve_model("a/gpt-5.6-terra", Some("high")).expect("resolve terra");
+        let resolved = config
+            .resolve_model("a/gpt-5.6-terra", Some("high"))
+            .expect("resolve terra");
         assert_eq!(resolved.provider_id, "a");
         assert_eq!(resolved.model_id, "gpt-5.6-terra");
         assert_eq!(resolved.selected_variant.as_deref(), Some("high"));
@@ -226,7 +234,9 @@ mod tests {
         assert_eq!(resolved_claude.selected_variant.as_deref(), Some("medium"));
 
         // 3. 验证非法 Variant 拦截
-        let err = config.resolve_model("a/gpt-5.6-terra", Some("super-ultra-max")).unwrap_err();
+        let err = config
+            .resolve_model("a/gpt-5.6-terra", Some("super-ultra-max"))
+            .unwrap_err();
         match err {
             ConfigError::InvalidVariant { variant, .. } => {
                 assert_eq!(variant, "super-ultra-max");
@@ -235,7 +245,9 @@ mod tests {
         }
 
         // 4. 验证 gpt-5.6-luna 解析及其 variants (包含 medium)
-        let resolved_luna = config.resolve_model("a/gpt-5.6-luna", Some("medium")).expect("resolve luna");
+        let resolved_luna = config
+            .resolve_model("a/gpt-5.6-luna", Some("medium"))
+            .expect("resolve luna");
         assert_eq!(resolved_luna.selected_variant.as_deref(), Some("medium"));
         assert_eq!(resolved_luna.provider.name(), "response");
     }
@@ -245,7 +257,11 @@ mod tests {
         let temp_ws = std::env::temp_dir().join(format!("vva_ws_test_{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&temp_ws);
         let example_path = temp_ws.join("config.example.jsonc");
-        std::fs::write(&example_path, r#"{"settings":{"default":"example/model"},"providers":{}}"#).unwrap();
+        std::fs::write(
+            &example_path,
+            r#"{"settings":{"default":"example/model"},"providers":{}}"#,
+        )
+        .unwrap();
 
         let res = load_config_with_workspace(None, Some(&temp_ws));
         if let Ok(cfg) = res {
@@ -272,4 +288,3 @@ mod tests {
         assert_eq!(expand_tilde(rel_path), rel_path);
     }
 }
-

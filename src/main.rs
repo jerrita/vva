@@ -1,29 +1,34 @@
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
-use clap::{Parser, Subcommand};
 use tokio::sync::mpsc;
 use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
-use vva::config::{home_dir, load_config, AppConfig, ResolvedModel};
+use vva::config::{AppConfig, ResolvedModel, home_dir, load_config};
 use vva::harness::{AgentConfig, AgentEngine, AgentEvent};
 use vva::model::{Annotation, ContentPart, Message, Session, Turn};
 use vva::provider::anthropic::AnthropicProvider;
 use vva::provider::gemini::GeminiProvider;
 use vva::provider::response::ResponseProvider;
 use vva::provider::{CompletionOptions, Provider};
-use vva::storage::jsonl::JsonlSessionStore;
 use vva::storage::SessionStore;
+use vva::storage::jsonl::JsonlSessionStore;
+use vva::tools::ToolRegistry;
 #[cfg(not(windows))]
 use vva::tools::bash::BashTool;
+use vva::tools::file::{FileEditTool, FileViewTool};
 #[cfg(windows)]
 use vva::tools::powershell::PowerShellTool;
-use vva::tools::file::{FileEditTool, FileViewTool};
-use vva::tools::ToolRegistry;
 use vva::ui::run_tui;
 
 #[derive(Parser)]
-#[command(name = "vva", author, version, about = "Vendor-Versatile Agent Harness for Coding")]
+#[command(
+    name = "vva",
+    author,
+    version,
+    about = "Vendor-Versatile Agent Harness for Coding"
+)]
 struct Cli {
     /// 配置文件路径 (.json 或 .jsonc)
     #[arg(short, long, global = true)]
@@ -96,9 +101,7 @@ enum SessionAction {
     /// 列出所有会话记录
     List,
     /// 查看指定会话详情、轮次与元数据
-    Inspect {
-        session_id: String,
-    },
+    Inspect { session_id: String },
 }
 
 #[tokio::main]
@@ -139,7 +142,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_config: Option<AppConfig> = match load_config(cli.config.as_deref()) {
         Ok(cfg) => Some(cfg),
         Err(err) => {
-            warn!("Config not loaded ({}). Falling back to direct env vars.", err);
+            warn!(
+                "Config not loaded ({}). Falling back to direct env vars.",
+                err
+            );
             None
         }
     };
@@ -153,16 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => {
             // 启动 TUI
             let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
-            run_tui(
-                store,
-                app_config,
-                None,
-                workspace,
-                None,
-                None,
-                None,
-            )
-            .await?;
+            run_tui(store, app_config, None, workspace, None, None, None).await?;
         }
 
         Some(Commands::Ui {
@@ -172,15 +169,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             session_id,
             workspace,
         }) => {
-            let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let workspace =
+                workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
             run_tui(
-                store,
-                app_config,
-                session_id,
-                workspace,
-                model,
-                variant,
-                web_search,
+                store, app_config, session_id, workspace, model, variant, web_search,
             )
             .await?;
         }
@@ -193,20 +185,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workspace,
             prompt,
         }) => {
-            let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let workspace =
+                workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
             // 未提供 prompt 时启动 TUI 交互
             let prompt = match prompt {
                 Some(p) => p,
                 None => {
                     return run_tui(
-                        store,
-                        app_config,
-                        session_id,
-                        workspace,
-                        model,
-                        variant,
-                        web_search,
+                        store, app_config, session_id, workspace, model, variant, web_search,
                     )
                     .await;
                 }
@@ -248,7 +235,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     target_search,
                 );
                 let sys_prompt = vva::system::build_system_prompt(&workspace);
-                let sys_turn = Turn::new(vva::model::Role::System, vec![Message::system(sys_prompt)], None);
+                let sys_turn = Turn::new(
+                    vva::model::Role::System,
+                    vec![Message::system(sys_prompt)],
+                    None,
+                );
                 s.append_turn(sys_turn);
                 store.save_header(&s).await?;
                 s
@@ -262,8 +253,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // 解析 Provider 实例
-            let (provider_inst, effective_model_name, reasoning_effort) = if let Some(cfg) = &app_config {
-                match cfg.resolve_model(&session.current_model, session.current_variant.as_deref()) {
+            let (provider_inst, effective_model_name, reasoning_effort) = if let Some(cfg) =
+                &app_config
+            {
+                match cfg.resolve_model(&session.current_model, session.current_variant.as_deref())
+                {
                     Ok(resolved) => {
                         let ResolvedModel {
                             model_id,
@@ -279,25 +273,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
-                let (provider_inst, model_id): (Arc<dyn Provider>, String) = match session.current_model.to_lowercase().as_str() {
-                    m if m.contains("anthropic") || m.contains("claude") => {
-                        let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-                        (Arc::new(AnthropicProvider::new(key)), session.current_model.clone())
-                    }
-                    m if m.contains("gemini") => {
-                        let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
-                        (Arc::new(GeminiProvider::new(key)), session.current_model.clone())
-                    }
-                    _ => {
-                        let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-                        (Arc::new(ResponseProvider::new(key)), session.current_model.clone())
-                    }
-                };
+                let (provider_inst, model_id): (Arc<dyn Provider>, String) =
+                    match session.current_model.to_lowercase().as_str() {
+                        m if m.contains("anthropic") || m.contains("claude") => {
+                            let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+                            (
+                                Arc::new(AnthropicProvider::new(key)),
+                                session.current_model.clone(),
+                            )
+                        }
+                        m if m.contains("gemini") => {
+                            let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
+                            (
+                                Arc::new(GeminiProvider::new(key)),
+                                session.current_model.clone(),
+                            )
+                        }
+                        _ => {
+                            let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+                            (
+                                Arc::new(ResponseProvider::new(key)),
+                                session.current_model.clone(),
+                            )
+                        }
+                    };
                 let effort = session.current_variant.clone();
                 (provider_inst, model_id, effort)
             };
 
-            println!("🤖 Active Provider: {} (API Model: {})", provider_inst.name(), effective_model_name);
+            println!(
+                "🤖 Active Provider: {} (API Model: {})",
+                provider_inst.name(),
+                effective_model_name
+            );
             if session.web_search {
                 println!("🌐 Native Web Search: Enabled");
             }
@@ -330,9 +338,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let engine = AgentEngine::new(provider_inst, store.clone(), tools, agent_config);
             let (tx, mut rx) = mpsc::channel::<AgentEvent>(32);
 
-            let run_handle = tokio::spawn(async move {
-                engine.run_turn(&mut session, Some(tx)).await
-            });
+            let run_handle =
+                tokio::spawn(async move { engine.run_turn(&mut session, Some(tx)).await });
 
             let mut in_thought = false;
             let mut in_text = false;
@@ -366,7 +373,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         in_text = false;
                         println!("\n⚙️ [Tool Calling] {}({})", name, args);
                     }
-                    AgentEvent::ToolFinished { name, result, is_error } => {
+                    AgentEvent::ToolFinished {
+                        name,
+                        result,
+                        is_error,
+                    } => {
                         let status_sym = if is_error { "❌" } else { "✅" };
                         println!("{} [{}] output:\n{}", status_sym, name, result.trim());
                     }
@@ -411,7 +422,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             SessionAction::Inspect { session_id } => {
-                let session = store.load_session(&session_id).await?
+                let session = store
+                    .load_session(&session_id)
+                    .await?
                     .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
                 println!("=== Session Header ===");
@@ -425,7 +438,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 println!("\n=== Turns ({}) ===", session.turns.len());
                 for (i, turn) in session.turns.iter().enumerate() {
-                    println!("\n--- Turn #{} [{:?}] ID: {} ---", i + 1, turn.role, turn.id);
+                    println!(
+                        "\n--- Turn #{} [{:?}] ID: {} ---",
+                        i + 1,
+                        turn.role,
+                        turn.id
+                    );
                     if let Some(parent) = &turn.parent_turn_id {
                         println!("Parent Turn: {}", parent);
                     }
@@ -444,13 +462,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(anthropic) = &turn.meta.anthropic {
                         println!(
                             "🏷️ [Anthropic Meta] Cache Write: {:?}, Cache Read: {:?}",
-                            anthropic.cache_creation_input_tokens, anthropic.cache_read_input_tokens
+                            anthropic.cache_creation_input_tokens,
+                            anthropic.cache_read_input_tokens
                         );
                     }
                     if let Some(gemini) = &turn.meta.gemini {
                         println!(
                             "🏷️ [Gemini Meta] Finish: {:?}, Safety: {}",
-                            gemini.finish_reason, gemini.safety_ratings.len()
+                            gemini.finish_reason,
+                            gemini.safety_ratings.len()
                         );
                     }
 
@@ -461,25 +481,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ContentPart::Text { text, annotations } => {
                                     println!("    [Text]: {}", text);
                                     for ann in annotations {
-                                        if let Annotation::UrlCitation { url, title, start_index, end_index } = ann {
-                                            println!("      🔗 Citation: {} ({}) [{}-{}]", title, url, start_index, end_index);
+                                        if let Annotation::UrlCitation {
+                                            url,
+                                            title,
+                                            start_index,
+                                            end_index,
+                                        } = ann
+                                        {
+                                            println!(
+                                                "      🔗 Citation: {} ({}) [{}-{}]",
+                                                title, url, start_index, end_index
+                                            );
                                         }
                                     }
                                 }
                                 ContentPart::Reasoning { content, signature } => {
-                                    println!("    [Reasoning (sig: {:?})]: {}", signature.as_deref().unwrap_or("none"), content);
+                                    println!(
+                                        "    [Reasoning (sig: {:?})]: {}",
+                                        signature.as_deref().unwrap_or("none"),
+                                        content
+                                    );
                                 }
                                 ContentPart::WebSearchCall(call) => {
-                                    println!("    🌐 [WebSearchCall]: Query='{}' Sources={}", call.query, call.sources.len());
+                                    println!(
+                                        "    🌐 [WebSearchCall]: Query='{}' Sources={}",
+                                        call.query,
+                                        call.sources.len()
+                                    );
                                     for src in &call.sources {
                                         println!("       - {} ({})", src.title, src.url);
                                     }
                                 }
                                 ContentPart::ToolCall(call) => {
-                                    println!("    ⚙️ [ToolCall]: {}({})", call.name, call.arguments);
+                                    println!(
+                                        "    ⚙️ [ToolCall]: {}({})",
+                                        call.name, call.arguments
+                                    );
                                 }
                                 ContentPart::ToolResult(res) => {
-                                    println!("    📦 [ToolResult] Error={}: {}", res.is_error, res.content);
+                                    println!(
+                                        "    📦 [ToolResult] Error={}: {}",
+                                        res.is_error, res.content
+                                    );
                                 }
                                 ContentPart::Image { source, .. } => {
                                     println!("    🖼️ [Image]: {:?}", source);
@@ -493,7 +536,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-        }
+        },
     }
 
     Ok(())

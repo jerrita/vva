@@ -92,4 +92,3 @@ pub trait Provider: Send + Sync {
         delta_sender: Option<mpsc::Sender<ProviderDelta>>,
     ) -> Result<ProviderResponse, ProviderError>;
 }
-

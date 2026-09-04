@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::harness::agent::AgentEvent;
@@ -11,7 +11,9 @@ use crate::ui::session_manager::{ManagedSession, SessionManager};
 pub use super::history::{ChatEntry, SidebarStats, compute_stats, entries_from_turns};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
-pub use selection::{TextCoord, TextSelection, base64_encode, get_clipboard_text, set_clipboard_text};
+pub use selection::{
+    TextCoord, TextSelection, base64_encode, get_clipboard_text, set_clipboard_text,
+};
 
 pub mod dispatch;
 pub mod editor;

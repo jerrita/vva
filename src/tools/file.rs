@@ -1,7 +1,7 @@
-use std::fs;
-use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use super::Tool;
 
@@ -156,7 +156,10 @@ impl Tool for FileEditTool {
         fs::write(&path, &args.content)
             .map_err(|e| format!("Failed to write file {}: {e}", path.display()))?;
 
-        Ok(format!("Successfully wrote {} bytes to {}", args.content.len(), path.display()))
+        Ok(format!(
+            "Successfully wrote {} bytes to {}",
+            args.content.len(),
+            path.display()
+        ))
     }
 }
-

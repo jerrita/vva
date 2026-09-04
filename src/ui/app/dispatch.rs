@@ -1,7 +1,7 @@
-use crate::harness::agent::AgentEvent;
-use crate::ui::history::{compute_stats, ChatEntry};
-use crate::ui::modals::ActiveModal;
 use super::App;
+use crate::harness::agent::AgentEvent;
+use crate::ui::history::{ChatEntry, compute_stats};
+use crate::ui::modals::ActiveModal;
 
 impl App {
     pub async fn submit_input(&mut self) {
@@ -35,10 +35,7 @@ impl App {
 
         if let Err(e) = self
             .session_mgr
-            .submit_prompt(
-                self.active_session.clone(),
-                &input_text,
-            )
+            .submit_prompt(self.active_session.clone(), &input_text)
             .await
         {
             self.chat_entries.push(ChatEntry::SystemNotice {

@@ -262,8 +262,13 @@ mod tests {
 
     #[test]
     fn test_compute_stats_calculation() {
-        let mut session =
-            Session::with_model(std::path::PathBuf::from("/ws"), None, "model_a", None, false);
+        let mut session = Session::with_model(
+            std::path::PathBuf::from("/ws"),
+            None,
+            "model_a",
+            None,
+            false,
+        );
         let mut turn = Turn::assistant_turn(vec![], None);
         turn.usage = Some(TokenUsage {
             prompt_tokens: 100,

@@ -57,4 +57,3 @@ impl Turn {
         meta.response_id.as_deref()
     }
 }
-

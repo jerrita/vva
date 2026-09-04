@@ -79,7 +79,8 @@ mod tests {
     #[test]
     fn test_sse_decoder_basic() {
         let mut decoder = SseDecoder::new();
-        let payload = b"event: message\ndata: {\"text\": \"hello\"}\n\nevent: done\ndata: [DONE]\n\n";
+        let payload =
+            b"event: message\ndata: {\"text\": \"hello\"}\n\nevent: done\ndata: [DONE]\n\n";
         let events = decoder.decode(payload);
 
         assert_eq!(events.len(), 2);

@@ -1,16 +1,16 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
+use super::{
+    CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
+    ProviderResponse, sse::SseDecoder,
+};
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
     Message, Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta,
     WebSearchCall, WebSearchSource,
-};
-use super::{
-    sse::SseDecoder, CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
-    ProviderResponse,
 };
 
 pub struct GeminiProvider {
@@ -49,12 +49,13 @@ impl GeminiProvider {
             }
             if let Some(last) = gemini_contents.last_mut()
                 && last["role"] == role
-                    && let Some(arr) = last["parts"].as_array_mut() {
-                        for p in parts {
-                            arr.push(p);
-                        }
-                        return;
-                    }
+                && let Some(arr) = last["parts"].as_array_mut()
+            {
+                for p in parts {
+                    arr.push(p);
+                }
+                return;
+            }
             gemini_contents.push(serde_json::json!({
                 "role": role,
                 "parts": parts,
@@ -112,8 +113,9 @@ impl GeminiProvider {
                                     }));
                                 }
                                 ContentPart::ToolCall(call) => {
-                                    let args: serde_json::Value = serde_json::from_str(&call.arguments)
-                                        .unwrap_or_else(|_| serde_json::json!({}));
+                                    let args: serde_json::Value =
+                                        serde_json::from_str(&call.arguments)
+                                            .unwrap_or_else(|_| serde_json::json!({}));
                                     parts_arr.push(serde_json::json!({
                                         "functionCall": {
                                             "name": call.name,
@@ -139,9 +141,10 @@ impl GeminiProvider {
                                         t.messages.iter().find_map(|m| {
                                             m.parts.iter().find_map(|p| {
                                                 if let ContentPart::ToolCall(tc) = p
-                                                    && tc.id == res.tool_call_id {
-                                                        return Some(tc.name.clone());
-                                                    }
+                                                    && tc.id == res.tool_call_id
+                                                {
+                                                    return Some(tc.name.clone());
+                                                }
                                                 None
                                             })
                                         })
@@ -209,7 +212,11 @@ impl GeminiProvider {
         if let Some(max_tokens) = options.max_tokens {
             gen_config["maxOutputTokens"] = serde_json::json!(max_tokens);
         }
-        if gen_config.as_object().map(|m| !m.is_empty()).unwrap_or(false) {
+        if gen_config
+            .as_object()
+            .map(|m| !m.is_empty())
+            .unwrap_or(false)
+        {
             body["generationConfig"] = gen_config;
         }
 
@@ -217,7 +224,10 @@ impl GeminiProvider {
     }
 
     /// 解析 Gemini 响应，将 groundingMetadata 映射为 Responses 风格的 WebSearchCall 与 Annotation
-    pub fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
+    pub fn parse_response(
+        &self,
+        json: serde_json::Value,
+    ) -> Result<ProviderResponse, ProviderError> {
         let candidate = json["candidates"]
             .as_array()
             .and_then(|c| c.first())
@@ -275,14 +285,15 @@ impl GeminiProvider {
                     if let Some(indices) = sup["groundingChunkIndices"].as_array() {
                         for idx_val in indices {
                             if let Some(idx) = idx_val.as_u64().map(|v| v as usize)
-                                && let Some(src) = search_sources.get(idx) {
-                                    citations.push(Annotation::UrlCitation {
-                                        url: src.url.clone(),
-                                        title: src.title.clone(),
-                                        start_index: start_idx,
-                                        end_index: end_idx,
-                                    });
-                                }
+                                && let Some(src) = search_sources.get(idx)
+                            {
+                                citations.push(Annotation::UrlCitation {
+                                    url: src.url.clone(),
+                                    title: src.title.clone(),
+                                    start_index: start_idx,
+                                    end_index: end_idx,
+                                });
+                            }
                         }
                     }
                 }
@@ -405,7 +416,10 @@ impl Provider for GeminiProvider {
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
         let base = self.base_url.trim().trim_end_matches('/');
-        let model_name = options.model.strip_prefix("models/").unwrap_or(&options.model);
+        let model_name = options
+            .model
+            .strip_prefix("models/")
+            .unwrap_or(&options.model);
         let path = if base.ends_with("/models") {
             format!("{base}/{model_name}:generateContent")
         } else {
@@ -453,7 +467,10 @@ impl Provider for GeminiProvider {
         delta_sender: Option<mpsc::Sender<ProviderDelta>>,
     ) -> Result<ProviderResponse, ProviderError> {
         let base = self.base_url.trim().trim_end_matches('/');
-        let model_name = options.model.strip_prefix("models/").unwrap_or(&options.model);
+        let model_name = options
+            .model
+            .strip_prefix("models/")
+            .unwrap_or(&options.model);
         let path = if base.ends_with("/models") {
             format!("{base}/{model_name}:streamGenerateContent")
         } else {
@@ -503,72 +520,80 @@ impl Provider for GeminiProvider {
         let mut code_execution_result: Option<GeminiCodeExecutionResult> = None;
         let mut usage: Option<TokenUsage> = None;
 
-        let mut process_chunk = |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
-            if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
-                if let Some(fr) = candidate["finishReason"].as_str() {
-                    finish_reason = Some(fr.to_string());
-                }
-
-                if let Some(sr_arr) = candidate["safetyRatings"].as_array() {
-                    for sr in sr_arr {
-                        safety_ratings.push(GeminiSafetyRating {
-                            category: sr["category"].as_str().unwrap_or_default().to_string(),
-                            probability: sr["probability"].as_str().unwrap_or_default().to_string(),
-                        });
+        let mut process_chunk =
+            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
+                if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
+                    if let Some(fr) = candidate["finishReason"].as_str() {
+                        finish_reason = Some(fr.to_string());
                     }
-                }
 
-                if let Some(ce) = candidate.get("codeExecutionResult") {
-                    code_execution_result = Some(GeminiCodeExecutionResult {
-                        outcome: ce["outcome"].as_str().unwrap_or_default().to_string(),
-                        output: ce["output"].as_str().unwrap_or_default().to_string(),
-                    });
-                }
-
-                // 处理 GroundingMetadata
-                if let Some(gm) = candidate.get("groundingMetadata") {
-                    let mut search_sources = Vec::new();
-                    if let Some(chunks) = gm["groundingChunks"].as_array() {
-                        for chunk in chunks {
-                            if let Some(web) = chunk.get("web") {
-                                search_sources.push(WebSearchSource {
-                                    url: web["uri"].as_str().unwrap_or_default().to_string(),
-                                    title: web["title"].as_str().unwrap_or_default().to_string(),
-                                    snippet: None,
-                                });
-                            }
+                    if let Some(sr_arr) = candidate["safetyRatings"].as_array() {
+                        for sr in sr_arr {
+                            safety_ratings.push(GeminiSafetyRating {
+                                category: sr["category"].as_str().unwrap_or_default().to_string(),
+                                probability: sr["probability"]
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            });
                         }
                     }
 
-                    let queries: Vec<String> = gm["webSearchQueries"]
-                        .as_array()
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|q| q.as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    let combined_query = queries.join(" | ");
-                    if !search_sources.is_empty() || !queries.is_empty() {
-                        search_call = Some(WebSearchCall {
-                            id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
-                            query: combined_query,
-                            status: SearchStatus::Completed,
-                            sources: search_sources.clone(),
+                    if let Some(ce) = candidate.get("codeExecutionResult") {
+                        code_execution_result = Some(GeminiCodeExecutionResult {
+                            outcome: ce["outcome"].as_str().unwrap_or_default().to_string(),
+                            output: ce["output"].as_str().unwrap_or_default().to_string(),
                         });
                     }
 
-                    if let Some(supports) = gm["groundingSupports"].as_array() {
-                        for sup in supports {
-                            let seg = &sup["segment"];
-                            let start_idx = seg["startIndex"].as_u64().unwrap_or(0) as usize;
-                            let end_idx = seg["endIndex"].as_u64().unwrap_or(0) as usize;
+                    // 处理 GroundingMetadata
+                    if let Some(gm) = candidate.get("groundingMetadata") {
+                        let mut search_sources = Vec::new();
+                        if let Some(chunks) = gm["groundingChunks"].as_array() {
+                            for chunk in chunks {
+                                if let Some(web) = chunk.get("web") {
+                                    search_sources.push(WebSearchSource {
+                                        url: web["uri"].as_str().unwrap_or_default().to_string(),
+                                        title: web["title"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .to_string(),
+                                        snippet: None,
+                                    });
+                                }
+                            }
+                        }
 
-                            if let Some(indices) = sup["groundingChunkIndices"].as_array() {
-                                for idx_val in indices {
-                                    if let Some(idx) = idx_val.as_u64().map(|v| v as usize)
-                                        && let Some(src) = search_sources.get(idx) {
+                        let queries: Vec<String> = gm["webSearchQueries"]
+                            .as_array()
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|q| q.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        let combined_query = queries.join(" | ");
+                        if !search_sources.is_empty() || !queries.is_empty() {
+                            search_call = Some(WebSearchCall {
+                                id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
+                                query: combined_query,
+                                status: SearchStatus::Completed,
+                                sources: search_sources.clone(),
+                            });
+                        }
+
+                        if let Some(supports) = gm["groundingSupports"].as_array() {
+                            for sup in supports {
+                                let seg = &sup["segment"];
+                                let start_idx = seg["startIndex"].as_u64().unwrap_or(0) as usize;
+                                let end_idx = seg["endIndex"].as_u64().unwrap_or(0) as usize;
+
+                                if let Some(indices) = sup["groundingChunkIndices"].as_array() {
+                                    for idx_val in indices {
+                                        if let Some(idx) = idx_val.as_u64().map(|v| v as usize)
+                                            && let Some(src) = search_sources.get(idx)
+                                        {
                                             let ann = Annotation::UrlCitation {
                                                 url: src.url.clone(),
                                                 title: src.title.clone(),
@@ -585,60 +610,60 @@ impl Provider for GeminiProvider {
                                                 citations.push(ann);
                                             }
                                         }
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // 处理 Parts (Thought / Text / ToolCall)
-                if let Some(raw_parts) = candidate["content"]["parts"].as_array() {
-                    for p in raw_parts {
-                        if p["thought"].as_bool() == Some(true) {
-                            if let Some(t) = p["text"].as_str() {
-                                accumulated_thought.push_str(t);
+                    // 处理 Parts (Thought / Text / ToolCall)
+                    if let Some(raw_parts) = candidate["content"]["parts"].as_array() {
+                        for p in raw_parts {
+                            if p["thought"].as_bool() == Some(true) {
+                                if let Some(t) = p["text"].as_str() {
+                                    accumulated_thought.push_str(t);
+                                    if let Some(tx) = tx_opt {
+                                        let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                    }
+                                }
+                            } else if let Some(text) = p["text"].as_str() {
+                                accumulated_text.push_str(text);
                                 if let Some(tx) = tx_opt {
-                                    let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                    let _ = tx.try_send(ProviderDelta::Text(text.to_string()));
                                 }
+                            } else if let Some(fc) = p.get("functionCall") {
+                                let call_name = fc["name"].as_str().unwrap_or_default().to_string();
+                                let args_str = fc["args"].to_string();
+                                let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                                tool_calls.push(ToolCall {
+                                    id: call_id,
+                                    name: call_name,
+                                    arguments: args_str,
+                                });
                             }
-                        } else if let Some(text) = p["text"].as_str() {
-                            accumulated_text.push_str(text);
-                            if let Some(tx) = tx_opt {
-                                let _ = tx.try_send(ProviderDelta::Text(text.to_string()));
-                            }
-                        } else if let Some(fc) = p.get("functionCall") {
-                            let call_name = fc["name"].as_str().unwrap_or_default().to_string();
-                            let args_str = fc["args"].to_string();
-                            let call_id = format!("call_{}", uuid::Uuid::new_v4().simple());
-                            tool_calls.push(ToolCall {
-                                id: call_id,
-                                name: call_name,
-                                arguments: args_str,
-                            });
                         }
                     }
                 }
-            }
 
-            if let Some(um) = json.get("usageMetadata") {
-                let prompt = um["promptTokenCount"].as_u64().unwrap_or(0) as u32;
-                let completion = um["candidatesTokenCount"].as_u64().unwrap_or(0) as u32;
-                let total = um["totalTokenCount"].as_u64().unwrap_or(0) as u32;
-                let cached = um["cachedContentTokenCount"].as_u64().map(|v| v as u32);
-                let reasoning = um["candidatesTokensDetails"]
-                    .as_array()
-                    .and_then(|arr| arr.iter().find(|d| d["modality"] == "THOUGHT"))
-                    .and_then(|d| d["tokenCount"].as_u64())
-                    .map(|v| v as u32);
-                usage = Some(TokenUsage {
-                    prompt_tokens: prompt,
-                    completion_tokens: completion,
-                    total_tokens: total,
-                    cached_tokens: cached,
-                    reasoning_tokens: reasoning,
-                });
-            }
-        };
+                if let Some(um) = json.get("usageMetadata") {
+                    let prompt = um["promptTokenCount"].as_u64().unwrap_or(0) as u32;
+                    let completion = um["candidatesTokenCount"].as_u64().unwrap_or(0) as u32;
+                    let total = um["totalTokenCount"].as_u64().unwrap_or(0) as u32;
+                    let cached = um["cachedContentTokenCount"].as_u64().map(|v| v as u32);
+                    let reasoning = um["candidatesTokensDetails"]
+                        .as_array()
+                        .and_then(|arr| arr.iter().find(|d| d["modality"] == "THOUGHT"))
+                        .and_then(|d| d["tokenCount"].as_u64())
+                        .map(|v| v as u32);
+                    usage = Some(TokenUsage {
+                        prompt_tokens: prompt,
+                        completion_tokens: completion,
+                        total_tokens: total,
+                        cached_tokens: cached,
+                        reasoning_tokens: reasoning,
+                    });
+                }
+            };
 
         while let Some(chunk_res) = stream.next().await {
             let chunk = chunk_res?;
@@ -765,7 +790,9 @@ mod tests {
             }
         });
 
-        let parsed = provider.parse_response(mock_gemini_response).expect("parse response");
+        let parsed = provider
+            .parse_response(mock_gemini_response)
+            .expect("parse response");
         let msg = &parsed.messages[0];
 
         // 验证结构体解析：包含了 WebSearchCall, Reasoning, Text (with Annotation)
@@ -776,7 +803,10 @@ mod tests {
             ContentPart::WebSearchCall(call) => {
                 assert_eq!(call.query, "Rust 2024 edition release announcement");
                 assert_eq!(call.sources.len(), 1);
-                assert_eq!(call.sources[0].url, "https://blog.rust-lang.org/2024/edition.html");
+                assert_eq!(
+                    call.sources[0].url,
+                    "https://blog.rust-lang.org/2024/edition.html"
+                );
                 assert_eq!(call.sources[0].title, "Rust 2024 Released");
             }
             _ => panic!("Expected WebSearchCall"),
@@ -795,7 +825,13 @@ mod tests {
             ContentPart::Text { text, annotations } => {
                 assert!(text.contains("Rust 2024 is the latest edition"));
                 assert_eq!(annotations.len(), 1);
-                if let Annotation::UrlCitation { url, start_index, end_index, .. } = &annotations[0] {
+                if let Annotation::UrlCitation {
+                    url,
+                    start_index,
+                    end_index,
+                    ..
+                } = &annotations[0]
+                {
                     assert_eq!(url, "https://blog.rust-lang.org/2024/edition.html");
                     assert_eq!(*start_index, 0);
                     assert_eq!(*end_index, 40);
@@ -814,11 +850,16 @@ mod tests {
 
     #[test]
     fn test_gemini_system_instruction_and_tool_call_response_mapping() {
-        let provider = GeminiProvider::new("test-key").with_base_url("https://generativelanguage.googleapis.com/v1beta/models");
+        let provider = GeminiProvider::new("test-key")
+            .with_base_url("https://generativelanguage.googleapis.com/v1beta/models");
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
         // System 指令
-        session.append_turn(Turn::new(Role::System, vec![Message::system("You are a helpful assistant.")], None));
+        session.append_turn(Turn::new(
+            Role::System,
+            vec![Message::system("You are a helpful assistant.")],
+            None,
+        ));
         // User 问题
         session.append_turn(Turn::user_turn(Message::user("List files"), None));
 
@@ -831,11 +872,15 @@ mod tests {
         session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
 
         // Tool 返回执行结果
-        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
-            tool_call_id: "call_abc123".into(),
-            content: "file1.txt\nfile2.txt".into(),
-            is_error: false,
-        })], None));
+        session.append_turn(Turn::new(
+            Role::Tool,
+            vec![Message::tool_result(ToolResult {
+                tool_call_id: "call_abc123".into(),
+                content: "file1.txt\nfile2.txt".into(),
+                is_error: false,
+            })],
+            None,
+        ));
 
         let options = CompletionOptions {
             model: "gemini-2.0-flash".into(),
@@ -884,7 +929,11 @@ mod tests {
                 {
                     for p in parts {
                         if p["thought"].as_bool() == Some(true) {
-                            let _ = tx.send(ProviderDelta::Thought(p["text"].as_str().unwrap().to_string())).await;
+                            let _ = tx
+                                .send(ProviderDelta::Thought(
+                                    p["text"].as_str().unwrap().to_string(),
+                                ))
+                                .await;
                         } else if let Some(t) = p["text"].as_str() {
                             let _ = tx.send(ProviderDelta::Text(t.to_string())).await;
                         }
@@ -893,7 +942,13 @@ mod tests {
             }
         }
 
-        assert_eq!(rx.recv().await, Some(ProviderDelta::Thought("Analyzing question...".into())));
-        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("Here is the result.".into())));
+        assert_eq!(
+            rx.recv().await,
+            Some(ProviderDelta::Thought("Analyzing question...".into()))
+        );
+        assert_eq!(
+            rx.recv().await,
+            Some(ProviderDelta::Text("Here is the result.".into()))
+        );
     }
 }

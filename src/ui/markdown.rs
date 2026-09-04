@@ -1,7 +1,7 @@
-use std::borrow::Cow;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
 /// 将包含 CJK 与普通字符的 Span 切割并按终端可用宽度安全折行
@@ -123,7 +123,20 @@ fn is_cjk_or_ascii_punct(ch: char) -> bool {
     ch.is_ascii_punctuation()
         || matches!(
             ch,
-            '：' | '！' | '？' | '；' | '，' | '。' | '、' | '）' | '】' | '”' | '’' | '》' | '…' | '—' | '·'
+            '：' | '！'
+                | '？'
+                | '；'
+                | '，'
+                | '。'
+                | '、'
+                | '）'
+                | '】'
+                | '”'
+                | '’'
+                | '》'
+                | '…'
+                | '—'
+                | '·'
         )
 }
 
@@ -307,7 +320,12 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
         match event {
             Event::Start(tag) => match tag {
                 Tag::Heading { level, .. } => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     if !output_lines.is_empty() {
                         output_lines.push(Line::from(""));
                     }
@@ -317,18 +335,38 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                     // 段落开始
                 }
                 Tag::List(start_num) => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     list_stack.push(start_num);
                 }
                 Tag::Item => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                 }
                 Tag::BlockQuote(_) => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     in_blockquote = true;
                 }
                 Tag::CodeBlock(kind) => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     in_code_block = true;
                     code_block_lang = match kind {
                         CodeBlockKind::Fenced(lang) => lang.to_string(),
@@ -337,7 +375,12 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                     code_block_lines.clear();
                 }
                 Tag::Table(_) => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     in_table = true;
                     table_rows.clear();
                 }
@@ -361,39 +404,76 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                 TagEnd::Heading(_) => {
                     let level = current_heading_level.take().unwrap_or(HeadingLevel::H1);
                     let (icon, style) = match level {
-                        HeadingLevel::H1 => ("█ ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                        HeadingLevel::H2 => ("■ ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                        HeadingLevel::H3 => ("◆ ", Style::default().fg(Color::LightGreen).add_modifier(Modifier::BOLD)),
-                        _ => ("▸ ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                        HeadingLevel::H1 => (
+                            "█ ",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        HeadingLevel::H2 => (
+                            "■ ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        HeadingLevel::H3 => (
+                            "◆ ",
+                            Style::default()
+                                .fg(Color::LightGreen)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        _ => (
+                            "▸ ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                     };
 
-                    let mut heading_spans = vec![
-                        Span::raw("   "),
-                        Span::styled(icon, style),
-                    ];
+                    let mut heading_spans = vec![Span::raw("   "), Span::styled(icon, style)];
                     heading_spans.append(&mut pending_spans);
                     output_lines.push(Line::from(heading_spans));
                     output_lines.push(Line::from(""));
                 }
                 TagEnd::Paragraph => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     output_lines.push(Line::from(""));
                 }
                 TagEnd::List(_) => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     list_stack.pop();
                     if list_stack.is_empty() {
                         output_lines.push(Line::from(""));
                     }
                 }
                 TagEnd::Item => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     if let Some(Some(n)) = list_stack.last_mut() {
                         *n += 1;
                     }
                 }
                 TagEnd::BlockQuote(_) => {
-                    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                    flush_paragraph(
+                        &mut pending_spans,
+                        &mut output_lines,
+                        &list_stack,
+                        in_blockquote,
+                    );
                     in_blockquote = false;
                     output_lines.push(Line::from(""));
                 }
@@ -410,18 +490,30 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                     };
 
                     let inner_w = max_width.saturating_sub(6).max(20);
-                    let header_line = format!("   ┌── [{lang_tag}] ─{}", "─".repeat(inner_w.saturating_sub(lang_tag.len() + 6)));
-                    output_lines.push(Line::from(vec![Span::styled(header_line, Style::default().fg(Color::Rgb(100, 100, 110)))]));
+                    let header_line = format!(
+                        "   ┌── [{lang_tag}] ─{}",
+                        "─".repeat(inner_w.saturating_sub(lang_tag.len() + 6))
+                    );
+                    output_lines.push(Line::from(vec![Span::styled(
+                        header_line,
+                        Style::default().fg(Color::Rgb(100, 100, 110)),
+                    )]));
 
                     for code_l in &code_block_lines {
                         output_lines.push(Line::from(vec![
                             Span::styled("   │ ", Style::default().fg(Color::Rgb(100, 100, 110))),
-                            Span::styled(code_l.clone(), Style::default().fg(Color::Rgb(220, 225, 230))),
+                            Span::styled(
+                                code_l.clone(),
+                                Style::default().fg(Color::Rgb(220, 225, 230)),
+                            ),
                         ]));
                     }
 
                     let footer_line = format!("   └──{}", "─".repeat(inner_w.saturating_sub(1)));
-                    output_lines.push(Line::from(vec![Span::styled(footer_line, Style::default().fg(Color::Rgb(100, 100, 110)))]));
+                    output_lines.push(Line::from(vec![Span::styled(
+                        footer_line,
+                        Style::default().fg(Color::Rgb(100, 100, 110)),
+                    )]));
                     output_lines.push(Line::from(""));
                 }
                 TagEnd::TableCell => {
@@ -459,7 +551,9 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                             .add_modifier(Modifier::BOLD);
                     }
                     if italic {
-                        style = style.add_modifier(Modifier::ITALIC).fg(Color::Rgb(200, 200, 210));
+                        style = style
+                            .add_modifier(Modifier::ITALIC)
+                            .fg(Color::Rgb(200, 200, 210));
                     }
                     if strikethrough {
                         style = style.add_modifier(Modifier::CROSSED_OUT);
@@ -468,7 +562,9 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
                     }
                     if in_blockquote {
-                        style = style.fg(Color::Rgb(170, 175, 185)).add_modifier(Modifier::ITALIC);
+                        style = style
+                            .fg(Color::Rgb(170, 175, 185))
+                            .add_modifier(Modifier::ITALIC);
                     }
 
                     pending_spans.push(Span::styled(text.to_string(), style));
@@ -487,7 +583,12 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
             }
 
             Event::Rule => {
-                flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+                flush_paragraph(
+                    &mut pending_spans,
+                    &mut output_lines,
+                    &list_stack,
+                    in_blockquote,
+                );
                 let w = max_width.saturating_sub(6).max(10);
                 output_lines.push(Line::from(vec![
                     Span::raw("   "),
@@ -501,11 +602,18 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
     }
 
     // 刷新末尾悬挂段落
-    flush_paragraph(&mut pending_spans, &mut output_lines, &list_stack, in_blockquote);
+    flush_paragraph(
+        &mut pending_spans,
+        &mut output_lines,
+        &list_stack,
+        in_blockquote,
+    );
 
     // 去除末尾冗余空行
     while let Some(last) = output_lines.last() {
-        if last.spans.is_empty() || (last.spans.len() == 1 && last.spans[0].content.trim().is_empty()) {
+        if last.spans.is_empty()
+            || (last.spans.len() == 1 && last.spans[0].content.trim().is_empty())
+        {
             output_lines.pop();
         } else {
             break;
@@ -535,7 +643,9 @@ fn render_table(rows: &[Vec<String>], output: &mut Vec<Line<'static>>) {
     }
 
     let border_style = Style::default().fg(Color::Rgb(100, 100, 110));
-    let header_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let header_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
     let cell_style = Style::default().fg(Color::White);
 
     // 顶边框 ┌──────┬──────┐
@@ -559,7 +669,11 @@ fn render_table(rows: &[Vec<String>], output: &mut Vec<Line<'static>>) {
             let pad = w.saturating_sub(cell_content.width());
             let padded_cell = format!(" {}{} ", cell_content, " ".repeat(pad));
 
-            let current_style = if row_idx == 0 { header_style } else { cell_style };
+            let current_style = if row_idx == 0 {
+                header_style
+            } else {
+                cell_style
+            };
             line_spans.push(Span::styled(padded_cell, current_style));
             line_spans.push(Span::styled("│", border_style));
         }
@@ -601,7 +715,10 @@ mod tests {
     fn test_markdown_headings_clean_presentation() {
         let md = "# Title 1\n## Title 2\n### 国内新闻";
         let lines = render_markdown(md, 80);
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         // 校验不包含未解析的 ###
         assert!(!text.contains("###"));
         assert!(text.contains("国内新闻"));
@@ -622,7 +739,10 @@ mod tests {
         }
 
         // 验证链接不重复展开为 `(url)` 形式
-        let full_text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let full_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(full_text.contains("finance.eastmoney.com"));
         assert!(!full_text.contains("(https://finance.eastmoney.com"));
     }
@@ -633,8 +753,15 @@ mod tests {
         let lines = render_markdown(md, 80);
 
         // 验证没有未闭合的字面量 **
-        let all_text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-        assert!(!all_text.contains("**"), "Markdown should not contain literal asterisks for bold titles: {}", all_text);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            !all_text.contains("**"),
+            "Markdown should not contain literal asterisks for bold titles: {}",
+            all_text
+        );
         assert!(all_text.contains("防汛防台风："));
         assert!(all_text.contains("中央气象台继续发布"));
         assert!(all_text.contains("政策与经济："));
@@ -648,7 +775,10 @@ mod tests {
                     && s.style.fg == Some(Color::Rgb(255, 215, 80))
             })
         });
-        assert!(bold_span_found, "Bold span with golden color and BOLD modifier should exist");
+        assert!(
+            bold_span_found,
+            "Bold span with golden color and BOLD modifier should exist"
+        );
     }
 
     #[test]
@@ -665,7 +795,10 @@ fn test() {
 | Bob | User |
 "#;
         let lines = render_markdown(md, 80);
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(text.contains("[rust]"));
         assert!(text.contains("println!"));
         assert!(text.contains("Alice"));
@@ -675,7 +808,9 @@ fn test() {
 
     #[test]
     fn test_wrap_spans_cjk_hanging_indent() {
-        let spans = vec![Span::raw("这是一个非常长的中文段落测试，用于检验自适应折行逻辑是否能够正确在汉字边界处截断换行并为每一行保持正确的缩进。")];
+        let spans = vec![Span::raw(
+            "这是一个非常长的中文段落测试，用于检验自适应折行逻辑是否能够正确在汉字边界处截断换行并为每一行保持正确的缩进。",
+        )];
         let lines = wrap_spans_to_lines(&spans, 30, "   • ", "     ");
         assert!(lines.len() > 1);
 
@@ -694,7 +829,10 @@ fn test() {
     fn test_markdown_inline_formatting() {
         let md = "This is **bold**, *italic*, ~~deleted~~, and `inline code`. > Quote block";
         let lines = render_markdown(md, 80);
-        let text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(text.contains("bold"));
         assert!(text.contains("italic"));
         assert!(text.contains("deleted"));

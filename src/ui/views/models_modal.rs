@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::app::App;
 
@@ -32,7 +32,9 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " Select Model (↑/↓ to navigate, Enter to switch) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(modal_rect);
@@ -54,12 +56,16 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Currently Active: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             curr_model,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             format!("({} models configured)", state.models.len()),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ),
     ]);
     frame.render_widget(Paragraph::new(top_line), chunks[0]);
@@ -82,10 +88,22 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         // 表头
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<26}", "Model Spec"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<20}", "Display Name"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<12}", "Protocol"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<10}", "Context"), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:<26}", "Model Spec"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<20}", "Display Name"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<12}", "Protocol"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<10}", "Context"),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("Variants", Style::default().fg(Color::DarkGray)),
         ]));
 
@@ -96,7 +114,13 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
             0
         };
 
-        for (i, item) in state.models.iter().enumerate().skip(start_idx).take(list_visible_height) {
+        for (i, item) in state
+            .models
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(list_visible_height)
+        {
             let is_selected = i == state.selected_index;
             let is_active = item.full_id == app.current_session_model();
 
@@ -114,7 +138,9 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -158,7 +184,10 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
                 Span::styled(prefix, row_style),
                 Span::styled(format!("{:<26}", short_spec), row_style),
                 Span::styled(format!("{:<20}", short_name), row_style),
-                Span::styled(format!("{:<12}", item.provider_type), Style::default().fg(protocol_color)),
+                Span::styled(
+                    format!("{:<12}", item.provider_type),
+                    Style::default().fg(protocol_color),
+                ),
                 Span::styled(format!("{:<10}", context_str), row_style),
                 Span::styled(variants_str, row_style),
             ]));
@@ -172,11 +201,15 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
     let footer_line = Line::from(vec![
         Span::styled(" [↑/↓/j/k] ", Style::default().fg(Color::Cyan)),
         Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Enter] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [Enter] ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("Switch Model  ", Style::default().fg(Color::DarkGray)),
         Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);
 }
-

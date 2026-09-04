@@ -31,4 +31,3 @@ pub trait SessionStore: Send + Sync {
     /// 列出所有存储的会话概要
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError>;
 }
-

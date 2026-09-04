@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::app::App;
 
@@ -22,10 +22,7 @@ pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
     };
 
     let line = Line::from(vec![
-        Span::styled(
-            "  💬 ",
-            Style::default().fg(Color::Cyan),
-        ),
+        Span::styled("  💬 ", Style::default().fg(Color::Cyan)),
         Span::styled(
             title_display,
             Style::default()
@@ -38,10 +35,8 @@ pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
         ),
     ]);
 
-    let block = Block::default()
-        .borders(Borders::NONE);
+    let block = Block::default().borders(Borders::NONE);
 
     let paragraph = Paragraph::new(line).block(block);
     frame.render_widget(paragraph, area);
 }
-

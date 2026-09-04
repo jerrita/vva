@@ -1,6 +1,6 @@
-use crate::ui::history::{compute_stats, entries_from_turns, ChatEntry};
-use crate::ui::modals::*;
 use super::App;
+use crate::ui::history::{ChatEntry, compute_stats, entries_from_turns};
+use crate::ui::modals::*;
 
 impl App {
     /// 重新加载当前活跃会话的对话历史和统计指标
@@ -229,7 +229,11 @@ impl App {
     pub async fn open_config_modal(&mut self) {
         let (current_model, current_variant, web_search) = {
             let s = self.active_session.session.read().await;
-            (s.current_model.clone(), s.current_variant.clone(), s.web_search)
+            (
+                s.current_model.clone(),
+                s.current_variant.clone(),
+                s.web_search,
+            )
         };
 
         self.config_modal = Some(ConfigModalState::new(

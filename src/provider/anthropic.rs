@@ -1,15 +1,15 @@
 use async_trait::async_trait;
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use crate::model::{
-    AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall,
-    ToolDefinition, TurnMeta,
-};
 use super::{
-    sse::SseDecoder, CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
-    ProviderResponse,
+    CompletionOptions, Provider, ProviderCapabilities, ProviderDelta, ProviderError,
+    ProviderResponse, sse::SseDecoder,
+};
+use crate::model::{
+    AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall, ToolDefinition,
+    TurnMeta,
 };
 
 pub struct AnthropicProvider {
@@ -67,12 +67,13 @@ impl AnthropicProvider {
             }
             if let Some(last) = messages_payload.last_mut()
                 && last["role"] == role
-                    && let Some(arr) = last["content"].as_array_mut() {
-                        for b in blocks {
-                            arr.push(b);
-                        }
-                        return;
-                    }
+                && let Some(arr) = last["content"].as_array_mut()
+            {
+                for b in blocks {
+                    arr.push(b);
+                }
+                return;
+            }
             messages_payload.push(serde_json::json!({
                 "role": role,
                 "content": blocks,
@@ -81,7 +82,12 @@ impl AnthropicProvider {
 
         for (i, msg) in flattened_msgs.iter().enumerate() {
             let is_last_user_turn = i + 1 == total_msgs && msg.role == Role::User;
-            let should_cache = msg.meta.anthropic.as_ref().map(|a| a.ephemeral_cache).unwrap_or(false)
+            let should_cache = msg
+                .meta
+                .anthropic
+                .as_ref()
+                .map(|a| a.ephemeral_cache)
+                .unwrap_or(false)
                 || is_last_user_turn;
 
             match msg.role {
@@ -98,34 +104,33 @@ impl AnthropicProvider {
                                     "text": text,
                                 });
                                 if should_cache {
-                                    block["cache_control"] = serde_json::json!({ "type": "ephemeral" });
+                                    block["cache_control"] =
+                                        serde_json::json!({ "type": "ephemeral" });
                                 }
                                 content_blocks.push(block);
                             }
-                            ContentPart::Image { source, .. } => {
-                                match source {
-                                    crate::model::MediaSource::Base64 { data, mime_type } => {
-                                        content_blocks.push(serde_json::json!({
-                                            "type": "image",
-                                            "source": {
-                                                "type": "base64",
-                                                "media_type": mime_type,
-                                                "data": data,
-                                            }
-                                        }));
-                                    }
-                                    crate::model::MediaSource::Url { url } => {
-                                        content_blocks.push(serde_json::json!({
-                                            "type": "image",
-                                            "source": {
-                                                "type": "url",
-                                                "url": url,
-                                            }
-                                        }));
-                                    }
-                                    _ => {}
+                            ContentPart::Image { source, .. } => match source {
+                                crate::model::MediaSource::Base64 { data, mime_type } => {
+                                    content_blocks.push(serde_json::json!({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": mime_type,
+                                            "data": data,
+                                        }
+                                    }));
                                 }
-                            }
+                                crate::model::MediaSource::Url { url } => {
+                                    content_blocks.push(serde_json::json!({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "url",
+                                            "url": url,
+                                        }
+                                    }));
+                                }
+                                _ => {}
+                            },
                             _ => {}
                         }
                     }
@@ -153,8 +158,9 @@ impl AnthropicProvider {
                                 }));
                             }
                             ContentPart::ToolCall(call) => {
-                                let args_val = serde_json::from_str::<serde_json::Value>(&call.arguments)
-                                    .unwrap_or_else(|_| serde_json::json!({}));
+                                let args_val =
+                                    serde_json::from_str::<serde_json::Value>(&call.arguments)
+                                        .unwrap_or_else(|_| serde_json::json!({}));
                                 content_blocks.push(serde_json::json!({
                                     "type": "tool_use",
                                     "id": call.id,
@@ -216,7 +222,10 @@ impl AnthropicProvider {
     }
 
     /// 解析 Anthropic Messages API 响应
-    pub fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
+    pub fn parse_response(
+        &self,
+        json: serde_json::Value,
+    ) -> Result<ProviderResponse, ProviderError> {
         let mut parts = Vec::new();
 
         if let Some(contents) = json["content"].as_array() {
@@ -236,7 +245,11 @@ impl AnthropicProvider {
                         let id = c["id"].as_str().unwrap_or_default().to_string();
                         let name = c["name"].as_str().unwrap_or_default().to_string();
                         let arguments = c["input"].to_string();
-                        parts.push(ContentPart::ToolCall(ToolCall { id, name, arguments }));
+                        parts.push(ContentPart::ToolCall(ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        }));
                     }
                     _ => {}
                 }
@@ -309,7 +322,8 @@ impl Provider for AnthropicProvider {
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(&self.api_key).map_err(|e| ProviderError::Protocol(e.to_string()))?,
+            HeaderValue::from_str(&self.api_key)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
         );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -354,7 +368,8 @@ impl Provider for AnthropicProvider {
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(&self.api_key).map_err(|e| ProviderError::Protocol(e.to_string()))?,
+            HeaderValue::from_str(&self.api_key)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
         );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -381,9 +396,18 @@ impl Provider for AnthropicProvider {
         let mut decoder = SseDecoder::new();
 
         enum AnthropicBlock {
-            Thinking { content: String, signature: Option<String> },
-            Text { text: String },
-            ToolUse { id: String, name: String, arguments_buf: String },
+            Thinking {
+                content: String,
+                signature: Option<String>,
+            },
+            Text {
+                text: String,
+            },
+            ToolUse {
+                id: String,
+                name: String,
+                arguments_buf: String,
+            },
         }
 
         let mut blocks: Vec<AnthropicBlock> = Vec::new();
@@ -393,99 +417,106 @@ impl Provider for AnthropicProvider {
         let mut cache_read: Option<u32> = None;
         let mut stop_reason: Option<String> = None;
 
-        let mut process_event = |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
-            let ev_type = json["type"].as_str().unwrap_or_default();
-            match ev_type {
-                "message_start" => {
-                    if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
-                        prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
-                        cache_creation = u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
-                        cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
-                    }
-                }
-                "content_block_start" => {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                    let cb = &json["content_block"];
-                    let block_type = cb["type"].as_str().unwrap_or_default();
-                    let block = match block_type {
-                        "thinking" => AnthropicBlock::Thinking {
-                            content: String::new(),
-                            signature: None,
-                        },
-                        "text" => AnthropicBlock::Text {
-                            text: cb["text"].as_str().unwrap_or_default().to_string(),
-                        },
-                        "tool_use" => AnthropicBlock::ToolUse {
-                            id: cb["id"].as_str().unwrap_or_default().to_string(),
-                            name: cb["name"].as_str().unwrap_or_default().to_string(),
-                            arguments_buf: String::new(),
-                        },
-                        _ => AnthropicBlock::Text {
-                            text: String::new(),
-                        },
-                    };
-                    while blocks.len() <= idx {
-                        blocks.push(AnthropicBlock::Text {
-                            text: String::new(),
-                        });
-                    }
-                    blocks[idx] = block;
-                }
-                "content_block_delta" => {
-                    let idx = json["index"].as_u64().unwrap_or(0) as usize;
-                    let delta = &json["delta"];
-                    let delta_type = delta["type"].as_str().unwrap_or_default();
-                    match delta_type {
-                        "thinking_delta" => {
-                            if let Some(t) = delta["thinking"].as_str() {
-                                if let Some(AnthropicBlock::Thinking { content, .. }) = blocks.get_mut(idx) {
-                                    content.push_str(t);
-                                }
-                                if let Some(tx) = tx_opt {
-                                    let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
-                                }
-                            }
+        let mut process_event =
+            |json: &serde_json::Value, tx_opt: &Option<mpsc::Sender<ProviderDelta>>| {
+                let ev_type = json["type"].as_str().unwrap_or_default();
+                match ev_type {
+                    "message_start" => {
+                        if let Some(u) = json.get("message").and_then(|m| m.get("usage")) {
+                            prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0) as u32;
+                            cache_creation =
+                                u["cache_creation_input_tokens"].as_u64().map(|v| v as u32);
+                            cache_read = u["cache_read_input_tokens"].as_u64().map(|v| v as u32);
                         }
-                        "text_delta" => {
-                            if let Some(t) = delta["text"].as_str() {
-                                if let Some(AnthropicBlock::Text { text }) = blocks.get_mut(idx) {
-                                    text.push_str(t);
-                                }
-                                if let Some(tx) = tx_opt {
-                                    let _ = tx.try_send(ProviderDelta::Text(t.to_string()));
+                    }
+                    "content_block_start" => {
+                        let idx = json["index"].as_u64().unwrap_or(0) as usize;
+                        let cb = &json["content_block"];
+                        let block_type = cb["type"].as_str().unwrap_or_default();
+                        let block = match block_type {
+                            "thinking" => AnthropicBlock::Thinking {
+                                content: String::new(),
+                                signature: None,
+                            },
+                            "text" => AnthropicBlock::Text {
+                                text: cb["text"].as_str().unwrap_or_default().to_string(),
+                            },
+                            "tool_use" => AnthropicBlock::ToolUse {
+                                id: cb["id"].as_str().unwrap_or_default().to_string(),
+                                name: cb["name"].as_str().unwrap_or_default().to_string(),
+                                arguments_buf: String::new(),
+                            },
+                            _ => AnthropicBlock::Text {
+                                text: String::new(),
+                            },
+                        };
+                        while blocks.len() <= idx {
+                            blocks.push(AnthropicBlock::Text {
+                                text: String::new(),
+                            });
+                        }
+                        blocks[idx] = block;
+                    }
+                    "content_block_delta" => {
+                        let idx = json["index"].as_u64().unwrap_or(0) as usize;
+                        let delta = &json["delta"];
+                        let delta_type = delta["type"].as_str().unwrap_or_default();
+                        match delta_type {
+                            "thinking_delta" => {
+                                if let Some(t) = delta["thinking"].as_str() {
+                                    if let Some(AnthropicBlock::Thinking { content, .. }) =
+                                        blocks.get_mut(idx)
+                                    {
+                                        content.push_str(t);
+                                    }
+                                    if let Some(tx) = tx_opt {
+                                        let _ = tx.try_send(ProviderDelta::Thought(t.to_string()));
+                                    }
                                 }
                             }
-                        }
-                        "signature_delta" => {
-                            if let Some(sig) = delta["signature"].as_str()
-                                && let Some(AnthropicBlock::Thinking { signature, .. }) = blocks.get_mut(idx)
-                            {
-                                *signature = Some(sig.to_string());
+                            "text_delta" => {
+                                if let Some(t) = delta["text"].as_str() {
+                                    if let Some(AnthropicBlock::Text { text }) = blocks.get_mut(idx)
+                                    {
+                                        text.push_str(t);
+                                    }
+                                    if let Some(tx) = tx_opt {
+                                        let _ = tx.try_send(ProviderDelta::Text(t.to_string()));
+                                    }
+                                }
                             }
-                        }
-                        "input_json_delta" => {
-                            if let Some(pj) = delta["partial_json"].as_str()
-                                && let Some(AnthropicBlock::ToolUse { arguments_buf, .. }) = blocks.get_mut(idx)
-                            {
-                                arguments_buf.push_str(pj);
+                            "signature_delta" => {
+                                if let Some(sig) = delta["signature"].as_str()
+                                    && let Some(AnthropicBlock::Thinking { signature, .. }) =
+                                        blocks.get_mut(idx)
+                                {
+                                    *signature = Some(sig.to_string());
+                                }
                             }
+                            "input_json_delta" => {
+                                if let Some(pj) = delta["partial_json"].as_str()
+                                    && let Some(AnthropicBlock::ToolUse { arguments_buf, .. }) =
+                                        blocks.get_mut(idx)
+                                {
+                                    arguments_buf.push_str(pj);
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
+                    "message_delta" => {
+                        if let Some(sr) = json["delta"]["stop_reason"].as_str() {
+                            stop_reason = Some(sr.to_string());
+                        }
+                        if let Some(u) = json.get("usage")
+                            && let Some(out) = u["output_tokens"].as_u64()
+                        {
+                            completion_tokens = out as u32;
+                        }
+                    }
+                    _ => {}
                 }
-                "message_delta" => {
-                    if let Some(sr) = json["delta"]["stop_reason"].as_str() {
-                        stop_reason = Some(sr.to_string());
-                    }
-                    if let Some(u) = json.get("usage")
-                        && let Some(out) = u["output_tokens"].as_u64()
-                    {
-                        completion_tokens = out as u32;
-                    }
-                }
-                _ => {}
-            }
-        };
+            };
 
         while let Some(chunk_res) = stream.next().await {
             let chunk = chunk_res?;
@@ -519,7 +550,11 @@ impl Provider for AnthropicProvider {
                         parts.push(ContentPart::text(text));
                     }
                 }
-                AnthropicBlock::ToolUse { id, name, arguments_buf } => {
+                AnthropicBlock::ToolUse {
+                    id,
+                    name,
+                    arguments_buf,
+                } => {
                     parts.push(ContentPart::ToolCall(ToolCall {
                         id,
                         name,
@@ -628,36 +663,53 @@ mod tests {
 
         // 检查最后一条用户消息是否自动注入了 cache_control
         let last_user_content = msgs[2]["content"].as_array().unwrap();
-        assert_eq!(
-            last_user_content[0]["cache_control"]["type"],
-            "ephemeral"
-        );
+        assert_eq!(last_user_content[0]["cache_control"]["type"], "ephemeral");
     }
 
     #[test]
     fn test_anthropic_tool_results_merged_into_single_user_turn() {
-        let provider = AnthropicProvider::new("test-key").with_base_url("https://proxy.example.com/v1/messages/");
+        let provider = AnthropicProvider::new("test-key")
+            .with_base_url("https://proxy.example.com/v1/messages/");
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
-        session.append_turn(Turn::user_turn(Message::user("List files and run command"), None));
+        session.append_turn(Turn::user_turn(
+            Message::user("List files and run command"),
+            None,
+        ));
 
         let asst_msg = Message::assistant(vec![
-            ContentPart::ToolCall(ToolCall { id: "call_1".into(), name: "file_view".into(), arguments: "{}".into() }),
-            ContentPart::ToolCall(ToolCall { id: "call_2".into(), name: "bash".into(), arguments: "{}".into() }),
+            ContentPart::ToolCall(ToolCall {
+                id: "call_1".into(),
+                name: "file_view".into(),
+                arguments: "{}".into(),
+            }),
+            ContentPart::ToolCall(ToolCall {
+                id: "call_2".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }),
         ]);
         session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
 
         // 两个连续的 Tool turn
-        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
-            tool_call_id: "call_1".into(),
-            content: "file contents".into(),
-            is_error: false,
-        })], None));
-        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(ToolResult {
-            tool_call_id: "call_2".into(),
-            content: "command output".into(),
-            is_error: false,
-        })], None));
+        session.append_turn(Turn::new(
+            Role::Tool,
+            vec![Message::tool_result(ToolResult {
+                tool_call_id: "call_1".into(),
+                content: "file contents".into(),
+                is_error: false,
+            })],
+            None,
+        ));
+        session.append_turn(Turn::new(
+            Role::Tool,
+            vec![Message::tool_result(ToolResult {
+                tool_call_id: "call_2".into(),
+                content: "command output".into(),
+                is_error: false,
+            })],
+            None,
+        ));
 
         let options = CompletionOptions {
             model: "claude-3-7-sonnet".into(),
@@ -712,15 +764,29 @@ mod tests {
                 if json["type"] == "content_block_delta" {
                     let delta = &json["delta"];
                     if delta["type"] == "thinking_delta" {
-                        let _ = tx.send(ProviderDelta::Thought(delta["thinking"].as_str().unwrap().to_string())).await;
+                        let _ = tx
+                            .send(ProviderDelta::Thought(
+                                delta["thinking"].as_str().unwrap().to_string(),
+                            ))
+                            .await;
                     } else if delta["type"] == "text_delta" {
-                        let _ = tx.send(ProviderDelta::Text(delta["text"].as_str().unwrap().to_string())).await;
+                        let _ = tx
+                            .send(ProviderDelta::Text(
+                                delta["text"].as_str().unwrap().to_string(),
+                            ))
+                            .await;
                     }
                 }
             }
         }
 
-        assert_eq!(rx.recv().await, Some(ProviderDelta::Thought("Reasoning about code...".into())));
-        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("Here is the solution.".into())));
+        assert_eq!(
+            rx.recv().await,
+            Some(ProviderDelta::Thought("Reasoning about code...".into()))
+        );
+        assert_eq!(
+            rx.recv().await,
+            Some(ProviderDelta::Text("Here is the solution.".into()))
+        );
     }
 }

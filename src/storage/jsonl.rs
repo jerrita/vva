@@ -1,11 +1,11 @@
+use async_trait::async_trait;
+use chrono::Utc;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use async_trait::async_trait;
-use chrono::Utc;
 
-use crate::model::{JsonlRecord, Session, SessionHeader, SessionSummary, Turn};
 use super::{SessionStore, StoreError};
+use crate::model::{JsonlRecord, Session, SessionHeader, SessionSummary, Turn};
 
 pub struct JsonlSessionStore {
     base_dir: PathBuf,
@@ -52,10 +52,7 @@ impl SessionStore for JsonlSessionStore {
             return Err(StoreError::NotFound(session_id.to_string()));
         }
 
-        let mut file = OpenOptions::new()
-            .create(false)
-            .append(true)
-            .open(&path)?;
+        let mut file = OpenOptions::new().create(false).append(true).open(&path)?;
 
         let turn_record = JsonlRecord::Turn(turn.clone());
         let turn_json = serde_json::to_string(&turn_record)?;
@@ -82,7 +79,11 @@ impl SessionStore for JsonlSessionStore {
 
         let header: SessionHeader = match serde_json::from_str::<JsonlRecord>(&first_line)? {
             JsonlRecord::Header(h) => h,
-            _ => return Err(StoreError::InvalidFormat("First line must be SessionHeader".into())),
+            _ => {
+                return Err(StoreError::InvalidFormat(
+                    "First line must be SessionHeader".into(),
+                ));
+            }
         };
 
         let mut turns = Vec::new();
@@ -125,25 +126,31 @@ impl SessionStore for JsonlSessionStore {
             let entry = entry?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
-                && let Ok(file) = File::open(&path) {
-                    let reader = BufReader::new(file);
-                    let mut lines = reader.lines();
-                    if let Some(Ok(first_line)) = lines.next()
-                        && let Ok(JsonlRecord::Header(header)) = serde_json::from_str::<JsonlRecord>(&first_line) {
-                            // 统计后续行数（Turn 数量）
-                            let turn_count = lines.map_while(Result::ok).filter(|l| !l.trim().is_empty()).count();
-                            summaries.push(SessionSummary {
-                                id: header.id,
-                                title: header.title,
-                                workspace_root: header.workspace_root,
-                                created_at: header.created_at,
-                                turn_count,
-                                current_model: header.current_model,
-                                current_variant: header.current_variant,
-                                web_search: header.web_search,
-                            });
-                        }
+                && let Ok(file) = File::open(&path)
+            {
+                let reader = BufReader::new(file);
+                let mut lines = reader.lines();
+                if let Some(Ok(first_line)) = lines.next()
+                    && let Ok(JsonlRecord::Header(header)) =
+                        serde_json::from_str::<JsonlRecord>(&first_line)
+                {
+                    // 统计后续行数（Turn 数量）
+                    let turn_count = lines
+                        .map_while(Result::ok)
+                        .filter(|l| !l.trim().is_empty())
+                        .count();
+                    summaries.push(SessionSummary {
+                        id: header.id,
+                        title: header.title,
+                        workspace_root: header.workspace_root,
+                        created_at: header.created_at,
+                        turn_count,
+                        current_model: header.current_model,
+                        current_variant: header.current_variant,
+                        web_search: header.web_search,
+                    });
                 }
+            }
         }
 
         // 按创建时间倒序排列
@@ -160,7 +167,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_jsonl_store_roundtrip_with_meta() {
-        let temp_dir = std::env::temp_dir().join(format!("vva_test_{}", uuid::Uuid::new_v4().simple()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_test_{}", uuid::Uuid::new_v4().simple()));
         let store = JsonlSessionStore::new(&temp_dir).expect("init store");
 
         let mut session = Session::with_model(
@@ -180,9 +188,14 @@ mod tests {
 
         // 追加 Turn 1 (User + Image)
         let mut user_msg = Message::user("Here is the error screenshot");
-        user_msg.parts.push(ContentPart::image_url("https://example.com/err.png", None));
+        user_msg
+            .parts
+            .push(ContentPart::image_url("https://example.com/err.png", None));
         let user_turn = Turn::user_turn(user_msg, None);
-        store.append_turn(&session.id, &user_turn).await.expect("append user turn");
+        store
+            .append_turn(&session.id, &user_turn)
+            .await
+            .expect("append user turn");
 
         // 追加 Turn 2 (Assistant with OpenAI response_id and WebSearchCall)
         let mut assistant_turn = Turn::assistant_turn(
@@ -197,10 +210,17 @@ mod tests {
             Some(user_turn.id.clone()),
         );
         assistant_turn.meta.response = Some(ResponseTurnMeta::new("resp_001xyz"));
-        store.append_turn(&session.id, &assistant_turn).await.expect("append assistant turn");
+        store
+            .append_turn(&session.id, &assistant_turn)
+            .await
+            .expect("append assistant turn");
 
         // 重新加载并校验
-        let loaded = store.load_session(&session.id).await.expect("load session").expect("session found");
+        let loaded = store
+            .load_session(&session.id)
+            .await
+            .expect("load session")
+            .expect("session found");
         assert_eq!(loaded.id, session.id);
         assert_eq!(loaded.title, Some("Bugfix task".into()));
         assert_eq!(loaded.current_model, "a/gpt-5.6-terra");

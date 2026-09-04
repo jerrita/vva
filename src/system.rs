@@ -130,25 +130,27 @@ fn get_os_info() -> String {
 
     #[cfg(target_os = "linux")]
     {
-        let distro = std::fs::read_to_string("/etc/os-release").ok().and_then(|content| {
-            let mut pretty = None;
-            let mut name = None;
-            let mut version = None;
-            for line in content.lines() {
-                if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
-                    pretty = Some(val.trim_matches('"').to_string());
-                } else if let Some(val) = line.strip_prefix("NAME=") {
-                    name = Some(val.trim_matches('"').to_string());
-                } else if let Some(val) = line.strip_prefix("VERSION=") {
-                    version = Some(val.trim_matches('"').to_string());
+        let distro = std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|content| {
+                let mut pretty = None;
+                let mut name = None;
+                let mut version = None;
+                for line in content.lines() {
+                    if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
+                        pretty = Some(val.trim_matches('"').to_string());
+                    } else if let Some(val) = line.strip_prefix("NAME=") {
+                        name = Some(val.trim_matches('"').to_string());
+                    } else if let Some(val) = line.strip_prefix("VERSION=") {
+                        version = Some(val.trim_matches('"').to_string());
+                    }
                 }
-            }
-            pretty.or_else(|| match (name, version) {
-                (Some(n), Some(v)) => Some(format!("{n} {v}")),
-                (Some(n), None) => Some(n),
-                _ => None,
-            })
-        });
+                pretty.or_else(|| match (name, version) {
+                    (Some(n), Some(v)) => Some(format!("{n} {v}")),
+                    (Some(n), None) => Some(n),
+                    _ => None,
+                })
+            });
 
         let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .map(|s| s.trim().to_string())
@@ -164,7 +166,8 @@ fn get_os_info() -> String {
 
     #[cfg(target_os = "macos")]
     {
-        let name = run_command_output("sw_vers", &["-productName"]).unwrap_or_else(|| "macOS".into());
+        let name =
+            run_command_output("sw_vers", &["-productName"]).unwrap_or_else(|| "macOS".into());
         let ver = run_command_output("sw_vers", &["-productVersion"]).unwrap_or_default();
         let build = run_command_output("sw_vers", &["-buildVersion"]).unwrap_or_default();
 
@@ -294,10 +297,9 @@ fn get_gpu_info() -> String {
 
     #[cfg(target_os = "linux")]
     {
-        if let Some(out) = run_command_output(
-            "nvidia-smi",
-            &["--query-gpu=name", "--format=csv,noheader"],
-        ) {
+        if let Some(out) =
+            run_command_output("nvidia-smi", &["--query-gpu=name", "--format=csv,noheader"])
+        {
             let gpus: Vec<String> = out
                 .lines()
                 .map(str::trim)
@@ -353,7 +355,9 @@ fn get_gpu_info() -> String {
 fn get_memory_info() -> String {
     #[cfg(windows)]
     {
-        if let Some(out) = run_command_output("wmic", &["ComputerSystem", "get", "TotalPhysicalMemory"]) {
+        if let Some(out) =
+            run_command_output("wmic", &["ComputerSystem", "get", "TotalPhysicalMemory"])
+        {
             for line in out.lines() {
                 let trimmed = line.trim();
                 if let Ok(bytes) = trimmed.parse::<u64>() {

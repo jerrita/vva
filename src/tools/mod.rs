@@ -2,10 +2,10 @@ pub mod bash;
 pub mod file;
 pub mod powershell;
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use async_trait::async_trait;
 use crate::model::{ToolCall, ToolDefinition, ToolResult};
+use async_trait::async_trait;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -24,13 +24,13 @@ pub trait Tool: Send + Sync {
 }
 
 pub struct ToolRegistry {
-    tools: HashMap<String, Arc<dyn Tool>>,
+    tools: BTreeMap<String, Arc<dyn Tool>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
-            tools: HashMap::new(),
+            tools: BTreeMap::new(),
         }
     }
 
@@ -63,3 +63,41 @@ impl Default for ToolRegistry {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NamedTool(&'static str);
+
+    #[async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "test tool"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _arguments: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+    }
+
+    #[test]
+    fn definitions_have_stable_name_order() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(NamedTool("powershell")));
+        registry.register(Arc::new(NamedTool("file_view")));
+        registry.register(Arc::new(NamedTool("file_write")));
+
+        let names: Vec<_> = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+
+        assert_eq!(names, ["file_view", "file_write", "powershell"]);
+    }
+}

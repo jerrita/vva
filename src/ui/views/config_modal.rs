@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::app::App;
 
@@ -30,7 +30,9 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " Configuration & Session Settings (↑/↓ navigate, Enter/Space to adjust) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(modal_rect);
@@ -49,7 +51,9 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::raw("  "),
         Span::styled(
             "Manage active session settings interactively:",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ),
     ]);
     frame.render_widget(Paragraph::new(top_line), chunks[0]);
@@ -57,8 +61,14 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("{:<24}", "Setting"), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{:<20}", "Current Value"), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{:<24}", "Setting"),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("{:<20}", "Current Value"),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::styled("Action", Style::default().fg(Color::DarkGray)),
     ]));
 
@@ -76,9 +86,14 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         };
 
         let val_style = if is_selected {
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         };
 
         let action_str = match item.kind {
@@ -92,7 +107,14 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
             Span::styled(prefix, row_style),
             Span::styled(format!("{:<24}", item.name), row_style),
             Span::styled(format!("{:<20}", item.current_value), val_style),
-            Span::styled(action_str, if is_selected { row_style } else { Style::default().fg(Color::DarkGray) }),
+            Span::styled(
+                action_str,
+                if is_selected {
+                    row_style
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ),
         ]));
     }
 
@@ -102,7 +124,12 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
     let footer_line = Line::from(vec![
         Span::styled(" [↑/↓/j/k] ", Style::default().fg(Color::Cyan)),
         Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Enter/Space] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [Enter/Space] ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("Modify / Toggle  ", Style::default().fg(Color::DarkGray)),
         Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
         Span::styled("Close", Style::default().fg(Color::DarkGray)),

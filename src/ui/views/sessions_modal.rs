@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::app::{App, ProjectScope};
 
@@ -30,11 +30,15 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
     let title_span = match state.scope {
         ProjectScope::CurrentProject => Span::styled(
             " Select Session to Resume (Per Project) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         ProjectScope::AllProjects => Span::styled(
             " Select Session to Resume (All Projects) ",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ),
     };
 
@@ -71,12 +75,18 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
 
     let (curr_style, all_style) = match state.scope {
         ProjectScope::CurrentProject => (
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             Style::default().fg(Color::DarkGray),
         ),
         ProjectScope::AllProjects => (
             Style::default().fg(Color::DarkGray),
-            Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ),
     };
 
@@ -88,7 +98,9 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::raw("   "),
         Span::styled(
             "(Press Tab to switch scope)",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ),
     ]);
     let tabs_p = Paragraph::new(tabs_line);
@@ -119,11 +131,26 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
         // 表头
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<16}", "Session ID"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<26}", "Title / Prompt"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<6}", "Turns"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<18}", "Model"), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{:<10}", "Created"), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:<16}", "Session ID"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<26}", "Title / Prompt"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<6}", "Turns"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<18}", "Model"),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("{:<10}", "Created"),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]));
 
         let list_visible_height = chunks[1].height.saturating_sub(1) as usize;
@@ -133,7 +160,13 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
             0
         };
 
-        for (i, item) in state.filtered_sessions.iter().enumerate().skip(start_idx).take(list_visible_height) {
+        for (i, item) in state
+            .filtered_sessions
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(list_visible_height)
+        {
             let is_selected = i == state.selected_index;
             let prefix = if is_selected { "> " } else { "  " };
 
@@ -169,13 +202,20 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
                 Style::default().fg(Color::White)
             };
 
-            let turn_color = if is_selected { Color::Black } else { Color::Yellow };
+            let turn_color = if is_selected {
+                Color::Black
+            } else {
+                Color::Yellow
+            };
 
             lines.push(Line::from(vec![
                 Span::styled(prefix, row_style),
                 Span::styled(format!("{:<16}", short_id), row_style),
                 Span::styled(format!("{:<26}", short_title), row_style),
-                Span::styled(format!("{:<6}", item.turn_count), Style::default().fg(turn_color)),
+                Span::styled(
+                    format!("{:<6}", item.turn_count),
+                    Style::default().fg(turn_color),
+                ),
                 Span::styled(format!("{:<18}", short_model), row_style),
                 Span::styled(format!("{:<10}", created_str), row_style),
             ]));
@@ -191,11 +231,15 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
         Span::styled(" [Tab] ", Style::default().fg(Color::Cyan)),
         Span::styled("Toggle Scope  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Enter] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [Enter] ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("Resume Session  ", Style::default().fg(Color::DarkGray)),
         Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);
 }
-

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tracing::error;
 
 use crate::config::{AppConfig, ResolvedModel};
@@ -13,12 +13,12 @@ use crate::provider::gemini::GeminiProvider;
 use crate::provider::response::ResponseProvider;
 use crate::provider::{CompletionOptions, Provider};
 use crate::storage::SessionStore;
+use crate::tools::ToolRegistry;
 #[cfg(not(windows))]
 use crate::tools::bash::BashTool;
+use crate::tools::file::{FileEditTool, FileViewTool};
 #[cfg(windows)]
 use crate::tools::powershell::PowerShellTool;
-use crate::tools::file::{FileEditTool, FileViewTool};
-use crate::tools::ToolRegistry;
 
 /// 单个活跃会话的运行时单例句柄
 pub struct ManagedSession {
@@ -132,7 +132,9 @@ impl SessionManager {
 
         let managed = Arc::new(ManagedSession::new(loaded));
         let mut map = self.sessions.write().await;
-        let entry = map.entry(session_id.to_string()).or_insert_with(|| managed.clone());
+        let entry = map
+            .entry(session_id.to_string())
+            .or_insert_with(|| managed.clone());
         Ok(entry.clone())
     }
 
@@ -168,7 +170,11 @@ impl SessionManager {
             let mut s = managed.session.write().await;
 
             let sys_prompt = crate::system::build_system_prompt(&s.workspace_root);
-            let sys_turn = Turn::new(crate::model::Role::System, vec![Message::system(sys_prompt)], None);
+            let sys_turn = Turn::new(
+                crate::model::Role::System,
+                vec![Message::system(sys_prompt)],
+                None,
+            );
             let sys_turn_id = sys_turn.id.clone();
             s.append_turn(sys_turn);
 
@@ -213,14 +219,20 @@ impl SessionManager {
             let session_clone = managed.session.clone();
             let prompt_str = prompt.to_string();
             tokio::spawn(async move {
-                generate_title_with_small_model(&cfg_clone, store_clone, session_clone, prompt_str).await;
+                generate_title_with_small_model(&cfg_clone, store_clone, session_clone, prompt_str)
+                    .await;
             });
         }
 
         // 2. 解析 Provider 与参数
         let (current_model, current_variant, session_workspace, session_web_search) = {
             let s = managed.session.read().await;
-            (s.current_model.clone(), s.current_variant.clone(), s.workspace_root.clone(), s.web_search)
+            (
+                s.current_model.clone(),
+                s.current_variant.clone(),
+                s.workspace_root.clone(),
+                s.web_search,
+            )
         };
 
         let (provider, effective_model, reasoning_effort) =
@@ -338,27 +350,41 @@ pub fn resolve_provider(
                         "Model '{current_model}' not found in current config; falling back to default '{}'",
                         cfg.settings.default
                     );
-                    return Ok((fallback.provider, fallback.model_id, fallback.selected_variant));
+                    return Ok((
+                        fallback.provider,
+                        fallback.model_id,
+                        fallback.selected_variant,
+                    ));
                 }
                 Err(format!("Error resolving model '{current_model}': {err}"))
             }
         }
     } else {
         // 无配置文件时的环境变数备用路由
-        let (provider_inst, model_id): (Arc<dyn Provider>, String) = match current_model.to_lowercase().as_str() {
-            m if m.contains("anthropic") || m.contains("claude") => {
-                let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-                (Arc::new(AnthropicProvider::new(key)), current_model.to_string())
-            }
-            m if m.contains("gemini") => {
-                let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
-                (Arc::new(GeminiProvider::new(key)), current_model.to_string())
-            }
-            _ => {
-                let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-                (Arc::new(ResponseProvider::new(key)), current_model.to_string())
-            }
-        };
+        let (provider_inst, model_id): (Arc<dyn Provider>, String) =
+            match current_model.to_lowercase().as_str() {
+                m if m.contains("anthropic") || m.contains("claude") => {
+                    let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
+                    (
+                        Arc::new(AnthropicProvider::new(key)),
+                        current_model.to_string(),
+                    )
+                }
+                m if m.contains("gemini") => {
+                    let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
+                    (
+                        Arc::new(GeminiProvider::new(key)),
+                        current_model.to_string(),
+                    )
+                }
+                _ => {
+                    let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
+                    (
+                        Arc::new(ResponseProvider::new(key)),
+                        current_model.to_string(),
+                    )
+                }
+            };
         Ok((provider_inst, model_id, current_variant.map(String::from)))
     }
 }
@@ -393,7 +419,9 @@ pub async fn generate_title_with_small_model(
             match resolve_provider(app_config, &current_model, None) {
                 Ok((p, m, _)) => (p, m),
                 Err(e) => {
-                    tracing::warn!("Failed to resolve model '{current_model}' for title generation: {e}");
+                    tracing::warn!(
+                        "Failed to resolve model '{current_model}' for title generation: {e}"
+                    );
                     return;
                 }
             }
@@ -456,11 +484,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_manager_singleton_guarantee() {
-        let temp_dir = std::env::temp_dir().join(format!("vva_test_mgr_{}", uuid::Uuid::new_v4().simple()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_test_mgr_{}", uuid::Uuid::new_v4().simple()));
         let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
         let mgr = SessionManager::new(store.clone(), None, "/tmp/project");
 
-        let s1 = mgr.create_session("model_a".into(), Some("high".into()), Some("Title 1".into()), false).await.expect("create s1");
+        let s1 = mgr
+            .create_session(
+                "model_a".into(),
+                Some("high".into()),
+                Some("Title 1".into()),
+                false,
+            )
+            .await
+            .expect("create s1");
         let sid = s1.id.clone();
 
         // 再次加载同一个 session，返回相同单例指针
@@ -473,7 +510,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_small_model_title_generation_flow() {
-        let temp_dir = std::env::temp_dir().join(format!("vva_test_title_{}", uuid::Uuid::new_v4().simple()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_test_title_{}", uuid::Uuid::new_v4().simple()));
         let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
 
         let session = Session::with_model(&temp_dir, None, "test_model", None, false);
@@ -495,30 +533,54 @@ mod tests {
 
     #[tokio::test]
     async fn test_lazy_session_creation_persists_only_on_first_prompt() {
-        let temp_dir = std::env::temp_dir().join(format!("vva_test_lazy_{}", uuid::Uuid::new_v4().simple()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_test_lazy_{}", uuid::Uuid::new_v4().simple()));
         let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
         let mgr = SessionManager::new(store.clone(), None, &temp_dir);
 
         // 1. 创建 Session 时不落盘
-        let s = mgr.create_session("response/gpt-4.5".into(), None, None, false).await.expect("create s");
+        let s = mgr
+            .create_session("response/gpt-4.5".into(), None, None, false)
+            .await
+            .expect("create s");
         assert!(!s.is_persisted());
 
         let session_file = temp_dir.join(format!("{}.jsonl", s.id));
-        assert!(!session_file.exists(), "Session file should not exist before first message");
+        assert!(
+            !session_file.exists(),
+            "Session file should not exist before first message"
+        );
 
         let sessions = store.list_sessions().await.expect("list sessions");
-        assert_eq!(sessions.len(), 0, "Store should have 0 sessions before first message");
+        assert_eq!(
+            sessions.len(),
+            0,
+            "Store should have 0 sessions before first message"
+        );
 
         // 2. 提交第一条消息后真正落盘，并生成 Turn 0 (System) 与 Turn 1 (User)
-        mgr.submit_prompt(s.clone(), "First prompt").await.expect("submit prompt");
+        mgr.submit_prompt(s.clone(), "First prompt")
+            .await
+            .expect("submit prompt");
         assert!(s.is_persisted());
-        assert!(session_file.exists(), "Session file should exist after first prompt");
+        assert!(
+            session_file.exists(),
+            "Session file should exist after first prompt"
+        );
 
-        let loaded = store.load_session(&s.id).await.expect("load").expect("must exist");
+        let loaded = store
+            .load_session(&s.id)
+            .await
+            .expect("load")
+            .expect("must exist");
         assert_eq!(loaded.turns.len(), 2);
         assert_eq!(loaded.turns[0].role, crate::model::Role::System);
         assert_eq!(loaded.turns[1].role, crate::model::Role::User);
-        assert!(loaded.turns[0].messages[0].text_content().contains("## Environment Context"));
+        assert!(
+            loaded.turns[0].messages[0]
+                .text_content()
+                .contains("## Environment Context")
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

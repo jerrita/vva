@@ -1,8 +1,10 @@
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
-use ratatui::Frame;
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use unicode_width::UnicodeWidthChar;
 
 use crate::ui::app::{App, ChatEntry, TextSelection};
@@ -22,7 +24,9 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
             ),
             Span::styled(
                 "/",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " to access commands (/sessions to resume).",
@@ -35,16 +39,17 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
         match entry {
             ChatEntry::UserPrompt { text } => {
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "👤 You",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "👤 You",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )]));
                 for l in text.lines() {
-                    let spans = vec![Span::styled(l.to_string(), Style::default().fg(Color::White))];
+                    let spans = vec![Span::styled(
+                        l.to_string(),
+                        Style::default().fg(Color::White),
+                    )];
                     let wrapped = wrap_spans_to_lines(&spans, max_width, "   ", "   ");
                     lines.extend(wrapped);
                 }
@@ -77,14 +82,12 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                         ),
                     ]));
                 } else {
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "🧠 Thinking",
-                            Style::default()
-                                .fg(Color::Rgb(140, 140, 140))
-                                .add_modifier(Modifier::ITALIC),
-                        ),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "🧠 Thinking",
+                        Style::default()
+                            .fg(Color::Rgb(140, 140, 140))
+                            .add_modifier(Modifier::ITALIC),
+                    )]));
                     for l in content.lines() {
                         let spans = vec![Span::styled(
                             l.to_string(),
@@ -107,30 +110,40 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
-                    Span::styled(
-                        args.clone(),
-                        Style::default().fg(Color::Rgb(160, 160, 160)),
-                    ),
+                    Span::styled(args.clone(), Style::default().fg(Color::Rgb(160, 160, 160))),
                 ];
                 let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
                 lines.extend(wrapped);
             }
-            ChatEntry::ToolResult { name: _, result, is_error } => {
+            ChatEntry::ToolResult {
+                name: _,
+                result,
+                is_error,
+            } => {
                 let status_color = if *is_error { Color::Red } else { Color::Green };
-                let status_icon = if *is_error { "❌ Error:" } else { "✅ Output:" };
+                let status_icon = if *is_error {
+                    "❌ Error:"
+                } else {
+                    "✅ Output:"
+                };
 
                 lines.push(Line::from(vec![
                     Span::raw("   "),
                     Span::styled(
                         status_icon,
-                        Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(status_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]));
 
                 let tool_lines: Vec<&str> = result.lines().collect();
                 let limit = 20;
                 for l in tool_lines.iter().take(limit) {
-                    let spans = vec![Span::styled(l.to_string(), Style::default().fg(Color::Rgb(170, 170, 170)))];
+                    let spans = vec![Span::styled(
+                        l.to_string(),
+                        Style::default().fg(Color::Rgb(170, 170, 170)),
+                    )];
                     let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "     ");
                     lines.extend(wrapped);
                 }
@@ -146,14 +159,12 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
             }
             ChatEntry::AssistantMessage { text, citations } => {
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "🤖 Assistant",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "🤖 Assistant",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )]));
                 let md_lines = render_markdown(text, max_width);
                 lines.extend(md_lines);
 
@@ -163,7 +174,9 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                         Span::raw("   "),
                         Span::styled(
                             "🔗 Sources / Citations:",
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
                         ),
                     ]));
                     for (i, (title, url)) in citations.iter().enumerate() {
@@ -171,7 +184,10 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                             Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Cyan)),
                             Span::styled(title.clone(), Style::default().fg(Color::White)),
                             Span::raw(" - "),
-                            Span::styled(url.clone(), Style::default().fg(Color::Rgb(100, 160, 255))),
+                            Span::styled(
+                                url.clone(),
+                                Style::default().fg(Color::Rgb(100, 160, 255)),
+                            ),
                         ];
                         let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "       ");
                         lines.extend(wrapped);
@@ -281,7 +297,12 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
         .bg(Color::Rgb(60, 90, 140))
         .fg(Color::White);
 
-    for (line_idx, line) in lines.iter_mut().enumerate().take(max_line + 1).skip(start.line) {
+    for (line_idx, line) in lines
+        .iter_mut()
+        .enumerate()
+        .take(max_line + 1)
+        .skip(start.line)
+    {
         let (sel_start_col, sel_end_col) = if start.line == end.line {
             (start.col, end.col)
         } else if line_idx == start.line {
@@ -319,11 +340,7 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
                         cur_buf.push(ch);
                     }
                     Some(sel) => {
-                        let style = if sel {
-                            highlight_style
-                        } else {
-                            span.style
-                        };
+                        let style = if sel { highlight_style } else { span.style };
                         new_spans.push(Span::styled(std::mem::take(&mut cur_buf), style));
                         cur_buf.push(ch);
                         cur_is_selected = Some(is_selected);
@@ -339,11 +356,7 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
             if let Some(sel) = cur_is_selected
                 && !cur_buf.is_empty()
             {
-                let style = if sel {
-                    highlight_style
-                } else {
-                    span.style
-                };
+                let style = if sel { highlight_style } else { span.style };
                 new_spans.push(Span::styled(cur_buf, style));
             }
         }
@@ -355,8 +368,7 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
 /// 对话与工具消息流视图（支持 Thinking 思考块、Tool 动作与结果、Assistant 最终回复 Markdown 渲染）
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     app.chat_area = area;
-    let block = Block::default()
-        .borders(Borders::NONE);
+    let block = Block::default().borders(Borders::NONE);
 
     let max_width = (area.width as usize).saturating_sub(1);
     let mut lines = build_chat_lines(app, max_width);
@@ -384,8 +396,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 
     // 当内容超出可视区时，在右侧渲染滚动条
     if max_scroll > 0 {
-        let mut scrollbar_state = ScrollbarState::new(max_scroll)
-            .position(scroll);
+        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(scroll);
 
         let thumb_color = if app.is_dragging_scrollbar {
             Color::Rgb(150, 180, 225)
@@ -428,7 +439,10 @@ mod tests {
         let app = create_test_app().await;
         let lines = build_chat_lines(&app, 80);
         assert!(lines.len() >= 2);
-        let joined: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(joined.contains("Start typing a prompt"));
     }
 
@@ -457,13 +471,16 @@ fn main() {
         assert!(!lines.is_empty());
 
         // 检查 Assistant 标头存在
-        let has_assistant_header = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content.contains("Assistant"))
-        });
+        let has_assistant_header = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("Assistant")));
         assert!(has_assistant_header);
 
         // 检查渲染出的 Markdown 内容
-        let all_text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(all_text.contains("Hello World"));
         assert!(all_text.contains("bold"));
         assert!(all_text.contains("inline code"));
@@ -474,9 +491,14 @@ fn main() {
         assert!(all_text.contains("https://rust-lang.org"));
 
         // 检查非空内容行均被添加了前缀缩进
-        let assistant_lines: Vec<_> = lines.iter().filter(|l| {
-            l.spans.iter().any(|s| s.content.contains("Hello World") || s.content.contains("bold"))
-        }).collect();
+        let assistant_lines: Vec<_> = lines
+            .iter()
+            .filter(|l| {
+                l.spans
+                    .iter()
+                    .any(|s| s.content.contains("Hello World") || s.content.contains("bold"))
+            })
+            .collect();
         for line in assistant_lines {
             assert_eq!(line.spans.first().map(|s| s.content.as_ref()), Some("   "));
         }
@@ -503,7 +525,10 @@ def stream_test():
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
 
-        let all_text: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
         assert!(all_text.contains("Note: this is a blockquote"));
         assert!(all_text.contains("Column A"));
         assert!(all_text.contains("Value 1"));
@@ -520,14 +545,16 @@ def stream_test():
 
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
-        let has_assistant = lines.iter().any(|l| l.spans.iter().any(|s| s.content.contains("Assistant")));
+        let has_assistant = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("Assistant")));
         assert!(has_assistant);
     }
 
     #[tokio::test]
     async fn test_render_chat_scrollbar_and_scrolling() {
-        use ratatui::backend::TestBackend;
         use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let mut app = create_test_app().await;
         // 添加大量文本使得行数超过视口（高度为 10）
@@ -540,9 +567,11 @@ def stream_test():
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
 
-        terminal.draw(|f| {
-            render_chat(&mut app, f, f.area());
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                render_chat(&mut app, f, f.area());
+            })
+            .unwrap();
 
         // 验证视口和滚动状态已自动计算，并且处于底部
         assert!(app.max_scroll > 0);
@@ -558,22 +587,22 @@ def stream_test():
 
         // 滚到顶时，滚动条滑块位于最顶部行 (y=0)
         app.scroll_to_top();
-        terminal.draw(|f| {
-            render_chat(&mut app, f, f.area());
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                render_chat(&mut app, f, f.area());
+            })
+            .unwrap();
         let top_cell = terminal.backend().buffer().cell((79, 0)).unwrap();
         assert_eq!(top_cell.symbol(), "█");
     }
 
     #[test]
     fn test_extract_selected_text_single_line() {
-        let lines = vec![
-            Line::from(vec![
-                Span::raw("Hello "),
-                Span::styled("World", Style::default().fg(Color::Green)),
-                Span::raw("!"),
-            ]),
-        ];
+        let lines = vec![Line::from(vec![
+            Span::raw("Hello "),
+            Span::styled("World", Style::default().fg(Color::Green)),
+            Span::raw("!"),
+        ])];
         let sel = TextSelection::new(
             TextCoord { line: 0, col: 6 },
             TextCoord { line: 0, col: 11 },
@@ -614,13 +643,11 @@ def stream_test():
 
     #[test]
     fn test_apply_selection_highlight() {
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("Prefix ", Style::default().fg(Color::Yellow)),
-                Span::styled("Selected", Style::default().fg(Color::Green)),
-                Span::styled(" Suffix", Style::default().fg(Color::Red)),
-            ]),
-        ];
+        let mut lines = vec![Line::from(vec![
+            Span::styled("Prefix ", Style::default().fg(Color::Yellow)),
+            Span::styled("Selected", Style::default().fg(Color::Green)),
+            Span::styled(" Suffix", Style::default().fg(Color::Red)),
+        ])];
         let sel = TextSelection::new(
             TextCoord { line: 0, col: 7 },
             TextCoord { line: 0, col: 15 },
@@ -639,4 +666,3 @@ def stream_test():
         assert_eq!(lines[0].spans[2].style.fg, Some(Color::Red));
     }
 }
-

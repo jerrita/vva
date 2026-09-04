@@ -149,8 +149,7 @@ async fn test_slash_command_thinking_execution() {
     app.submit_input().await;
     assert!(app.thinking_concise);
     assert!(app.chat_entries.iter().any(|e| match e {
-        ChatEntry::SystemNotice { text } =>
-            text.contains("Thinking display mode set to concise"),
+        ChatEntry::SystemNotice { text } => text.contains("Thinking display mode set to concise"),
         _ => false,
     }));
 
@@ -183,7 +182,10 @@ async fn test_app_scroll_control_and_clamping() {
     assert_eq!(app.max_scroll, 0);
     assert!(app.auto_scroll);
     app.scroll_up(5);
-    assert!(app.auto_scroll, "When max_scroll is 0, scroll_up should not break auto_scroll");
+    assert!(
+        app.auto_scroll,
+        "When max_scroll is 0, scroll_up should not break auto_scroll"
+    );
 
     // 视口更新：内容超出，总可滚动 50 行
     app.update_viewport(50, 20);
@@ -245,8 +247,10 @@ async fn test_app_scroll_control_and_clamping() {
 
 #[tokio::test]
 async fn test_session_resume_preserves_web_search_state() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("vva_app_resume_search_test_{}", uuid::Uuid::new_v4()));
+    let temp_dir = std::env::temp_dir().join(format!(
+        "vva_app_resume_search_test_{}",
+        uuid::Uuid::new_v4()
+    ));
     let _ = std::fs::create_dir_all(&temp_dir);
     let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
     let session_mgr = Arc::new(SessionManager::new(store.clone(), None, temp_dir.clone()));
@@ -256,7 +260,10 @@ async fn test_session_resume_preserves_web_search_state() {
         .create_session("model_1".into(), None, Some("Session 1".into()), true)
         .await
         .unwrap();
-    session_mgr.submit_prompt(s1.clone(), "init s1").await.unwrap();
+    session_mgr
+        .submit_prompt(s1.clone(), "init s1")
+        .await
+        .unwrap();
     let s1_id = s1.id.clone();
 
     // 2. 创建 Session 2 并发送首条消息落盘，初始关闭 web_search
@@ -264,7 +271,10 @@ async fn test_session_resume_preserves_web_search_state() {
         .create_session("model_2".into(), None, Some("Session 2".into()), false)
         .await
         .unwrap();
-    session_mgr.submit_prompt(s2.clone(), "init s2").await.unwrap();
+    session_mgr
+        .submit_prompt(s2.clone(), "init s2")
+        .await
+        .unwrap();
     let s2_id = s2.id.clone();
 
     // 3. 启动 App，以 Session 1 为初始会话
@@ -363,7 +373,8 @@ async fn test_selection_state_lifecycle() {
 
 #[tokio::test]
 async fn test_input_selection_state_and_deletion() {
-    let temp_dir = std::env::temp_dir().join(format!("vva_app_input_sel_test_{}", uuid::Uuid::new_v4()));
+    let temp_dir =
+        std::env::temp_dir().join(format!("vva_app_input_sel_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&temp_dir);
     let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
     let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
@@ -436,8 +447,7 @@ fn test_base64_encode() {
 
 #[tokio::test]
 async fn test_paste_multiline_into_input_buffer_preserves_lines() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("vva_paste_test_{}", uuid::Uuid::new_v4()));
+    let temp_dir = std::env::temp_dir().join(format!("vva_paste_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&temp_dir);
     let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
     let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
@@ -454,7 +464,10 @@ async fn test_paste_multiline_into_input_buffer_preserves_lines() {
     app.insert_str(multiline_code);
 
     // 验证多行完整保留在输入框中，行数正确，末尾规范化为 \n
-    assert_eq!(app.input.as_str(), "fn main() {\n    println!(\"hello\");\n}\n");
+    assert_eq!(
+        app.input.as_str(),
+        "fn main() {\n    println!(\"hello\");\n}\n"
+    );
     assert_eq!(app.input_line_count(), 4);
     assert!(app.last_key_input_time.is_some());
 
@@ -463,8 +476,7 @@ async fn test_paste_multiline_into_input_buffer_preserves_lines() {
 
 #[tokio::test]
 async fn test_input_time_updated_on_char_insert() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("vva_time_test_{}", uuid::Uuid::new_v4()));
+    let temp_dir = std::env::temp_dir().join(format!("vva_time_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&temp_dir);
     let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
     let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
@@ -489,8 +501,7 @@ async fn test_input_time_updated_on_char_insert() {
 
 #[tokio::test]
 async fn test_prompt_history_rotation_and_draft_restore() {
-    let temp_dir =
-        std::env::temp_dir().join(format!("vva_history_test_{}", uuid::Uuid::new_v4()));
+    let temp_dir = std::env::temp_dir().join(format!("vva_history_test_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&temp_dir);
     let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
     let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));

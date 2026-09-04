@@ -25,10 +25,20 @@ impl Default for AgentConfig {
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
     Thought(String),
-    ToolExecuting { name: String, args: String },
-    ToolFinished { name: String, result: String, is_error: bool },
+    ToolExecuting {
+        name: String,
+        args: String,
+    },
+    ToolFinished {
+        name: String,
+        result: String,
+        is_error: bool,
+    },
     Text(String),
-    Citation { title: String, url: String },
+    Citation {
+        title: String,
+        url: String,
+    },
     Finished,
     Error(String),
 }
@@ -139,20 +149,24 @@ impl AgentEngine {
             let mut tool_messages = Vec::new();
             for call in tool_calls {
                 if let Some(tx) = &event_sender {
-                    let _ = tx.send(AgentEvent::ToolExecuting {
-                        name: call.name.clone(),
-                        args: call.arguments.clone(),
-                    }).await;
+                    let _ = tx
+                        .send(AgentEvent::ToolExecuting {
+                            name: call.name.clone(),
+                            args: call.arguments.clone(),
+                        })
+                        .await;
                 }
 
                 let result = self.tools.execute_call(&call).await;
 
                 if let Some(tx) = &event_sender {
-                    let _ = tx.send(AgentEvent::ToolFinished {
-                        name: call.name.clone(),
-                        result: result.content.clone(),
-                        is_error: result.is_error,
-                    }).await;
+                    let _ = tx
+                        .send(AgentEvent::ToolFinished {
+                            name: call.name.clone(),
+                            result: result.content.clone(),
+                            is_error: result.is_error,
+                        })
+                        .await;
                 }
 
                 tool_messages.push(Message::tool_result(result));
@@ -164,7 +178,10 @@ impl AgentEngine {
             session.append_turn(tool_turn);
         }
 
-        warn!(max_iterations = self.config.max_iterations, "Agent loop reached max iterations");
+        warn!(
+            max_iterations = self.config.max_iterations,
+            "Agent loop reached max iterations"
+        );
         if let Some(tx) = &event_sender {
             let _ = tx.send(AgentEvent::Finished).await;
         }
@@ -180,4 +197,3 @@ pub enum AgentError {
     #[error("Storage error: {0}")]
     Storage(#[from] StoreError),
 }
-

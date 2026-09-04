@@ -39,7 +39,7 @@ use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
-use views::sidebar::{render_sidebar, SidebarInfo};
+use views::sidebar::{SidebarInfo, render_sidebar};
 use views::variants_modal::render_variants_modal;
 
 /// 启动 Ratatui 交互式终端 UI
@@ -55,7 +55,12 @@ pub async fn run_tui(
     enable_raw_mode()?;
     let mut stdout = stdout();
     #[cfg(not(windows))]
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
     #[cfg(windows)]
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
 
@@ -69,7 +74,11 @@ pub async fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let session_mgr = Arc::new(SessionManager::new(store.clone(), app_config.clone(), workspace));
+    let session_mgr = Arc::new(SessionManager::new(
+        store.clone(),
+        app_config.clone(),
+        workspace,
+    ));
 
     // 加载或创建初始 Session 单例
     let initial_session: Arc<ManagedSession> = if let Some(sid) = initial_session_id {
@@ -288,11 +297,7 @@ async fn run_app_loop(
     Ok(())
 }
 
-async fn handle_crossterm_event(
-    app: &mut App,
-    event: CrosstermEvent,
-    reader: &mut EventStream,
-) {
+async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &mut EventStream) {
     if let CrosstermEvent::Mouse(mouse) = event {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -309,8 +314,10 @@ async fn handle_crossterm_event(
                         && mouse.row < app.input_inner_area.y + app.input_inner_area.height;
 
                     if in_input_x && in_input_y {
-                        let rel_row = (mouse.row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
-                        let rel_col = (mouse.column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
+                        let rel_row = (mouse.row - app.input_inner_area.y) as usize
+                            + app.input.scroll_y.get();
+                        let rel_col = (mouse.column - app.input_inner_area.x) as usize
+                            + app.input.scroll_x.get();
                         let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
                         app.start_input_selection(char_pos);
                         app.clear_text_selection();
@@ -347,16 +354,20 @@ async fn handle_crossterm_event(
                     if in_scrollbar_col && in_chat_rows && app.max_scroll > 0 {
                         app.is_dragging_scrollbar = true;
                         let track_height = app.chat_area.height as usize;
-                        let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
-                        let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
+                        let row_offset =
+                            (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
+                        let ratio =
+                            row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
                         app.scroll_to_ratio(ratio);
                     } else if in_chat_rows
                         && mouse.column >= app.chat_area.x
                         && mouse.column < scrollbar_col
                     {
                         app.is_dragging_scrollbar = false;
-                        let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
-                        let col_offset = (mouse.column as usize).saturating_sub(app.chat_area.x as usize);
+                        let row_offset =
+                            (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
+                        let col_offset =
+                            (mouse.column as usize).saturating_sub(app.chat_area.x as usize);
                         let scroll = if app.auto_scroll {
                             app.max_scroll
                         } else {
@@ -378,7 +389,8 @@ async fn handle_crossterm_event(
                     let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
                         0
                     } else {
-                        (mouse.row as usize - app.chat_area.y as usize).min(track_height.saturating_sub(1))
+                        (mouse.row as usize - app.chat_area.y as usize)
+                            .min(track_height.saturating_sub(1))
                     };
                     let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
                     app.scroll_to_ratio(ratio);

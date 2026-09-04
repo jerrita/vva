@@ -1,6 +1,6 @@
-use crate::ui::command::match_commands;
-use super::selection::get_clipboard_text;
 use super::App;
+use super::selection::get_clipboard_text;
+use crate::ui::command::match_commands;
 
 impl App {
     pub fn insert_char(&mut self, c: char) {
@@ -40,7 +40,8 @@ impl App {
     }
 
     pub fn set_cursor_from_mouse(&mut self, target_row: usize, target_visual_col: usize) -> usize {
-        self.input.set_cursor_from_visual_coord(target_row, target_visual_col)
+        self.input
+            .set_cursor_from_visual_coord(target_row, target_visual_col)
     }
 
     /// 向上轮换历史 Prompt

@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use super::model::{AppConfig, ModelConfig, ProviderType};
+use super::parser::ConfigError;
+use crate::provider::Provider;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::response::ResponseProvider;
-use crate::provider::Provider;
-use super::model::{AppConfig, ModelConfig, ProviderType};
-use super::parser::ConfigError;
 
 pub struct ResolvedModel {
     pub provider_id: String,
@@ -50,10 +50,9 @@ impl AppConfig {
             found.ok_or_else(|| ConfigError::ModelNotFound(spec.to_string()))?
         };
 
-        let provider_cfg = self
-            .providers
-            .get(&provider_id)
-            .ok_or_else(|| ConfigError::ModelNotFound(format!("Provider '{provider_id}' not found")))?;
+        let provider_cfg = self.providers.get(&provider_id).ok_or_else(|| {
+            ConfigError::ModelNotFound(format!("Provider '{provider_id}' not found"))
+        })?;
 
         let model_cfg = provider_cfg
             .models
@@ -123,7 +122,10 @@ impl AppConfig {
             ProviderType::Gemini => {
                 let url = if base_url.is_empty() {
                     "https://generativelanguage.googleapis.com/v1beta".to_string()
-                } else if base_url.ends_with("/v1beta") || base_url.ends_with("/v1") || base_url.contains("/models") {
+                } else if base_url.ends_with("/v1beta")
+                    || base_url.ends_with("/v1")
+                    || base_url.contains("/models")
+                {
                     base_url.to_string()
                 } else {
                     format!("{base_url}/v1beta")

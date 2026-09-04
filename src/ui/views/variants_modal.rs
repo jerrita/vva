@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::app::App;
 
@@ -32,7 +32,9 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(Color::Magenta))
         .title(Span::styled(
             " Select Reasoning Variant (↑/↓ to navigate, Enter to switch) ",
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(modal_rect);
@@ -55,18 +57,24 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Model: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             curr_model,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("    "),
         Span::styled("Active Variant: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             curr_var,
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled(
             format!("({} options)", state.variants.len()),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ),
     ]);
     frame.render_widget(Paragraph::new(top_line), chunks[0]);
@@ -89,7 +97,10 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         // 表头
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<28}", "Variant / Effort"), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{:<28}", "Variant / Effort"),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled("Status", Style::default().fg(Color::DarkGray)),
         ]));
 
@@ -100,7 +111,13 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
             0
         };
 
-        for (i, item) in state.variants.iter().enumerate().skip(start_idx).take(list_visible_height) {
+        for (i, item) in state
+            .variants
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(list_visible_height)
+        {
             let is_selected = i == state.selected_index;
             let is_active = item.id.as_ref() == state.active_variant.as_ref();
 
@@ -118,21 +135,24 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
                     .bg(Color::Magenta)
                     .add_modifier(Modifier::BOLD)
             } else if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
 
-            let status_str = if is_active {
-                "[active]"
-            } else {
-                "-"
-            };
+            let status_str = if is_active { "[active]" } else { "-" };
 
             let status_style = if is_selected {
-                Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD)
             } else if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -152,7 +172,12 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
     let footer_line = Line::from(vec![
         Span::styled(" [↑/↓/j/k] ", Style::default().fg(Color::Magenta)),
         Span::styled("Navigate  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Enter] ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [Enter] ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("Set Variant  ", Style::default().fg(Color::DarkGray)),
         Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),

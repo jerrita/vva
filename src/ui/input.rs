@@ -61,8 +61,18 @@ impl InputBuffer {
     /// 删除当前选区中的文本内容；若存在有效选区并删除成功返回 true
     pub fn delete_selection(&mut self) -> bool {
         if let Some((start, end)) = self.selection_range() {
-            let start_byte = self.text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(self.text.len());
-            let end_byte = self.text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(self.text.len());
+            let start_byte = self
+                .text
+                .char_indices()
+                .nth(start)
+                .map(|(i, _)| i)
+                .unwrap_or(self.text.len());
+            let end_byte = self
+                .text
+                .char_indices()
+                .nth(end)
+                .map(|(i, _)| i)
+                .unwrap_or(self.text.len());
             self.text.drain(start_byte..end_byte);
             self.cursor_pos = start;
             self.selection = None;
@@ -75,8 +85,18 @@ impl InputBuffer {
     /// 获取选区选中的文本字符串
     pub fn selected_text(&self) -> Option<String> {
         self.selection_range().map(|(start, end)| {
-            let start_byte = self.text.char_indices().nth(start).map(|(i, _)| i).unwrap_or(self.text.len());
-            let end_byte = self.text.char_indices().nth(end).map(|(i, _)| i).unwrap_or(self.text.len());
+            let start_byte = self
+                .text
+                .char_indices()
+                .nth(start)
+                .map(|(i, _)| i)
+                .unwrap_or(self.text.len());
+            let end_byte = self
+                .text
+                .char_indices()
+                .nth(end)
+                .map(|(i, _)| i)
+                .unwrap_or(self.text.len());
             self.text[start_byte..end_byte].to_string()
         })
     }
@@ -299,7 +319,11 @@ impl InputBuffer {
     }
 
     /// 根据文本行号与目标视觉列宽度设置光标位置 (支持视口滚动、多行及 CJK 字符)，并返回字符偏移
-    pub fn set_cursor_from_visual_coord(&mut self, target_row: usize, target_visual_col: usize) -> usize {
+    pub fn set_cursor_from_visual_coord(
+        &mut self,
+        target_row: usize,
+        target_visual_col: usize,
+    ) -> usize {
         if self.text.is_empty() {
             self.cursor_pos = 0;
             return 0;

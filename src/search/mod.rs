@@ -13,7 +13,11 @@ pub enum SearchError {
 /// 客户端外挂搜索引擎 Trait（当模型供应商不具备原生 Grounding 时的备用机制，如 Tavily / SearxNG）
 #[async_trait]
 pub trait ExternalSearchEngine: Send + Sync {
-    async fn search(&self, query: &str, max_results: usize) -> Result<Vec<WebSearchSource>, SearchError>;
+    async fn search(
+        &self,
+        query: &str,
+        max_results: usize,
+    ) -> Result<Vec<WebSearchSource>, SearchError>;
 }
 
 /// 统一搜索引擎调度器：整合原生 Grounding 与外置搜索引擎

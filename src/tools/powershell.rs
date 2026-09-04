@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::path::PathBuf;
 use tokio::process::Command;
 
 use super::Tool;
@@ -107,7 +107,9 @@ mod tests {
     #[cfg(windows)]
     async fn test_powershell_tool_execution() {
         let tool = PowerShellTool::new(std::env::current_dir().unwrap());
-        let result = tool.execute(r#"{"command":"Write-Output 'hello_powershell'"}"#).await;
+        let result = tool
+            .execute(r#"{"command":"Write-Output 'hello_powershell'"}"#)
+            .await;
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("hello_powershell"));

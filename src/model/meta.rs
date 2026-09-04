@@ -56,6 +56,9 @@ pub struct ResponseTurnMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     pub store: bool,
+    /// Responses API 原生 output items，用于无状态会话逐项保真回传。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_items: Vec<ResponseOutputItem>,
 }
 
 impl ResponseTurnMeta {
@@ -67,6 +70,7 @@ impl ResponseTurnMeta {
             service_tier: None,
             reasoning_effort: None,
             store: true,
+            output_items: Vec::new(),
         }
     }
 }
@@ -75,6 +79,106 @@ impl ResponseTurnMeta {
 pub struct ResponseMessageMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseOutputItem {
+    Reasoning {
+        id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        summary: Vec<ResponseReasoningSummary>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        content: Vec<ResponseReasoningContent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+    },
+    Message {
+        id: String,
+        status: String,
+        role: ResponseMessageRole,
+        content: Vec<ResponseMessageContent>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        phase: Option<String>,
+    },
+    FunctionCall {
+        id: String,
+        call_id: String,
+        name: String,
+        arguments: String,
+        status: String,
+    },
+    WebSearchCall {
+        id: String,
+        status: String,
+        action: ResponseWebSearchAction,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseReasoningSummary {
+    SummaryText { text: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseReasoningContent {
+    ReasoningText { text: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseMessageRole {
+    Assistant,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseMessageContent {
+    OutputText {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        annotations: Vec<super::Annotation>,
+    },
+    Refusal {
+        refusal: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseWebSearchAction {
+    Search {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        queries: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sources: Vec<ResponseWebSearchSource>,
+    },
+    OpenPage {
+        url: String,
+    },
+    FindInPage {
+        url: String,
+        pattern: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResponseWebSearchSource {
+    #[serde(rename = "type")]
+    pub source_type: ResponseWebSearchSourceType,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseWebSearchSourceType {
+    Url,
 }
 
 // ================== Anthropic 专有元数据 ==================
@@ -139,4 +243,3 @@ pub struct GeminiCodeExecutionResult {
     pub outcome: String,
     pub output: String,
 }
-

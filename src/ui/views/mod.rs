@@ -7,4 +7,3 @@ pub mod models_modal;
 pub mod sessions_modal;
 pub mod sidebar;
 pub mod variants_modal;
-

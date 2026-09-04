@@ -1,8 +1,8 @@
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::ui::command::COMMANDS;
 
@@ -25,7 +25,9 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             " Help & Keyboard Shortcuts ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(modal_rect);
@@ -39,48 +41,81 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
         "Available Slash Commands:",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     )));
 
     for cmd in COMMANDS {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<14}", cmd.name), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("- {}", cmd.description), Style::default().fg(Color::White)),
+            Span::styled(
+                format!("  {:<14}", cmd.name),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("- {}", cmd.description),
+                Style::default().fg(Color::White),
+            ),
         ]));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Keyboard Shortcuts:",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(vec![
         Span::styled("  Enter        ", Style::default().fg(Color::Green)),
-        Span::styled("- Submit prompt / execute selected command", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Submit prompt / execute selected command",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Ctrl+Enter   ", Style::default().fg(Color::Green)),
-        Span::styled("- Insert newline in input (also Shift+Enter / Alt+Enter)", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Insert newline in input (also Shift+Enter / Alt+Enter)",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Tab          ", Style::default().fg(Color::Green)),
-        Span::styled("- Autocomplete command in input / toggle project scope in /sessions", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Autocomplete command in input / toggle project scope in /sessions",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Up / Down    ", Style::default().fg(Color::Green)),
-        Span::styled("- Move cursor between lines in input / navigate suggestions", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Move cursor between lines in input / navigate suggestions",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  PgUp / PgDn  ", Style::default().fg(Color::Green)),
-        Span::styled("- Scroll conversation history up and down", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Scroll conversation history up and down",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Esc          ", Style::default().fg(Color::Green)),
-        Span::styled("- Close popup modal / clear input", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Close popup modal / clear input",
+            Style::default().fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Ctrl+C       ", Style::default().fg(Color::Green)),
-        Span::styled("- Abort current agent run / quit application", Style::default().fg(Color::White)),
+        Span::styled(
+            "- Abort current agent run / quit application",
+            Style::default().fg(Color::White),
+        ),
     ]));
 
     let p = Paragraph::new(lines);
@@ -88,11 +123,23 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
 
     let footer = Paragraph::new(Line::from(vec![
         Span::styled(" Press ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[Esc]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[Esc]",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" or ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[q]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::styled(" to close this dialog", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "[q]",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " to close this dialog",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]));
     frame.render_widget(footer, chunks[1]);
 }
-

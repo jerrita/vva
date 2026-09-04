@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 use super::tool::{ToolCall, ToolResult};
 
@@ -94,7 +94,11 @@ impl ContentPart {
         }
     }
 
-    pub fn document_path(path: impl Into<PathBuf>, filename: Option<String>, mime_type: Option<String>) -> Self {
+    pub fn document_path(
+        path: impl Into<PathBuf>,
+        filename: Option<String>,
+        mime_type: Option<String>,
+    ) -> Self {
         Self::Document {
             source: MediaSource::Path { path: path.into() },
             mime_type,
@@ -160,7 +164,11 @@ impl WebSearchCall {
         }
     }
 
-    pub fn completed(id: impl Into<String>, query: impl Into<String>, sources: Vec<WebSearchSource>) -> Self {
+    pub fn completed(
+        id: impl Into<String>,
+        query: impl Into<String>,
+        sources: Vec<WebSearchSource>,
+    ) -> Self {
         Self {
             id: id.into(),
             query: query.into(),
@@ -196,4 +204,3 @@ impl WebSearchSource {
         }
     }
 }
-
