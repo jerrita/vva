@@ -41,7 +41,7 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // 顶部提示
+            Constraint::Length(3), // 顶部提示与搜索条件
             Constraint::Min(1),    // 配置列表
             Constraint::Length(1), // 底部操作按键提示
         ])
@@ -56,7 +56,12 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    frame.render_widget(Paragraph::new(top_line), chunks[0]);
+    let search_line = Line::from(vec![
+        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.query, Style::default().fg(Color::Cyan)),
+        Span::styled("_", Style::default().fg(Color::Cyan)),
+    ]);
+    frame.render_widget(Paragraph::new(vec![top_line, search_line]), chunks[0]);
 
     let mut lines = Vec::new();
     lines.push(Line::from(vec![
@@ -72,7 +77,7 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Action", Style::default().fg(Color::DarkGray)),
     ]));
 
-    for (i, item) in state.items.iter().enumerate() {
+    for (i, item) in state.filtered_items.iter().enumerate() {
         let is_selected = i == state.selected_index;
         let prefix = if is_selected { "> " } else { "  " };
 
@@ -131,7 +136,9 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("Modify / Toggle  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
+        Span::styled(" [type] ", Style::default().fg(Color::Cyan)),
+        Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
         Span::styled("Close", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);

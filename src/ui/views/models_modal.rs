@@ -14,8 +14,8 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
     };
 
     // 居中计算弹出框尺寸
-    let modal_width = 88.min(area.width.saturating_sub(4));
-    let modal_height = 20.min(area.height.saturating_sub(4));
+    let modal_width = 90.min(area.width.saturating_sub(4));
+    let modal_height = (state.filtered_models.len() as u16 + 6).min(area.height.saturating_sub(4));
 
     let modal_rect = Rect {
         x: (area.width - modal_width) / 2,
@@ -43,7 +43,7 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // 当前会话活跃模型指示
+            Constraint::Length(2), // 当前会话活跃模型指示与搜索条件
             Constraint::Min(1),    // 模型列表
             Constraint::Length(1), // 底部操作按键提示
         ])
@@ -62,22 +62,31 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(
-            format!("({} models configured)", state.models.len()),
+            format!(
+                "({}/{} models)",
+                state.filtered_models.len(),
+                state.models.len()
+            ),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    frame.render_widget(Paragraph::new(top_line), chunks[0]);
+    let search_line = Line::from(vec![
+        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.query, Style::default().fg(Color::Cyan)),
+        Span::styled("_", Style::default().fg(Color::Cyan)),
+    ]);
+    frame.render_widget(Paragraph::new(vec![top_line, search_line]), chunks[0]);
 
     // 2. 模型列表渲染
-    if state.models.is_empty() {
+    if state.filtered_models.is_empty() {
         let empty_msg = vec![
             Line::from(""),
             Line::from(vec![
                 Span::raw("   "),
                 Span::styled(
-                    "No models configured in ~/.vva/config.jsonc or project config.",
+                    "No models match the filter.",
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
@@ -85,26 +94,49 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         frame.render_widget(Paragraph::new(empty_msg), chunks[1]);
     } else {
         let mut lines = Vec::new();
+        let show_details = chunks[1].width >= 70;
+        let provider_width: usize = if show_details { 14 } else { 12 };
+        let protocol_width: usize = 10;
+        let context_width: usize = 10;
+        let fixed_width =
+            2 + provider_width + protocol_width + if show_details { context_width } else { 0 };
+        let name_width = (chunks[1].width as usize)
+            .saturating_sub(fixed_width)
+            .min(22);
+        let variants_width = if show_details {
+            (chunks[1].width as usize).saturating_sub(fixed_width + name_width)
+        } else {
+            0
+        };
+
         // 表头
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!("{:<26}", "Model Spec"),
+                format!("{:<name_width$}", "Name"),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                format!("{:<20}", "Display Name"),
+                format!("{:<provider_width$}", "Provider"),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                format!("{:<12}", "Protocol"),
+                format!("{:<protocol_width$}", "Protocol"),
                 Style::default().fg(Color::DarkGray),
             ),
-            Span::styled(
-                format!("{:<10}", "Context"),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled("Variants", Style::default().fg(Color::DarkGray)),
+            if show_details {
+                Span::styled(
+                    format!("{:<context_width$}", "Context"),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                Span::raw("")
+            },
+            if show_details {
+                Span::styled("Variants", Style::default().fg(Color::DarkGray))
+            } else {
+                Span::raw("")
+            },
         ]));
 
         let list_visible_height = chunks[1].height.saturating_sub(1) as usize;
@@ -115,7 +147,7 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         };
 
         for (i, item) in state
-            .models
+            .filtered_models
             .iter()
             .enumerate()
             .skip(start_idx)
@@ -145,17 +177,8 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
                 Style::default().fg(Color::White)
             };
 
-            let short_spec = if item.full_id.len() > 24 {
-                format!("{}..", &item.full_id[..22])
-            } else {
-                item.full_id.clone()
-            };
-
-            let short_name = if item.display_name.len() > 18 {
-                format!("{}..", &item.display_name[..16])
-            } else {
-                item.display_name.clone()
-            };
+            let short_name = truncate(&item.display_name, name_width);
+            let short_provider = truncate(&item.provider_id, provider_width);
 
             let context_str = match item.context_limit {
                 Some(ctx) if ctx >= 1_000_000 => format!("{}M", ctx / 1_000_000),
@@ -169,27 +192,38 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
                 _ => "-".to_string(),
             };
 
-            let protocol_color = if is_selected {
-                Color::Black
+            let protocol_style = if is_selected {
+                row_style
             } else {
-                match item.provider_type.as_str() {
+                Style::default().fg(match item.provider_type.as_str() {
                     "response" => Color::Green,
                     "anthropic" => Color::Magenta,
                     "gemini" => Color::Blue,
                     _ => Color::DarkGray,
-                }
+                })
             };
 
             lines.push(Line::from(vec![
                 Span::styled(prefix, row_style),
-                Span::styled(format!("{:<26}", short_spec), row_style),
-                Span::styled(format!("{:<20}", short_name), row_style),
+                Span::styled(format!("{:<name_width$}", short_name), row_style),
+                Span::styled(format!("{:<provider_width$}", short_provider), row_style),
                 Span::styled(
-                    format!("{:<12}", item.provider_type),
-                    Style::default().fg(protocol_color),
+                    format!(
+                        "{:<protocol_width$}",
+                        truncate(&item.provider_type, protocol_width)
+                    ),
+                    protocol_style,
                 ),
-                Span::styled(format!("{:<10}", context_str), row_style),
-                Span::styled(variants_str, row_style),
+                if show_details {
+                    Span::styled(format!("{:<context_width$}", context_str), row_style)
+                } else {
+                    Span::raw("")
+                },
+                if show_details {
+                    Span::styled(truncate(&variants_str, variants_width), row_style)
+                } else {
+                    Span::raw("")
+                },
             ]));
         }
 
@@ -208,8 +242,22 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("Switch Model  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
+        Span::styled(" [type] ", Style::default().fg(Color::Cyan)),
+        Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= width {
+        return text.to_string();
+    }
+
+    text.chars()
+        .take(width.saturating_sub(2))
+        .collect::<String>()
+        + ".."
 }

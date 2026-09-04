@@ -53,7 +53,7 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // Scope 标签切换提示
+            Constraint::Length(3), // Scope 标签与搜索条件
             Constraint::Min(1),    // Session 列表
             Constraint::Length(1), // 底部操作按键提示
         ])
@@ -103,7 +103,12 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    let tabs_p = Paragraph::new(tabs_line);
+    let search_line = Line::from(vec![
+        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.query, Style::default().fg(Color::Cyan)),
+        Span::styled("_", Style::default().fg(Color::Cyan)),
+    ]);
+    let tabs_p = Paragraph::new(vec![tabs_line, search_line]);
     frame.render_widget(tabs_p, chunks[0]);
 
     // 2. 会话列表渲染
@@ -113,7 +118,7 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
             Line::from(vec![
                 Span::raw("   "),
                 Span::styled(
-                    "No sessions found in this scope.",
+                    "No sessions match this scope and filter.",
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
@@ -238,7 +243,9 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("Resume Session  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
+        Span::styled(" [type] ", Style::default().fg(Color::Cyan)),
+        Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);

@@ -1,3 +1,5 @@
+use super::fuzzy_matches;
+
 /// /variant 模态弹窗展示的推理强度档位条目
 #[derive(Debug, Clone)]
 pub struct VariantItem {
@@ -12,7 +14,9 @@ pub struct VariantsModalState {
     pub current_model: String,
     pub active_variant: Option<String>,
     pub variants: Vec<VariantItem>,
+    pub filtered_variants: Vec<VariantItem>,
     pub selected_index: usize,
+    pub query: String,
 }
 
 impl VariantsModalState {
@@ -30,24 +34,64 @@ impl VariantsModalState {
             })
             .unwrap_or(0);
 
-        Self {
+        let mut state = Self {
             current_model,
             active_variant,
             variants,
+            filtered_variants: Vec::new(),
             selected_index,
-        }
+            query: String::new(),
+        };
+        state.apply_filter();
+        state.selected_index = state
+            .filtered_variants
+            .iter()
+            .position(|v| match (&v.id, &state.active_variant) {
+                (Some(id), Some(cur)) => id == cur,
+                (None, None) => true,
+                _ => false,
+            })
+            .unwrap_or(0);
+        state
+    }
+
+    pub fn apply_filter(&mut self) {
+        self.filtered_variants = self
+            .variants
+            .iter()
+            .filter(|variant| {
+                self.query.is_empty()
+                    || fuzzy_matches(&self.query, &variant.display_name)
+                    || variant
+                        .id
+                        .as_deref()
+                        .is_some_and(|id| fuzzy_matches(&self.query, id))
+            })
+            .cloned()
+            .collect();
+        self.selected_index = 0;
+    }
+
+    pub fn push_query(&mut self, c: char) {
+        self.query.push(c);
+        self.apply_filter();
+    }
+
+    pub fn pop_query(&mut self) {
+        self.query.pop();
+        self.apply_filter();
     }
 
     pub fn next(&mut self) {
-        if !self.variants.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.variants.len();
+        if !self.filtered_variants.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.filtered_variants.len();
         }
     }
 
     pub fn previous(&mut self) {
-        if !self.variants.is_empty() {
+        if !self.filtered_variants.is_empty() {
             self.selected_index = if self.selected_index == 0 {
-                self.variants.len() - 1
+                self.filtered_variants.len() - 1
             } else {
                 self.selected_index - 1
             };
@@ -55,7 +99,7 @@ impl VariantsModalState {
     }
 
     pub fn selected_variant(&self) -> Option<&VariantItem> {
-        self.variants.get(self.selected_index)
+        self.filtered_variants.get(self.selected_index)
     }
 }
 

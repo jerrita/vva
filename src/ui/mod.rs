@@ -262,11 +262,11 @@ async fn run_app_loop(
 
             // 5. 模态弹窗层
             match &app.modal {
-                ActiveModal::Sessions => render_sessions_modal(app, frame, size),
-                ActiveModal::Models => render_models_modal(app, frame, size),
-                ActiveModal::Variants => render_variants_modal(app, frame, size),
-                ActiveModal::Config => render_config_modal(app, frame, size),
-                ActiveModal::Help => render_help_modal(frame, size),
+                ActiveModal::Sessions => render_sessions_modal(app, frame, main_area),
+                ActiveModal::Models => render_models_modal(app, frame, main_area),
+                ActiveModal::Variants => render_variants_modal(app, frame, main_area),
+                ActiveModal::Config => render_config_modal(app, frame, main_area),
+                ActiveModal::Help => render_help_modal(frame, main_area),
                 ActiveModal::None => {}
             }
         })?;
@@ -496,8 +496,20 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
         match &app.modal {
             ActiveModal::Sessions => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Esc => {
                         app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Backspace => {
+                        let ws = app.session_mgr.workspace().to_path_buf();
+                        if let Some(ref mut sm) = app.sessions_modal {
+                            sm.pop_query(&ws);
+                        }
+                    }
+                    KeyCode::Char(c) if !matches!(c, 'p' | 'j' | 'k') => {
+                        let ws = app.session_mgr.workspace().to_path_buf();
+                        if let Some(ref mut sm) = app.sessions_modal {
+                            sm.push_query(c, &ws);
+                        }
                     }
                     KeyCode::Tab | KeyCode::Char('p') => {
                         let ws = app.session_mgr.workspace().to_path_buf();
@@ -532,8 +544,18 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
             }
             ActiveModal::Models => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Esc => {
                         app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(ref mut mm) = app.models_modal {
+                            mm.pop_query();
+                        }
+                    }
+                    KeyCode::Char(c) if !matches!(c, 'j' | 'k') => {
+                        if let Some(ref mut mm) = app.models_modal {
+                            mm.push_query(c);
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if let Some(ref mut mm) = app.models_modal {
@@ -562,8 +584,18 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
             }
             ActiveModal::Variants => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Esc => {
                         app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(ref mut vm) = app.variants_modal {
+                            vm.pop_query();
+                        }
+                    }
+                    KeyCode::Char(c) if !matches!(c, 'j' | 'k') => {
+                        if let Some(ref mut vm) = app.variants_modal {
+                            vm.push_query(c);
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if let Some(ref mut vm) = app.variants_modal {
@@ -592,8 +624,18 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
             }
             ActiveModal::Config => {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Esc => {
                         app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(ref mut cm) = app.config_modal {
+                            cm.pop_query();
+                        }
+                    }
+                    KeyCode::Char(c) if !matches!(c, 'j' | 'k' | ' ') => {
+                        if let Some(ref mut cm) = app.config_modal {
+                            cm.push_query(c);
+                        }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if let Some(ref mut cm) = app.config_modal {

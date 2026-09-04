@@ -1,3 +1,5 @@
+use super::fuzzy_matches;
+
 /// /model 模态选择框展示的模型条目
 #[derive(Debug, Clone)]
 pub struct ModelItem {
@@ -15,7 +17,9 @@ pub struct ModelItem {
 #[derive(Debug, Clone)]
 pub struct ModelsModalState {
     pub models: Vec<ModelItem>,
+    pub filtered_models: Vec<ModelItem>,
     pub selected_index: usize,
+    pub query: String,
 }
 
 impl ModelsModalState {
@@ -25,22 +29,56 @@ impl ModelsModalState {
             .position(|m| m.full_id == current_model || m.model_id == current_model)
             .unwrap_or(0);
 
-        Self {
+        let mut state = Self {
             models,
+            filtered_models: Vec::new(),
             selected_index,
-        }
+            query: String::new(),
+        };
+        state.apply_filter();
+        state.selected_index = state
+            .filtered_models
+            .iter()
+            .position(|m| m.full_id == current_model || m.model_id == current_model)
+            .unwrap_or(0);
+        state
+    }
+
+    pub fn apply_filter(&mut self) {
+        self.filtered_models = self
+            .models
+            .iter()
+            .filter(|model| {
+                self.query.is_empty()
+                    || fuzzy_matches(&self.query, &model.full_id)
+                    || fuzzy_matches(&self.query, &model.display_name)
+                    || fuzzy_matches(&self.query, &model.provider_type)
+            })
+            .cloned()
+            .collect();
+        self.selected_index = 0;
+    }
+
+    pub fn push_query(&mut self, c: char) {
+        self.query.push(c);
+        self.apply_filter();
+    }
+
+    pub fn pop_query(&mut self) {
+        self.query.pop();
+        self.apply_filter();
     }
 
     pub fn next(&mut self) {
-        if !self.models.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.models.len();
+        if !self.filtered_models.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.filtered_models.len();
         }
     }
 
     pub fn previous(&mut self) {
-        if !self.models.is_empty() {
+        if !self.filtered_models.is_empty() {
             self.selected_index = if self.selected_index == 0 {
-                self.models.len() - 1
+                self.filtered_models.len() - 1
             } else {
                 self.selected_index - 1
             };
@@ -48,7 +86,7 @@ impl ModelsModalState {
     }
 
     pub fn selected_model(&self) -> Option<&ModelItem> {
-        self.models.get(self.selected_index)
+        self.filtered_models.get(self.selected_index)
     }
 }
 
@@ -92,5 +130,10 @@ mod tests {
 
         modal.previous();
         assert_eq!(modal.selected_index, 1);
+
+        modal.push_query('t');
+        modal.push_query('w');
+        assert_eq!(modal.filtered_models.len(), 1);
+        assert_eq!(modal.selected_model().unwrap().full_id, "prov/model-2");
     }
 }

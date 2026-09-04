@@ -1,3 +1,5 @@
+use super::fuzzy_matches;
+
 /// /config 模态弹窗中的设置项类别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigItemKind {
@@ -20,7 +22,9 @@ pub struct ConfigSettingItem {
 #[derive(Debug, Clone)]
 pub struct ConfigModalState {
     pub items: Vec<ConfigSettingItem>,
+    pub filtered_items: Vec<ConfigSettingItem>,
     pub selected_index: usize,
+    pub query: String,
 }
 
 impl ConfigModalState {
@@ -69,13 +73,43 @@ impl ConfigModalState {
             },
         ];
 
-        Self {
+        let mut state = Self {
             items,
+            filtered_items: Vec::new(),
             selected_index: 0,
-        }
+            query: String::new(),
+        };
+        state.apply_filter();
+        state
+    }
+
+    pub fn apply_filter(&mut self) {
+        self.filtered_items = self
+            .items
+            .iter()
+            .filter(|item| {
+                self.query.is_empty()
+                    || fuzzy_matches(&self.query, &item.name)
+                    || fuzzy_matches(&self.query, &item.current_value)
+                    || fuzzy_matches(&self.query, &item.description)
+            })
+            .cloned()
+            .collect();
+        self.selected_index = 0;
+    }
+
+    pub fn push_query(&mut self, c: char) {
+        self.query.push(c);
+        self.apply_filter();
+    }
+
+    pub fn pop_query(&mut self) {
+        self.query.pop();
+        self.apply_filter();
     }
 
     pub fn update_web_search(&mut self, web_search: bool) {
+        let selected_kind = self.selected_item().map(|item| item.kind);
         if let Some(item) = self
             .items
             .iter_mut()
@@ -83,9 +117,12 @@ impl ConfigModalState {
         {
             item.current_value = if web_search { "Enabled" } else { "Disabled" }.to_string();
         }
+        self.apply_filter();
+        self.restore_selected_kind(selected_kind);
     }
 
     pub fn update_thinking_display(&mut self, thinking_concise: bool) {
+        let selected_kind = self.selected_item().map(|item| item.kind);
         if let Some(item) = self
             .items
             .iter_mut()
@@ -98,18 +135,30 @@ impl ConfigModalState {
             }
             .to_string();
         }
+        self.apply_filter();
+        self.restore_selected_kind(selected_kind);
+    }
+
+    fn restore_selected_kind(&mut self, selected_kind: Option<ConfigItemKind>) {
+        if let Some(kind) = selected_kind {
+            self.selected_index = self
+                .filtered_items
+                .iter()
+                .position(|item| item.kind == kind)
+                .unwrap_or(0);
+        }
     }
 
     pub fn next(&mut self) {
-        if !self.items.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.items.len();
+        if !self.filtered_items.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.filtered_items.len();
         }
     }
 
     pub fn previous(&mut self) {
-        if !self.items.is_empty() {
+        if !self.filtered_items.is_empty() {
             self.selected_index = if self.selected_index == 0 {
-                self.items.len() - 1
+                self.filtered_items.len() - 1
             } else {
                 self.selected_index - 1
             };
@@ -117,7 +166,7 @@ impl ConfigModalState {
     }
 
     pub fn selected_item(&self) -> Option<&ConfigSettingItem> {
-        self.items.get(self.selected_index)
+        self.filtered_items.get(self.selected_index)
     }
 }
 

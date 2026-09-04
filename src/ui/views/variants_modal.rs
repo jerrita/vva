@@ -43,7 +43,7 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2), // 当前模型与当前生效 Variant 指示
+            Constraint::Length(3), // 当前模型、当前生效 Variant 与搜索条件
             Constraint::Min(1),    // Variant 列表
             Constraint::Length(1), // 底部操作按键提示
         ])
@@ -71,22 +71,31 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         ),
         Span::raw("  "),
         Span::styled(
-            format!("({} options)", state.variants.len()),
+            format!(
+                "({}/{} options)",
+                state.filtered_variants.len(),
+                state.variants.len()
+            ),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::ITALIC),
         ),
     ]);
-    frame.render_widget(Paragraph::new(top_line), chunks[0]);
+    let search_line = Line::from(vec![
+        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(&state.query, Style::default().fg(Color::Magenta)),
+        Span::styled("_", Style::default().fg(Color::Magenta)),
+    ]);
+    frame.render_widget(Paragraph::new(vec![top_line, search_line]), chunks[0]);
 
     // 2. 档位列表渲染
-    if state.variants.is_empty() {
+    if state.filtered_variants.is_empty() {
         let empty_msg = vec![
             Line::from(""),
             Line::from(vec![
                 Span::raw("   "),
                 Span::styled(
-                    "No variants available for this model.",
+                    "No variants match the filter.",
                     Style::default().fg(Color::Yellow),
                 ),
             ]),
@@ -112,7 +121,7 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
         };
 
         for (i, item) in state
-            .variants
+            .filtered_variants
             .iter()
             .enumerate()
             .skip(start_idx)
@@ -179,7 +188,9 @@ pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled("Set Variant  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(" [Esc/q] ", Style::default().fg(Color::Yellow)),
+        Span::styled(" [type] ", Style::default().fg(Color::Magenta)),
+        Span::styled("Filter  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);

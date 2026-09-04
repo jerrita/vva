@@ -1,3 +1,4 @@
+use super::fuzzy_matches;
 use crate::model::SessionSummary;
 use std::path::Path;
 
@@ -15,6 +16,7 @@ pub struct SessionsModalState {
     pub filtered_sessions: Vec<SessionSummary>,
     pub selected_index: usize,
     pub scope: ProjectScope,
+    pub query: String,
 }
 
 impl SessionsModalState {
@@ -24,6 +26,7 @@ impl SessionsModalState {
             filtered_sessions: Vec::new(),
             selected_index: 0,
             scope: ProjectScope::CurrentProject,
+            query: String::new(),
         };
         state.apply_filter(current_workspace);
         state
@@ -55,14 +58,41 @@ impl SessionsModalState {
                         s.workspace_root == current_workspace
                     }
                 })
+                .filter(|s| self.matches_query(s))
                 .cloned()
                 .collect(),
-            ProjectScope::AllProjects => self.all_sessions.clone(),
+            ProjectScope::AllProjects => self
+                .all_sessions
+                .iter()
+                .filter(|s| self.matches_query(s))
+                .cloned()
+                .collect(),
         };
 
         if self.selected_index >= self.filtered_sessions.len() {
             self.selected_index = 0;
         }
+    }
+
+    pub fn push_query(&mut self, c: char, current_workspace: &Path) {
+        self.query.push(c);
+        self.apply_filter(current_workspace);
+    }
+
+    pub fn pop_query(&mut self, current_workspace: &Path) {
+        self.query.pop();
+        self.apply_filter(current_workspace);
+    }
+
+    fn matches_query(&self, session: &SessionSummary) -> bool {
+        self.query.is_empty()
+            || fuzzy_matches(&self.query, &session.id)
+            || session
+                .title
+                .as_deref()
+                .is_some_and(|title| fuzzy_matches(&self.query, title))
+            || fuzzy_matches(&self.query, &session.current_model)
+            || fuzzy_matches(&self.query, &session.workspace_root.to_string_lossy())
     }
 
     pub fn next(&mut self) {
@@ -144,6 +174,14 @@ mod tests {
         assert_eq!(modal.selected_session().unwrap().id, "sess_1"); // wrap around
         modal.previous();
         assert_eq!(modal.selected_session().unwrap().id, "sess_2");
+
+        modal.push_query('a', &ws_a);
+        modal.push_query('2', &ws_a);
+        assert_eq!(modal.filtered_sessions.len(), 1);
+        assert_eq!(modal.selected_session().unwrap().id, "sess_2");
+
+        modal.pop_query(&ws_a);
+        modal.pop_query(&ws_a);
 
         // 切换到 All Projects
         modal.toggle_scope(&ws_a);
