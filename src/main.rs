@@ -229,7 +229,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let target_search = web_search.unwrap_or(true);
                 let mut s = Session::with_model(
                     &workspace,
-                    Some(prompt.chars().take(40).collect()),
+                    Some(vva::model::provisional_title(&prompt)),
                     target_model,
                     variant,
                     target_search,
@@ -326,13 +326,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             session.append_turn(user_turn);
 
             let agent_config = AgentConfig {
-                max_iterations: 15,
                 completion_options: CompletionOptions {
                     model: effective_model_name,
                     enable_web_search: session.web_search,
                     reasoning_effort,
                     ..Default::default()
                 },
+                ..Default::default()
             };
 
             let engine = AgentEngine::new(provider_inst, store.clone(), tools, agent_config);

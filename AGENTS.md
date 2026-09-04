@@ -86,8 +86,6 @@ src/
 │   ├── anthropic.rs        # Anthropic Messages API (Prompt Caching + Thinking 签名)
 │   ├── gemini.rs           # Google Gemini API (Grounding 投影 + 代码沙盒)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器
-├── search/                 # 统一搜索调度 (原生直通 / 外置降级)
-│   └── mod.rs
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
 │   ├── bash.rs             # Shell 执行 (Unix)

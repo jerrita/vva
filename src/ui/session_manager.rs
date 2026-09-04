@@ -203,7 +203,7 @@ impl SessionManager {
             s.append_turn(sys_turn);
 
             if s.title.is_none() {
-                s.title = Some(prompt.chars().take(40).collect());
+                s.title = Some(crate::model::provisional_title(prompt));
                 should_generate_title = true;
             }
 
@@ -231,7 +231,7 @@ impl SessionManager {
         {
             let mut s = managed.session.write().await;
             if s.title.is_none() {
-                s.title = Some(prompt.chars().take(40).collect());
+                s.title = Some(crate::model::provisional_title(prompt));
                 should_generate_title = true;
             }
             s.append_turn(user_turn);
@@ -278,13 +278,13 @@ impl SessionManager {
         tools.register(Arc::new(FileEditTool::new(&session_workspace)));
 
         let agent_config = AgentConfig {
-            max_iterations: 15,
             completion_options: CompletionOptions {
                 model: effective_model,
                 enable_web_search: session_web_search,
                 reasoning_effort,
                 ..Default::default()
             },
+            ..Default::default()
         };
 
         let engine = AgentEngine::new(provider, self.store.clone(), tools, agent_config);

@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
 use crate::ui::app::App;
+use crate::ui::text::truncate;
 use crate::ui::views::chat::apply_selection_highlight;
 
 /// 右侧边栏所需的会话元信息
@@ -20,32 +21,21 @@ pub struct SidebarInfo<'a> {
 pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> {
     let title_display = if info.session_title.trim().is_empty() {
         "Untitled".to_string()
-    } else if info.session_title.chars().count() > 18 {
-        format!(
-            "{}...",
-            info.session_title.chars().take(16).collect::<String>()
-        )
     } else {
-        info.session_title.to_string()
+        truncate(info.session_title, 18)
     };
 
-    let short_id = if info.session_id.len() > 16 {
-        format!("{}...", &info.session_id[..14])
-    } else {
-        info.session_id.to_string()
-    };
+    let short_id = truncate(info.session_id, 16);
 
     let ws_display = std::path::Path::new(info.workspace)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(info.workspace);
 
-    let model_display = if info.model.len() > 20 {
-        format!("{}...", &info.model[..18])
-    } else if info.model.is_empty() {
+    let model_display = if info.model.is_empty() {
         "Default".to_string()
     } else {
-        info.model.to_string()
+        truncate(info.model, 20)
     };
 
     let context_limit = app.stats.context_limit.unwrap_or(200_000);

@@ -22,7 +22,7 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: super::shared_client().clone(),
             api_key: api_key.into(),
             base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
         }

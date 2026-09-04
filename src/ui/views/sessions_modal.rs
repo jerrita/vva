@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::ui::app::{App, ProjectScope};
+use crate::ui::text::truncate;
 
 /// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程
 pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
@@ -175,25 +176,15 @@ pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
             let is_selected = i == state.selected_index;
             let prefix = if is_selected { "> " } else { "  " };
 
-            let short_id = if item.id.len() > 14 {
-                format!("{}..", &item.id[..12])
-            } else {
-                item.id.clone()
-            };
+            let short_id = truncate(&item.id, 14);
 
             let title_raw = item.title.as_deref().unwrap_or("Untitled");
-            let short_title = if title_raw.chars().count() > 24 {
-                format!("{}...", title_raw.chars().take(22).collect::<String>())
-            } else {
-                title_raw.to_string()
-            };
+            let short_title = truncate(title_raw, 24);
 
-            let short_model = if item.current_model.len() > 16 {
-                format!("{}..", &item.current_model[..14])
-            } else if item.current_model.is_empty() {
+            let short_model = if item.current_model.is_empty() {
                 "-".to_string()
             } else {
-                item.current_model.clone()
+                truncate(&item.current_model, 16)
             };
 
             let created_str = item.created_at.format("%m-%d %H:%M").to_string();

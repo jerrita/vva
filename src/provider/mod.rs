@@ -3,11 +3,20 @@ pub mod gemini;
 pub mod response;
 pub mod sse;
 
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::model::{Message, Session, TokenUsage, ToolDefinition, TurnMeta};
+
+/// 全局共享 HTTP 客户端：复用连接池，避免每次会话轮次重建 TLS 连接
+static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+pub fn shared_client() -> &'static reqwest::Client {
+    SHARED_CLIENT.get_or_init(reqwest::Client::new)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderDelta {

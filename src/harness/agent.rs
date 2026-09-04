@@ -16,7 +16,7 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            max_iterations: 10,
+            max_iterations: 15,
             completion_options: CompletionOptions::default(),
         }
     }

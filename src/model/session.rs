@@ -11,6 +11,11 @@ fn default_web_search() -> bool {
     true
 }
 
+/// 由用户首条 Prompt 派生的占位标题（正式标题由后台小模型异步生成后覆盖）
+pub fn provisional_title(prompt: &str) -> String {
+    prompt.chars().take(40).collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Session {
     pub id: String,

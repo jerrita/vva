@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::ui::app::App;
+use crate::ui::text::truncate;
 
 /// 渲染 /model 模态弹窗，支持上下键或 j/k 浏览选择当前配置中的可用模型
 pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
@@ -248,16 +249,4 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Cancel", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[2]);
-}
-
-fn truncate(text: &str, width: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= width {
-        return text.to_string();
-    }
-
-    text.chars()
-        .take(width.saturating_sub(2))
-        .collect::<String>()
-        + ".."
 }

@@ -21,7 +21,7 @@ pub struct ResponseProvider {
 impl ResponseProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: super::shared_client().clone(),
             api_key: api_key.into(),
             base_url: "https://api.openai.com/v1".into(),
         }

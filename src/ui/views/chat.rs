@@ -62,11 +62,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                         .map(str::trim)
                         .find(|l| !l.is_empty())
                         .unwrap_or("Thinking...");
-                    let short_preview = if first_line.chars().count() > 80 {
-                        format!("{}...", first_line.chars().take(77).collect::<String>())
-                    } else {
-                        first_line.to_string()
-                    };
+                    let short_preview = crate::ui::text::truncate(first_line, 80);
                     lines.push(Line::from(vec![
                         Span::styled(
                             "🧠 Thinking: ",

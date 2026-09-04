@@ -17,7 +17,7 @@ pub use meta::{
     ResponseWebSearchAction, ResponseWebSearchSource, ResponseWebSearchSourceType, SessionMeta,
     TurnMeta,
 };
-pub use session::{JsonlRecord, Session, SessionHeader, SessionSummary};
+pub use session::{JsonlRecord, Session, SessionHeader, SessionSummary, provisional_title};
 pub use tool::{ToolCall, ToolDefinition, ToolResult};
 pub use turn::{TokenUsage, Turn};
 

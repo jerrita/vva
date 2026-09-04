@@ -5,6 +5,7 @@ pub mod input;
 pub mod markdown;
 pub mod modals;
 pub mod session_manager;
+pub mod text;
 pub mod views;
 
 #[cfg(test)]
