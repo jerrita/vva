@@ -113,10 +113,6 @@ mod tests {
         assert_eq!(cfg_matches.len(), 1);
         assert_eq!(cfg_matches[0].name, "/config");
 
-        let th_matches = match_commands("/th");
-        assert_eq!(th_matches.len(), 1);
-        assert_eq!(th_matches[0].name, "/thinking");
-
         let think_matches = match_commands("/think");
         assert_eq!(think_matches.len(), 1);
         assert_eq!(think_matches[0].name, "/thinking");

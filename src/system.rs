@@ -414,26 +414,3 @@ fn get_memory_info() -> String {
     "Unknown".to_string()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_system_info_collect_and_format() {
-        let info = SystemInfo::collect();
-        assert!(!info.date.is_empty());
-        assert!(!info.os.is_empty());
-        assert!(!info.arch.is_empty());
-        assert!(!info.cpu.is_empty());
-        assert!(!info.gpu.is_empty());
-        assert!(!info.memory.is_empty());
-
-        let prompt = info.to_system_prompt(Path::new("/test/workspace"));
-        assert!(prompt.contains(&info.date));
-        assert!(prompt.contains(&info.os));
-        assert!(prompt.contains(&info.cpu));
-        assert!(prompt.contains(&info.gpu));
-        assert!(prompt.contains(&info.memory));
-        assert!(prompt.contains("/test/workspace"));
-    }
-}

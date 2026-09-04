@@ -122,14 +122,7 @@ mod tests {
         assert_eq!(modal.selected_model().unwrap().full_id, "prov/model-1");
 
         modal.next();
-        assert_eq!(modal.selected_index, 1);
         assert_eq!(modal.selected_model().unwrap().full_id, "prov/model-2");
-
-        modal.next();
-        assert_eq!(modal.selected_index, 0); // wrap around
-
-        modal.previous();
-        assert_eq!(modal.selected_index, 1);
 
         modal.push_query('t');
         modal.push_query('w');

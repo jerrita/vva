@@ -417,21 +417,12 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::jsonl::JsonlSessionStore;
     use crate::ui::app::TextCoord;
-    use crate::ui::session_manager::SessionManager;
-    use std::sync::Arc;
 
     async fn create_test_app() -> App {
-        let temp_dir = std::env::temp_dir().join(format!("vva_chat_test_{}", uuid::Uuid::new_v4()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let store = Arc::new(JsonlSessionStore::new(&temp_dir).unwrap());
-        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
-        let session = session_mgr
-            .create_session("init_model".into(), None, None, false)
+        crate::ui::test_support::create_test_app("init_model", None, None, false)
             .await
-            .unwrap();
-        App::new(session_mgr, session, false).await
+            .app
     }
 
     #[tokio::test]

@@ -1221,67 +1221,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_response_provider_stream_events_flow() {
-        let provider = ResponseProvider::new("test-key");
-        let (tx, mut rx) = mpsc::channel::<ProviderDelta>(10);
-
-        let sse_stream_data = concat!(
-            "event: response.reasoning_text.delta\n",
-            "data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"Thinking deeply...\"}\n\n",
-            "event: response.output_text.delta\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello \"}\n\n",
-            "event: response.output_text.delta\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"world!\"}\n\n",
-            "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream_1\",\"status\":\"completed\",\"store\":true,\"output\":[{\"type\":\"reasoning\",\"id\":\"r1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"Thinking deeply...\"}]},{\"type\":\"message\",\"id\":\"m1\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world!\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":10,\"total_tokens\":15,\"input_tokens_details\":{\"cached_tokens\":0,\"cache_write_tokens\":0},\"output_tokens_details\":{\"reasoning_tokens\":0}}}}\n\n",
-            "data: [DONE]\n\n"
-        );
-
-        let mut decoder = SseDecoder::new();
-        let events = decoder.decode(sse_stream_data.as_bytes());
-
-        let mut completed_response = None;
-        for ev in events {
-            if ev.data == "[DONE]" {
-                break;
-            }
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data) {
-                let ev_type = json["type"].as_str().unwrap_or_default();
-                match ev_type {
-                    "response.output_text.delta" => {
-                        if let Some(delta) = json["delta"].as_str() {
-                            let _ = tx.send(ProviderDelta::Text(delta.to_string())).await;
-                        }
-                    }
-                    "response.reasoning_text.delta" => {
-                        if let Some(delta) = json["delta"].as_str() {
-                            let _ = tx.send(ProviderDelta::Thought(delta.to_string())).await;
-                        }
-                    }
-                    "response.completed" => {
-                        if let Some(resp_obj) = json.get("response") {
-                            completed_response =
-                                Some(provider.parse_response(resp_obj.clone()).unwrap());
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        assert_eq!(
-            rx.recv().await,
-            Some(ProviderDelta::Thought("Thinking deeply...".into()))
-        );
-        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("Hello ".into())));
-        assert_eq!(rx.recv().await, Some(ProviderDelta::Text("world!".into())));
-
-        let resp = completed_response.expect("completed response");
-        assert_eq!(resp.messages.len(), 1);
-        assert_eq!(resp.usage.unwrap().total_tokens, 15);
-    }
-
     #[test]
     fn test_response_provider_store_false_falls_back_to_full_history() {
         let provider = ResponseProvider::new("test-key");

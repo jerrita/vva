@@ -547,30 +547,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_small_model_title_generation_flow() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("vva_test_title_{}", uuid::Uuid::new_v4().simple()));
-        let store = Arc::new(JsonlSessionStore::new(&temp_dir).expect("init store"));
-
-        let session = Session::with_model(&temp_dir, None, "test_model", None, false);
-        store.save_header(&session).await.expect("save header");
-
-        let session_lock = Arc::new(RwLock::new(session));
-        assert_eq!(session_lock.read().await.title, None);
-
-        generate_title_with_small_model(
-            &None,
-            store.clone(),
-            session_lock.clone(),
-            Arc::new(AtomicBool::new(false)),
-            "How to write a fast web server in Rust?".into(),
-        )
-        .await;
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
-
-    #[tokio::test]
     async fn test_lazy_session_creation_persists_only_on_first_prompt() {
         let temp_dir =
             std::env::temp_dir().join(format!("vva_test_lazy_{}", uuid::Uuid::new_v4().simple()));

@@ -237,24 +237,14 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::jsonl::JsonlSessionStore;
     use crate::ui::app::{TextCoord, TextSelection};
-    use crate::ui::session_manager::SessionManager;
+    use crate::ui::test_support::create_test_app;
     use ratatui::backend::TestBackend;
-    use std::sync::Arc;
 
     #[tokio::test]
     async fn render_sidebar_keeps_selectable_text_lines() {
-        let temp_dir =
-            std::env::temp_dir().join(format!("vva_sidebar_test_{}", uuid::Uuid::new_v4()));
-        let _ = std::fs::create_dir_all(&temp_dir);
-        let store = Arc::new(JsonlSessionStore::new(&temp_dir).unwrap());
-        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
-        let session = session_mgr
-            .create_session("test-model".into(), None, None, false)
-            .await
-            .unwrap();
-        let mut app = App::new(session_mgr, session, false).await;
+        let mut ta = create_test_app("test-model", None, None, false).await;
+        let app = &mut ta.app;
         app.start_sidebar_selection(0, 7);
         app.update_sidebar_selection(0, 14);
         app.finish_sidebar_selection();
@@ -269,7 +259,7 @@ mod tests {
         let backend = TestBackend::new(30, 25);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&mut app, frame, Rect::new(0, 0, 30, 25), &info))
+            .draw(|frame| render_sidebar(app, frame, Rect::new(0, 0, 30, 25), &info))
             .unwrap();
 
         assert_eq!(app.sidebar_area, Rect::new(1, 1, 29, 22));
@@ -288,6 +278,6 @@ mod tests {
             Some("Example".to_string())
         );
 
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::remove_dir_all(&ta.temp_dir);
     }
 }

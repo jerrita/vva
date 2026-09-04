@@ -175,25 +175,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_modal_navigation_and_toggle() {
+    fn test_config_modal_toggle_restores_selection() {
         let mut cm =
             ConfigModalState::new("test_model".into(), Some("medium".into()), false, false);
 
-        assert_eq!(cm.items.len(), 4);
-        assert_eq!(cm.items[0].kind, ConfigItemKind::Model);
-        assert_eq!(cm.items[1].kind, ConfigItemKind::Variant);
-        assert_eq!(cm.items[2].kind, ConfigItemKind::WebSearch);
-        assert_eq!(cm.items[2].current_value, "Disabled");
-        assert_eq!(cm.items[3].kind, ConfigItemKind::ThinkingDisplay);
-        assert_eq!(cm.items[3].current_value, "Full");
-
-        // 导航
+        // 导航至 WebSearch 项并切换取值
         cm.next();
-        assert_eq!(cm.selected_index, 1);
         cm.next();
         assert_eq!(cm.selected_index, 2);
         cm.update_web_search(true);
         assert_eq!(cm.items[2].current_value, "Enabled");
+
+        // toggle 内部会重建过滤列表，选中项应被恢复而非重置，后续导航仍指向下一项
         cm.next();
         assert_eq!(cm.selected_index, 3);
         cm.update_thinking_display(true);

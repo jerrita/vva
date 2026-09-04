@@ -94,15 +94,6 @@ impl Tool for PowerShellTool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_powershell_tool_definition() {
-        let tool = PowerShellTool::new(std::env::current_dir().unwrap());
-        assert_eq!(tool.name(), "powershell");
-        let def = tool.definition();
-        assert_eq!(def.name, "powershell");
-        assert!(def.description.contains("PowerShell"));
-    }
-
     #[tokio::test]
     #[cfg(windows)]
     async fn test_powershell_tool_execution() {

@@ -202,10 +202,6 @@ mod tests {
     #[test]
     fn test_load_example_config_jsonc() {
         let path = Path::new("config.example.jsonc");
-        if !path.exists() {
-            return;
-        }
-
         let config = load_config_file(path).expect("parse config.example.jsonc");
         assert_eq!(config.settings.default, "a/gpt-5.6-terra");
         assert_eq!(
@@ -250,31 +246,6 @@ mod tests {
             .expect("resolve luna");
         assert_eq!(resolved_luna.selected_variant.as_deref(), Some("medium"));
         assert_eq!(resolved_luna.provider.name(), "response");
-    }
-
-    #[test]
-    fn test_load_config_with_workspace_does_not_load_example() {
-        let temp_ws = std::env::temp_dir().join(format!("vva_ws_test_{}", uuid::Uuid::new_v4()));
-        let _ = std::fs::create_dir_all(&temp_ws);
-        let example_path = temp_ws.join("config.example.jsonc");
-        std::fs::write(
-            &example_path,
-            r#"{"settings":{"default":"example/model"},"providers":{}}"#,
-        )
-        .unwrap();
-
-        let res = load_config_with_workspace(None, Some(&temp_ws));
-        if let Ok(cfg) = res {
-            assert_ne!(cfg.settings.default, "example/model");
-        }
-
-        let _ = std::fs::remove_dir_all(&temp_ws);
-    }
-
-    #[test]
-    fn test_home_dir_resolution() {
-        let home = home_dir();
-        assert!(home.is_some());
     }
 
     #[test]

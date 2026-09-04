@@ -202,3 +202,17 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     }
     res
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_base64_encode() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"Hello World"), "SGVsbG8gV29ybGQ=");
+    }
+}

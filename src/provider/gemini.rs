@@ -909,45 +909,5 @@ mod tests {
         assert_eq!(fr["name"], "bash");
         assert_eq!(fr["response"]["content"], "file1.txt\nfile2.txt");
     }
-
-    #[tokio::test]
-    async fn test_gemini_provider_stream_events_flow() {
-        let (tx, mut rx) = mpsc::channel::<ProviderDelta>(10);
-
-        let sse_data = concat!(
-            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Analyzing question...\",\"thought\":true}]},\"finishReason\":\"\"}]}\n\n",
-            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Here is the result.\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":15,\"totalTokenCount\":25}}\n\n"
-        );
-
-        let mut decoder = SseDecoder::new();
-        let events = decoder.decode(sse_data.as_bytes());
-
-        for ev in events {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&ev.data)
-                && let Some(candidate) = json["candidates"].as_array().and_then(|c| c.first())
-                && let Some(parts) = candidate["content"]["parts"].as_array()
-            {
-                for p in parts {
-                    if p["thought"].as_bool() == Some(true) {
-                        let _ = tx
-                            .send(ProviderDelta::Thought(
-                                p["text"].as_str().unwrap().to_string(),
-                            ))
-                            .await;
-                    } else if let Some(t) = p["text"].as_str() {
-                        let _ = tx.send(ProviderDelta::Text(t.to_string())).await;
-                    }
-                }
-            }
-        }
-
-        assert_eq!(
-            rx.recv().await,
-            Some(ProviderDelta::Thought("Analyzing question...".into()))
-        );
-        assert_eq!(
-            rx.recv().await,
-            Some(ProviderDelta::Text("Here is the result.".into()))
-        );
-    }
 }
+

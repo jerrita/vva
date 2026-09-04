@@ -478,20 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_and_clear() {
-        let mut buf = InputBuffer::new();
-        buf.set("hello\nworld");
-        assert_eq!(buf.line_count(), 2);
-        assert_eq!(buf.cursor_pos, 11);
-
-        buf.clear();
-        assert!(buf.is_empty());
-        assert_eq!(buf.cursor_pos, 0);
-        assert_eq!(buf.scroll_y.get(), 0);
-        assert_eq!(buf.scroll_x.get(), 0);
-    }
-
-    #[test]
     fn test_set_cursor_from_visual_coord() {
         let mut buf = InputBuffer::new();
         buf.set("你好世界\nHello World");

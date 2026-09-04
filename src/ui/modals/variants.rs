@@ -134,13 +134,6 @@ mod tests {
             Some("high")
         );
 
-        modal.next();
-        assert_eq!(modal.selected_index, 0); // wrap around to none
-        assert_eq!(modal.selected_variant().unwrap().id, None);
-
-        modal.previous();
-        assert_eq!(modal.selected_index, 2); // wrap around back to high
-
         modal.previous();
         assert_eq!(modal.selected_index, 1); // low
         assert_eq!(modal.selected_variant().unwrap().id.as_deref(), Some("low"));

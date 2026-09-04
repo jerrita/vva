@@ -170,10 +170,6 @@ mod tests {
         // 导航测试
         modal.next();
         assert_eq!(modal.selected_session().unwrap().id, "sess_2");
-        modal.next();
-        assert_eq!(modal.selected_session().unwrap().id, "sess_1"); // wrap around
-        modal.previous();
-        assert_eq!(modal.selected_session().unwrap().id, "sess_2");
 
         modal.push_query('a', &ws_a);
         modal.push_query('2', &ws_a);

@@ -7,6 +7,9 @@ pub mod modals;
 pub mod session_manager;
 pub mod views;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 #[cfg(not(windows))]
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{
