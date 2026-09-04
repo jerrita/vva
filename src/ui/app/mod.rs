@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use ratatui::layout::Rect;
+use ratatui::text::Line;
 use tokio::sync::broadcast;
 
 use crate::harness::agent::AgentEvent;
@@ -37,6 +38,10 @@ pub struct App {
     pub is_dragging_scrollbar: bool,
     pub text_selection: Option<TextSelection>,
     pub is_selecting_text: bool,
+    pub sidebar_area: Rect,
+    pub sidebar_lines: Vec<Line<'static>>,
+    pub sidebar_selection: Option<TextSelection>,
+    pub is_selecting_sidebar: bool,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
@@ -83,6 +88,10 @@ impl App {
             is_dragging_scrollbar: false,
             text_selection: None,
             is_selecting_text: false,
+            sidebar_area: Rect::default(),
+            sidebar_lines: Vec::new(),
+            sidebar_selection: None,
+            is_selecting_sidebar: false,
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,

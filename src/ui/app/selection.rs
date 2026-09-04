@@ -1,6 +1,6 @@
 use super::App;
 
-/// 对话流中的文本绝对行列坐标
+/// 文本区域中的绝对行列坐标
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextCoord {
     pub line: usize,
@@ -64,6 +64,32 @@ impl App {
         self.is_selecting_text = false;
     }
 
+    pub fn start_sidebar_selection(&mut self, line: usize, col: usize) {
+        let coord = TextCoord { line, col };
+        self.sidebar_selection = Some(TextSelection::new(coord, coord));
+        self.is_selecting_sidebar = true;
+    }
+
+    pub fn update_sidebar_selection(&mut self, line: usize, col: usize) {
+        if let Some(ref mut sel) = self.sidebar_selection {
+            sel.head = TextCoord { line, col };
+        }
+    }
+
+    pub fn finish_sidebar_selection(&mut self) {
+        self.is_selecting_sidebar = false;
+        if let Some(ref sel) = self.sidebar_selection
+            && sel.is_empty()
+        {
+            self.sidebar_selection = None;
+        }
+    }
+
+    pub fn clear_sidebar_selection(&mut self) {
+        self.sidebar_selection = None;
+        self.is_selecting_sidebar = false;
+    }
+
     pub fn copy_selection_to_clipboard(&mut self) -> bool {
         if let Some(text) = self.input.selected_text()
             && !text.is_empty()
@@ -75,6 +101,14 @@ impl App {
         let lines = crate::ui::views::chat::build_chat_lines(self, max_width);
         if let Some(ref sel) = self.text_selection
             && let Some(text) = crate::ui::views::chat::extract_selected_text(&lines, sel)
+            && !text.is_empty()
+        {
+            let _ = set_clipboard_text(&text);
+            return true;
+        }
+        if let Some(ref sel) = self.sidebar_selection
+            && let Some(text) =
+                crate::ui::views::chat::extract_selected_text(&self.sidebar_lines, sel)
             && !text.is_empty()
         {
             let _ = set_clipboard_text(&text);

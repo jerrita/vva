@@ -22,6 +22,7 @@ impl App {
         self.active_session = target;
         self.event_rx = self.active_session.event_tx.subscribe();
         self.clear_text_selection();
+        self.clear_sidebar_selection();
 
         let session_web_search = {
             let s = self.active_session.session.read().await;

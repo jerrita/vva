@@ -19,6 +19,7 @@ impl App {
 
         self.clear_input();
         self.clear_text_selection();
+        self.clear_sidebar_selection();
 
         // 处理斜杠命令
         if input_text.starts_with('/') {

@@ -245,6 +245,10 @@ async fn run_app_loop(
                     variant: session_variant.as_deref(),
                 };
                 render_sidebar(app, frame, sidebar_rect, &info);
+            } else {
+                app.sidebar_area = ratatui::layout::Rect::default();
+                app.sidebar_lines.clear();
+                app.clear_sidebar_selection();
             }
 
             // 5. 模态弹窗层
@@ -310,11 +314,27 @@ async fn handle_crossterm_event(
                         let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
                         app.start_input_selection(char_pos);
                         app.clear_text_selection();
+                        app.clear_sidebar_selection();
                         app.is_dragging_scrollbar = false;
                         return;
                     } else {
                         app.clear_input_selection();
                     }
+                }
+
+                if app.modal == ActiveModal::None
+                    && app.sidebar_area.width > 0
+                    && mouse.column >= app.sidebar_area.x
+                    && mouse.column < app.sidebar_area.x + app.sidebar_area.width
+                    && mouse.row >= app.sidebar_area.y
+                    && mouse.row < app.sidebar_area.y + app.sidebar_area.height
+                {
+                    let row_offset = (mouse.row - app.sidebar_area.y) as usize;
+                    let col_offset = (mouse.column - app.sidebar_area.x) as usize;
+                    app.start_sidebar_selection(row_offset, col_offset);
+                    app.clear_text_selection();
+                    app.is_dragging_scrollbar = false;
+                    return;
                 }
 
                 if app.modal == ActiveModal::None && app.chat_area.height > 0 {
@@ -344,9 +364,11 @@ async fn handle_crossterm_event(
                         };
                         let line = scroll + row_offset;
                         app.start_text_selection(line, col_offset);
+                        app.clear_sidebar_selection();
                     } else {
                         app.is_dragging_scrollbar = false;
                         app.clear_text_selection();
+                        app.clear_sidebar_selection();
                     }
                 }
             }
@@ -399,6 +421,20 @@ async fn handle_crossterm_event(
                     };
                     let line = scroll + row_offset;
                     app.update_text_selection(line, col_offset);
+                } else if app.is_selecting_sidebar && app.sidebar_area.height > 0 {
+                    let row_offset = if mouse.row < app.sidebar_area.y {
+                        0
+                    } else {
+                        ((mouse.row - app.sidebar_area.y) as usize)
+                            .min(app.sidebar_area.height.saturating_sub(1) as usize)
+                    };
+                    let col_offset = if mouse.column < app.sidebar_area.x {
+                        0
+                    } else {
+                        ((mouse.column - app.sidebar_area.x) as usize)
+                            .min(app.sidebar_area.width.saturating_sub(1) as usize)
+                    };
+                    app.update_sidebar_selection(row_offset, col_offset);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
@@ -409,6 +445,9 @@ async fn handle_crossterm_event(
                 if app.is_selecting_text {
                     app.finish_text_selection();
                 }
+                if app.is_selecting_sidebar {
+                    app.finish_sidebar_selection();
+                }
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 if app.input.selection.is_some() {
@@ -417,6 +456,9 @@ async fn handle_crossterm_event(
                 } else if app.text_selection.is_some() {
                     app.copy_selection_to_clipboard();
                     app.clear_text_selection();
+                } else if app.sidebar_selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_sidebar_selection();
                 } else if app.modal == ActiveModal::None {
                     app.paste_from_clipboard();
                 }
@@ -676,6 +718,9 @@ async fn handle_crossterm_event(
                 } else if app.text_selection.is_some() {
                     app.copy_selection_to_clipboard();
                     app.clear_text_selection();
+                } else if app.sidebar_selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_sidebar_selection();
                 } else if !app.input.is_empty() {
                     app.clear_input();
                 } else if app.active_session.is_running() {
@@ -694,6 +739,9 @@ async fn handle_crossterm_event(
                 } else if app.text_selection.is_some() {
                     app.copy_selection_to_clipboard();
                     app.clear_text_selection();
+                } else if app.sidebar_selection.is_some() {
+                    app.copy_selection_to_clipboard();
+                    app.clear_sidebar_selection();
                 } else if !app.input.is_empty() {
                     app.clear_input();
                 } else if app.active_session.is_running() {
@@ -863,6 +911,8 @@ async fn handle_crossterm_event(
                     app.clear_input();
                 } else if app.text_selection.is_some() {
                     app.clear_text_selection();
+                } else if app.sidebar_selection.is_some() {
+                    app.clear_sidebar_selection();
                 }
             }
             _ => {}
