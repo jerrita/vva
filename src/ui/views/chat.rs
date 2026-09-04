@@ -3,8 +3,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthChar;
 
-use crate::ui::app::{App, ChatEntry};
+use crate::ui::app::{App, ChatEntry, TextSelection};
 use crate::ui::markdown::{render_markdown, wrap_spans_to_lines};
 
 /// 构建对话流的 Ratatui 文本行列表（支持 Markdown 渲染、CJK 安全折行与多级缩进）
@@ -197,6 +198,160 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// 从渲染完成的文本行中提取处于选区范围内的纯文本内容（按行保留视觉对齐并去除尾随空白）
+pub fn extract_selected_text(lines: &[Line], selection: &TextSelection) -> Option<String> {
+    if selection.is_empty() {
+        return None;
+    }
+    let (start, end) = selection.normalized();
+    if start.line >= lines.len() {
+        return None;
+    }
+
+    let mut result_lines = Vec::new();
+
+    let end_idx = end.line.min(lines.len().saturating_sub(1));
+    for (line_idx, line) in lines.iter().enumerate().take(end_idx + 1).skip(start.line) {
+        let (sel_start_col, sel_end_col) = if start.line == end.line {
+            (start.col, end.col)
+        } else if line_idx == start.line {
+            (start.col, usize::MAX)
+        } else if line_idx == end.line {
+            (0, end.col)
+        } else {
+            (0, usize::MAX)
+        };
+
+        if sel_start_col >= sel_end_col {
+            result_lines.push(String::new());
+            continue;
+        }
+
+        let mut line_text = String::new();
+        let mut col = 0;
+
+        for span in &line.spans {
+            for ch in span.content.chars() {
+                let w = ch.width().unwrap_or(0);
+                let char_start = col;
+                let char_end = col + w;
+                let is_selected = if w == 0 {
+                    char_start >= sel_start_col && char_start < sel_end_col
+                } else {
+                    char_end > sel_start_col && char_start < sel_end_col
+                };
+
+                if is_selected {
+                    line_text.push(ch);
+                }
+                col += w;
+            }
+        }
+
+        result_lines.push(line_text.trim_end().to_string());
+    }
+
+    if result_lines.is_empty() {
+        return None;
+    }
+
+    while let Some(last) = result_lines.last() {
+        if last.is_empty() && result_lines.len() > 1 {
+            result_lines.pop();
+        } else {
+            break;
+        }
+    }
+
+    Some(result_lines.join("\n"))
+}
+
+/// 对处于选区范围内的文本行注入高亮样式（支持 CJK 字符边界精确切分）
+pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSelection) {
+    if selection.is_empty() {
+        return;
+    }
+    let (start, end) = selection.normalized();
+    let max_line = end.line.min(lines.len().saturating_sub(1));
+    if start.line > max_line {
+        return;
+    }
+
+    let highlight_style = Style::default()
+        .bg(Color::Rgb(60, 90, 140))
+        .fg(Color::White);
+
+    for (line_idx, line) in lines.iter_mut().enumerate().take(max_line + 1).skip(start.line) {
+        let (sel_start_col, sel_end_col) = if start.line == end.line {
+            (start.col, end.col)
+        } else if line_idx == start.line {
+            (start.col, usize::MAX)
+        } else if line_idx == end.line {
+            (0, end.col)
+        } else {
+            (0, usize::MAX)
+        };
+
+        if sel_start_col >= sel_end_col {
+            continue;
+        }
+
+        let old_spans = std::mem::take(&mut line.spans);
+        let mut new_spans: Vec<Span<'static>> = Vec::new();
+        let mut col = 0;
+
+        for span in old_spans {
+            let mut cur_buf = String::new();
+            let mut cur_is_selected: Option<bool> = None;
+
+            for ch in span.content.chars() {
+                let w = ch.width().unwrap_or(0);
+                let char_start = col;
+                let char_end = col + w;
+                let is_selected = if w == 0 {
+                    char_start >= sel_start_col && char_start < sel_end_col
+                } else {
+                    char_end > sel_start_col && char_start < sel_end_col
+                };
+
+                match cur_is_selected {
+                    Some(sel) if sel == is_selected => {
+                        cur_buf.push(ch);
+                    }
+                    Some(sel) => {
+                        let style = if sel {
+                            highlight_style
+                        } else {
+                            span.style
+                        };
+                        new_spans.push(Span::styled(std::mem::take(&mut cur_buf), style));
+                        cur_buf.push(ch);
+                        cur_is_selected = Some(is_selected);
+                    }
+                    None => {
+                        cur_buf.push(ch);
+                        cur_is_selected = Some(is_selected);
+                    }
+                }
+                col += w;
+            }
+
+            if let Some(sel) = cur_is_selected
+                && !cur_buf.is_empty()
+            {
+                let style = if sel {
+                    highlight_style
+                } else {
+                    span.style
+                };
+                new_spans.push(Span::styled(cur_buf, style));
+            }
+        }
+
+        line.spans = new_spans;
+    }
+}
+
 /// 对话与工具消息流视图（支持 Thinking 思考块、Tool 动作与结果、Assistant 最终回复 Markdown 渲染）
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     app.chat_area = area;
@@ -204,7 +359,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
         .borders(Borders::NONE);
 
     let max_width = (area.width as usize).saturating_sub(1);
-    let lines = build_chat_lines(app, max_width);
+    let mut lines = build_chat_lines(app, max_width);
     let total_lines = lines.len();
     let viewport_height = area.height as usize;
     let max_scroll = total_lines.saturating_sub(viewport_height);
@@ -216,6 +371,10 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     } else {
         app.scroll_offset.min(max_scroll)
     };
+
+    if let Some(ref sel) = app.text_selection {
+        apply_selection_highlight(&mut lines, sel);
+    }
 
     let paragraph = Paragraph::new(lines)
         .block(block)
@@ -248,6 +407,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use crate::storage::jsonl::JsonlSessionStore;
+    use crate::ui::app::TextCoord;
     use crate::ui::session_manager::SessionManager;
     use std::sync::Arc;
 
@@ -403,6 +563,80 @@ def stream_test():
         }).unwrap();
         let top_cell = terminal.backend().buffer().cell((79, 0)).unwrap();
         assert_eq!(top_cell.symbol(), "█");
+    }
+
+    #[test]
+    fn test_extract_selected_text_single_line() {
+        let lines = vec![
+            Line::from(vec![
+                Span::raw("Hello "),
+                Span::styled("World", Style::default().fg(Color::Green)),
+                Span::raw("!"),
+            ]),
+        ];
+        let sel = TextSelection::new(
+            TextCoord { line: 0, col: 6 },
+            TextCoord { line: 0, col: 11 },
+        );
+        let extracted = extract_selected_text(&lines, &sel);
+        assert_eq!(extracted, Some("World".to_string()));
+    }
+
+    #[test]
+    fn test_extract_selected_text_multiline_cjk() {
+        let lines = vec![
+            Line::from(vec![Span::raw("第一行：你好世界")]),
+            Line::from(vec![Span::raw("第二行：Rust编程语言")]),
+        ];
+        // 第一行 "第一行：" 宽度为 4*2=8 -> col 8 开始选取 "你好世界"
+        // 第二行 "第二行：" 宽度为 8，"Rust" 宽度为 4 -> col 12 结束选取
+        let sel = TextSelection::new(
+            TextCoord { line: 0, col: 8 },
+            TextCoord { line: 1, col: 12 },
+        );
+        let extracted = extract_selected_text(&lines, &sel);
+        assert_eq!(extracted, Some("你好世界\n第二行：Rust".to_string()));
+    }
+
+    #[test]
+    fn test_extract_selected_text_reverse_drag() {
+        let lines = vec![
+            Line::from(vec![Span::raw("Line 0 alpha")]),
+            Line::from(vec![Span::raw("Line 1 beta")]),
+        ];
+        let sel = TextSelection::new(
+            TextCoord { line: 1, col: 11 },
+            TextCoord { line: 0, col: 7 },
+        );
+        let extracted = extract_selected_text(&lines, &sel);
+        assert_eq!(extracted, Some("alpha\nLine 1 beta".to_string()));
+    }
+
+    #[test]
+    fn test_apply_selection_highlight() {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Prefix ", Style::default().fg(Color::Yellow)),
+                Span::styled("Selected", Style::default().fg(Color::Green)),
+                Span::styled(" Suffix", Style::default().fg(Color::Red)),
+            ]),
+        ];
+        let sel = TextSelection::new(
+            TextCoord { line: 0, col: 7 },
+            TextCoord { line: 0, col: 15 },
+        );
+        apply_selection_highlight(&mut lines, &sel);
+
+        assert_eq!(lines[0].spans.len(), 3);
+        assert_eq!(lines[0].spans[0].content, "Prefix ");
+        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Yellow));
+
+        assert_eq!(lines[0].spans[1].content, "Selected");
+        assert_eq!(lines[0].spans[1].style.bg, Some(Color::Rgb(60, 90, 140)));
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::White));
+
+        assert_eq!(lines[0].spans[2].content, " Suffix");
+        assert_eq!(lines[0].spans[2].style.fg, Some(Color::Red));
     }
 }
 

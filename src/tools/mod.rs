@@ -1,5 +1,6 @@
 pub mod bash;
 pub mod file;
+pub mod powershell;
 
 use std::collections::HashMap;
 use std::sync::Arc;

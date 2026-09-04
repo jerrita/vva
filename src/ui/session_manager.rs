@@ -13,7 +13,10 @@ use crate::provider::gemini::GeminiProvider;
 use crate::provider::response::ResponseProvider;
 use crate::provider::{CompletionOptions, Provider};
 use crate::storage::SessionStore;
+#[cfg(not(windows))]
 use crate::tools::bash::BashTool;
+#[cfg(windows)]
+use crate::tools::powershell::PowerShellTool;
 use crate::tools::file::{FileEditTool, FileViewTool};
 use crate::tools::ToolRegistry;
 
@@ -224,6 +227,9 @@ impl SessionManager {
             resolve_provider(&self.app_config, &current_model, current_variant.as_deref())?;
 
         let mut tools = ToolRegistry::new();
+        #[cfg(windows)]
+        tools.register(Arc::new(PowerShellTool::new(&session_workspace)));
+        #[cfg(not(windows))]
         tools.register(Arc::new(BashTool::new(&session_workspace)));
         tools.register(Arc::new(FileViewTool::new(&session_workspace)));
         tools.register(Arc::new(FileEditTool::new(&session_workspace)));

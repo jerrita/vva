@@ -88,6 +88,22 @@ impl Session {
             .rev()
             .find_map(|t| t.openai_response_id())
     }
+
+    /// 在历史轮次中按 call_id 查找对应的 ToolCall
+    pub fn find_tool_call(&self, call_id: &str) -> Option<&crate::model::ToolCall> {
+        for turn in self.turns.iter().rev() {
+            for msg in &turn.messages {
+                for part in &msg.parts {
+                    if let crate::model::ContentPart::ToolCall(call) = part
+                        && call.id == call_id
+                    {
+                        return Some(call);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// JSONL 持久化格式：首行 Header

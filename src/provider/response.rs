@@ -152,6 +152,20 @@ impl ResponseProvider {
                         }
                     }
                     Role::Tool => {
+                        // 确保所有待提交 output 的 function_call 均在 input_items 中声明（例如当 Assistant 轮次被 previous_response_id 截断时补齐）
+                        for part in &msg.parts {
+                            if let ContentPart::ToolResult(res) = part
+                                && !input_items.iter().any(|it| it["type"] == "function_call" && it["call_id"] == res.tool_call_id)
+                                && let Some(call) = session.find_tool_call(&res.tool_call_id)
+                            {
+                                input_items.push(serde_json::json!({
+                                    "type": "function_call",
+                                    "call_id": call.id,
+                                    "name": call.name,
+                                    "arguments": call.arguments,
+                                }));
+                            }
+                        }
                         for part in &msg.parts {
                             if let ContentPart::ToolResult(res) = part {
                                 input_items.push(serde_json::json!({
@@ -583,6 +597,57 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0]["content"][0]["text"], "What about tomorrow?");
         assert_eq!(body2["reasoning"]["effort"], "medium");
+    }
+
+    #[test]
+    fn test_response_provider_previous_id_with_tool_call_output_pair() {
+        let provider = ResponseProvider::new("test-key");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+
+        // 1. 用户提问
+        session.append_turn(Turn::user_turn(Message::user("run dir"), None));
+
+        // 2. Assistant 返回 ToolCall，并生成 response_id
+        let mut asst_turn = Turn::assistant_turn(
+            vec![Message::assistant(vec![ContentPart::ToolCall(ToolCall {
+                id: "call_abc123".into(),
+                name: "powershell".into(),
+                arguments: r#"{"command":"dir"}"#.into(),
+            })])],
+            None,
+        );
+        asst_turn.meta.response = Some(ResponseTurnMeta::new("resp_asst_1"));
+        session.append_turn(asst_turn);
+
+        // 3. 执行工具并返回 ToolResult
+        session.append_turn(Turn::new(
+            Role::Tool,
+            vec![Message::tool_result(ToolResult {
+                tool_call_id: "call_abc123".into(),
+                content: "dir output".into(),
+                is_error: false,
+            })],
+            None,
+        ));
+
+        let options = CompletionOptions {
+            model: "gpt-5.6-terra".into(),
+            ..Default::default()
+        };
+
+        // 4. 构建下次请求 Payload：需携带 previous_response_id，且 input 必须同时包含 function_call 和 function_call_output
+        let body = provider.build_request_body(&session, &[], &options);
+        assert_eq!(body["previous_response_id"], "resp_asst_1");
+
+        let inputs = body["input"].as_array().unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0]["type"], "function_call");
+        assert_eq!(inputs[0]["call_id"], "call_abc123");
+        assert_eq!(inputs[0]["name"], "powershell");
+
+        assert_eq!(inputs[1]["type"], "function_call_output");
+        assert_eq!(inputs[1]["call_id"], "call_abc123");
+        assert_eq!(inputs[1]["output"], "dir output");
     }
 
     #[test]

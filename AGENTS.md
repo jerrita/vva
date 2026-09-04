@@ -90,7 +90,8 @@ src/
 │   └── mod.rs
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
-│   ├── bash.rs             # Shell 执行
+│   ├── bash.rs             # Shell 执行 (Unix)
+│   ├── powershell.rs       # PowerShell 执行 (Windows)
 │   └── file.rs             # 文件读写与查看
 ├── harness/                # 调度引擎
 │   ├── mod.rs

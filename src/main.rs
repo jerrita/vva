@@ -14,7 +14,10 @@ use vva::provider::response::ResponseProvider;
 use vva::provider::{CompletionOptions, Provider};
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::storage::SessionStore;
+#[cfg(not(windows))]
 use vva::tools::bash::BashTool;
+#[cfg(windows)]
+use vva::tools::powershell::PowerShellTool;
 use vva::tools::file::{FileEditTool, FileViewTool};
 use vva::tools::ToolRegistry;
 use vva::ui::run_tui;
@@ -301,6 +304,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // 初始化 Coding 工具
             let mut tools = ToolRegistry::new();
+            #[cfg(windows)]
+            tools.register(Arc::new(PowerShellTool::new(&workspace)));
+            #[cfg(not(windows))]
             tools.register(Arc::new(BashTool::new(&workspace)));
             tools.register(Arc::new(FileViewTool::new(&workspace)));
             tools.register(Arc::new(FileEditTool::new(&workspace)));

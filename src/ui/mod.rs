@@ -287,21 +287,36 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 app.scroll_down(3);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if app.modal == ActiveModal::None && app.max_scroll > 0 && app.chat_area.height > 0 {
+                if app.modal == ActiveModal::None && app.chat_area.height > 0 {
                     let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
                     let in_scrollbar_col = mouse.column >= scrollbar_col.saturating_sub(1)
                         && mouse.column <= scrollbar_col;
                     let in_chat_rows = mouse.row >= app.chat_area.y
                         && mouse.row < app.chat_area.y + app.chat_area.height;
 
-                    if in_scrollbar_col && in_chat_rows {
+                    if in_scrollbar_col && in_chat_rows && app.max_scroll > 0 {
                         app.is_dragging_scrollbar = true;
                         let track_height = app.chat_area.height as usize;
                         let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
                         let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
                         app.scroll_to_ratio(ratio);
+                    } else if in_chat_rows
+                        && mouse.column >= app.chat_area.x
+                        && mouse.column < scrollbar_col
+                    {
+                        app.is_dragging_scrollbar = false;
+                        let row_offset = (mouse.row as usize).saturating_sub(app.chat_area.y as usize);
+                        let col_offset = (mouse.column as usize).saturating_sub(app.chat_area.x as usize);
+                        let scroll = if app.auto_scroll {
+                            app.max_scroll
+                        } else {
+                            app.scroll_offset.min(app.max_scroll)
+                        };
+                        let line = scroll + row_offset;
+                        app.start_text_selection(line, col_offset);
                     } else {
                         app.is_dragging_scrollbar = false;
+                        app.clear_text_selection();
                     }
                 }
             }
@@ -315,10 +330,43 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                     };
                     let ratio = row_offset as f64 / track_height.saturating_sub(1).max(1) as f64;
                     app.scroll_to_ratio(ratio);
+                } else if app.is_selecting_text && app.chat_area.height > 0 {
+                    if mouse.row < app.chat_area.y {
+                        app.scroll_up(1);
+                    } else if mouse.row >= app.chat_area.y + app.chat_area.height {
+                        app.scroll_down(1);
+                    }
+                    let scrollbar_col = app.chat_area.x + app.chat_area.width.saturating_sub(1);
+                    let row_offset = if (mouse.row as usize) < app.chat_area.y as usize {
+                        0
+                    } else {
+                        (mouse.row as usize - app.chat_area.y as usize)
+                            .min(app.chat_area.height.saturating_sub(1) as usize)
+                    };
+                    let col_offset = if (mouse.column as usize) < app.chat_area.x as usize {
+                        0
+                    } else {
+                        (mouse.column as usize - app.chat_area.x as usize)
+                            .min(scrollbar_col.saturating_sub(app.chat_area.x) as usize)
+                    };
+                    let scroll = if app.auto_scroll {
+                        app.max_scroll
+                    } else {
+                        app.scroll_offset.min(app.max_scroll)
+                    };
+                    let line = scroll + row_offset;
+                    app.update_text_selection(line, col_offset);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 app.is_dragging_scrollbar = false;
+                if app.is_selecting_text {
+                    app.finish_text_selection();
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) if app.text_selection.is_some() => {
+                app.copy_selection_to_clipboard();
+                app.clear_text_selection();
             }
             _ => {}
         }
@@ -653,8 +701,12 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 let step = app.viewport_height.saturating_sub(2).max(5);
                 app.scroll_down(step);
             }
-            KeyCode::Esc if !app.input.is_empty() => {
-                app.clear_input();
+            KeyCode::Esc => {
+                if !app.input.is_empty() {
+                    app.clear_input();
+                } else if app.text_selection.is_some() {
+                    app.clear_text_selection();
+                }
             }
             _ => {}
         }

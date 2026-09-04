@@ -11,6 +11,42 @@ pub use super::history::{ChatEntry, SidebarStats, compute_stats, entries_from_tu
 pub use super::input::InputBuffer;
 pub use super::modals::*;
 
+/// 对话流中的文本绝对行列坐标
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextCoord {
+    pub line: usize,
+    pub col: usize,
+}
+
+/// 鼠标拖拽文本选区
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextSelection {
+    pub anchor: TextCoord,
+    pub head: TextCoord,
+}
+
+impl TextSelection {
+    pub fn new(anchor: TextCoord, head: TextCoord) -> Self {
+        Self { anchor, head }
+    }
+
+    /// 返回规范化后的起止坐标 (start, end)，满足 start <= end
+    pub fn normalized(&self) -> (TextCoord, TextCoord) {
+        if self.anchor.line < self.head.line
+            || (self.anchor.line == self.head.line && self.anchor.col <= self.head.col)
+        {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+
+    /// 判断选区是否为空（起止点重合）
+    pub fn is_empty(&self) -> bool {
+        self.anchor == self.head
+    }
+}
+
 /// TUI 交互式应用全局状态与控制中枢
 pub struct App {
     pub session_mgr: Arc<SessionManager>,
@@ -25,6 +61,8 @@ pub struct App {
     pub viewport_height: usize,
     pub chat_area: Rect,
     pub is_dragging_scrollbar: bool,
+    pub text_selection: Option<TextSelection>,
+    pub is_selecting_text: bool,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
@@ -63,6 +101,8 @@ impl App {
             viewport_height: 0,
             chat_area: Rect::default(),
             is_dragging_scrollbar: false,
+            text_selection: None,
+            is_selecting_text: false,
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,
@@ -98,6 +138,7 @@ impl App {
         let target = self.session_mgr.get_or_load(session_id).await?;
         self.active_session = target;
         self.event_rx = self.active_session.event_tx.subscribe();
+        self.clear_text_selection();
 
         let session_web_search = {
             let s = self.active_session.session.read().await;
@@ -480,6 +521,48 @@ impl App {
         }
     }
 
+    // --- 文本选区与剪贴板控制方法 ---
+
+    pub fn start_text_selection(&mut self, line: usize, col: usize) {
+        let coord = TextCoord { line, col };
+        self.text_selection = Some(TextSelection::new(coord, coord));
+        self.is_selecting_text = true;
+        self.auto_scroll = false;
+    }
+
+    pub fn update_text_selection(&mut self, line: usize, col: usize) {
+        if let Some(ref mut sel) = self.text_selection {
+            sel.head = TextCoord { line, col };
+        }
+    }
+
+    pub fn finish_text_selection(&mut self) {
+        self.is_selecting_text = false;
+        if let Some(ref sel) = self.text_selection
+            && sel.is_empty()
+        {
+            self.text_selection = None;
+        }
+    }
+
+    pub fn clear_text_selection(&mut self) {
+        self.text_selection = None;
+        self.is_selecting_text = false;
+    }
+
+    pub fn copy_selection_to_clipboard(&mut self) -> bool {
+        let max_width = (self.chat_area.width as usize).saturating_sub(1).max(20);
+        let lines = crate::ui::views::chat::build_chat_lines(self, max_width);
+        if let Some(ref sel) = self.text_selection
+            && let Some(text) = crate::ui::views::chat::extract_selected_text(&lines, sel)
+            && !text.is_empty()
+        {
+            let _ = set_clipboard_text(&text);
+            return true;
+        }
+        false
+    }
+
     // --- 输入框代理方法 ---
 
     pub fn insert_char(&mut self, c: char) {
@@ -592,6 +675,7 @@ impl App {
         }
 
         self.clear_input();
+        self.clear_text_selection();
 
         // 处理斜杠命令
         if input_text.starts_with('/') {
@@ -780,6 +864,52 @@ impl App {
             _ => "⠸",
         }
     }
+}
+
+/// 将文本设置到系统剪贴板（支持原生系统剪贴板与 ANSI OSC 52 转义序列）
+pub fn set_clipboard_text(text: &str) -> Result<(), String> {
+    let mut success = false;
+    if let Ok(mut clipboard) = arboard::Clipboard::new()
+        && clipboard.set_text(text).is_ok()
+    {
+        success = true;
+    }
+
+    // 同时输出 ANSI OSC 52 转义序列，支持远程终端及 SSH 剪贴板透传
+    let b64 = base64_encode(text.as_bytes());
+    let osc52 = format!("\x1b]52;c;{b64}\x07");
+    let mut stdout = std::io::stdout();
+    let _ = std::io::Write::write_all(&mut stdout, osc52.as_bytes());
+    let _ = std::io::Write::flush(&mut stdout);
+
+    if success {
+        Ok(())
+    } else {
+        Err("Failed to set system clipboard".to_string())
+    }
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut res = String::new();
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = chunk.get(1).copied().unwrap_or(0);
+        let b2 = chunk.get(2).copied().unwrap_or(0);
+        res.push(CHARSET[(b0 >> 2) as usize] as char);
+        res.push(CHARSET[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            res.push(CHARSET[(((b1 & 0xf) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            res.push('=');
+        }
+        if chunk.len() > 2 {
+            res.push(CHARSET[(b2 & 0x3f) as usize] as char);
+        } else {
+            res.push('=');
+        }
+    }
+    res
 }
 
 #[cfg(test)]
@@ -1048,5 +1178,73 @@ mod tests {
         assert!(loaded_s1_again.web_search);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_selection_state_lifecycle() {
+        let temp_dir = std::env::temp_dir().join(format!("vva_app_sel_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("init_model".into(), None, None, false)
+            .await
+            .unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 1. 初始状态选区为空
+        assert!(app.text_selection.is_none());
+        assert!(!app.is_selecting_text);
+
+        // 2. 开始拖选
+        app.start_text_selection(2, 5);
+        assert!(app.is_selecting_text);
+        assert_eq!(
+            app.text_selection,
+            Some(TextSelection::new(
+                TextCoord { line: 2, col: 5 },
+                TextCoord { line: 2, col: 5 }
+            ))
+        );
+
+        // 3. 拖拽移动游标
+        app.update_text_selection(3, 10);
+        assert_eq!(
+            app.text_selection,
+            Some(TextSelection::new(
+                TextCoord { line: 2, col: 5 },
+                TextCoord { line: 3, col: 10 }
+            ))
+        );
+
+        // 4. 释放鼠标完成拖选
+        app.finish_text_selection();
+        assert!(!app.is_selecting_text);
+        assert!(app.text_selection.is_some());
+
+        // 5. 单击（起止点相同）释放时自动清空选区
+        app.start_text_selection(4, 2);
+        app.finish_text_selection();
+        assert!(!app.is_selecting_text);
+        assert!(app.text_selection.is_none());
+
+        // 6. 手动清空选区
+        app.start_text_selection(1, 0);
+        app.update_text_selection(1, 10);
+        app.finish_text_selection();
+        assert!(app.text_selection.is_some());
+        app.clear_text_selection();
+        assert!(app.text_selection.is_none());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_base64_encode() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"Hello World"), "SGVsbG8gV29ybGQ=");
     }
 }
