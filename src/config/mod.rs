@@ -55,12 +55,8 @@ pub fn load_config_with_workspace(
             let candidate_filenames = [
                 "vva.jsonc",
                 "vva.json",
-                "config.jsonc",
-                "config.json",
                 ".vva/config.jsonc",
                 ".vva/config.json",
-                ".vva.jsonc",
-                ".vva.json",
             ];
 
             let mut loaded = None;
