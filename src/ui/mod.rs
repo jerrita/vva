@@ -2,13 +2,15 @@ pub mod app;
 pub mod command;
 pub mod history;
 pub mod input;
+pub mod markdown;
 pub mod modals;
 pub mod session_manager;
 pub mod views;
 
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event as CrosstermEvent, EventStream, KeyCode,
-    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
     PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -36,7 +38,7 @@ use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
-use views::sidebar::render_sidebar;
+use views::sidebar::{render_sidebar, SidebarInfo};
 use views::variants_modal::render_variants_modal;
 
 /// 启动 Ratatui 交互式终端 UI
@@ -51,7 +53,7 @@ pub async fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
 
     let keyboard_enhancement = supports_keyboard_enhancement().unwrap_or(false);
     if keyboard_enhancement {
@@ -90,6 +92,7 @@ pub async fn run_tui(
     if keyboard_enhancement {
         let _ = execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags);
     }
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -190,15 +193,14 @@ async fn run_app_loop(
 
             // 4. 右侧边栏
             if let Some(sidebar_rect) = sidebar_area {
-                render_sidebar(
-                    app,
-                    frame,
-                    sidebar_rect,
-                    &session_id,
-                    &session_workspace,
-                    &session_model,
-                    session_variant.as_deref(),
-                );
+                let info = SidebarInfo {
+                    session_id: &session_id,
+                    session_title: &session_title,
+                    workspace: &session_workspace,
+                    model: &session_model,
+                    variant: session_variant.as_deref(),
+                };
+                render_sidebar(app, frame, sidebar_rect, &info);
             }
 
             // 5. 模态弹窗层
@@ -239,6 +241,19 @@ async fn run_app_loop(
 }
 
 async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
+    if let CrosstermEvent::Mouse(mouse) = event {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                app.scroll_up(3);
+            }
+            MouseEventKind::ScrollDown => {
+                app.scroll_down(3);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if let CrosstermEvent::Paste(text) = event {
         if app.modal == ActiveModal::None {
             app.insert_str(&text);
@@ -523,28 +538,40 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                 app.move_cursor_right();
             }
             KeyCode::Up => {
-                app.move_cursor_up();
+                if app.input.is_empty() {
+                    app.scroll_up(2);
+                } else {
+                    app.move_cursor_up();
+                }
             }
             KeyCode::Down => {
-                app.move_cursor_down();
+                if app.input.is_empty() {
+                    app.scroll_down(2);
+                } else {
+                    app.move_cursor_down();
+                }
             }
             KeyCode::Home => {
-                app.move_cursor_home();
+                if app.input.is_empty() {
+                    app.scroll_to_top();
+                } else {
+                    app.move_cursor_home();
+                }
             }
             KeyCode::End => {
-                app.move_cursor_end();
+                if app.input.is_empty() {
+                    app.scroll_to_bottom();
+                } else {
+                    app.move_cursor_end();
+                }
             }
             KeyCode::PageUp => {
-                app.auto_scroll = false;
-                app.scroll_offset = app.scroll_offset.saturating_add(5);
+                let step = app.viewport_height.saturating_sub(2).max(5);
+                app.scroll_up(step);
             }
             KeyCode::PageDown => {
-                if app.scroll_offset > 5 {
-                    app.scroll_offset -= 5;
-                } else {
-                    app.scroll_offset = 0;
-                    app.auto_scroll = true;
-                }
+                let step = app.viewport_height.saturating_sub(2).max(5);
+                app.scroll_down(step);
             }
             KeyCode::Esc if !app.input.is_empty() => {
                 app.clear_input();

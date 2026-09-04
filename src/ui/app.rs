@@ -20,6 +20,8 @@ pub struct App {
     pub enable_web_search: bool,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
+    pub max_scroll: usize,
+    pub viewport_height: usize,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
@@ -49,6 +51,8 @@ impl App {
             enable_web_search,
             scroll_offset: 0,
             auto_scroll: true,
+            max_scroll: 0,
+            viewport_height: 0,
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,
@@ -75,6 +79,7 @@ impl App {
         self.chat_entries = entries_from_turns(&turns);
         self.stats = compute_stats(&session_clone, self.session_mgr.app_config());
         self.scroll_offset = 0;
+        self.max_scroll = 0;
         self.auto_scroll = true;
     }
 
@@ -379,6 +384,62 @@ impl App {
         self.modal = ActiveModal::Config;
     }
 
+    // --- 滚动流控制方法 ---
+
+    /// 更新当前对话流的可视区与最大可滚动行数，自适应维持滚动位置
+    pub fn update_viewport(&mut self, max_scroll: usize, viewport_height: usize) {
+        self.max_scroll = max_scroll;
+        self.viewport_height = viewport_height;
+        if self.auto_scroll {
+            self.scroll_offset = max_scroll;
+        } else {
+            self.scroll_offset = self.scroll_offset.min(max_scroll);
+        }
+    }
+
+    /// 向上滚动（查看更早历史消息）
+    pub fn scroll_up(&mut self, delta: usize) {
+        if self.max_scroll == 0 {
+            return;
+        }
+        if self.auto_scroll {
+            self.auto_scroll = false;
+            self.scroll_offset = self.max_scroll.saturating_sub(delta);
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_sub(delta);
+        }
+    }
+
+    /// 向下滚动（接近最新消息），若到达底部则恢复自动吸底模式
+    pub fn scroll_down(&mut self, delta: usize) {
+        if self.max_scroll == 0 {
+            return;
+        }
+        if !self.auto_scroll {
+            let next_offset = self.scroll_offset.saturating_add(delta);
+            if next_offset >= self.max_scroll {
+                self.scroll_offset = self.max_scroll;
+                self.auto_scroll = true;
+            } else {
+                self.scroll_offset = next_offset;
+            }
+        }
+    }
+
+    /// 一键滚动到会话顶部
+    pub fn scroll_to_top(&mut self) {
+        if self.max_scroll > 0 {
+            self.auto_scroll = false;
+            self.scroll_offset = 0;
+        }
+    }
+
+    /// 一键滚动到底部并开启自动吸底
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = self.max_scroll;
+        self.auto_scroll = true;
+    }
+
     // --- 输入框代理方法 ---
 
     pub fn insert_char(&mut self, c: char) {
@@ -579,6 +640,8 @@ impl App {
             "/clear" | "/c" => {
                 self.chat_entries.clear();
                 self.scroll_offset = 0;
+                self.max_scroll = 0;
+                self.auto_scroll = true;
             }
             "/help" | "/h" | "/?" => {
                 self.modal = ActiveModal::Help;
@@ -652,7 +715,7 @@ impl App {
             }
         }
         if self.auto_scroll {
-            self.scroll_offset = 0;
+            self.scroll_offset = self.max_scroll;
         }
     }
 
@@ -798,6 +861,62 @@ mod tests {
             ChatEntry::SystemNotice { text } => text.contains("Thinking display mode set to full"),
             _ => false,
         }));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_app_scroll_control_and_clamping() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_app_scroll_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+        let session_mgr = Arc::new(SessionManager::new(store, None, temp_dir.clone()));
+        let session = session_mgr
+            .create_session("test_model".into(), None, None)
+            .await
+            .unwrap();
+        let mut app = App::new(session_mgr, session, false).await;
+
+        // 初始状态：无滚动条，处于自动吸底模式
+        assert_eq!(app.max_scroll, 0);
+        assert!(app.auto_scroll);
+        app.scroll_up(5);
+        assert!(app.auto_scroll, "When max_scroll is 0, scroll_up should not break auto_scroll");
+
+        // 视口更新：内容超出，总可滚动 50 行
+        app.update_viewport(50, 20);
+        assert_eq!(app.scroll_offset, 50);
+        assert!(app.auto_scroll);
+
+        // 向上滚动 5 行
+        app.scroll_up(5);
+        assert!(!app.auto_scroll);
+        assert_eq!(app.scroll_offset, 45);
+
+        // 大步向上滚动超过顶部，必须在 0 处安全截断，不得下溢或失控
+        app.scroll_up(100);
+        assert_eq!(app.scroll_offset, 0);
+
+        // 向下滚动 10 行
+        app.scroll_down(10);
+        assert_eq!(app.scroll_offset, 10);
+        assert!(!app.auto_scroll);
+
+        // 向下滚动超过最大可滚动行，恢复吸底状态并精确 clamp 于 max_scroll
+        app.scroll_down(100);
+        assert_eq!(app.scroll_offset, 50);
+        assert!(app.auto_scroll);
+
+        // 一键到顶
+        app.scroll_to_top();
+        assert_eq!(app.scroll_offset, 0);
+        assert!(!app.auto_scroll);
+
+        // 一键到底
+        app.scroll_to_bottom();
+        assert_eq!(app.scroll_offset, 50);
+        assert!(app.auto_scroll);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

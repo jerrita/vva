@@ -23,8 +23,8 @@ pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
 
     let line = Line::from(vec![
         Span::styled(
-            "  ",
-            Style::default(),
+            "  💬 ",
+            Style::default().fg(Color::Cyan),
         ),
         Span::styled(
             title_display,
@@ -39,8 +39,7 @@ pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
     ]);
 
     let block = Block::default()
-        .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(Color::Rgb(60, 60, 65)));
+        .borders(Borders::NONE);
 
     let paragraph = Paragraph::new(line).block(block);
     frame.render_widget(paragraph, area);

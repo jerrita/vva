@@ -6,15 +6,21 @@ use ratatui::Frame;
 
 use crate::ui::app::App;
 
+/// 右侧边栏所需的会话元信息
+pub struct SidebarInfo<'a> {
+    pub session_id: &'a str,
+    pub session_title: &'a str,
+    pub workspace: &'a str,
+    pub model: &'a str,
+    pub variant: Option<&'a str>,
+}
+
 /// 右侧边栏：展示 Session ID、Workspace、缓存、上下文窗口、Token 消耗与 Cost 估算
 pub fn render_sidebar(
     app: &App,
     frame: &mut Frame,
     area: Rect,
-    session_id: &str,
-    workspace: &str,
-    model: &str,
-    variant: Option<&str>,
+    info: &SidebarInfo,
 ) {
     let block = Block::default()
         .borders(Borders::LEFT)
@@ -34,7 +40,7 @@ pub fn render_sidebar(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5), // Session & Workspace
+            Constraint::Length(6), // Title, Session & Workspace
             Constraint::Length(4), // Model & Variant
             Constraint::Length(5), // Context Window & Tokens
             Constraint::Length(4), // Cache Read / Write
@@ -44,18 +50,30 @@ pub fn render_sidebar(
         .split(inner);
 
     // 1. Session & Workspace
-    let short_id = if session_id.len() > 16 {
-        format!("{}...", &session_id[..14])
+    let title_display = if info.session_title.trim().is_empty() {
+        "Untitled".to_string()
+    } else if info.session_title.chars().count() > 18 {
+        format!("{}...", info.session_title.chars().take(16).collect::<String>())
     } else {
-        session_id.to_string()
+        info.session_title.to_string()
     };
 
-    let ws_display = std::path::Path::new(workspace)
+    let short_id = if info.session_id.len() > 16 {
+        format!("{}...", &info.session_id[..14])
+    } else {
+        info.session_id.to_string()
+    };
+
+    let ws_display = std::path::Path::new(info.workspace)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(workspace);
+        .unwrap_or(info.workspace);
 
     let session_lines = vec![
+        Line::from(vec![
+            Span::styled("Title: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(title_display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
         Line::from(vec![
             Span::styled("Session: ", Style::default().fg(Color::DarkGray)),
             Span::styled(short_id, Style::default().fg(Color::Cyan)),
@@ -80,15 +98,15 @@ pub fn render_sidebar(
     frame.render_widget(session_p, chunks[0]);
 
     // 2. Model & Variant
-    let model_display = if model.len() > 20 {
-        format!("{}...", &model[..18])
-    } else if model.is_empty() {
+    let model_display = if info.model.len() > 20 {
+        format!("{}...", &info.model[..18])
+    } else if info.model.is_empty() {
         "Default".to_string()
     } else {
-        model.to_string()
+        info.model.to_string()
     };
 
-    let variant_display = variant.unwrap_or("none");
+    let variant_display = info.variant.unwrap_or("none");
     let model_lines = vec![
         Line::from(vec![
             Span::styled("Model: ", Style::default().fg(Color::DarkGray)),

@@ -28,7 +28,7 @@ src/ui/
 │   └── config.rs           # ConfigModalState (设置项交互式切换)
 └── views/                  # 纯渲染层组件（无状态业务逻辑）
     ├── header.rs           # 顶部极简标题栏
-    ├── chat.rs             # 中间对话流（气泡渲染、思考折叠、工具调用卡片）
+    ├── chat.rs             # 中间对话流（气泡渲染、思考折叠、工具调用卡片、Assistant 回复 Markdown 渲染）
     ├── sidebar.rs          # 右侧详情边栏（宽屏自适应，Token与花费看板）
     ├── input_area.rs       # 复合输入区（状态条、命令建议浮层、多行输入框）
     ├── sessions_modal.rs   # /sessions 弹窗视图
@@ -67,3 +67,12 @@ src/ui/
 - **代码位置**：[`src/ui/modals/`](../src/ui/modals/) 与 [`src/ui/views/`](../src/ui/views/)
 - 模态框的状态数据、过滤器逻辑与键盘导航单元测试完全内聚在 `modals/` 对应文件中；
 - 视图渲染组件（`views/*_modal.rs`）仅负责从状态中提取数据并使用 Ratatui 部件呈现，两者单向依赖，职责边界高度清晰。
+
+### 3.5 `markdown.rs` & `chat.rs`：原生 Markdown 渲染与视口滚动引擎
+- **代码位置**：[`src/ui/markdown.rs`](../src/ui/markdown.rs) 与 [`src/ui/views/chat.rs`](../src/ui/views/chat.rs)
+- **核心功能**：
+  - **原生 CommonMark 排版引擎**：自主构建基于 `pulldown-cmark` 的原生渲染器，支持 `# / ## / ###` 极简胶囊徽标、代码块高亮外框、Unicode 规范表格与列表悬挂缩进（Hanging Indent）；
+  - **CJK 标点强调边界智能预处理**：针对中文 LLM 输出常见的 `**标题：**内容` 语法（因 CommonMark 标点后非空白边界限制导致无法闭合的问题），在词法层精准注入边界修正，杜绝暴露原生 `**` 标记；
+  - **醒目高贵加粗色泽**：加粗 Span 赋予温暖金黄色 (`Color::Rgb(255, 215, 80)`) 搭配 `Modifier::BOLD`，在各类终端深色背景与字体下均具绝佳辨识度；
+  - **抗抖动防溢出滚动引擎**：`App` 维护绝对行位坐标，严格防越界 Clamp，彻底根除滚轮溢出导致的“失效/冻结”问题；流式输出期间在阅读历史时保持屏幕不动，滚回底部自动恢复跟随；
+  - **优雅滚动条组件**：基于 Ratatui `Scrollbar` 与 `ScrollbarState`，在内容溢出可视区时自适应在右侧渲染半透明滚动滑块。
