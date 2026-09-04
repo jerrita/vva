@@ -114,10 +114,63 @@ impl SessionsModalState {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ModelItem {
+    pub full_id: String,
+    pub provider_id: String,
+    pub model_id: String,
+    pub display_name: String,
+    pub provider_type: String,
+    pub reasoning: bool,
+    pub context_limit: Option<usize>,
+    pub variants: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelsModalState {
+    pub models: Vec<ModelItem>,
+    pub selected_index: usize,
+}
+
+impl ModelsModalState {
+    pub fn new(models: Vec<ModelItem>, current_model: &str) -> Self {
+        let selected_index = models
+            .iter()
+            .position(|m| m.full_id == current_model)
+            .unwrap_or(0);
+
+        Self {
+            models,
+            selected_index,
+        }
+    }
+
+    pub fn next(&mut self) {
+        if !self.models.is_empty() {
+            self.selected_index = (self.selected_index + 1) % self.models.len();
+        }
+    }
+
+    pub fn previous(&mut self) {
+        if !self.models.is_empty() {
+            self.selected_index = if self.selected_index == 0 {
+                self.models.len() - 1
+            } else {
+                self.selected_index - 1
+            };
+        }
+    }
+
+    pub fn selected_model(&self) -> Option<&ModelItem> {
+        self.models.get(self.selected_index)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveModal {
     None,
     Sessions,
+    Models,
     Help,
 }
 
@@ -148,6 +201,7 @@ pub struct App {
     pub should_quit: bool,
     pub modal: ActiveModal,
     pub sessions_modal: Option<SessionsModalState>,
+    pub models_modal: Option<ModelsModalState>,
     pub matched_commands: Vec<&'static SlashCommand>,
     pub selected_command_index: usize,
     pub stats: SidebarStats,
@@ -174,6 +228,7 @@ impl App {
             should_quit: false,
             modal: ActiveModal::None,
             sessions_modal: None,
+            models_modal: None,
             matched_commands: Vec::new(),
             selected_command_index: 0,
             stats: SidebarStats::default(),
@@ -218,6 +273,81 @@ impl App {
                 text: "Failed to list sessions from store".into(),
             });
         }
+    }
+
+    /// 获取当前活跃 Session 的模型名称
+    pub fn current_session_model(&self) -> String {
+        if let Ok(guard) = self.active_session.session.try_read() {
+            guard.current_model.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    /// 打开 /model 模态框并获取当前配置的所有可用模型
+    pub async fn open_models_modal(&mut self) {
+        let current_model = {
+            let s = self.active_session.session.read().await;
+            s.current_model.clone()
+        };
+
+        let mut models = Vec::new();
+        if let Some(cfg) = self.session_mgr.app_config() {
+            for (p_id, p_cfg) in &cfg.providers {
+                for (m_id, m_cfg) in &p_cfg.models {
+                    let effective_type = m_cfg.effective_type(p_cfg.provider_type);
+                    models.push(ModelItem {
+                        full_id: format!("{p_id}/{m_id}"),
+                        provider_id: p_id.clone(),
+                        model_id: m_id.clone(),
+                        display_name: m_cfg.name.clone(),
+                        provider_type: format!("{:?}", effective_type).to_lowercase(),
+                        reasoning: m_cfg.reasoning,
+                        context_limit: m_cfg.limit.as_ref().map(|l| l.context),
+                        variants: m_cfg.variants.clone(),
+                    });
+                }
+            }
+        }
+        models.sort_by(|a, b| a.full_id.cmp(&b.full_id));
+
+        self.models_modal = Some(ModelsModalState::new(models, &current_model));
+        self.modal = ActiveModal::Models;
+    }
+
+    /// 切换模型并持久化保存 Session Header
+    pub async fn switch_model(&mut self, model_spec: &str) {
+        let (sid, current_var) = {
+            let s = self.active_session.session.read().await;
+            (s.id.clone(), s.current_variant.clone())
+        };
+
+        // 校验新模型是否支持当前 variant
+        let new_variant = if let Some(cfg) = self.session_mgr.app_config() {
+            if let Ok(resolved) = cfg.resolve_model(model_spec, current_var.as_deref()) {
+                resolved.selected_variant
+            } else {
+                None
+            }
+        } else {
+            current_var
+        };
+
+        {
+            let mut s = self.active_session.session.write().await;
+            s.set_model(model_spec.to_string(), new_variant);
+        }
+
+        let s_clone = {
+            let s_ref = self.active_session.session.read().await;
+            let _ = self.session_mgr.store().save_header(&s_ref).await;
+            s_ref.clone()
+        };
+
+        self.chat_entries.push(ChatEntry::SystemNotice {
+            text: format!("Switched model to '{model_spec}' for session {sid}"),
+        });
+        self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
     }
 
     /// 用户键盘输入字符
@@ -352,49 +482,9 @@ impl App {
             }
             "/model" | "/m" => {
                 if arg.is_empty() {
-                    let curr = {
-                        let s = self.active_session.session.read().await;
-                        s.current_model.clone()
-                    };
-                    let mut msg = format!("Current model: {curr}\n\nAvailable models:");
-                    if let Some(cfg) = self.session_mgr.app_config() {
-                        let mut models: Vec<String> = Vec::new();
-                        for (p_id, p_cfg) in &cfg.providers {
-                            for m_id in p_cfg.models.keys() {
-                                models.push(format!("{p_id}/{m_id}"));
-                            }
-                        }
-                        models.sort();
-                        if models.is_empty() {
-                            msg.push_str("\n  (None configured)");
-                        } else {
-                            for m in models {
-                                msg.push_str(&format!("\n  • {m}"));
-                            }
-                        }
-                    } else {
-                        msg.push_str("\n  (No config loaded)");
-                    }
-                    msg.push_str("\n\nUsage: /model <provider>/<model_id>");
-                    self.chat_entries.push(ChatEntry::SystemNotice { text: msg });
+                    self.open_models_modal().await;
                 } else {
-                    let (sid, current_var) = {
-                        let s = self.active_session.session.read().await;
-                        (s.id.clone(), s.current_variant.clone())
-                    };
-                    {
-                        let mut s = self.active_session.session.write().await;
-                        s.set_model(arg.clone(), current_var);
-                    }
-                    let s_clone = {
-                        let s_ref = self.active_session.session.read().await;
-                        let _ = self.session_mgr.store().save_header(&s_ref).await;
-                        s_ref.clone()
-                    };
-                    self.chat_entries.push(ChatEntry::SystemNotice {
-                        text: format!("Switched model to '{arg}' for session {sid}"),
-                    });
-                    self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+                    self.switch_model(&arg).await;
                 }
             }
             "/variant" | "/v" | "/effort" => {
@@ -734,13 +824,11 @@ mod tests {
         let session = session_mgr.create_session("init_model".into(), None, None).await.unwrap();
         let mut app = App::new(session_mgr, session, false).await;
 
-        // 1. 无参 /model 展示当前模型
+        // 1. 无参 /model 打开 Models 模态选择框
         app.input = "/model".into();
         app.submit_input().await;
-        assert!(app.chat_entries.iter().any(|e| match e {
-            ChatEntry::SystemNotice { text } => text.contains("Current model: init_model"),
-            _ => false,
-        }));
+        assert_eq!(app.modal, ActiveModal::Models);
+        assert!(app.models_modal.is_some());
 
         // 2. 带参 /model 切换模型
         app.input = "/model target_model".into();
@@ -753,5 +841,43 @@ mod tests {
         }));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_models_modal_navigation() {
+        let m1 = ModelItem {
+            full_id: "prov/model-1".into(),
+            provider_id: "prov".into(),
+            model_id: "model-1".into(),
+            display_name: "Model One".into(),
+            provider_type: "response".into(),
+            reasoning: true,
+            context_limit: Some(128000),
+            variants: Some(vec!["low".into(), "high".into()]),
+        };
+        let m2 = ModelItem {
+            full_id: "prov/model-2".into(),
+            provider_id: "prov".into(),
+            model_id: "model-2".into(),
+            display_name: "Model Two".into(),
+            provider_type: "anthropic".into(),
+            reasoning: false,
+            context_limit: Some(200000),
+            variants: None,
+        };
+
+        let mut modal = ModelsModalState::new(vec![m1, m2], "prov/model-1");
+        assert_eq!(modal.selected_index, 0);
+        assert_eq!(modal.selected_model().unwrap().full_id, "prov/model-1");
+
+        modal.next();
+        assert_eq!(modal.selected_index, 1);
+        assert_eq!(modal.selected_model().unwrap().full_id, "prov/model-2");
+
+        modal.next();
+        assert_eq!(modal.selected_index, 0); // wrap around
+
+        modal.previous();
+        assert_eq!(modal.selected_index, 1);
     }
 }

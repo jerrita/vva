@@ -23,6 +23,7 @@ use views::chat::render_chat;
 use views::header::render_header;
 use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
+use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
 use views::sidebar::render_sidebar;
 
@@ -155,6 +156,7 @@ async fn run_app_loop(
             // 5. 模态弹窗层
             match &app.modal {
                 ActiveModal::Sessions => render_sessions_modal(app, frame, size),
+                ActiveModal::Models => render_models_modal(app, frame, size),
                 ActiveModal::Help => render_help_modal(frame, size),
                 ActiveModal::None => {}
             }
@@ -224,6 +226,36 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent) {
                         if let Some(sid) = selected_id {
                             app.modal = ActiveModal::None;
                             let _ = app.switch_to_session(&sid).await;
+                        }
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            ActiveModal::Models => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        app.modal = ActiveModal::None;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if let Some(ref mut mm) = app.models_modal {
+                            mm.previous();
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if let Some(ref mut mm) = app.models_modal {
+                            mm.next();
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let selected_spec = app
+                            .models_modal
+                            .as_ref()
+                            .and_then(|mm| mm.selected_model().map(|m| m.full_id.clone()));
+
+                        if let Some(spec) = selected_spec {
+                            app.modal = ActiveModal::None;
+                            app.switch_model(&spec).await;
                         }
                     }
                     _ => {}

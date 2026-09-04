@@ -110,6 +110,8 @@ pub fn render_input_area(
         Span::styled("  📂 ", Style::default().fg(Color::DarkGray)),
         Span::styled(ws_name, Style::default().fg(Color::DarkGray)),
         Span::styled("  ·  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("/model", Style::default().fg(Color::Cyan)),
+        Span::styled(" to select  ", Style::default().fg(Color::DarkGray)),
         Span::styled("/sessions", Style::default().fg(Color::Cyan)),
         Span::styled(" to resume  ", Style::default().fg(Color::DarkGray)),
         Span::styled("/help", Style::default().fg(Color::Cyan)),

@@ -16,8 +16,8 @@ pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "/model",
         aliases: &["/m"],
-        description: "Switch current model (e.g. /model a/claude-sonnet-4-6)",
-        example: "/model <model_id>",
+        description: "Select model interactively or switch (/model <id>)",
+        example: "/model [model_id]",
     },
     SlashCommand {
         name: "/variant",
