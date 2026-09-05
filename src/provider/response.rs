@@ -220,7 +220,6 @@ impl ResponseProvider {
         let mut body = serde_json::json!({
             "model": options.model,
             "input": input_items,
-            "store": true,
             "prompt_cache_key": session.id,
         });
 
@@ -273,9 +272,12 @@ impl ResponseProvider {
         &self,
         json: serde_json::Value,
     ) -> Result<ProviderResponse, ProviderError> {
-        let is_stored = json["store"].as_bool().ok_or_else(|| {
-            ProviderError::Protocol("Missing 'store' in Responses API output".into())
-        })?;
+        let is_stored = match json.get("store") {
+            Some(value) => value.as_bool().ok_or_else(|| {
+                ProviderError::Protocol("Invalid 'store' in Responses API output".into())
+            })?,
+            None => false,
+        };
 
         let raw_id = json["id"].as_str().ok_or_else(|| {
             ProviderError::Protocol("Missing 'id' in Responses API output".into())
@@ -1119,7 +1121,7 @@ mod tests {
             .build_request_body(&session, &[], &options)
             .expect("build body");
         assert!(body.get("previous_response_id").is_none());
-        assert_eq!(body["store"], true);
+        assert!(body.get("store").is_none());
         assert_eq!(body["prompt_cache_key"], session.id);
         assert_eq!(
             body["include"],
@@ -1151,17 +1153,19 @@ mod tests {
     }
 
     #[test]
-    fn test_response_provider_missing_store_returns_protocol_error() {
+    fn test_response_provider_missing_store_is_not_stored() {
         let provider = ResponseProvider::new("test-key");
         let mock_json_no_store = serde_json::json!({
             "id": "resp_test_1",
             "status": "completed",
             "output": []
         });
-        let result = provider.parse_response(mock_json_no_store);
-        assert!(
-            matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("Missing 'store'"))
-        );
+        let parsed = provider
+            .parse_response(mock_json_no_store)
+            .expect("parse response without store");
+        let meta = parsed.meta.response.as_ref().unwrap();
+        assert!(meta.response_id.is_none());
+        assert!(!meta.store);
     }
 
     #[test]

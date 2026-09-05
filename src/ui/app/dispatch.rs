@@ -239,11 +239,7 @@ impl App {
                 self.chat_entries.push(ChatEntry::SystemNotice { text });
             }
             AgentEvent::Finished => {
-                let s_clone = {
-                    let s = self.active_session.session.read().await;
-                    s.clone()
-                };
-                self.stats = compute_stats(&s_clone, self.session_mgr.app_config());
+                self.reload_active_session_history().await;
             }
             AgentEvent::Aborted => {
                 self.chat_entries.push(ChatEntry::SystemNotice {

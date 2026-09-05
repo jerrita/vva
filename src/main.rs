@@ -198,6 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // CLI 单次非交互运行流程
+            let is_new_session = session_id.is_none();
             let mut session = if let Some(sid) = session_id {
                 let mut s = store
                     .load_session(&sid)
@@ -254,6 +255,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("⚠️  [Notice] {notice}");
             }
 
+            if is_new_session {
+                store.save_header(&session).await?;
+            }
             let user_msg = Message::user(&prompt);
             let parent_turn_id = session.last_turn_id();
             let user_turn = Turn::user_turn(user_msg, parent_turn_id);
