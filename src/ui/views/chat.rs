@@ -64,7 +64,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
             (Role::User, ContentPart::Text { text, .. }) => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
-                    "👤 You",
+                    "You",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
@@ -104,7 +104,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
 
                 lines.push(Line::from(""));
                 if app.thinking_concise {
-                    let mut spans = vec![Span::styled("🧠 Thinking: ", prefix_style)];
+                    let mut spans = vec![Span::styled("Thinking: ", prefix_style)];
                     match paragraphs.first().and_then(|ls| ls.first()) {
                         Some(first) => spans.extend(first.spans.iter().cloned()),
                         None => spans.push(Span::styled("Thinking...", body_style)),
@@ -134,7 +134,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 lines.push(Line::from(""));
                 let spans = vec![
                     Span::styled(
-                        format!("⚙️ [{}]", name),
+                        format!("[{}]", name),
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
@@ -149,16 +149,12 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 let is_error = &result.is_error;
                 let result = &result.content;
                 let status_color = if *is_error { Color::Red } else { Color::Green };
-                let status_icon = if *is_error {
-                    "❌ Error:"
-                } else {
-                    "✅ Output:"
-                };
+                let status_label = if *is_error { "Error:" } else { "Output:" };
 
                 lines.push(Line::from(vec![
                     Span::raw("   "),
                     Span::styled(
-                        status_icon,
+                        status_label,
                         Style::default()
                             .fg(status_color)
                             .add_modifier(Modifier::BOLD),
@@ -198,7 +194,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     .collect();
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
-                    "🤖 Assistant",
+                    "Assistant",
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -211,7 +207,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     lines.push(Line::from(vec![
                         Span::raw("   "),
                         Span::styled(
-                            "🔗 Sources / Citations:",
+                            "Sources / Citations:",
                             Style::default()
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
@@ -237,15 +233,12 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
     }
     for text in &app.notices {
         lines.push(Line::from(""));
-        let spans = vec![
-            Span::styled("💡 ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                text.clone(),
-                Style::default()
-                    .fg(Color::Rgb(200, 200, 200))
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ];
+        let spans = vec![Span::styled(
+            text.clone(),
+            Style::default()
+                .fg(Color::Rgb(200, 200, 200))
+                .add_modifier(Modifier::ITALIC),
+        )];
         let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
         lines.extend(wrapped);
     }
