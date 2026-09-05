@@ -1,13 +1,10 @@
 use async_trait::async_trait;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::common::{EventForwarder, RoleBlockMerger, function_tool_def, require_str, require_u64};
-use super::http::{SseEventHandler, consume_sse, post_sse};
-use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
-    shared_client,
-};
+use super::common::{EventForwarder, RoleBlockMerger, require_str, require_u64, require_value};
+use super::http::{SseEventHandler, post_json, post_sse};
+use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
 use crate::event::AgentEvent;
 use crate::model::{
     AnthropicTurnMeta, ContentPart, Message, Role, Session, TokenUsage, ToolCall, ToolDefinition,
@@ -40,7 +37,7 @@ impl AnthropicProvider {
     }
 
     /// 将 Session 转换为符合 Anthropic Messages API 的请求体（保留 thinking 签名并注入缓存断点）
-    pub fn build_request_body(
+    fn build_request_body(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
@@ -48,7 +45,7 @@ impl AnthropicProvider {
     ) -> Result<serde_json::Value, ProviderError> {
         let api_tools: Vec<serde_json::Value> = tools
             .iter()
-            .map(|tool| function_tool_def(tool, "input_schema"))
+            .map(|tool| serde_json::json!({"name": tool.name, "description": tool.description, "input_schema": tool.parameters}))
             .collect();
 
         let mut system_text = String::new();
@@ -59,17 +56,17 @@ impl AnthropicProvider {
         let mut flattened_msgs = Vec::new();
         for turn in &session.turns {
             for msg in &turn.messages {
-                flattened_msgs.push(msg);
+                flattened_msgs.push((turn.role, msg));
             }
         }
 
         let total_msgs = flattened_msgs.len();
 
-        for (i, msg) in flattened_msgs.iter().enumerate() {
-            let is_last_user_turn = i + 1 == total_msgs && msg.role == Role::User;
+        for (i, (role, msg)) in flattened_msgs.iter().enumerate() {
+            let is_last_user_turn = i + 1 == total_msgs && *role == Role::User;
             let should_cache = is_last_user_turn;
 
-            match msg.role {
+            match role {
                 Role::System => {
                     system_text.push_str(&msg.text_content());
                 }
@@ -206,10 +203,19 @@ impl AnthropicProvider {
 
     /// 解析 Anthropic Messages API 响应：非流式 DTO 与流式累积块归一到同一 `AnthropicBlock`
     /// 后经 `assemble_response` 组装（一个解析器、两个入口）
-    pub fn parse_response(
-        &self,
-        json: serde_json::Value,
-    ) -> Result<ProviderResponse, ProviderError> {
+    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_str(&self.api_key)
+                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
+        );
+        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        Ok(headers)
+    }
+
+    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
         let dto: AnthropicResponseDto = serde_json::from_value(json).map_err(|e| {
             ProviderError::Protocol(format!("Invalid Anthropic Messages API response: {e}"))
         })?;
@@ -384,7 +390,7 @@ fn assemble_response(
         ..Default::default()
     };
     ProviderResponse {
-        messages: vec![Message::assistant(parts)],
+        messages: vec![Message::new(parts)],
         usage,
         meta,
     }
@@ -399,40 +405,19 @@ impl Provider for AnthropicProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_native_search: false,
-            supports_prompt_caching: true,
-            supports_thinking_signature: true,
-            supports_stateful_response_id: false,
             supports_reasoning_effort: false,
         }
     }
 
-    fn endpoint_url(&self, _model: &str, _stream: bool) -> Result<String, ProviderError> {
-        Ok(self.normalized_endpoint())
-    }
-
-    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&self.api_key)
-                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
-        );
-        headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        Ok(headers)
-    }
-
-    fn build_request_body(
+    async fn complete(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<serde_json::Value, ProviderError> {
-        AnthropicProvider::build_request_body(self, session, tools, options)
-    }
-
-    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
-        AnthropicProvider::parse_response(self, json)
+    ) -> Result<ProviderResponse, ProviderError> {
+        let body = self.build_request_body(session, tools, options)?;
+        let response = post_json(&self.normalized_endpoint(), self.auth_headers()?, &body).await?;
+        self.parse_response(response)
     }
 
     async fn complete_stream(
@@ -445,23 +430,18 @@ impl Provider for AnthropicProvider {
         let mut body = self.build_request_body(session, tools, options)?;
         body["stream"] = serde_json::json!(true);
 
-        let mut headers = self.auth_headers()?;
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-
-        let res = post_sse(
-            shared_client(),
-            &self.endpoint_url(&options.model, true)?,
-            headers,
-            &body,
-        )
-        .await?;
-
         let mut handler = AnthropicStreamHandler {
             blocks: Vec::new(),
             usage: AnthropicUsageSnapshot::default(),
             forwarder: EventForwarder::new(event_sender),
         };
-        consume_sse(res, &mut handler).await?;
+        post_sse(
+            &self.normalized_endpoint(),
+            self.auth_headers()?,
+            &body,
+            &mut handler,
+        )
+        .await?;
 
         Ok(assemble_response(handler.blocks, handler.usage))
     }
@@ -491,9 +471,7 @@ impl SseEventHandler for AnthropicStreamHandler {
         let ev_type = require_str(&json, "type")?;
         match ev_type {
             "message_start" => {
-                let u = json.pointer("/message/usage").ok_or_else(|| {
-                    ProviderError::Protocol("Missing 'message.usage' in message_start event".into())
-                })?;
+                let u = require_value(require_value(&json, "message")?, "usage")?;
                 self.usage.seen = true;
                 self.usage.input_tokens = require_u64(u, "input_tokens")? as u32;
                 self.usage.cache_creation_input_tokens =
@@ -503,11 +481,7 @@ impl SseEventHandler for AnthropicStreamHandler {
             }
             "content_block_start" => {
                 let idx = require_u64(&json, "index")? as usize;
-                let cb = json.get("content_block").ok_or_else(|| {
-                    ProviderError::Protocol(
-                        "Missing 'content_block' in content_block_start event".into(),
-                    )
-                })?;
+                let cb = require_value(&json, "content_block")?;
                 let block_type = require_str(cb, "type")?;
                 let block = match block_type {
                     "thinking" => AnthropicBlock::Thinking {
@@ -535,9 +509,7 @@ impl SseEventHandler for AnthropicStreamHandler {
             }
             "content_block_delta" => {
                 let idx = require_u64(&json, "index")? as usize;
-                let delta = json.get("delta").ok_or_else(|| {
-                    ProviderError::Protocol("Missing 'delta' in content_block_delta event".into())
-                })?;
+                let delta = require_value(&json, "delta")?;
                 let delta_type = require_str(delta, "type")?;
                 match delta_type {
                     "thinking_delta" => {
@@ -635,8 +607,8 @@ mod tests {
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
         // 用户输入
-        let user_msg = Message::user("Solve this puzzle with deep thinking");
-        session.append_turn(Turn::user_turn(user_msg, None));
+        let user_msg = Message::text("Solve this puzzle with deep thinking");
+        session.append_turn(Turn::user_turn(user_msg));
 
         // 模拟 Anthropic 返回包含 thinking block 和 signature 的响应
         let mock_resp = serde_json::json!({
@@ -669,12 +641,12 @@ mod tests {
         assert_eq!(anthropic_meta.stop_reason.as_deref(), Some("end_turn"));
 
         // 将 assistant turn 加入 session
-        let mut assistant_turn = Turn::assistant_turn(parsed.messages, None);
+        let mut assistant_turn = Turn::assistant_turn(parsed.messages);
         assistant_turn.meta = parsed.meta;
         session.append_turn(assistant_turn);
 
         // 下一轮用户继续追问
-        session.append_turn(Turn::user_turn(Message::user("Why 42?"), None));
+        session.append_turn(Turn::user_turn(Message::text("Why 42?")));
 
         // 生成下一次调用的 request body，验证 thinking 和 signature 被完整保留
         let options = CompletionOptions {
@@ -706,12 +678,9 @@ mod tests {
             .with_base_url("https://proxy.example.com/v1/messages/");
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
-        session.append_turn(Turn::user_turn(
-            Message::user("List files and run command"),
-            None,
-        ));
+        session.append_turn(Turn::user_turn(Message::text("List files and run command")));
 
-        let asst_msg = Message::assistant(vec![
+        let asst_msg = Message::new(vec![
             ContentPart::ToolCall(ToolCall {
                 id: "call_1".into(),
                 name: "file_view".into(),
@@ -723,7 +692,7 @@ mod tests {
                 arguments: "{}".into(),
             }),
         ]);
-        session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
+        session.append_turn(Turn::assistant_turn(vec![asst_msg]));
 
         // 两个连续的 Tool turn
         session.append_turn(Turn::new(
@@ -733,7 +702,6 @@ mod tests {
                 content: "file contents".into(),
                 is_error: false,
             })],
-            None,
         ));
         session.append_turn(Turn::new(
             Role::Tool,
@@ -742,7 +710,6 @@ mod tests {
                 content: "command output".into(),
                 is_error: false,
             })],
-            None,
         ));
 
         let options = CompletionOptions {

@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::ui::app::App;
+use crate::ui::modals::ModelsModalState;
 use crate::ui::text::truncate;
 use crate::ui::views::modal_shell::{
     ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
@@ -12,19 +12,18 @@ use crate::ui::views::modal_shell::{
 };
 
 /// 渲染 /model 模态弹窗，支持上下键或 j/k 浏览选择当前配置中的可用模型
-pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let state = match &app.models_modal {
-        Some(s) => s,
-        None => return,
-    };
-
+pub fn render_models_modal(
+    state: &ModelsModalState,
+    current_model: &str,
+    frame: &mut Frame,
+    area: Rect,
+) {
     // 顶部当前状态行
-    let curr_model = app.current_session_model();
     let top_line = Line::from(vec![
         Span::raw("  "),
         Span::styled("Currently Active: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            curr_model,
+            current_model,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -137,7 +136,7 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
         .take(visible)
     {
         let is_selected = i == state.selected_index;
-        let is_active = item.full_id == app.current_session_model();
+        let is_active = item.full_id == current_model;
 
         let (prefix, row_style) = list_row_affix(is_selected, is_active, Color::Cyan);
 
@@ -160,7 +159,7 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
             row_style
         } else {
             Style::default().fg(match item.provider_type.as_str() {
-                "response" | "glm-coding-plan" => Color::Green,
+                "response" => Color::Green,
                 "anthropic" => Color::Magenta,
                 "gemini" => Color::Blue,
                 _ => Color::DarkGray,

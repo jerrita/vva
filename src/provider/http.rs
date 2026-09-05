@@ -18,26 +18,45 @@ pub trait SseEventHandler: Send {
 
 /// 发送 JSON POST 并解析 JSON 响应（非 2xx 返回 ApiError）
 pub async fn post_json(
-    client: &reqwest::Client,
     url: &str,
     headers: HeaderMap,
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, ProviderError> {
-    ensure_success(client.post(url).headers(headers).json(body).send().await?)
-        .await?
-        .json()
-        .await
-        .map_err(Into::into)
+    ensure_success(
+        super::shared_client()
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await?,
+    )
+    .await?
+    .json()
+    .await
+    .map_err(Into::into)
 }
 
-/// 发送 JSON POST 并返回 SSE 流式响应（非 2xx 返回 ApiError）
-pub async fn post_sse(
-    client: &reqwest::Client,
+/// 发送 JSON POST 并将 SSE 事件逐个交给处理器（自动补 Accept 头）
+pub async fn post_sse<H: SseEventHandler>(
     url: &str,
-    headers: HeaderMap,
+    mut headers: HeaderMap,
     body: &serde_json::Value,
-) -> Result<reqwest::Response, ProviderError> {
-    ensure_success(client.post(url).headers(headers).json(body).send().await?).await
+    handler: &mut H,
+) -> Result<(), ProviderError> {
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("text/event-stream"),
+    );
+    let res = ensure_success(
+        super::shared_client()
+            .post(url)
+            .headers(headers)
+            .json(body)
+            .send()
+            .await?,
+    )
+    .await?;
+    consume_sse(res, handler).await
 }
 
 async fn ensure_success(res: reqwest::Response) -> Result<reqwest::Response, ProviderError> {
@@ -52,7 +71,7 @@ async fn ensure_success(res: reqwest::Response) -> Result<reqwest::Response, Pro
 /// 消费 SSE 流并将每个事件 JSON 交给处理器。
 /// "[DONE]" 为 OpenAI 风格流终止哨兵（Anthropic / Gemini 不发送），收到即终止；
 /// 无法解析的事件数据按协议错误上报（仅跳过空数据行），流自然结束后 flush 解码器残留事件。
-pub async fn consume_sse<H: SseEventHandler>(
+async fn consume_sse<H: SseEventHandler>(
     res: reqwest::Response,
     handler: &mut H,
 ) -> Result<(), ProviderError> {

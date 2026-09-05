@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::ui::app::{App, ProjectScope};
+use crate::ui::modals::{ProjectScope, SessionsModalState};
 use crate::ui::text::truncate;
 use crate::ui::views::modal_shell::{
     ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
@@ -12,12 +12,7 @@ use crate::ui::views::modal_shell::{
 };
 
 /// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程
-pub fn render_sessions_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let state = match &app.sessions_modal {
-        Some(s) => s,
-        None => return,
-    };
-
+pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area: Rect) {
     let title = match state.scope {
         ProjectScope::CurrentProject => " Select Session to Resume (Per Project) ",
         ProjectScope::AllProjects => " Select Session to Resume (All Projects) ",

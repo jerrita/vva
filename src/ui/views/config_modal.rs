@@ -4,19 +4,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::ui::app::{App, ConfigItemKind};
+use crate::ui::modals::{ConfigItemKind, ConfigModalState};
 use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_shell,
     selected_row_style, visible_window,
 };
 
 /// 渲染 /config 模态弹窗，支持上下键或 j/k 浏览与调整各项会话配置（模型、推理档位、网络搜索等）
-pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let state = match &app.config_modal {
-        Some(s) => s,
-        None => return,
-    };
-
+pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Rect) {
     let top_line = Line::from(vec![
         Span::raw("  "),
         Span::styled(

@@ -1,16 +1,16 @@
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::watch;
 
-use crate::harness::agent::AgentEvent;
+use crate::harness::SessionView;
+use crate::harness::{ManagedSession, SessionManager};
 use crate::ui::command::SlashCommand;
-use crate::ui::session_manager::{ManagedSession, SessionManager};
 
 // 重新导出子模块内容以保持 100% 外部向后兼容
-pub use super::history::{ChatEntry, SidebarStats, compute_stats, entries_from_turns};
+pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
+pub use pane::TextPane;
 pub use selection::{
     SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
     get_clipboard_text, set_clipboard_text,
@@ -18,6 +18,7 @@ pub use selection::{
 
 pub mod dispatch;
 pub mod editor;
+pub mod pane;
 pub mod scroll;
 pub mod selection;
 pub mod session;
@@ -25,31 +26,38 @@ pub mod session;
 #[cfg(test)]
 mod tests;
 
+/// 聊天流行缓存的失效依据：会话视图版本、渲染宽度、思考展示模式与本地通知数量
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChatCacheKey {
+    pub revision: u64,
+    pub width: usize,
+    pub thinking_concise: bool,
+    pub notices: usize,
+}
+
 /// TUI 交互式应用全局状态与控制中枢
 pub struct App {
     pub session_mgr: Arc<SessionManager>,
     pub active_session: Arc<ManagedSession>,
-    pub event_rx: broadcast::Receiver<AgentEvent>,
-    pub chat_entries: Vec<ChatEntry>,
+    pub view_rx: watch::Receiver<Arc<SessionView>>,
+    pub view: Arc<SessionView>,
+    /// 界面通知流：本地提示与会话任务通知按到达顺序汇入同一份
+    pub notices: Vec<String>,
+    /// 已汇入的会话通知数量
+    pub consumed_notices: usize,
     pub input: InputBuffer,
-    pub enable_web_search: bool,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
     pub max_scroll: usize,
     pub viewport_height: usize,
-    pub chat_area: Rect,
     pub is_dragging_scrollbar: bool,
-    pub text_selection: SelectionTracker,
-    pub sidebar_area: Rect,
-    pub sidebar_lines: Vec<Line<'static>>,
-    pub sidebar_selection: SelectionTracker,
+    /// 聊天流面板：行缓存按 chat_cache_key 失效，渲染与复制读同一份
+    pub chat: TextPane,
+    pub chat_cache_key: ChatCacheKey,
+    pub sidebar: TextPane,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
-    pub sessions_modal: Option<SessionsModalState>,
-    pub models_modal: Option<ModelsModalState>,
-    pub variants_modal: Option<VariantsModalState>,
-    pub config_modal: Option<ConfigModalState>,
     pub matched_commands: Vec<&'static SlashCommand>,
     pub selected_command_index: usize,
     pub stats: SidebarStats,
@@ -66,41 +74,32 @@ impl App {
     pub async fn new(
         session_mgr: Arc<SessionManager>,
         initial_session: Arc<ManagedSession>,
-        enable_web_search: bool,
     ) -> Self {
-        let event_rx = initial_session.event_tx.subscribe();
-        let effective_web_search = if let Ok(s) = initial_session.session.try_read() {
-            s.web_search
-        } else {
-            enable_web_search
-        };
-        let mut app = Self {
+        let view_rx = initial_session.subscribe();
+        let view = initial_session.snapshot();
+        let stats = compute_stats(&view.session, session_mgr.app_config());
+        Self {
             session_mgr,
             active_session: initial_session,
-            event_rx,
-            chat_entries: Vec::new(),
+            view_rx,
+            view,
+            notices: Vec::new(),
+            consumed_notices: 0,
             input: InputBuffer::new(),
-            enable_web_search: effective_web_search,
             scroll_offset: 0,
             auto_scroll: true,
             max_scroll: 0,
             viewport_height: 0,
-            chat_area: Rect::default(),
             is_dragging_scrollbar: false,
-            text_selection: SelectionTracker::default(),
-            sidebar_area: Rect::default(),
-            sidebar_lines: Vec::new(),
-            sidebar_selection: SelectionTracker::default(),
+            chat: TextPane::default(),
+            chat_cache_key: ChatCacheKey::default(),
+            sidebar: TextPane::default(),
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,
-            sessions_modal: None,
-            models_modal: None,
-            variants_modal: None,
-            config_modal: None,
             matched_commands: Vec::new(),
             selected_command_index: 0,
-            stats: SidebarStats::default(),
+            stats,
             thinking_concise: false,
             last_key_input_time: None,
             input_inner_area: Rect::default(),
@@ -108,10 +107,7 @@ impl App {
             history_index: None,
             saved_draft: String::new(),
             is_selecting_input: false,
-        };
-
-        app.reload_active_session_history().await;
-        app
+        }
     }
 
     /// 定时 tick（更新 spinner）

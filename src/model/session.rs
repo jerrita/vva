@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use super::message::Role;
-use super::meta::SessionMeta;
 use super::turn::Turn;
 
 fn default_web_search() -> bool {
@@ -34,8 +33,6 @@ pub struct Session {
     #[serde(default = "default_web_search")]
     pub web_search: bool,
     pub turns: Vec<Turn>,
-    #[serde(default)]
-    pub meta: SessionMeta,
 }
 
 impl Session {
@@ -61,12 +58,7 @@ impl Session {
             current_variant,
             web_search,
             turns: Vec::new(),
-            meta: SessionMeta::default(),
         }
-    }
-
-    pub fn last_turn_id(&self) -> Option<String> {
-        self.turns.last().map(|t| t.id.clone())
     }
 
     pub fn append_turn(&mut self, turn: Turn) {
@@ -79,32 +71,6 @@ impl Session {
         self.current_model = model.into();
         self.current_variant = variant;
         self.updated_at = Utc::now();
-    }
-
-    /// 应用 CLI / TUI 传入的会话恢复覆写参数，返回是否有字段被修改
-    pub fn apply_overrides(
-        &mut self,
-        model: Option<String>,
-        variant: Option<String>,
-        web_search: Option<bool>,
-    ) -> bool {
-        let mut changed = false;
-        if let Some(m) = model {
-            self.current_model = m;
-            changed = true;
-        }
-        if variant.is_some() {
-            self.current_variant = variant;
-            changed = true;
-        }
-        if let Some(w) = web_search {
-            self.web_search = w;
-            changed = true;
-        }
-        if changed {
-            self.updated_at = Utc::now();
-        }
-        changed
     }
 
     /// 更新会话原生网络搜索开启状态
@@ -154,8 +120,6 @@ pub struct SessionHeader {
     pub current_variant: Option<String>,
     #[serde(default = "default_web_search")]
     pub web_search: bool,
-    #[serde(default)]
-    pub meta: SessionMeta,
 }
 
 impl From<&Session> for SessionHeader {
@@ -168,7 +132,6 @@ impl From<&Session> for SessionHeader {
             current_model: s.current_model.clone(),
             current_variant: s.current_variant.clone(),
             web_search: s.web_search,
-            meta: s.meta.clone(),
         }
     }
 }
@@ -186,7 +149,6 @@ impl SessionHeader {
             current_variant: self.current_variant,
             web_search: self.web_search,
             turns,
-            meta: self.meta,
         }
     }
 }
@@ -196,7 +158,7 @@ impl SessionHeader {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonlRecord {
     Header(SessionHeader),
-    Turn(Turn),
+    Turn(Box<Turn>),
 }
 
 /// 用于列表展示的轻量会话摘要

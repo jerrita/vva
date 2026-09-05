@@ -1,16 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// 供应商专有的全局会话级元数据
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct SessionMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<ResponseSessionMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub anthropic: Option<AnthropicSessionMeta>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub gemini: Option<GeminiSessionMeta>,
-}
-
 /// 供应商专有的交互轮次级元数据
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct TurnMeta {
@@ -22,22 +11,7 @@ pub struct TurnMeta {
     pub gemini: Option<GeminiTurnMeta>,
 }
 
-/// 供应商专有的消息级元数据
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct MessageMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<ResponseMessageMeta>,
-}
-
 // ================== OpenAI Responses API 专有元数据 ==================
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ResponseSessionMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub instructions: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponseTurnMeta {
@@ -69,12 +43,6 @@ impl ResponseTurnMeta {
             output_items: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ResponseMessageMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub item_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -181,12 +149,6 @@ pub enum ResponseWebSearchSourceType {
 // ================== Anthropic 专有元数据 ==================
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct AnthropicSessionMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct AnthropicTurnMeta {
     /// 缓存统计：原生 Prompt Caching 优势追踪
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,12 +160,6 @@ pub struct AnthropicTurnMeta {
 }
 
 // ================== Google Gemini 专有元数据 ==================
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct GeminiSessionMeta {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct GeminiTurnMeta {

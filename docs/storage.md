@@ -7,7 +7,7 @@
 在 vva 中，持久化引擎满足以下设计要求：
 1. **统一领域存储**：磁盘持久化保存领域模型实体与强类型元数据；
 2. **写入抗崩溃**：对话过程中每轮交互即时落盘，在断电或进程中断时保留会话数据；
-3. **避免全量重写开销**：追加写机制避免长会话中的全量序列化与写放大；
+3. **轮次追加写**：每轮交互只向文件尾部追加一行，长会话不因新增轮次触发全量序列化；
 4. **流式增量加载与 Git Diff 友好**：便于版本管理与流式解析。
 
 ---
@@ -24,16 +24,16 @@ vva 默认采用 **JSONL (JSON Lines) 追加写存储引擎**（[`JsonlSessionSt
 每个 `.jsonl` 文件严格遵循以下两段式结构：
 
 ```
-Line 1:      {"type":"header","data":{"id":"sess_xxx","title":"Refactor","workspace_root":"/path","created_at":"...","updated_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true,"meta":{}}}
-Line 2:      {"type":"turn","data":{"id":"turn_001","role":"user","messages":[...],"usage":null,"meta":{}}}
-Line 3:      {"type":"turn","data":{"id":"turn_002","role":"assistant","messages":[...],"usage":{...},"meta":{"response":{"response_id":"resp_123",...}}}}
-Line 4..N:   {"type":"turn","data":{...}}
+Line 1:      {"type":"header","id":"sess_xxx","title":"Refactor","workspace_root":"/path","created_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true}
+Line 2:      {"type":"turn","id":"turn_001","role":"user","messages":[{"parts":[...]}],"meta":{}}
+Line 3:      {"type":"turn","id":"turn_002","role":"assistant","messages":[{"parts":[...]}],"usage":{...},"meta":{"response":{"response_id":"resp_123",...}}}
+Line 4..N:   {"type":"turn",...}
 ```
 
 - **第 1 行 (`JsonlRecord::Header`)**：
   - 存储全局会话头信息 [`SessionHeader`](../src/model/session.rs)；
   - 绑定当前会话的 `current_model`、`current_variant`、`web_search` 与 `workspace_root`；
-  - 仅在会话创建或发生模型/标题/网络搜索配置变更时覆写更新第 1 行。
+  - 会话创建或发生模型/标题/网络搜索配置变更时调用 `save_header`，按“首行 Header + 全部已有轮次”写入同目录临时文件，`fsync` 后 `rename` 原子替换；重写中途失败时原文件与历史保持完整。其余时间文件只被追加。
 - **第 2..N 行 (`JsonlRecord::Turn`)**：
   - 每完成一轮交互（用户提问、模型响应或工具执行返回），直接向文件尾部执行标准 `O_APPEND` 追加写；
   - 独立记录该轮的全部 `messages`、`usage` 及专属 `meta`。
@@ -47,7 +47,7 @@ Line 4..N:   {"type":"turn","data":{...}}
 ```rust
 #[async_trait]
 pub trait SessionStore: Send + Sync {
-    /// 保存或更新会话 Header 及全量轮次
+    /// 保存或更新会话 Header（重写首行并回写全部已有轮次）
     async fn save_header(&self, session: &Session) -> Result<(), StoreError>;
 
     /// 向指定会话尾部追加单轮 Turn（核心 Append-Only 写入路径）
@@ -71,6 +71,6 @@ pub trait SessionStore: Send + Sync {
 1. **抗进程崩溃**：
    - 使用 `OpenOptions::new().append(true)` 打开文件，单轮写入附带换行符并刷新缓冲区。进程终止时保留已完成轮次。
 2. **轻量会话列表检索 (`list_sessions`)**：
-   - 提取会话列表或在 TUI `/sessions` 弹窗展示时，**仅读取各 `.jsonl` 文件的首行**（获取 `SessionHeader`）与行数（统计 `turn_count`），不全量反序列化消息体。
+   - 提取会话列表或在 TUI `/sessions` 弹窗展示时，**仅反序列化各 `.jsonl` 文件的首行**（获取 `SessionHeader`）；`turn_count` 按剩余字节流中的换行符计数得出，不解析消息体、不分配行字符串。
 3. **零数据兜底保证**：
    - 解析记录时使用枚举分发（`JsonlRecord`），检测到损坏行返回强类型 `StoreError`，不吞没错误或替换为空数据。

@@ -1,13 +1,12 @@
 use async_trait::async_trait;
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::common::{EventForwarder, require_u64};
-use super::http::{SseEventHandler, consume_sse, post_sse};
-use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
-    shared_client,
+use super::common::{
+    EventForwarder, require_array, require_bool, require_str, require_u64, require_value,
 };
+use super::http::{SseEventHandler, post_json, post_sse};
+use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, Message, ResponseMessageContent, ResponseOutputItem,
@@ -54,7 +53,7 @@ impl ResponseProvider {
     }
 
     /// 将 Session 与当前上下文转换为 Responses API 请求体
-    pub fn build_request_body(
+    fn build_request_body(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
@@ -116,7 +115,7 @@ impl ResponseProvider {
             }
 
             for msg in &turn.messages {
-                match msg.role {
+                match turn.role {
                     Role::System => {
                         input_items.push(serde_json::json!({
                             "type": "message",
@@ -268,20 +267,13 @@ impl ResponseProvider {
 
     /// 解析 Responses API 响应体：先反序列化为强类型 output items，
     /// 再投影为领域 ContentPart（解析失败即报协议错误，不做字段兜底）
-    pub fn parse_response(
-        &self,
-        json: serde_json::Value,
-    ) -> Result<ProviderResponse, ProviderError> {
+    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
         let is_stored = match json.get("store") {
-            Some(value) => value.as_bool().ok_or_else(|| {
-                ProviderError::Protocol("Invalid 'store' in Responses API output".into())
-            })?,
+            Some(_) => require_bool(&json, "store")?,
             None => false,
         };
 
-        let raw_id = json["id"].as_str().ok_or_else(|| {
-            ProviderError::Protocol("Missing 'id' in Responses API output".into())
-        })?;
+        let raw_id = require_str(&json, "id")?;
 
         let response_id = if is_stored {
             Some(raw_id.to_string())
@@ -289,12 +281,7 @@ impl ResponseProvider {
             None
         };
 
-        let status = json["status"]
-            .as_str()
-            .ok_or_else(|| {
-                ProviderError::Protocol("Missing 'status' in Responses API output".into())
-            })?
-            .to_string();
+        let status = require_str(&json, "status")?.to_string();
 
         if status == "failed" {
             let err_msg = json
@@ -315,9 +302,7 @@ impl ResponseProvider {
         let service_tier = json["service_tier"].as_str().map(|s| s.to_string());
         let reasoning_effort = json["reasoning"]["effort"].as_str().map(|s| s.to_string());
 
-        let output_items = json["output"].as_array().ok_or_else(|| {
-            ProviderError::Protocol("Missing 'output' in Responses API output".into())
-        })?;
+        let output_items = require_array(&json, "output")?;
 
         let mut native_output_items = Vec::with_capacity(output_items.len());
         for item in output_items {
@@ -329,7 +314,6 @@ impl ResponseProvider {
         }
 
         let mut parts = Vec::new();
-        let mut last_msg_item_id = None;
 
         for item in &native_output_items {
             match item {
@@ -390,11 +374,7 @@ impl ResponseProvider {
                         });
                     }
                 }
-                ResponseOutputItem::Message { id, content, .. } => {
-                    if is_stored {
-                        last_msg_item_id = Some(id.clone());
-                    }
-
+                ResponseOutputItem::Message { content, .. } => {
                     for c in content {
                         match c {
                             ResponseMessageContent::OutputText { text, annotations } => {
@@ -428,29 +408,14 @@ impl ResponseProvider {
         if let Some(u) = json.get("usage")
             && !u.is_null()
         {
-            let input_tokens = u["input_tokens"]
-                .as_u64()
-                .ok_or_else(|| ProviderError::Protocol("Missing 'input_tokens' in usage".into()))?
-                as u32;
-            let output_tokens = u["output_tokens"]
-                .as_u64()
-                .ok_or_else(|| ProviderError::Protocol("Missing 'output_tokens' in usage".into()))?
-                as u32;
-            let total_tokens = u["total_tokens"]
-                .as_u64()
-                .ok_or_else(|| ProviderError::Protocol("Missing 'total_tokens' in usage".into()))?
-                as u32;
+            let input_tokens = require_u64(u, "input_tokens")? as u32;
+            let output_tokens = require_u64(u, "output_tokens")? as u32;
+            let total_tokens = require_u64(u, "total_tokens")? as u32;
 
-            let input_details = u["input_tokens_details"].as_object().ok_or_else(|| {
-                ProviderError::Protocol("Missing 'input_tokens_details' in usage".into())
-            })?;
-            let cached = input_details["cached_tokens"].as_u64().ok_or_else(|| {
-                ProviderError::Protocol("Missing 'cached_tokens' in input_tokens_details".into())
-            })? as u32;
+            let input_details = require_value(u, "input_tokens_details")?;
+            let cached = require_u64(input_details, "cached_tokens")? as u32;
 
-            let output_details = u["output_tokens_details"].as_object().ok_or_else(|| {
-                ProviderError::Protocol("Missing 'output_tokens_details' in usage".into())
-            })?;
+            let output_details = require_value(u, "output_tokens_details")?;
             let reasoning = output_details["reasoning_tokens"].as_u64().ok_or_else(|| {
                 ProviderError::Protocol(
                     "Missing 'reasoning_tokens' in output_tokens_details".into(),
@@ -479,12 +444,7 @@ impl ResponseProvider {
             ..Default::default()
         };
 
-        let mut message = Message::assistant(parts);
-        if let Some(msg_id) = last_msg_item_id {
-            message.meta.response = Some(crate::model::ResponseMessageMeta {
-                item_id: Some(msg_id),
-            });
-        }
+        let message = Message::new(parts);
 
         Ok(ProviderResponse {
             messages: vec![message],
@@ -503,32 +463,24 @@ impl Provider for ResponseProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_native_search: true,
-            supports_prompt_caching: false,
-            supports_thinking_signature: false,
-            supports_stateful_response_id: true,
             supports_reasoning_effort: true,
         }
     }
 
-    fn endpoint_url(&self, _model: &str, _stream: bool) -> Result<String, ProviderError> {
-        Ok(self.normalized_endpoint())
-    }
-
-    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
-        self.build_auth_headers()
-    }
-
-    fn build_request_body(
+    async fn complete(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<serde_json::Value, ProviderError> {
-        ResponseProvider::build_request_body(self, session, tools, options)
-    }
-
-    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
-        ResponseProvider::parse_response(self, json)
+    ) -> Result<ProviderResponse, ProviderError> {
+        let body = self.build_request_body(session, tools, options)?;
+        let response = post_json(
+            &self.normalized_endpoint(),
+            self.build_auth_headers()?,
+            &body,
+        )
+        .await?;
+        self.parse_response(response)
     }
 
     async fn complete_stream(
@@ -541,23 +493,18 @@ impl Provider for ResponseProvider {
         let mut body = self.build_request_body(session, tools, options)?;
         body["stream"] = serde_json::json!(true);
 
-        let mut headers = self.auth_headers()?;
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-
-        let res = post_sse(
-            shared_client(),
-            &self.endpoint_url(&options.model, true)?,
-            headers,
-            &body,
-        )
-        .await?;
-
         let mut handler = ResponseStreamHandler {
             provider: self,
             forwarder: EventForwarder::new(event_sender),
             completed: None,
         };
-        consume_sse(res, &mut handler).await?;
+        post_sse(
+            &self.normalized_endpoint(),
+            self.build_auth_headers()?,
+            &body,
+            &mut handler,
+        )
+        .await?;
 
         handler.completed.ok_or_else(|| {
             ProviderError::Protocol("Stream ended without response.completed".into())
@@ -575,20 +522,14 @@ struct ResponseStreamHandler<'a> {
 #[async_trait]
 impl SseEventHandler for ResponseStreamHandler<'_> {
     async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError> {
-        let ev_type = json["type"]
-            .as_str()
-            .ok_or_else(|| ProviderError::Protocol("Missing 'type' in SSE event data".into()))?;
+        let ev_type = require_str(&json, "type")?;
         match ev_type {
             "error" => {
-                let msg = json["message"].as_str().ok_or_else(|| {
-                    ProviderError::Protocol("Missing 'message' in error event".into())
-                })?;
+                let msg = require_str(&json, "message")?;
                 Err(ProviderError::Protocol(format!("Stream error: {msg}")))
             }
             "response.failed" => {
-                let resp_obj = json.get("response").ok_or_else(|| {
-                    ProviderError::Protocol("Missing 'response' in response.failed event".into())
-                })?;
+                let resp_obj = require_value(&json, "response")?;
                 let err_msg = resp_obj
                     .get("error")
                     .and_then(|e| e.get("message"))
@@ -599,11 +540,7 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                 )))
             }
             "response.output_text.delta" => {
-                let delta = json["delta"].as_str().ok_or_else(|| {
-                    ProviderError::Protocol(
-                        "Missing 'delta' in response.output_text.delta event".into(),
-                    )
-                })?;
+                let delta = require_str(&json, "delta")?;
                 self.forwarder.text(delta).await;
                 Ok(())
             }
@@ -617,16 +554,12 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                 Ok(())
             }
             "response.reasoning_text.delta" | "response.reasoning_summary_text.delta" => {
-                let delta = json["delta"].as_str().ok_or_else(|| {
-                    ProviderError::Protocol("Missing 'delta' in reasoning delta event".into())
-                })?;
+                let delta = require_str(&json, "delta")?;
                 self.forwarder.thought(delta).await;
                 Ok(())
             }
             "response.completed" => {
-                let resp_obj = json.get("response").ok_or_else(|| {
-                    ProviderError::Protocol("Missing 'response' in response.completed event".into())
-                })?;
+                let resp_obj = require_value(&json, "response")?;
                 let parsed = self.provider.parse_response(resp_obj.clone())?;
                 for msg in &parsed.messages {
                     for part in &msg.parts {
@@ -658,8 +591,8 @@ mod tests {
         let provider = ResponseProvider::new("test-key");
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
-        let user_msg = Message::user("Check the weather in Tokyo");
-        let user_turn = Turn::user_turn(user_msg, None);
+        let user_msg = Message::text("Check the weather in Tokyo");
+        let user_turn = Turn::user_turn(user_msg);
         session.append_turn(user_turn);
 
         // 第一轮：无 previous_response_id，携带 reasoning_effort
@@ -681,16 +614,14 @@ mod tests {
         assert!(body1.get("reasoning_effort").is_none());
 
         // 模拟第一轮 Assistant 成功返回 response_id = "resp_turn_1"
-        let mut asst_turn = Turn::assistant_turn(
-            vec![Message::assistant(vec![ContentPart::text("It is sunny.")])],
-            None,
-        );
+        let mut asst_turn =
+            Turn::assistant_turn(vec![Message::new(vec![ContentPart::text("It is sunny.")])]);
         asst_turn.meta.response = Some(ResponseTurnMeta::new("resp_turn_1"));
         session.append_turn(asst_turn);
 
         // 用户提出第二轮需求
-        let user_msg2 = Message::user("What about tomorrow?");
-        session.append_turn(Turn::user_turn(user_msg2, None));
+        let user_msg2 = Message::text("What about tomorrow?");
+        session.append_turn(Turn::user_turn(user_msg2));
 
         // 第二轮：应自动提取 previous_response_id: "resp_turn_1"
         let body2 = provider
@@ -711,17 +642,15 @@ mod tests {
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
         // 1. 用户提问
-        session.append_turn(Turn::user_turn(Message::user("run dir"), None));
+        session.append_turn(Turn::user_turn(Message::text("run dir")));
 
         // 2. Assistant 返回 ToolCall，并生成 response_id
-        let mut asst_turn = Turn::assistant_turn(
-            vec![Message::assistant(vec![ContentPart::ToolCall(ToolCall {
+        let mut asst_turn =
+            Turn::assistant_turn(vec![Message::new(vec![ContentPart::ToolCall(ToolCall {
                 id: "call_abc123".into(),
                 name: "powershell".into(),
                 arguments: r#"{"command":"dir"}"#.into(),
-            })])],
-            None,
-        );
+            })])]);
         asst_turn.meta.response = Some(ResponseTurnMeta::new("resp_asst_1"));
         session.append_turn(asst_turn);
 
@@ -733,7 +662,6 @@ mod tests {
                 content: "dir output".into(),
                 is_error: false,
             })],
-            None,
         ));
 
         let options = CompletionOptions {
@@ -866,15 +794,11 @@ mod tests {
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
         // System 提示
-        session.append_turn(Turn::new(
-            Role::System,
-            vec![Message::system("Be concise.")],
-            None,
-        ));
+        session.append_turn(Turn::new(Role::System, vec![Message::text("Be concise.")]));
         // User 问题
-        session.append_turn(Turn::user_turn(Message::user("Hello"), None));
+        session.append_turn(Turn::user_turn(Message::text("Hello")));
         // Assistant 回复且包含 ToolCall（来自其他 provider 或无 previous_response_id）
-        let asst_msg = Message::assistant(vec![
+        let asst_msg = Message::new(vec![
             ContentPart::text("Calling tool"),
             ContentPart::ToolCall(ToolCall {
                 id: "c1".into(),
@@ -882,7 +806,7 @@ mod tests {
                 arguments: r#"{"command":"pwd"}"#.into(),
             }),
         ]);
-        session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
+        session.append_turn(Turn::assistant_turn(vec![asst_msg]));
         // Tool 返回
         session.append_turn(Turn::new(
             Role::Tool,
@@ -891,7 +815,6 @@ mod tests {
                 content: "/home/project".into(),
                 is_error: false,
             })],
-            None,
         ));
 
         let options = CompletionOptions {
@@ -991,12 +914,17 @@ mod tests {
             .expect("parse standard response");
         assert_eq!(parsed.messages.len(), 1);
         let msg = &parsed.messages[0];
-        assert_eq!(
-            msg.meta
+        assert!(
+            parsed
+                .meta
                 .response
                 .as_ref()
-                .and_then(|r| r.item_id.as_deref()),
-            Some("msg_std_100")
+                .unwrap()
+                .output_items
+                .iter()
+                .any(|item| {
+                    matches!(item, ResponseOutputItem::Message { id, .. } if id == "msg_std_100")
+                })
         );
         let parts = &msg.parts;
         assert_eq!(parts.len(), 3);
@@ -1031,8 +959,8 @@ mod tests {
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
         // 1. 用户第一轮提问
-        let user_msg1 = Message::user("我需要做一般轻度 coding 开发");
-        session.append_turn(Turn::user_turn(user_msg1, None));
+        let user_msg1 = Message::text("我需要做一般轻度 coding 开发");
+        session.append_turn(Turn::user_turn(user_msg1));
 
         // 2. 模拟服务端返回 store: false 的响应报文
         let mock_unstored_json = serde_json::json!({
@@ -1095,9 +1023,8 @@ mod tests {
         assert!(resp_meta.previous_response_id.is_none());
         assert!(!resp_meta.store);
         // 不记录依赖 store 的 message item_id
-        assert!(parsed.messages[0].meta.response.is_none());
 
-        let mut asst_turn = Turn::assistant_turn(parsed.messages, None);
+        let mut asst_turn = Turn::assistant_turn(parsed.messages);
         asst_turn.meta = parsed.meta;
         assert!(asst_turn.openai_response_id().is_none());
         session.append_turn(asst_turn);
@@ -1106,8 +1033,8 @@ mod tests {
         assert!(session.latest_openai_response_id().is_none());
 
         // 3. 用户发起第二轮提问
-        let user_msg2 = Message::user("要考虑性价比");
-        session.append_turn(Turn::user_turn(user_msg2, None));
+        let user_msg2 = Message::text("要考虑性价比");
+        session.append_turn(Turn::user_turn(user_msg2));
 
         let options = CompletionOptions {
             model: "gpt-5.6-terra".into(),

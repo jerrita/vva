@@ -1,29 +1,29 @@
 use std::sync::Arc;
 
-use super::model::{AppConfig, GLM_CODING_PLAN_BASE_URL, ModelConfig, ProviderType};
+use super::model::{AppConfig, ModelConfig, ProviderConfig, ProviderType};
 use super::parser::ConfigError;
 use crate::provider::Provider;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::response::ResponseProvider;
 
-pub struct ResolvedModel {
+pub struct ResolvedModel<'a> {
     pub provider_id: String,
     pub model_id: String,
     pub full_spec: String,
     pub model_config: ModelConfig,
-    pub provider: Arc<dyn Provider>,
+    provider_config: &'a ProviderConfig,
     pub selected_variant: Option<String>,
 }
 
-impl std::fmt::Debug for ResolvedModel {
+impl std::fmt::Debug for ResolvedModel<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResolvedModel")
             .field("provider_id", &self.provider_id)
             .field("model_id", &self.model_id)
             .field("full_spec", &self.full_spec)
             .field("model_config", &self.model_config)
-            .field("provider_name", &self.provider.name())
+            .field("protocol", &self.provider_config.provider_type)
             .field("selected_variant", &self.selected_variant)
             .finish()
     }
@@ -35,34 +35,50 @@ impl AppConfig {
         &self,
         spec: &str,
         requested_variant: Option<&str>,
-    ) -> Result<ResolvedModel, ConfigError> {
+    ) -> Result<ResolvedModel<'_>, ConfigError> {
         let (provider_id, model_id) = if let Some((p, m)) = spec.split_once('/') {
             (p.to_string(), m.to_string())
         } else {
-            // 若没有指定 provider 前缀，尝试从各 provider 中查找该 model
-            let mut found = None;
-            for (p_id, p_cfg) in &self.providers {
-                if p_cfg.models.contains_key(spec) {
-                    found = Some((p_id.clone(), spec.to_string()));
-                    break;
+            let mut matches = self
+                .providers
+                .iter()
+                .filter(|(_, provider)| provider.models.contains_key(spec));
+            if let Some((id, _)) = matches.next() {
+                if matches.next().is_some() {
+                    return Err(ConfigError::ModelNotFound(format!(
+                        "Ambiguous model '{spec}'; use provider/model"
+                    )));
                 }
+                (id.clone(), spec.to_string())
+            } else {
+                let (id, _) = self
+                    .settings
+                    .default
+                    .split_once('/')
+                    .ok_or_else(|| ConfigError::ModelNotFound(spec.to_string()))?;
+                if !self.providers.get(id).is_some_and(|p| p.models.is_empty()) {
+                    return Err(ConfigError::ModelNotFound(spec.to_string()));
+                }
+                (id.to_string(), spec.to_string())
             }
-            found.ok_or_else(|| ConfigError::ModelNotFound(spec.to_string()))?
         };
 
         let provider_cfg = self.providers.get(&provider_id).ok_or_else(|| {
             ConfigError::ModelNotFound(format!("Provider '{provider_id}' not found"))
         })?;
 
-        let model_cfg = provider_cfg
-            .models
-            .get(&model_id)
-            .ok_or_else(|| {
+        let model_cfg = if provider_cfg.models.is_empty() {
+            ModelConfig {
+                reasoning: true,
+                ..Default::default()
+            }
+        } else {
+            provider_cfg.models.get(&model_id).cloned().ok_or_else(|| {
                 ConfigError::ModelNotFound(format!(
                     "Model '{model_id}' not found under provider '{provider_id}'"
                 ))
             })?
-            .clone();
+        };
 
         // 校验或确定推理强度档位 (Variant)
         let selected_variant = if let Some(req_var) = requested_variant {
@@ -93,21 +109,32 @@ impl AppConfig {
             None
         };
 
+        let full_spec = format!("{provider_id}/{model_id}");
+        Ok(ResolvedModel {
+            provider_id,
+            model_id,
+            full_spec,
+            model_config: model_cfg,
+            provider_config: provider_cfg,
+            selected_variant,
+        })
+    }
+}
+
+impl ResolvedModel<'_> {
+    pub fn create_provider(&self) -> Arc<dyn Provider> {
         // 计算实际生效的 ProviderType（支持模型级 override；未声明 type 时按 Response）
-        let effective_type =
-            model_cfg.effective_type(provider_cfg.provider_type.unwrap_or_default());
+        let effective_type = self
+            .model_config
+            .effective_type(self.provider_config.provider_type.unwrap_or_default());
 
         // 规范化 Base URL（针对各 API 标准端点严格对接与去重）
-        let base_url = provider_cfg.base_url.trim().trim_end_matches('/');
-        let api_key = provider_cfg.api_key.trim();
+        let base_url = self.provider_config.base_url.trim().trim_end_matches('/');
+        let api_key = self.provider_config.api_key.trim();
 
         let provider_inst: Arc<dyn Provider> = match effective_type {
-            ProviderType::Response | ProviderType::GlmCodingPlan => {
-                let default_url = if effective_type == ProviderType::GlmCodingPlan {
-                    GLM_CODING_PLAN_BASE_URL
-                } else {
-                    "https://api.openai.com/v1"
-                };
+            ProviderType::Response => {
+                let default_url = "https://api.openai.com/v1";
                 let url = if base_url.is_empty() {
                     default_url.to_string()
                 } else if base_url.ends_with("/v1") || base_url.ends_with("/responses") {
@@ -142,83 +169,6 @@ impl AppConfig {
             }
         };
 
-        let full_spec = format!("{provider_id}/{model_id}");
-        Ok(ResolvedModel {
-            provider_id,
-            model_id,
-            full_spec,
-            model_config: model_cfg,
-            provider: provider_inst,
-            selected_variant,
-        })
-    }
-}
-
-pub type ResolvedProviderInfo = (Arc<dyn Provider>, String, Option<String>);
-
-/// 解析 Provider 实例、模型生效名称及 Variant。
-/// 配置存在时走配置路由（历史会话模型失效时回退默认模型并记录告警）；
-/// 无配置文件时按模型名与环境变量直连官方端点。
-pub fn resolve_provider(
-    app_config: &Option<AppConfig>,
-    current_model: &str,
-    current_variant: Option<&str>,
-) -> Result<ResolvedProviderInfo, String> {
-    if let Some(cfg) = app_config {
-        match cfg.resolve_model(current_model, current_variant) {
-            Ok(resolved) => {
-                let ResolvedModel {
-                    model_id,
-                    provider,
-                    selected_variant,
-                    ..
-                } = resolved;
-                Ok((provider, model_id, selected_variant))
-            }
-            Err(err) => {
-                // 如果历史会话中记录的模型在当前配置中不存在，回退到默认模型
-                if current_model != cfg.settings.default
-                    && let Ok(fallback) = cfg.resolve_model(&cfg.settings.default, None)
-                {
-                    tracing::warn!(
-                        "Model '{current_model}' not found in current config; falling back to default '{}'",
-                        cfg.settings.default
-                    );
-                    return Ok((
-                        fallback.provider,
-                        fallback.model_id,
-                        fallback.selected_variant,
-                    ));
-                }
-                Err(format!("Error resolving model '{current_model}': {err}"))
-            }
-        }
-    } else {
-        // 无配置文件时的环境变数备用路由
-        let (provider_inst, model_id): (Arc<dyn Provider>, String) =
-            match current_model.to_lowercase().as_str() {
-                m if m.contains("anthropic") || m.contains("claude") => {
-                    let key = std::env::var("ANTHROPIC_API_KEY").unwrap_or_default();
-                    (
-                        Arc::new(AnthropicProvider::new(key)),
-                        current_model.to_string(),
-                    )
-                }
-                m if m.contains("gemini") => {
-                    let key = std::env::var("GEMINI_API_KEY").unwrap_or_default();
-                    (
-                        Arc::new(GeminiProvider::new(key)),
-                        current_model.to_string(),
-                    )
-                }
-                _ => {
-                    let key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-                    (
-                        Arc::new(ResponseProvider::new(key)),
-                        current_model.to_string(),
-                    )
-                }
-            };
-        Ok((provider_inst, model_id, current_variant.map(String::from)))
+        provider_inst
     }
 }

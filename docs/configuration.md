@@ -28,12 +28,16 @@ vva 支持分层配置加载机制：
 
 代码位置：[`src/config/resolver.rs`](../src/config/resolver.rs) 与 [`src/config/model.rs`](../src/config/model.rs)
 
-### 3.1 规格寻址格式：`{provider_id}/{model_id}`
+### 3.1 解析与构造分离
+`resolve_model` 只做配置解析：寻址供应商与模型节点、校验推理档位，返回 `ResolvedModel`（`provider_id`, `model_id`, `full_spec`, `model_config`, `selected_variant`）。
+Provider 实例由 `ResolvedModel::create_provider()` 在需要发起调用时单独构造，因此统计价格、展示模型清单等只读路径不会创建适配器。
+
+### 3.2 规格寻址格式：`{provider_id}/{model_id}`
 模型统一采用二段式寻址规范：
 - 例如：`"openai/gpt-5-terra"`、`"anthropic/claude-3-7-sonnet"`、`"google/gemini-2.5-pro"`；
 - 路由器首先在全局配置的 `providers` 表中寻址供应商节点，继而在其子集 `models` 表中匹配具体模型配置。
 
-### 3.2 节点协议覆写 (`type`)
+### 3.3 节点协议覆写 (`type`)
 在某些统一反代网关节点下，某些模型可能使用的是不同的下层协议。配置系统支持在具体模型节点上声明独立的协议类型以覆写供应商默认协议：
 ```jsonc
 {
@@ -53,16 +57,16 @@ vva 支持分层配置加载机制：
 }
 ```
 
-### 3.3 推理强度档位（variants）声明与校验
+### 3.4 推理强度档位（variants）声明与校验
 - 模型配置支持声明其所支持的思考与推理强度档位，例如：
   `"variants": ["minimal", "low", "medium", "high", "xhigh", "max"]`；
 - 当用户在 CLI 或 TUI 中传入 `--variant high` 或使用 `/variant high` 时，路由器会自动进行合法性校验，并将其映射为对应供应商的官方协议字段（如 OpenAI Responses 的 `reasoning_effort`）。
 
-### 3.4 URL 端点规范化
+### 3.5 URL 端点规范化
 - 根据供应商类型自动规范化 URL 端点（自动去除重复斜杠，自动适配 `/v1` 或 `/v1beta`）；
 - 避免因用户在 `base_url` 结尾多写或少写 `/` 导致 HTTP 404。
 
-### 3.5 内置供应商预设：`glm-coding-plan`
+### 3.6 内置供应商预设：`glm-coding-plan`
 GLM Coding Plan 只需填写 `api_key`。解析时按供应商 id `glm-coding-plan` 或 `type: "glm-coding-plan"` 识别，并自动补全：
 - 协议：OpenAI Responses（底层复用 `ResponseProvider`）
 - 端点：`https://open.bigmodel.cn/api/v1`（Codex Responses，原生 `web_search`）

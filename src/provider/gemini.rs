@@ -1,13 +1,10 @@
 use async_trait::async_trait;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use tokio::sync::mpsc;
 
-use super::common::{RoleBlockMerger, function_tool_def, require_str, require_u64};
-use super::http::{SseEventHandler, consume_sse, post_sse};
-use super::{
-    CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
-    shared_client,
-};
+use super::common::{RoleBlockMerger, require_str, require_u64};
+use super::http::{SseEventHandler, post_json, post_sse};
+use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
@@ -69,7 +66,7 @@ impl GeminiProvider {
     }
 
     /// 将 Session 转换为 Gemini API 的 contents 与 tools 结构
-    pub fn build_request_body(
+    fn build_request_body(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
@@ -81,7 +78,7 @@ impl GeminiProvider {
 
         for turn in &session.turns {
             for msg in &turn.messages {
-                match msg.role {
+                match turn.role {
                     Role::System => {
                         system_instruction_parts.push(serde_json::json!({
                             "text": msg.text_content()
@@ -203,7 +200,7 @@ impl GeminiProvider {
         if !tools.is_empty() {
             let function_declarations: Vec<serde_json::Value> = tools
                 .iter()
-                .map(|t| function_tool_def(t, "parameters"))
+                .map(|t| serde_json::json!({"name": t.name, "description": t.description, "parameters": t.parameters}))
                 .collect();
             tools_list.push(serde_json::json!({
                 "function_declarations": function_declarations
@@ -233,10 +230,7 @@ impl GeminiProvider {
     }
 
     /// 解析 Gemini 响应，将 groundingMetadata 映射为 Responses 风格的 WebSearchCall 与 Annotation
-    pub fn parse_response(
-        &self,
-        json: serde_json::Value,
-    ) -> Result<ProviderResponse, ProviderError> {
+    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
         if json["candidates"]
             .as_array()
             .and_then(|c| c.first())
@@ -252,7 +246,7 @@ impl GeminiProvider {
         let (parts, meta, usage) = accumulator.finish();
 
         Ok(ProviderResponse {
-            messages: vec![Message::assistant(parts)],
+            messages: vec![Message::new(parts)],
             usage,
             meta,
         })
@@ -268,32 +262,24 @@ impl Provider for GeminiProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_native_search: true,
-            supports_prompt_caching: false,
-            supports_thinking_signature: false,
-            supports_stateful_response_id: false,
             supports_reasoning_effort: false,
         }
     }
 
-    fn endpoint_url(&self, model: &str, stream: bool) -> Result<String, ProviderError> {
-        Ok(GeminiProvider::endpoint_url(self, model, stream))
-    }
-
-    fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
-        GeminiProvider::auth_headers(self)
-    }
-
-    fn build_request_body(
+    async fn complete(
         &self,
         session: &Session,
         tools: &[ToolDefinition],
         options: &CompletionOptions,
-    ) -> Result<serde_json::Value, ProviderError> {
-        GeminiProvider::build_request_body(self, session, tools, options)
-    }
-
-    fn parse_response(&self, json: serde_json::Value) -> Result<ProviderResponse, ProviderError> {
-        GeminiProvider::parse_response(self, json)
+    ) -> Result<ProviderResponse, ProviderError> {
+        let body = self.build_request_body(session, tools, options)?;
+        let response = post_json(
+            &self.endpoint_url(&options.model, false),
+            self.auth_headers()?,
+            &body,
+        )
+        .await?;
+        self.parse_response(response)
     }
 
     async fn complete_stream(
@@ -305,23 +291,18 @@ impl Provider for GeminiProvider {
     ) -> Result<ProviderResponse, ProviderError> {
         let body = self.build_request_body(session, tools, options)?;
 
-        let mut headers = self.auth_headers()?;
-        headers.insert(ACCEPT, HeaderValue::from_static("text/event-stream"));
-
-        let res = post_sse(
-            shared_client(),
-            &GeminiProvider::endpoint_url(self, &options.model, true),
-            headers,
+        let mut handler = GeminiAccumulator::new(event_sender);
+        post_sse(
+            &self.endpoint_url(&options.model, true),
+            self.auth_headers()?,
             &body,
+            &mut handler,
         )
         .await?;
-
-        let mut handler = GeminiAccumulator::new(event_sender);
-        consume_sse(res, &mut handler).await?;
         let (parts, meta, usage) = handler.finish();
 
         Ok(ProviderResponse {
-            messages: vec![Message::assistant(parts)],
+            messages: vec![Message::new(parts)],
             usage,
             meta,
         })
@@ -715,19 +696,18 @@ mod tests {
         // System 指令
         session.append_turn(Turn::new(
             Role::System,
-            vec![Message::system("You are a helpful assistant.")],
-            None,
+            vec![Message::text("You are a helpful assistant.")],
         ));
         // User 问题
-        session.append_turn(Turn::user_turn(Message::user("List files"), None));
+        session.append_turn(Turn::user_turn(Message::text("List files")));
 
         // Assistant 调用 bash 工具
-        let asst_msg = Message::assistant(vec![ContentPart::ToolCall(ToolCall {
+        let asst_msg = Message::new(vec![ContentPart::ToolCall(ToolCall {
             id: "call_abc123".into(),
             name: "bash".into(),
             arguments: r#"{"command":"ls"}"#.into(),
         })]);
-        session.append_turn(Turn::assistant_turn(vec![asst_msg], None));
+        session.append_turn(Turn::assistant_turn(vec![asst_msg]));
 
         // Tool 返回执行结果
         session.append_turn(Turn::new(
@@ -737,7 +717,6 @@ mod tests {
                 content: "file1.txt\nfile2.txt".into(),
                 is_error: false,
             })],
-            None,
         ));
 
         let options = CompletionOptions {

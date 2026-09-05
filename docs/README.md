@@ -47,7 +47,7 @@
    - 内置供应商预设（`glm-coding-plan` 仅填 api_key）
 
 6. **[现代化终端用户界面设计 (ui.md)](ui.md)**
-   - 单例 `SessionManager` 与并发后台 Agent 运行机制
+   - 会话任务单一所有权与 `SessionView` 快照订阅
    - `App` 顶层响应式状态机与非阻塞事件主循环
    - 独立的 `InputBuffer` 多行文本编辑器（CJK宽字符视觉对齐、Unicode边界保护、视口滚动）
    - 模态弹窗状态机与视图层解耦（`sessions`, `models`, `variants`, `config`）

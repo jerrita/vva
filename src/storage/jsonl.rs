@@ -10,7 +10,8 @@ use crate::model::{JsonlRecord, Session, SessionHeader, SessionSummary, Turn};
 ///
 /// 文件布局：首行 Header 记录 + 逐行 Turn 记录。Header 变更（标题生成、模型切换）
 /// 时整体重写文件——JSONL 首行长度不定、无法原地替换，以低频写放大换取格式
-/// 简单与崩溃一致性。磁盘 IO 均通过 `spawn_blocking` 执行，避免阻塞异步运行时。
+/// 简单。重写经同目录临时文件落盘后 rename 替换，中途失败保留原文件。
+/// 磁盘 IO 均通过 `spawn_blocking` 执行，避免阻塞异步运行时。
 pub struct JsonlSessionStore {
     base_dir: PathBuf,
 }
@@ -44,18 +45,24 @@ fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError
         fs::create_dir_all(parent)?;
     }
 
-    let mut file = File::create(&path)?;
+    // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
+    let temp_path = path.with_extension("jsonl.tmp");
+    let mut file = File::create(&temp_path)?;
     let header_record = JsonlRecord::Header(SessionHeader::from(session));
     let header_json = serde_json::to_string(&header_record)?;
     writeln!(file, "{header_json}")?;
 
     for turn in &session.turns {
-        let turn_record = JsonlRecord::Turn(turn.clone());
+        let turn_record = JsonlRecord::Turn(Box::new(turn.clone()));
         let turn_json = serde_json::to_string(&turn_record)?;
         writeln!(file, "{turn_json}")?;
     }
 
     file.flush()?;
+    file.sync_all()?;
+    drop(file);
+
+    fs::rename(&temp_path, &path)?;
     Ok(())
 }
 
@@ -67,7 +74,7 @@ fn append_turn_sync(base_dir: &Path, session_id: &str, turn: &Turn) -> Result<()
 
     let mut file = OpenOptions::new().create(false).append(true).open(&path)?;
 
-    let turn_record = JsonlRecord::Turn(turn.clone());
+    let turn_record = JsonlRecord::Turn(Box::new(turn.clone()));
     let turn_json = serde_json::to_string(&turn_record)?;
     writeln!(file, "{turn_json}")?;
     file.flush()?;
@@ -107,12 +114,25 @@ fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session
             continue;
         }
         match serde_json::from_str::<JsonlRecord>(trimmed)? {
-            JsonlRecord::Turn(t) => turns.push(t),
+            JsonlRecord::Turn(t) => turns.push(*t),
             _ => return Err(StoreError::InvalidFormat("Expected Turn record".into())),
         }
     }
 
     Ok(Some(header.into_session(turns)))
+}
+
+/// 统计剩余字节流中的换行符数量（会话摘要只需轮次条数，无需解析内容）
+fn count_lines(reader: &mut BufReader<File>) -> usize {
+    let mut buffer = [0u8; 64 * 1024];
+    let mut count = 0;
+    while let Ok(read) = std::io::Read::read(reader, &mut buffer) {
+        if read == 0 {
+            break;
+        }
+        count += buffer[..read].iter().filter(|byte| **byte == b'\n').count();
+    }
+    count
 }
 
 fn delete_session_sync(base_dir: &Path, session_id: &str) -> Result<(), StoreError> {
@@ -136,10 +156,10 @@ fn list_sessions_sync(base_dir: &Path) -> Result<Vec<SessionSummary>, StoreError
         if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
             && let Ok(file) = File::open(&path)
         {
-            let reader = BufReader::new(file);
-            let mut lines = reader.lines();
-            let first_line = lines.next();
-            let parsed_header = first_line.and_then(|l| l.ok()).and_then(|line| {
+            let mut reader = BufReader::new(file);
+            let mut first_line = String::new();
+            let parsed_header = reader.read_line(&mut first_line).ok().and_then(|_| {
+                let line = first_line;
                 match serde_json::from_str::<JsonlRecord>(&line) {
                     Ok(JsonlRecord::Header(header)) => Some(header),
                     // 损坏的 Header 不再静默吞没：显式告警后跳过该文件
@@ -153,11 +173,8 @@ fn list_sessions_sync(base_dir: &Path) -> Result<Vec<SessionSummary>, StoreError
                 }
             });
             if let Some(header) = parsed_header {
-                // 统计后续行数（Turn 数量）
-                let turn_count = lines
-                    .map_while(Result::ok)
-                    .filter(|l| !l.trim().is_empty())
-                    .count();
+                // 轮次数按剩余换行符统计：不反序列化消息体，长会话文件同样廉价
+                let turn_count = count_lines(&mut reader);
                 summaries.push(SessionSummary {
                     id: header.id,
                     title: header.title,
@@ -222,44 +239,37 @@ mod tests {
             std::env::temp_dir().join(format!("vva_test_{}", uuid::Uuid::new_v4().simple()));
         let store = JsonlSessionStore::new(&temp_dir).expect("init store");
 
-        let mut session = Session::with_model(
+        let session = Session::with_model(
             PathBuf::from("/tmp/repo"),
             Some("Bugfix task".into()),
             "a/gpt-5.6-terra",
             Some("high".into()),
             true,
         );
-        session.meta.response = Some(ResponseSessionMeta {
-            model: Some("gpt-5.6-terra".into()),
-            instructions: Some("You are a helpful coding assistant".into()),
-        });
 
         // 写入 Session 头部
         store.save_header(&session).await.expect("save header");
 
         // 追加 Turn 1 (User + Image)
-        let mut user_msg = Message::user("Here is the error screenshot");
+        let mut user_msg = Message::text("Here is the error screenshot");
         user_msg
             .parts
             .push(ContentPart::image_url("https://example.com/err.png"));
-        let user_turn = Turn::user_turn(user_msg, None);
+        let user_turn = Turn::user_turn(user_msg);
         store
             .append_turn(&session.id, &user_turn)
             .await
             .expect("append user turn");
 
         // 追加 Turn 2 (Assistant with OpenAI response_id and WebSearchCall)
-        let mut assistant_turn = Turn::assistant_turn(
-            vec![Message::assistant(vec![
-                ContentPart::WebSearchCall(WebSearchCall::completed(
-                    "search_1",
-                    "rust compiler issue",
-                    vec![WebSearchSource::new("https://rust-lang.org", "Rust", None)],
-                )),
-                ContentPart::text("Found solution"),
-            ])],
-            Some(user_turn.id.clone()),
-        );
+        let mut assistant_turn = Turn::assistant_turn(vec![Message::new(vec![
+            ContentPart::WebSearchCall(WebSearchCall::completed(
+                "search_1",
+                "rust compiler issue",
+                vec![WebSearchSource::new("https://rust-lang.org", "Rust", None)],
+            )),
+            ContentPart::text("Found solution"),
+        ])]);
         assistant_turn.meta.response = Some(ResponseTurnMeta::new("resp_001xyz"));
         store
             .append_turn(&session.id, &assistant_turn)

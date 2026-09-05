@@ -4,19 +4,14 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::ui::app::App;
+use crate::ui::modals::VariantsModalState;
 use crate::ui::views::modal_shell::{
     ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
     selected_row_style, visible_window,
 };
 
 /// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位
-pub fn render_variants_modal(app: &App, frame: &mut Frame, area: Rect) {
-    let state = match &app.variants_modal {
-        Some(s) => s,
-        None => return,
-    };
-
+pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area: Rect) {
     // 顶部状态指示行
     let curr_model = &state.current_model;
     let curr_var = state.active_variant.as_deref().unwrap_or("none");

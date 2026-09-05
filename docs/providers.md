@@ -12,6 +12,23 @@
 3. **单测 Mock 真实性约束**：
    - 单元测试 Mock 报文对照厂商官方文档规范构造，不在生产适配器代码中为错误测试数据添加容错分支。
 
+### 1.1 接口边界
+[`Provider`](../src/provider/mod.rs) trait 对外只暴露调用方真正需要的能力：
+
+```rust
+#[async_trait]
+pub trait Provider: Send + Sync {
+    fn name(&self) -> &str;
+    fn capabilities(&self) -> ProviderCapabilities;
+    async fn complete(...) -> Result<ProviderResponse, ProviderError>;
+    async fn complete_stream(...) -> Result<ProviderResponse, ProviderError>;
+}
+```
+
+端点拼装、鉴权头、请求构建与响应解析属于各适配器内部实现。传输由 [`http.rs`](../src/provider/http.rs) 共享：`post_json` 负责非流式往返，`post_sse` 负责补 Accept 头、发起请求并驱动 SSE 事件循环，适配器只提供 URL、鉴权头、请求体与 `SseEventHandler`。
+
+跨供应商的通用辅助集中在 [`common.rs`](../src/provider/common.rs)：事件背压转发（`EventForwarder`）、同角色块合并（`RoleBlockMerger`）以及严格字段读取（`require_str` / `require_u64` / `require_bool` / `require_value` / `require_array`）——必填字段缺失或类型不符一律报协议错误，三家适配器使用同一套读取器与错误语义。
+
 ---
 
 ## 2. OpenAI Responses API 适配器

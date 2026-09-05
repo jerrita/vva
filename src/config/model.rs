@@ -14,9 +14,6 @@ pub enum ProviderType {
     Response,
     Anthropic,
     Gemini,
-    /// 智谱 GLM Coding Plan：底层走 OpenAI Responses 协议
-    #[serde(rename = "glm-coding-plan")]
-    GlmCodingPlan,
 }
 
 impl ProviderType {
@@ -25,7 +22,6 @@ impl ProviderType {
             Self::Response => "response",
             Self::Anthropic => "anthropic",
             Self::Gemini => "gemini",
-            Self::GlmCodingPlan => "glm-coding-plan",
         }
     }
 }
@@ -78,7 +74,7 @@ impl AppConfig {
             if !is_glm_coding_plan_provider(id, cfg.provider_type) {
                 continue;
             }
-            cfg.provider_type = Some(ProviderType::GlmCodingPlan);
+            cfg.provider_type = Some(ProviderType::Response);
             if cfg.base_url.is_empty() {
                 cfg.base_url = GLM_CODING_PLAN_BASE_URL.to_string();
             }
@@ -90,11 +86,8 @@ impl AppConfig {
 }
 
 fn is_glm_coding_plan_provider(id: &str, provider_type: Option<ProviderType>) -> bool {
-    match provider_type {
-        Some(ProviderType::GlmCodingPlan) => true,
-        Some(ProviderType::Response) | None => id == GLM_CODING_PLAN_PROVIDER_ID,
-        Some(_) => false,
-    }
+    id == GLM_CODING_PLAN_PROVIDER_ID
+        && matches!(provider_type, Some(ProviderType::Response) | None)
 }
 
 fn glm_coding_plan_builtin_models() -> HashMap<String, ModelConfig> {
@@ -172,7 +165,7 @@ pub struct ProviderConfig {
     pub models: HashMap<String, ModelConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub name: String,
     /// 可选的模型级供应商协议覆写（例如在 response 代理节点下声明 anthropic 原生协议）

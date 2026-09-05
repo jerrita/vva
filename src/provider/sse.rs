@@ -9,7 +9,7 @@ pub struct SseEvent {
 
 #[derive(Debug, Default)]
 pub struct SseDecoder {
-    buffer: String,
+    buffer: Vec<u8>,
     current_data: Vec<String>,
 }
 
@@ -18,20 +18,20 @@ impl SseDecoder {
         Self::default()
     }
 
-    /// 解码传入的 chunk 字节流，产生解析完成的 SSE 事件列表
+    /// 解码传入的 chunk 字节流，产生解析完成的 SSE 事件列表。
+    /// 按字节缓冲并在完整行形成后才解码，多字节字符被 chunk 边界切开时不会损坏。
     pub fn decode(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
-        let chunk_str = String::from_utf8_lossy(chunk);
-        self.buffer.push_str(&chunk_str);
+        self.buffer.extend_from_slice(chunk);
 
         let mut events = Vec::new();
 
-        while let Some(pos) = self.buffer.find('\n') {
-            let mut line = self.buffer[..pos].to_string();
-            self.buffer.drain(..=pos);
-
-            if line.ends_with('\r') {
-                line.pop();
+        while let Some(pos) = self.buffer.iter().position(|b| *b == b'\n') {
+            let mut raw = self.buffer.drain(..=pos).collect::<Vec<u8>>();
+            raw.pop();
+            if raw.last() == Some(&b'\r') {
+                raw.pop();
             }
+            let line = String::from_utf8_lossy(&raw);
 
             if line.is_empty() {
                 // 空行触发单次事件派发
@@ -63,6 +63,17 @@ impl SseDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sse_decoder_splits_multibyte_char_across_chunks() {
+        let payload = b"data: {\"text\":\"\xe4\xb8\xad\xe6\x96\x87\"}\n\n";
+        let (head, tail) = payload.split_at(16); // 切在 "中" 的字节中间
+        let mut decoder = SseDecoder::new();
+        assert!(decoder.decode(head).is_empty());
+        let events = decoder.decode(tail);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data, "{\"text\":\"中文\"}");
+    }
 
     #[test]
     fn test_sse_decoder_basic() {

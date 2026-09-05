@@ -2,12 +2,11 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
-use vva::config::{AppConfig, FALLBACK_MODEL_SPEC, home_dir, load_config};
-use vva::harness::{AgentEvent, build_engine};
-use vva::model::{Annotation, ContentPart, Message, Turn};
+use vva::config::{AppConfig, home_dir, load_config};
+use vva::harness::{AgentEvent, SessionManager};
+use vva::model::{Annotation, ContentPart};
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::ui::run_tui;
@@ -56,29 +55,6 @@ enum Commands {
         prompt: Option<String>,
     },
 
-    /// 启动终端用户界面 (Ratatui TUI)
-    Ui {
-        /// 目标模型标识
-        #[arg(short, long)]
-        model: Option<String>,
-
-        /// 推理强度档位
-        #[arg(short, long)]
-        variant: Option<String>,
-
-        /// 开启网络搜索
-        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-        web_search: Option<bool>,
-
-        /// 恢复指定 Session ID
-        #[arg(short, long)]
-        session_id: Option<String>,
-
-        /// 工作空间目录路径 (默认为当前目录)
-        #[arg(short, long)]
-        workspace: Option<PathBuf>,
-    },
-
     /// 管理和查看历史 Session
     Session {
         #[command(subcommand)]
@@ -105,7 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 判断是否启动全屏 TUI 模式，避免 tracing 输出干扰终端屏幕
     let is_tui = match &cli.command {
         None => true,
-        Some(Commands::Ui { .. }) => true,
         Some(Commands::Run { prompt, .. }) => prompt.is_none(),
         _ => false,
     };
@@ -128,43 +103,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .try_init();
     }
 
-    // 读取配置 (支持 JSON 与 JSONC)
-    let app_config: Option<AppConfig> = match load_config(cli.config.as_deref()) {
-        Ok(cfg) => Some(cfg),
-        Err(err) => {
-            warn!(
-                "Config not loaded ({}). Falling back to direct env vars.",
-                err
-            );
-            None
+    let app_config = match load_config(cli.config.as_deref()) {
+        Ok(config) => config,
+        Err(vva::config::ConfigError::NotFound(_))
+            if cli.config.is_none() && std::env::var_os("VVA_CONFIG").is_none() =>
+        {
+            AppConfig::from_env()
         }
+        Err(error) => return Err(error.into()),
     };
 
-    let default_model = app_config
-        .as_ref()
-        .map(|c| c.settings.default.clone())
-        .unwrap_or_else(|| FALLBACK_MODEL_SPEC.to_string());
-
     match cli.command {
+        // 无子命令等价于不带 prompt 的 run
         None => {
-            // 启动 TUI
             let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
             run_tui(store, app_config, None, workspace, None, None, None).await?;
-        }
-
-        Some(Commands::Ui {
-            model,
-            variant,
-            web_search,
-            session_id,
-            workspace,
-        }) => {
-            let workspace =
-                workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
-            run_tui(
-                store, app_config, session_id, workspace, model, variant, web_search,
-            )
-            .await?;
         }
 
         Some(Commands::Run {
@@ -189,85 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            // 显式指定的模型严格校验：不可解析时直接报错退出，不静默回退默认模型
-            if let (Some(cfg), Some(m)) = (&app_config, &model)
-                && let Err(err) = cfg.resolve_model(m, variant.as_deref())
-            {
-                eprintln!("Error resolving model '{m}': {err}");
-                std::process::exit(1);
-            }
-
-            // CLI 单次非交互运行流程
-            let is_new_session = session_id.is_none();
-            let mut session = if let Some(sid) = session_id {
-                let mut s = store
-                    .load_session(&sid)
-                    .await?
-                    .ok_or_else(|| format!("Session not found: {sid}"))?;
-                if s.apply_overrides(model, variant, web_search) {
-                    store.save_header(&s).await?;
-                }
-                s
-            } else {
-                let target_model = model.unwrap_or(default_model);
-                let target_search = web_search.unwrap_or(true);
-                vva::system::new_session(
-                    &workspace,
-                    Some(&vva::model::provisional_title(&prompt)),
-                    target_model,
-                    variant,
-                    target_search,
-                )
-            };
-
+            let manager = SessionManager::new(store.clone(), app_config, workspace);
+            let session = manager
+                .open_session(session_id.as_deref(), model, variant, web_search)
+                .await?;
+            let view = session.snapshot();
             println!("🚀 [vva] Session ID: {}", session.id);
-            println!("📂 Workspace: {}", session.workspace_root.display());
-            println!("🎯 Session Model: {}", session.current_model);
-            if let Some(v) = &session.current_variant {
-                println!("⚡ Reasoning Variant: {}", v);
-            }
-
-            // 引擎组装共享单点（配置路由 + 能力协商降级通知）
-            let (engine, notices) = match build_engine(
-                &app_config,
-                &session.current_model,
-                session.current_variant.as_deref(),
-                session.web_search,
-                &workspace,
-                store.clone(),
-            ) {
-                Ok(v) => v,
-                Err(err) => {
-                    eprintln!("{err}");
-                    std::process::exit(1);
-                }
-            };
-
-            println!(
-                "🤖 Active Provider: {} (API Model: {})",
-                engine.provider_name(),
-                engine.model()
-            );
-            if session.web_search {
-                println!("🌐 Native Web Search: Enabled");
-            }
-            for notice in notices {
-                eprintln!("⚠️  [Notice] {notice}");
-            }
-
-            if is_new_session {
-                store.save_header(&session).await?;
-            }
-            let user_msg = Message::user(&prompt);
-            let parent_turn_id = session.last_turn_id();
-            let user_turn = Turn::user_turn(user_msg, parent_turn_id);
-            store.append_turn(&session.id, &user_turn).await?;
-            session.append_turn(user_turn);
-
+            println!("📂 Workspace: {}", view.session.workspace_root.display());
+            println!("🎯 Session Model: {}", view.session.current_model);
             let (tx, mut rx) = mpsc::channel::<AgentEvent>(32);
-
-            let run_handle =
-                tokio::spawn(async move { engine.run_turn(&mut session, Some(tx)).await });
+            session.submit(&prompt, Some(tx)).await?;
 
             let mut in_thought = false;
             let mut in_text = false;
@@ -327,8 +211,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-
-            run_handle.await??;
         }
 
         Some(Commands::Session { action }) => match action {
@@ -370,7 +252,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Selected Model: {}", session.current_model);
                 println!("Reasoning Variant: {:?}", session.current_variant);
                 println!("Created At: {}", session.created_at);
-                println!("Global Meta: {:#?}", session.meta);
 
                 println!("\n=== Turns ({}) ===", session.turns.len());
                 for (i, turn) in session.turns.iter().enumerate() {
@@ -380,9 +261,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         turn.role,
                         turn.id
                     );
-                    if let Some(parent) = &turn.parent_turn_id {
-                        println!("Parent Turn: {}", parent);
-                    }
                     if let Some(usage) = &turn.usage {
                         println!(
                             "Tokens: Prompt: {}, Completion: {}, Total: {}",
@@ -411,7 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     for msg in &turn.messages {
-                        println!("  Message [{:?}] ID: {}", msg.role, msg.id);
+                        println!("  Message:");
                         for part in &msg.parts {
                             match part {
                                 ContentPart::Text { text, annotations } => {

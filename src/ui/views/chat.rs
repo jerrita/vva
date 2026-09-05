@@ -7,15 +7,28 @@ use ratatui::widgets::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::ui::app::{App, ChatEntry, TextSelection, char_in_column_range};
+use crate::model::{Annotation, ContentPart, Role};
+use crate::ui::app::{App, TextCoord, TextSelection, char_in_column_range};
 use crate::ui::markdown::{render_markdown, wrap_spans_to_lines};
+
+/// 聊天流正文可用宽度（右侧留出一列给滚动条）
+pub fn chat_text_width(area: Rect) -> usize {
+    (area.width as usize).saturating_sub(1)
+}
 
 /// 构建对话流的 Ratatui 文本行列表（支持 Markdown 渲染、CJK 安全折行与多级缩进）
 pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let max_width = max_width.max(20);
 
-    if app.chat_entries.is_empty() {
+    if app
+        .view
+        .session
+        .turns
+        .iter()
+        .all(|t| t.role == Role::System)
+        && app.view.draft.is_empty()
+    {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled(
@@ -35,9 +48,20 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
         ]));
     }
 
-    for entry in &app.chat_entries {
-        match entry {
-            ChatEntry::UserPrompt { text } => {
+    let parts = app
+        .view
+        .session
+        .turns
+        .iter()
+        .flat_map(|turn| {
+            turn.messages
+                .iter()
+                .flat_map(move |message| message.parts.iter().map(move |part| (turn.role, part)))
+        })
+        .chain(app.view.draft.iter().map(|part| (Role::Assistant, part)));
+    for (role, part) in parts {
+        match (role, part) {
+            (Role::User, ContentPart::Text { text, .. }) => {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     "👤 You",
@@ -54,7 +78,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     lines.extend(wrapped);
                 }
             }
-            ChatEntry::Thinking { content } => {
+            (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
                 // 各思考段落（协议层以空行分隔）独立渲染 markdown 并统一弱化为灰色斜体
                 // （Style::patch 语义下 fg 覆盖、修饰符并集，加粗等强调得以保留）
                 let body_style = Style::default()
@@ -104,7 +128,9 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     }
                 }
             }
-            ChatEntry::ToolCall { name, args } => {
+            (Role::Assistant, ContentPart::ToolCall(call)) => {
+                let name = &call.name;
+                let args = &call.arguments;
                 lines.push(Line::from(""));
                 let spans = vec![
                     Span::styled(
@@ -119,11 +145,9 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
                 lines.extend(wrapped);
             }
-            ChatEntry::ToolResult {
-                name: _,
-                result,
-                is_error,
-            } => {
+            (Role::Tool, ContentPart::ToolResult(result)) => {
+                let is_error = &result.is_error;
+                let result = &result.content;
                 let status_color = if *is_error { Color::Red } else { Color::Green };
                 let status_icon = if *is_error {
                     "❌ Error:"
@@ -161,7 +185,17 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     ]));
                 }
             }
-            ChatEntry::AssistantMessage { text, citations } => {
+            (Role::Assistant, ContentPart::Text { text, annotations }) => {
+                let citations: Vec<_> = annotations
+                    .iter()
+                    .filter_map(|a| {
+                        if let Annotation::UrlCitation { title, url, .. } = a {
+                            Some((title, url))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     "🤖 Assistant",
@@ -186,10 +220,10 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     for (i, (title, url)) in citations.iter().enumerate() {
                         let spans = vec![
                             Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Cyan)),
-                            Span::styled(title.clone(), Style::default().fg(Color::White)),
+                            Span::styled((*title).clone(), Style::default().fg(Color::White)),
                             Span::raw(" - "),
                             Span::styled(
-                                url.clone(),
+                                (*url).clone(),
                                 Style::default().fg(Color::Rgb(100, 160, 255)),
                             ),
                         ];
@@ -198,21 +232,22 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     }
                 }
             }
-            ChatEntry::SystemNotice { text } => {
-                lines.push(Line::from(""));
-                let spans = vec![
-                    Span::styled("💡 ", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        text.clone(),
-                        Style::default()
-                            .fg(Color::Rgb(200, 200, 200))
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ];
-                let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-                lines.extend(wrapped);
-            }
+            _ => {}
         }
+    }
+    for text in &app.notices {
+        lines.push(Line::from(""));
+        let spans = vec![
+            Span::styled("💡 ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                text.clone(),
+                Style::default()
+                    .fg(Color::Rgb(200, 200, 200))
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ];
+        let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
+        lines.extend(wrapped);
     }
 
     lines
@@ -269,10 +304,36 @@ pub fn extract_selected_text(lines: &[Line], selection: &TextSelection) -> Optio
 
 /// 对处于选区范围内的文本行注入高亮样式（支持 CJK 字符边界精确切分）
 pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSelection) {
+    apply_selection_highlight_offset(lines, selection, 0);
+}
+
+/// 同上，`offset` 为切片首行在整体行列表中的行号（渲染可视窗口时使用）
+pub fn apply_selection_highlight_offset(
+    lines: &mut [Line<'static>],
+    selection: &TextSelection,
+    offset: usize,
+) {
     if selection.is_empty() {
         return;
     }
     let (start, end) = selection.normalized();
+    if end.line < offset {
+        return;
+    }
+    // 起点落在窗口上方时，窗口首行按整行选中处理
+    let start = if start.line < offset {
+        TextCoord { line: 0, col: 0 }
+    } else {
+        TextCoord {
+            line: start.line - offset,
+            col: start.col,
+        }
+    };
+    let end = TextCoord {
+        line: end.line - offset,
+        col: end.col,
+    };
+    let selection = &TextSelection::new(start, end);
     let max_line = end.line.min(lines.len().saturating_sub(1));
     if start.line > max_line {
         return;
@@ -335,30 +396,26 @@ pub fn apply_selection_highlight(lines: &mut [Line<'static>], selection: &TextSe
 
 /// 对话与工具消息流视图（支持 Thinking 思考块、Tool 动作与结果、Assistant 最终回复 Markdown 渲染）
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
-    app.chat_area = area;
+    app.chat.area = area;
     let block = Block::default().borders(Borders::NONE);
 
-    let max_width = (area.width as usize).saturating_sub(1);
-    let mut lines = build_chat_lines(app, max_width);
-    let total_lines = lines.len();
+    app.refresh_chat_lines(chat_text_width(area));
+    let total_lines = app.chat.lines.len();
     let viewport_height = area.height as usize;
     let max_scroll = total_lines.saturating_sub(viewport_height);
 
     app.update_viewport(max_scroll, viewport_height);
 
-    let scroll = if app.auto_scroll {
-        max_scroll
-    } else {
-        app.scroll_offset.min(max_scroll)
-    };
+    let scroll = app.chat_scroll();
 
-    if let Some(sel) = app.text_selection.get() {
-        apply_selection_highlight(&mut lines, sel);
+    // 只取可视窗口交给渲染：每帧工作量与视口高度相关，与历史长度无关
+    let end = (scroll + viewport_height).min(total_lines);
+    let mut window: Vec<Line<'static>> = app.chat.lines[scroll.min(total_lines)..end].to_vec();
+    if let Some(sel) = app.chat.selection.get() {
+        apply_selection_highlight_offset(&mut window, sel, scroll);
     }
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll as u16, 0));
+    let paragraph = Paragraph::new(window).block(block);
 
     frame.render_widget(paragraph, area);
 
@@ -409,10 +466,14 @@ mod tests {
     async fn test_thinking_renders_one_thought_line_per_part() {
         let mut app = create_test_app().await;
         // 模拟协议层输出：各 summary part 带原始 markdown 标记，以空行（段落边界）分隔
-        app.chat_entries.push(ChatEntry::Thinking {
-            content: "**Requesting Shenzhen weather forecast**\n\n**Drafting cautious forecast**"
-                .to_string(),
-        });
+        app.add_part(
+            Role::Assistant,
+            ContentPart::reasoning(
+                "**Requesting Shenzhen weather forecast**\n\n**Drafting cautious forecast**"
+                    .to_string(),
+                None,
+            ),
+        );
 
         // full 模式：每个思考段落一条独立的 `+ Thought:` 行
         let lines = build_chat_lines(&app, 80);
@@ -463,10 +524,18 @@ fn main() {
 }
 ```
 "#;
-        app.chat_entries.push(ChatEntry::AssistantMessage {
-            text: md_content.to_string(),
-            citations: vec![("Rust Lang".to_string(), "https://rust-lang.org".to_string())],
-        });
+        app.add_part(
+            Role::Assistant,
+            ContentPart::Text {
+                text: md_content.to_string(),
+                annotations: vec![Annotation::UrlCitation {
+                    title: "Rust Lang".into(),
+                    url: "https://rust-lang.org".into(),
+                    start_index: 0,
+                    end_index: 1,
+                }],
+            },
+        );
 
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
@@ -518,10 +587,13 @@ fn main() {
 def stream_test():
     pass
 "#;
-        app.chat_entries.push(ChatEntry::AssistantMessage {
-            text: md_streaming.to_string(),
-            citations: Vec::new(),
-        });
+        app.add_part(
+            Role::Assistant,
+            ContentPart::Text {
+                text: md_streaming.to_string(),
+                annotations: Vec::new(),
+            },
+        );
 
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
@@ -539,10 +611,13 @@ def stream_test():
     #[tokio::test]
     async fn test_assistant_markdown_empty() {
         let mut app = create_test_app().await;
-        app.chat_entries.push(ChatEntry::AssistantMessage {
-            text: String::new(),
-            citations: Vec::new(),
-        });
+        app.add_part(
+            Role::Assistant,
+            ContentPart::Text {
+                text: String::new(),
+                annotations: Vec::new(),
+            },
+        );
 
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
@@ -560,9 +635,7 @@ def stream_test():
         let mut app = create_test_app().await;
         // 添加大量文本使得行数超过视口（高度为 10）
         for i in 0..30 {
-            app.chat_entries.push(ChatEntry::UserPrompt {
-                text: format!("Message line {i}"),
-            });
+            app.add_part(Role::User, ContentPart::text(format!("Message line {i}")));
         }
 
         let backend = TestBackend::new(80, 10);
@@ -579,7 +652,7 @@ def stream_test():
         assert_eq!(app.viewport_height, 10);
         assert!(app.auto_scroll);
         assert_eq!(app.scroll_offset, app.max_scroll);
-        assert_eq!(app.chat_area, Rect::new(0, 0, 80, 10));
+        assert_eq!(app.chat.area, Rect::new(0, 0, 80, 10));
 
         // 验证滚到底时，滚动条滑块位于最底部行 (y=9)
         let buffer = terminal.backend().buffer();
@@ -595,6 +668,24 @@ def stream_test():
             .unwrap();
         let top_cell = terminal.backend().buffer().cell((79, 0)).unwrap();
         assert_eq!(top_cell.symbol(), "█");
+    }
+
+    #[test]
+    fn test_highlight_offset_window_above_selection_start() {
+        // 选区从窗口上方开始：窗口首行应整行高亮，而非从原起始列开始
+        let mut window = vec![
+            Line::from(vec![Span::raw("second")]),
+            Line::from(vec![Span::raw("third")]),
+        ];
+        let sel = TextSelection::new(TextCoord { line: 0, col: 3 }, TextCoord { line: 2, col: 2 });
+        apply_selection_highlight_offset(&mut window, &sel, 1);
+        let first_line_selected: String = window[0]
+            .spans
+            .iter()
+            .filter(|span| span.style.bg.is_some())
+            .map(|span| span.content.to_string())
+            .collect();
+        assert_eq!(first_line_selected, "second");
     }
 
     #[test]

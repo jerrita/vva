@@ -10,11 +10,10 @@ pub use content::{
 };
 pub use message::{Message, Role};
 pub use meta::{
-    AnthropicSessionMeta, AnthropicTurnMeta, GeminiCodeExecutionResult, GeminiSafetyRating,
-    GeminiSessionMeta, GeminiTurnMeta, MessageMeta, ResponseMessageContent, ResponseMessageMeta,
-    ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent, ResponseReasoningSummary,
-    ResponseSessionMeta, ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
-    ResponseWebSearchSourceType, SessionMeta, TurnMeta,
+    AnthropicTurnMeta, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
+    ResponseMessageContent, ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent,
+    ResponseReasoningSummary, ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
+    ResponseWebSearchSourceType, TurnMeta,
 };
 pub use session::{JsonlRecord, Session, SessionHeader, SessionSummary, provisional_title};
 pub use tool::{ToolCall, ToolDefinition, ToolResult};
@@ -32,14 +31,12 @@ mod tests {
             Some("Test Task".into()),
         );
 
-        let user_turn = Turn::user_turn(Message::user("Hello world"), None);
+        let user_turn = Turn::user_turn(Message::text("Hello world"));
         session.append_turn(user_turn);
         assert!(session.latest_openai_response_id().is_none());
 
-        let mut assistant_turn = Turn::assistant_turn(
-            vec![Message::assistant(vec![ContentPart::text("Hi there!")])],
-            session.last_turn_id(),
-        );
+        let mut assistant_turn =
+            Turn::assistant_turn(vec![Message::new(vec![ContentPart::text("Hi there!")])]);
         assistant_turn.meta.response = Some(ResponseTurnMeta::new("resp_001"));
         session.append_turn(assistant_turn);
 

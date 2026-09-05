@@ -1,6 +1,6 @@
 use super::*;
+use crate::harness::ManagedSession;
 use crate::storage::SessionStore;
-use crate::ui::session_manager::ManagedSession;
 use crate::ui::test_support::create_test_app;
 
 /// 等待会话后台轮次结束，避免 App::new 的 try_read 与引擎写锁产生调度竞争
@@ -19,24 +19,18 @@ async fn test_slash_command_model_execution() {
     // 1. 无参 /model 打开 Models 模态选择框
     app.set_input("/model");
     app.submit_input().await;
-    assert_eq!(app.modal, ActiveModal::Models);
-    assert!(app.models_modal.is_some());
+    assert!(matches!(app.modal, ActiveModal::Models(_)));
 
     // 2. 带参 /model 切换模型
     app.set_input("/model target_model");
     app.submit_input().await;
-    let curr = app
-        .active_session
-        .session
-        .read()
-        .await
-        .current_model
-        .clone();
-    assert_eq!(curr, "target_model");
-    assert!(app.chat_entries.iter().any(|e| match e {
-        ChatEntry::SystemNotice { text } => text.contains("Switched model to 'target_model'"),
-        _ => false,
-    }));
+    let curr = app.active_session.snapshot().session.current_model.clone();
+    assert_eq!(curr, "openai/target_model");
+    assert!(
+        app.notices
+            .iter()
+            .any(|text| text.contains("Switched model to 'target_model'"))
+    );
 
     let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
@@ -51,13 +45,12 @@ async fn test_clear_deletes_current_session_and_creates_new_one() {
     app.submit_input().await;
 
     assert_ne!(app.active_session.id, previous_id);
-    assert!(app.chat_entries.is_empty());
-    assert!(app.active_session.session.read().await.web_search);
+    assert!(app.view.session.turns.is_empty());
+    assert!(app.active_session.snapshot().session.web_search);
     assert_eq!(
         app.active_session
+            .snapshot()
             .session
-            .read()
-            .await
             .current_variant
             .as_deref(),
         Some("high")
@@ -95,9 +88,9 @@ async fn test_slash_command_variant_execution() {
     // 1. 无参 /variant 打开 Variants 模态框，包含 none (default) 与配置的 variants
     app.set_input("/variant");
     app.submit_input().await;
-    assert_eq!(app.modal, ActiveModal::Variants);
-    assert!(app.variants_modal.is_some());
-    let vm = app.variants_modal.as_ref().unwrap();
+    let ActiveModal::Variants(vm) = &app.modal else {
+        panic!("expected variants modal");
+    };
     assert_eq!(vm.variants.len(), 3);
     assert_eq!(vm.variants[0].id, None);
     assert_eq!(vm.variants[1].id.as_deref(), Some("low"));
@@ -108,25 +101,24 @@ async fn test_slash_command_variant_execution() {
     app.submit_input().await;
     let curr = app
         .active_session
+        .snapshot()
         .session
-        .read()
-        .await
         .current_variant
         .clone();
     assert_eq!(curr, Some("high".to_string()));
-    assert!(app.chat_entries.iter().any(|e| match e {
-        ChatEntry::SystemNotice { text } => text.contains("Set reasoning variant to 'high'"),
-        _ => false,
-    }));
+    assert!(
+        app.notices
+            .iter()
+            .any(|text| text.contains("Set reasoning variant to 'high'"))
+    );
 
     // 3. /variant none 重置为 None
     app.set_input("/variant none");
     app.submit_input().await;
     let curr_none = app
         .active_session
+        .snapshot()
         .session
-        .read()
-        .await
         .current_variant
         .clone();
     assert_eq!(curr_none, None);
@@ -137,11 +129,12 @@ async fn test_slash_command_variant_execution() {
         .create_session("prov/model-without-vars".into(), None, None, false)
         .await
         .unwrap();
-    let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars, false).await;
+    let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
     app_no_vars.set_input("/variant");
     app_no_vars.submit_input().await;
-    assert_eq!(app_no_vars.modal, ActiveModal::Variants);
-    let vm_empty = app_no_vars.variants_modal.as_ref().unwrap();
+    let ActiveModal::Variants(vm_empty) = &app_no_vars.modal else {
+        panic!("expected variants modal");
+    };
     assert!(vm_empty.variants.is_empty());
 
     let _ = std::fs::remove_dir_all(&ta.temp_dir);
@@ -227,7 +220,11 @@ async fn test_session_resume_preserves_web_search_state() {
     ));
     let _ = std::fs::create_dir_all(&temp_dir);
     let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
-    let session_mgr = Arc::new(SessionManager::new(store.clone(), None, temp_dir.clone()));
+    let session_mgr = Arc::new(SessionManager::new(
+        store.clone(),
+        crate::ui::test_support::test_config(),
+        temp_dir.clone(),
+    ));
 
     // 1. 创建 Session 1 并发送首条消息落盘，初始开启 web_search
     let s1 = session_mgr
@@ -256,24 +253,24 @@ async fn test_session_resume_preserves_web_search_state() {
     wait_until_idle(&s2).await;
 
     // 3. 启动 App，以 Session 1 为初始会话
-    let mut app = App::new(session_mgr.clone(), s1, false).await;
+    let mut app = App::new(session_mgr.clone(), s1).await;
     // App 继承 Session 1 的 web_search: true
-    assert!(app.enable_web_search);
+    assert!(app.view.session.web_search);
 
     // 4. 切换到 Session 2
     app.switch_to_session(&s2_id).await.unwrap();
     // App 状态切换为 Session 2 的 web_search: false
-    assert!(!app.enable_web_search);
+    assert!(!app.view.session.web_search);
 
     // 5. 切换回 Session 1
     app.switch_to_session(&s1_id).await.unwrap();
     // 恢复 Session 1 时，状态与上一次保持一致为 true，避免 prompt cache 失效
-    assert!(app.enable_web_search);
+    assert!(app.view.session.web_search);
 
     // 6. 执行 /web off 显式关闭 Session 1 的网络搜索
     app.set_input("/web off");
     app.submit_input().await;
-    assert!(!app.enable_web_search);
+    assert!(!app.view.session.web_search);
 
     // 校验 Session 1 持久化存储中的 web_search 已同步更新为 false
     let loaded_s1 = store.load_session(&s1_id).await.unwrap().unwrap();
@@ -282,7 +279,7 @@ async fn test_session_resume_preserves_web_search_state() {
     // 7. 再次执行 /web on 开启 Session 1 的网络搜索
     app.set_input("/web on");
     app.submit_input().await;
-    assert!(app.enable_web_search);
+    assert!(app.view.session.web_search);
 
     let loaded_s1_again = store.load_session(&s1_id).await.unwrap().unwrap();
     assert!(loaded_s1_again.web_search);

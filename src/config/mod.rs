@@ -9,11 +9,34 @@ pub use model::{
     ProviderConfig, ProviderType,
 };
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
-pub use resolver::{ResolvedModel, ResolvedProviderInfo, resolve_provider};
+pub use resolver::ResolvedModel;
 
 /// 无任何配置文件可用时的新会话兜底模型规格。
 /// 必须是不带 provider 前缀的裸模型名，使环境变量路由（OPENAI_API_KEY 直连）仍可解析。
-pub const FALLBACK_MODEL_SPEC: &str = "gpt-5.6-terra";
+pub const DEFAULT_MODEL_SPEC: &str = "openai/gpt-5.6-terra";
+
+impl AppConfig {
+    /// 将环境变量入口转换为与文件配置相同的供应商配置。
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+        config.settings.default = DEFAULT_MODEL_SPEC.into();
+        for (id, protocol, variable) in [
+            ("openai", ProviderType::Response, "OPENAI_API_KEY"),
+            ("anthropic", ProviderType::Anthropic, "ANTHROPIC_API_KEY"),
+            ("gemini", ProviderType::Gemini, "GEMINI_API_KEY"),
+        ] {
+            config.providers.insert(
+                id.into(),
+                ProviderConfig {
+                    provider_type: Some(protocol),
+                    api_key: std::env::var(variable).unwrap_or_default(),
+                    ..Default::default()
+                },
+            );
+        }
+        config
+    }
+}
 
 /// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
 pub fn home_dir() -> Option<PathBuf> {
@@ -271,13 +294,13 @@ mod tests {
         assert_eq!(resolved.provider_id, "a");
         assert_eq!(resolved.model_id, "gpt-5.6-terra");
         assert_eq!(resolved.selected_variant.as_deref(), Some("high"));
-        assert_eq!(resolved.provider.name(), "response");
+        assert_eq!(resolved.create_provider().name(), "response");
 
         // 2. 验证模型级协议覆写（Claude 在 provider a 下覆写为 Anthropic）
         let resolved_claude = config
             .resolve_model("a/claude-sonnet-4-6", None)
             .expect("resolve claude");
-        assert_eq!(resolved_claude.provider.name(), "anthropic");
+        assert_eq!(resolved_claude.create_provider().name(), "anthropic");
         // variants 中包含 medium，默认选择 medium
         assert_eq!(resolved_claude.selected_variant.as_deref(), Some("medium"));
 
@@ -297,7 +320,7 @@ mod tests {
             .resolve_model("a/gpt-5.6-luna", Some("medium"))
             .expect("resolve luna");
         assert_eq!(resolved_luna.selected_variant.as_deref(), Some("medium"));
-        assert_eq!(resolved_luna.provider.name(), "response");
+        assert_eq!(resolved_luna.create_provider().name(), "response");
 
         // glm-coding-plan 仅填 api_key 时补全端点与内置模型
         let glm = config
@@ -308,13 +331,7 @@ mod tests {
         let glm_resolved = config
             .resolve_model("glm-coding-plan/glm-5.3-flash", None)
             .expect("resolve glm-5.3-flash");
-        assert_eq!(
-            glm_resolved
-                .provider
-                .endpoint_url("glm-5.3-flash", true)
-                .unwrap(),
-            format!("{GLM_CODING_PLAN_BASE_URL}/responses")
-        );
+        assert_eq!(glm_resolved.create_provider().name(), "response");
     }
 
     #[test]

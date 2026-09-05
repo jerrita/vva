@@ -55,7 +55,7 @@ pub fn render_input_area(
         ]
     };
 
-    let web_search_span = if app.enable_web_search {
+    let web_search_span = if app.view.session.web_search {
         Span::styled(
             "🌐 Web Search: Enabled  ",
             Style::default().fg(Color::Green),

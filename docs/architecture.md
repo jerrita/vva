@@ -24,13 +24,13 @@
 ```
 +-------------------------------------------------------------------------+
 |                        CLI / TUI Interaction Layer                      |
-|             (main.rs / ui/mod.rs / ui/app.rs / ui/input.rs)             |
+|        (main.rs / ui/mod.rs / ui/app/ / ui/views/ / ui/input.rs)        |
 +------------------------------------+------------------------------------+
                                      |
                                      v
 +-------------------------------------------------------------------------+
 |                        Harness & Session Layer                          |
-|         (ui/session_manager.rs / harness/agent.rs / tools/mod.rs)       |
+|         (harness/session.rs / harness/agent.rs / tools/mod.rs)          |
 +-------------------+--------------------------------+--------------------+
                     |                                |
                     v                                v
@@ -52,15 +52,15 @@
    - **禁止跨协议伪造退化**：Responses API 适配器不检查 Chat Completions 的 `choices` 字段，不进行数据伪造与推导；
    - **禁止非标字段猜测链**：不编写类似 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等猜测链。官方文档未定义的字段，不在代码中编写猜测逻辑。
 3. **UI / Harness 调度层零兜底**：
-   - UI 由标准事件流（`AgentEvent`）驱动渲染，不在 `AgentEvent::Finished` 中从会话历史覆盖聊天记录。界面未展现内容时排查适配器转换逻辑。
+   - 会话任务发布 `SessionView` 快照，UI 直接渲染其中的已完成轮次与流式草稿，不维护第二份聊天历史，也不在轮次结束时重载历史覆盖界面。界面未展现内容时排查适配器转换逻辑。
 4. **单测 Mock 真实性约束**：
    - 单元测试 Mock 报文对照厂商官方标准规范构造，不在生产代码中为错误测试数据添加容错分支。
 
 ### 2.2 强类型供应商元数据 (Strict Typed Meta)
 系统为三大供应商定义编译期强类型元数据，不使用弱类型的 `HashMap<String, serde_json::Value>`：
-- **OpenAI Responses API**：`ResponseTurnMeta`（`response_id`, `previous_response_id`, `status`, `service_tier`, `system_fingerprint`, `reasoning_effort`）
-- **Anthropic Messages API**：`AnthropicTurnMeta`（`cache_creation_input_tokens`, `cache_read_input_tokens`, `stop_reason`）、`AnthropicMessageMeta`（`ephemeral_cache`）
-- **Google Gemini API**：`GeminiTurnMeta`（`finish_reason`, `safety_ratings`, `code_execution_result`）、`GeminiMessageMeta`（`thought_signature`）
+- **OpenAI Responses API**：`ResponseTurnMeta`（`response_id`, `previous_response_id`, `status`, `service_tier`, `reasoning_effort`, `store`, `output_items`）
+- **Anthropic Messages API**：`AnthropicTurnMeta`（`cache_creation_input_tokens`, `cache_read_input_tokens`, `stop_reason`）
+- **Google Gemini API**：`GeminiTurnMeta`（`finish_reason`, `safety_ratings`, `code_execution_result`）
 
 ---
 
@@ -76,9 +76,10 @@
    - 实现 `Provider` trait，声明原生能力集（`ProviderCapabilities`）；
    - 处理各家协议转换，通过泛型 SSE 流解码输出标准 `AgentEvent`。
 4. **执行与调度层 (`src/harness/`, `src/tools/`)**：
-   - `AgentEngine` 驱动多轮次 Agent Loop，处理模型推理、工具调用（Bash、文件读写等）、结果回传以及历史持久化。
+   - `AgentEngine` 组装 Provider、工具注册表与补全参数；
+   - `SessionTask` 是会话的唯一所有者，顺序处理提交、配置变更与取消，驱动多轮 Agent Loop 并落盘历史；`SessionManager` 只维护会话句柄表，CLI 与 TUI 共用该入口。
 5. **存储层 (`src/storage/`)**：
    - `JsonlSessionStore` 提供行级追加写的持久化方案，支持崩溃容灾与流式历史读取。
 6. **交互层 (`src/ui/`, `src/main.rs`)**：
    - CLI 支持单次会话执行与检查；
-   - Ratatui TUI 基于单例 `SessionManager` 实现非阻塞后台运行与实时渲染。
+   - Ratatui TUI 订阅会话任务发布的 `SessionView`，实现非阻塞后台运行与实时渲染。

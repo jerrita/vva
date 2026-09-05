@@ -113,64 +113,36 @@ pub fn char_in_column_range(ch: char, col: usize, range: (usize, usize)) -> bool
 }
 
 impl App {
-    pub fn start_text_selection(&mut self, line: usize, col: usize) {
-        self.text_selection.start(line, col);
-        self.auto_scroll = false;
+    /// 按级联顺序（输入框 → 聊天流 → 侧边栏）返回首个存在的选区文本
+    pub fn active_selection_text(&self) -> Option<String> {
+        self.input
+            .selected_text()
+            .or_else(|| self.chat.selected_text())
+            .or_else(|| self.sidebar.selected_text())
+            .filter(|text| !text.is_empty())
     }
 
-    pub fn update_text_selection(&mut self, line: usize, col: usize) {
-        self.text_selection.update(line, col);
+    /// 复制首个存在的选区到剪贴板并清除该选区，无选区时返回 false
+    pub fn copy_active_selection(&mut self) -> bool {
+        let Some(text) = self.active_selection_text() else {
+            return false;
+        };
+        let _ = set_clipboard_text(&text);
+        self.clear_selections();
+        true
     }
 
-    pub fn finish_text_selection(&mut self) {
-        self.text_selection.finish();
+    pub fn clear_selections(&mut self) {
+        self.clear_input_selection();
+        self.chat.selection.clear();
+        self.sidebar.selection.clear();
     }
 
-    pub fn clear_text_selection(&mut self) {
-        self.text_selection.clear();
-    }
-
-    pub fn start_sidebar_selection(&mut self, line: usize, col: usize) {
-        self.sidebar_selection.start(line, col);
-    }
-
-    pub fn update_sidebar_selection(&mut self, line: usize, col: usize) {
-        self.sidebar_selection.update(line, col);
-    }
-
-    pub fn finish_sidebar_selection(&mut self) {
-        self.sidebar_selection.finish();
-    }
-
-    pub fn clear_sidebar_selection(&mut self) {
-        self.sidebar_selection.clear();
-    }
-
-    pub fn copy_selection_to_clipboard(&mut self) -> bool {
-        if let Some(text) = self.input.selected_text()
-            && !text.is_empty()
-        {
-            let _ = set_clipboard_text(&text);
-            return true;
-        }
-        let max_width = (self.chat_area.width as usize).saturating_sub(1).max(20);
-        let lines = crate::ui::views::chat::build_chat_lines(self, max_width);
-        if let Some(sel) = self.text_selection.get()
-            && let Some(text) = crate::ui::views::chat::extract_selected_text(&lines, sel)
-            && !text.is_empty()
-        {
-            let _ = set_clipboard_text(&text);
-            return true;
-        }
-        if let Some(sel) = self.sidebar_selection.get()
-            && let Some(text) =
-                crate::ui::views::chat::extract_selected_text(&self.sidebar_lines, sel)
-            && !text.is_empty()
-        {
-            let _ = set_clipboard_text(&text);
-            return true;
-        }
-        false
+    /// 结束所有进行中的拖拽选区
+    pub fn finish_selections(&mut self) {
+        self.finish_input_selection();
+        self.chat.selection.finish();
+        self.sidebar.selection.finish();
     }
 
     pub fn start_input_selection(&mut self, char_idx: usize) {

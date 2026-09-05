@@ -37,9 +37,9 @@
 > **类型系统约束**：使用强类型结构体，不使用松散的 `HashMap<String, serde_json::Value>`。
 
 为核心供应商定义专属强类型元数据（见 `src/model/meta.rs`）：
-- **OpenAI Responses API**：`ResponseTurnMeta`, `ResponseSessionMeta`, `ResponseMessageMeta`（item_id 链式绑定）
-- **Anthropic Messages API**：`AnthropicTurnMeta`, `AnthropicSessionMeta`
-- **Google Gemini API**：`GeminiTurnMeta`, `GeminiSessionMeta`
+- **OpenAI Responses API**：`ResponseTurnMeta`（`response_id` 链式绑定与 `ResponseOutputItem` 原生条目回传）
+- **Anthropic Messages API**：`AnthropicTurnMeta`
+- **Google Gemini API**：`GeminiTurnMeta`
 
 ---
 
@@ -54,7 +54,7 @@
 | **持久化存储** | [docs/storage.md](docs/storage.md) | JSONL 追加写存储引擎、`Header` 与 `Turn` 记录规范、抗崩溃容灾 |
 | **供应商适配** | [docs/providers.md](docs/providers.md) | Responses 链式继承、Anthropic 缓存与签名、Gemini 搜索注脚与通用 SSE 解码 |
 | **配置路由** | [docs/configuration.md](docs/configuration.md) | JSON/JSONC 词法注释剥离、`${VAR}` 环境变量展开、模型规格寻址与端点规范化 |
-| **终端交互** | [docs/ui.md](docs/ui.md) | Ratatui TUI 架构、`SessionManager` 单例并发、`InputBuffer` 多行编辑与模态框状态解耦 |
+| **终端交互** | [docs/ui.md](docs/ui.md) | Ratatui TUI 架构、会话任务与 `SessionView` 订阅、`InputBuffer` 多行编辑与模态框状态解耦 |
 
 ---
 
@@ -64,28 +64,28 @@
 src/
 ├── lib.rs                  # 核心模块导出
 ├── event.rs                # AgentEvent 统一事件流词汇表 (Provider 流式增量 + Harness 工具/Notice/Aborted 事件)
-├── system.rs               # 系统环境信息采集与新会话系统提示组装 (SystemInfo / build_system_prompt / new_session)
-├── main.rs                 # CLI 命令行入口 (vva run, vva session list/inspect)
+├── system.rs               # 系统环境信息采集与系统提示组装 (日期 / OS / arch / workspace)
+├── main.rs                 # CLI 命令行入口 (vva run [prompt], vva session list/inspect)
 ├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
 │   ├── mod.rs              # load_config 自动寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
 │   ├── model.rs            # AppConfig, ProviderConfig (provider_type 为 Option，合并时仅显式声明才覆写), ModelConfig；glm-coding-plan 预设补全
 │   ├── parser.rs           # strip_jsonc_comments 与 interpolate_env_vars
-│   └── resolver.rs         # resolve_model 寻址路由与 Provider 动态构造（含 glm-coding-plan → Responses）
+│   └── resolver.rs         # resolve_model 只做配置解析并返回 ResolvedModel；Provider 由 ResolvedModel::create_provider 单独构造
 ├── model/                  # 领域模型与强类型体系
 │   ├── mod.rs              # 模块导出与通用类型
-│   ├── meta.rs             # Response, Anthropic, Gemini 专属强类型元数据 (轮次级)
+│   ├── meta.rs             # Response, Anthropic, Gemini 专属强类型轮次元数据 (含 ResponseOutputItem 原生条目链)
 │   ├── content.rs          # 多模态 (Image)、搜索与 Annotation
-│   ├── message.rs          # Message 与 Role
+│   ├── message.rs          # Role 与 Message (内容分组值对象，仅持有 parts)
 │   ├── turn.rs             # Turn 与 TokenUsage
-│   ├── session.rs          # Session 与 JSONL 记录定义 (含 apply_overrides)
+│   ├── session.rs          # Session 与 JSONL 记录定义 (SessionHeader / JsonlRecord)
 │   └── tool.rs             # ToolCall, ToolResult, ToolDefinition
 ├── storage/                # 存储抽象与实现
 │   ├── mod.rs              # SessionStore Trait
-│   └── jsonl.rs            # JsonlSessionStore 行级追加写引擎
+│   └── jsonl.rs            # JsonlSessionStore 行级追加写引擎 (Header 重写经临时文件原子替换)
 ├── provider/               # 供应商适配器层 (原生协议直通)
-│   ├── mod.rs              # Provider Trait (endpoint/auth/build/parse + complete 默认实现)、能力声明与共享 HTTP Client (超时)
-│   ├── common.rs           # 跨供应商共享辅助 (EventForwarder 背压转发 / require_str|u64 严格读取 / RoleBlockMerger / function_tool_def)
-│   ├── http.rs             # 共享传输封装 (post_json/post_sse + SSE 事件循环 SseEventHandler，严格 JSON 校验)
+│   ├── mod.rs              # Provider Trait (capabilities/complete/complete_stream)、能力声明与共享 HTTP Client (超时)
+│   ├── common.rs           # 跨供应商共享辅助 (EventForwarder 背压转发 / require_* 严格读取 / RoleBlockMerger)
+│   ├── http.rs             # 共享传输封装 (post_json 非流式 / post_sse 流式事件循环 SseEventHandler)
 │   ├── response.rs         # OpenAI Responses API (previous_response_id + 原生搜索)
 │   ├── anthropic.rs        # Anthropic Messages API (Prompt Caching + Thinking 签名，流式/非流式统一解析)
 │   ├── gemini.rs           # Google Gemini API (Grounding 多 chunk 合并投影 + 代码沙盒 + 共享累积器)
@@ -96,34 +96,35 @@ src/
 │   ├── bash.rs             # Bash 执行 (Unix)
 │   ├── powershell.rs       # PowerShell 执行 (Windows)
 │   └── file.rs             # 文件读写与查看
-├── harness/                # 调度引擎
+├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
-│   └── agent.rs            # 多轮 Agent 循环驱动 (AgentEngine + build_engine 共享组装 + capability_notices 能力协商)
+│   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions) 与 capability_notices 能力协商
+│   └── session.rs          # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
 └── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── app/                # App 响应式控制器、状态机与子系统调度
-    │   ├── mod.rs          # App 结构体定义、生命周期与模块导出 (SelectionTracker 选区收敛)
-    │   ├── session.rs      # Session 切换与模态框状态调度
+    │   ├── mod.rs          # App 结构体定义、生命周期与模块导出 (ChatCacheKey 行缓存失效依据)
+    │   ├── session.rs      # 会话切换、SessionView 快照刷新与模态框状态调度
     │   ├── editor.rs       # 输入缓冲编辑、光标移动与斜杠命令补全
-    │   ├── dispatch.rs     # 用户提交、斜杠命令路由与 AgentEvent 分发 (含 set_web_search/toggle_thinking_display 共用动作)
+    │   ├── dispatch.rs     # 用户提交、斜杠命令路由与会话请求分发
+    │   ├── pane.rs         # TextPane 可选中文本面板 (命中判定/选区/行缓存)，聊天流与侧边栏共用
     │   ├── selection.rs    # TextCoord/TextSelection/SelectionTracker 与剪贴板
     │   ├── scroll.rs       # 视口滚动与坐标映射
     │   ├── tests.rs        # App 完整自动化单元测试集
     │   └── test_support.rs # 测试共享基建 (临时 JSONL 存储 + App 构造)
     ├── command.rs          # 斜杠命令系统与 Claude Code 风格前缀自动补全
-    ├── history.rs          # ChatEntry 对话流与 SidebarStats 纯函数视图投影
+    ├── history.rs          # SidebarStats 纯函数统计投影 (compute_stats)
     ├── input.rs            # InputBuffer 多行文本编辑、光标计算与 CJK 对齐算法
     ├── markdown.rs         # Markdown 解析与终端样式渲染 (pulldown-cmark)
     ├── text.rs             # 文本展示工具 (按显示宽度截断 truncate，CJK 双列)
     ├── modals/             # 独立的模态弹窗状态机与单测
-    │   ├── mod.rs          # ActiveModal 枚举、FilterableModal Trait 与通用按键归一化
+    │   ├── mod.rs          # ActiveModal 枚举 (变体直接携带状态)、ModalAction、FilterableModal Trait 与按键归一化
     │   ├── sessions.rs     # SessionsModalState (按工程过滤与会话切换)
     │   ├── models.rs       # ModelsModalState (模型清单筛选)
     │   ├── variants.rs     # VariantsModalState (推理档位切换)
     │   └── config.rs       # ConfigModalState (设置项交互切换)
-    ├── session_manager.rs  # 全局 Session 单例与并发后台运行管理 (persist_header 单点 + submit_prompt 拆分)
     └── views/              # 纯渲染层组件
         ├── mod.rs          # 视图模块导出
-        ├── chat.rs         # 聊天流渲染
+        ├── chat.rs         # 聊天流渲染 (已完成轮次 + 流式草稿同源渲染)
         ├── config_modal.rs # 设置弹窗视图
         ├── header.rs       # 顶部标题栏
         ├── help_modal.rs   # 帮助弹窗视图
@@ -140,7 +141,7 @@ src/
 ## 5. 后续开发与扩展指南
 
 1. **新增模型/供应商适配**：
-   - 在 `src/model/meta.rs` 中定义强类型结构体，并在 `SessionMeta` / `TurnMeta` / `MessageMeta` 中引入字段；
+   - 在 `src/model/meta.rs` 中定义强类型结构体，并在 `TurnMeta` 中引入字段；
    - 在 `src/config/model.rs` 与 `src/config/resolver.rs` 中注册对应的 ProviderType 路由；
    - 在 `src/provider/` 中实现 `Provider` trait，在 `capabilities()` 中声明支持的原生能力；
    - 编写单测验证供应商专属特性（如 cache、signature、response_id、reasoning_effort）的双向转换保真性。

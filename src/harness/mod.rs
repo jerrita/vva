@@ -1,3 +1,5 @@
 pub mod agent;
+pub mod session;
 
-pub use agent::{AgentConfig, AgentEngine, AgentEvent, build_engine, capability_notices};
+pub use crate::event::AgentEvent;
+pub use session::{ManagedSession, RunState, SessionManager, SessionView};

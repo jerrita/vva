@@ -1,14 +1,11 @@
 use std::path::Path;
 
-/// 系统与硬件静态环境信息
+/// 系统静态环境信息
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemInfo {
     pub date: String,
     pub os: String,
     pub arch: String,
-    pub cpu: String,
-    pub gpu: String,
-    pub memory: String,
 }
 
 impl SystemInfo {
@@ -18,9 +15,6 @@ impl SystemInfo {
             date: get_current_date(),
             os: get_os_info(),
             arch: std::env::consts::ARCH.to_string(),
-            cpu: get_cpu_info(),
-            gpu: get_gpu_info(),
-            memory: get_memory_info(),
         }
     }
 
@@ -31,16 +25,10 @@ impl SystemInfo {
              ## Environment Context\n\
              - Date: {}\n\
              - Operating System: {} ({})\n\
-             - CPU: {}\n\
-             - GPU: {}\n\
-             - Memory: {}\n\
              - Workspace Root: {}\n",
             self.date,
             self.os,
             self.arch,
-            self.cpu,
-            self.gpu,
-            self.memory,
             workspace.display()
         )
     }
@@ -49,32 +37,6 @@ impl SystemInfo {
 /// 生成当前工作空间下的固定 System Prompt
 pub fn build_system_prompt(workspace: &Path) -> String {
     SystemInfo::collect().to_system_prompt(workspace)
-}
-
-/// 创建带工作区系统提示 Turn 的新会话（CLI 单次运行与 TUI 懒持久化首条消息共用）
-pub fn new_session(
-    workspace: &Path,
-    title: Option<&str>,
-    model: impl Into<String>,
-    variant: Option<String>,
-    web_search: bool,
-) -> crate::model::Session {
-    let mut session = crate::model::Session::with_model(
-        workspace,
-        title.map(str::to_string),
-        model,
-        variant,
-        web_search,
-    );
-    let sys_turn = crate::model::Turn::new(
-        crate::model::Role::System,
-        vec![crate::model::Message::system(build_system_prompt(
-            workspace,
-        ))],
-        None,
-    );
-    session.append_turn(sys_turn);
-    session
 }
 
 fn get_current_date() -> String {
@@ -213,229 +175,4 @@ fn get_os_info() -> String {
     {
         format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH)
     }
-}
-
-fn get_cpu_info() -> String {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-
-    #[cfg(windows)]
-    {
-        let brand = run_command_output(
-            "reg",
-            &[
-                "query",
-                "HKLM\\HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
-                "/v",
-                "ProcessorNameString",
-            ],
-        )
-        .and_then(|out| parse_reg_sz(&out, "ProcessorNameString"));
-
-        if let Some(b) = brand {
-            let trimmed = b.trim();
-            if !trimmed.is_empty() {
-                return format!("{trimmed} ({cores} logical cores)");
-            }
-        }
-        if let Ok(ident) = std::env::var("PROCESSOR_IDENTIFIER") {
-            let trimmed = ident.trim();
-            if !trimmed.is_empty() {
-                return format!("{trimmed} ({cores} logical cores)");
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/cpuinfo") {
-            for line in content.lines() {
-                if (line.starts_with("model name") || line.starts_with("Processor"))
-                    && let Some((_, model)) = line.split_once(':')
-                {
-                    let trimmed = model.trim();
-                    if !trimmed.is_empty() {
-                        return format!("{trimmed} ({cores} logical cores)");
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(out) = run_command_output("sysctl", &["-n", "machdep.cpu.brand_string"]) {
-            let trimmed = out.trim();
-            if !trimmed.is_empty() {
-                return format!("{trimmed} ({cores} logical cores)");
-            }
-        }
-    }
-
-    format!("{} ({} logical cores)", std::env::consts::ARCH, cores)
-}
-
-fn get_gpu_info() -> String {
-    #[cfg(windows)]
-    {
-        if let Some(out) = run_command_output(
-            "reg",
-            &[
-                "query",
-                "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}",
-                "/s",
-                "/v",
-                "DriverDesc",
-            ],
-        ) {
-            let mut gpus = Vec::new();
-            for line in out.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("DriverDesc") {
-                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                    if parts.len() >= 3 && parts[1] == "REG_SZ" {
-                        let name = parts[2..].join(" ");
-                        let lower = name.to_lowercase();
-                        if !lower.contains("virtual")
-                            && !lower.contains("remote")
-                            && !lower.contains("gameviewer")
-                            && !lower.contains("mumu")
-                            && !lower.contains("vnc")
-                            && !lower.contains("rdp")
-                            && !lower.contains("citrix")
-                            && !lower.contains("parsec")
-                            && !lower.contains("teamviewer")
-                            && !lower.contains("anydesk")
-                            && !lower.contains("iddsampledriver")
-                            && !lower.contains("indirect")
-                            && !gpus.contains(&name)
-                        {
-                            gpus.push(name);
-                        }
-                    }
-                }
-            }
-            if !gpus.is_empty() {
-                return gpus.join(", ");
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(out) =
-            run_command_output("nvidia-smi", &["--query-gpu=name", "--format=csv,noheader"])
-        {
-            let gpus: Vec<String> = out
-                .lines()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect();
-            if !gpus.is_empty() {
-                return gpus.join(", ");
-            }
-        }
-
-        if let Some(out) = run_command_output("lspci", &[]) {
-            let mut gpus = Vec::new();
-            for line in out.lines() {
-                if (line.contains("VGA compatible controller") || line.contains("3D controller"))
-                    && let Some((_, rest)) = line.split_once(':')
-                {
-                    let trimmed = rest.trim();
-                    if !trimmed.is_empty() && !gpus.contains(&trimmed.to_string()) {
-                        gpus.push(trimmed.to_string());
-                    }
-                }
-            }
-            if !gpus.is_empty() {
-                return gpus.join(", ");
-            }
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(out) = run_command_output("system_profiler", &["SPDisplaysDataType"]) {
-            let mut gpus = Vec::new();
-            for line in out.lines() {
-                if line.trim().starts_with("Chipset Model:") {
-                    if let Some((_, model)) = line.split_once(':') {
-                        let trimmed = model.trim();
-                        if !trimmed.is_empty() && !gpus.contains(&trimmed.to_string()) {
-                            gpus.push(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-            if !gpus.is_empty() {
-                return gpus.join(", ");
-            }
-        }
-    }
-
-    "None detected".to_string()
-}
-
-fn get_memory_info() -> String {
-    #[cfg(windows)]
-    {
-        if let Some(out) =
-            run_command_output("wmic", &["ComputerSystem", "get", "TotalPhysicalMemory"])
-        {
-            for line in out.lines() {
-                let trimmed = line.trim();
-                if let Ok(bytes) = trimmed.parse::<u64>() {
-                    let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                    return format!("{gb:.1} GB");
-                }
-            }
-        }
-
-        if let Some(out) = run_command_output(
-            "powershell",
-            &[
-                "-NoProfile",
-                "-Command",
-                "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
-            ],
-        ) {
-            let trimmed = out.trim();
-            if let Ok(bytes) = trimmed.parse::<u64>() {
-                let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                return format!("{gb:.1} GB");
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
-            for line in content.lines() {
-                if line.starts_with("MemTotal:") {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2
-                        && let Ok(kb) = parts[1].parse::<f64>()
-                    {
-                        let gb = kb / (1024.0 * 1024.0);
-                        return format!("{gb:.1} GB");
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(out) = run_command_output("sysctl", &["-n", "hw.memsize"]) {
-            if let Ok(bytes) = out.trim().parse::<u64>() {
-                let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                return format!("{gb:.1} GB");
-            }
-        }
-    }
-
-    "Unknown".to_string()
 }

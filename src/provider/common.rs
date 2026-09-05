@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 
 use super::ProviderError;
 use crate::event::AgentEvent;
-use crate::model::ToolDefinition;
 
 /// 增量事件转发器：统一封装 `Option<Sender>` 的转发样板。
 /// 全部走 `send().await` 以保留背压语义（通道满时等待而非丢弃事件）。
@@ -59,6 +58,34 @@ pub fn require_str<'a>(json: &'a serde_json::Value, field: &str) -> Result<&'a s
         .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
 }
 
+/// 严格读取必填布尔字段：缺失或类型不符直接报协议错误
+pub fn require_bool(json: &serde_json::Value, field: &str) -> Result<bool, ProviderError> {
+    json[field]
+        .as_bool()
+        .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
+}
+
+/// 严格读取必填子结构（对象 / 数组等）：缺失即报协议错误
+pub fn require_value<'a>(
+    json: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a serde_json::Value, ProviderError> {
+    match json.get(field) {
+        Some(value) if !value.is_null() => Ok(value),
+        _ => Err(ProviderError::Protocol(format!("Missing '{field}'"))),
+    }
+}
+
+/// 严格读取必填数组字段：缺失或类型不符直接报协议错误
+pub fn require_array<'a>(
+    json: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a Vec<serde_json::Value>, ProviderError> {
+    json[field]
+        .as_array()
+        .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
+}
+
 /// 相邻同角色消息合并器。
 /// Anthropic（user/assistant 严格交替）与 Gemini（user/model 角色）都要求
 /// 将连续的同角色内容块聚合进同一条消息，仅 `content` / `parts` 字段名不同。
@@ -96,16 +123,4 @@ impl RoleBlockMerger {
     pub fn into_messages(self) -> Vec<serde_json::Value> {
         self.messages
     }
-}
-
-/// 构建函数工具声明的公共字段（name / description / 参数表）。
-/// 参数表字段名因协议而异（Responses 与 Gemini 为 `parameters`，Anthropic 为 `input_schema`），
-/// 由调用方传入；协议专属的其余字段（如 Responses 的 `"type": "function"`）由调用方补齐。
-pub fn function_tool_def(tool: &ToolDefinition, parameters_key: &str) -> serde_json::Value {
-    let mut def = serde_json::json!({
-        "name": tool.name,
-        "description": tool.description,
-    });
-    def[parameters_key] = tool.parameters.clone();
-    def
 }

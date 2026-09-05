@@ -101,14 +101,70 @@ impl ModalInput {
     }
 }
 
-/// 当前活跃的弹窗视图类型
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// 当前活跃的弹窗：状态随变体一同持有，界面开启与状态存在互为同一事实
+#[derive(Debug, Clone, Default)]
 pub enum ActiveModal {
     #[default]
     None,
-    Sessions,
-    Models,
-    Variants,
-    Config,
+    Sessions(SessionsModalState),
+    Models(ModelsModalState),
+    Variants(VariantsModalState),
+    Config(ConfigModalState),
     Help,
+}
+
+/// 弹窗中确认选中项后请求执行的动作
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ModalAction {
+    None,
+    SwitchSession(String),
+    SwitchModel(String),
+    SwitchVariant(Option<String>),
+    OpenModels,
+    OpenVariants,
+    ToggleWebSearch,
+    ToggleThinkingDisplay,
+}
+
+impl ActiveModal {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// 读取当前选中项并转换为待执行动作
+    pub(crate) fn activate(&self) -> ModalAction {
+        match self {
+            Self::Sessions(state) => state
+                .selected_session()
+                .map(|s| ModalAction::SwitchSession(s.id.clone()))
+                .unwrap_or(ModalAction::None),
+            Self::Models(state) => state
+                .selected_model()
+                .map(|m| ModalAction::SwitchModel(m.full_id.clone()))
+                .unwrap_or(ModalAction::None),
+            Self::Variants(state) => state
+                .selected_variant()
+                .map(|v| ModalAction::SwitchVariant(v.id.clone()))
+                .unwrap_or(ModalAction::None),
+            Self::Config(state) => match state.selected_item().map(|item| item.kind) {
+                Some(ConfigItemKind::Model) => ModalAction::OpenModels,
+                Some(ConfigItemKind::Variant) => ModalAction::OpenVariants,
+                Some(ConfigItemKind::WebSearch) => ModalAction::ToggleWebSearch,
+                Some(ConfigItemKind::ThinkingDisplay) => ModalAction::ToggleThinkingDisplay,
+                None => ModalAction::None,
+            },
+            Self::None | Self::Help => ModalAction::None,
+        }
+    }
+
+    /// 将导航与过滤输入应用到当前弹窗状态
+    pub(crate) fn apply_input(&mut self, input: ModalInput) {
+        match self {
+            Self::Sessions(state) => input.apply(state),
+            Self::Models(state) => input.apply(state),
+            Self::Variants(state) => input.apply(state),
+            Self::Config(state) => input.apply(state),
+            Self::None | Self::Help => {}
+        }
+    }
 }

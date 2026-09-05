@@ -18,21 +18,16 @@ classDiagram
         +Option~String~ current_variant
         +bool web_search
         +Vec~Turn~ turns
-        +SessionMeta meta
     }
     class Turn {
         +String id
-        +Option~String~ parent_turn_id
         +Role role
         +Vec~Message~ messages
         +Option~TokenUsage~ usage
         +TurnMeta meta
     }
     class Message {
-        +String id
-        +Role role
         +Vec~ContentPart~ parts
-        +MessageMeta meta
     }
     class ContentPart {
         <<enumeration>>
@@ -63,18 +58,16 @@ classDiagram
 ### 1.2 Turn（轮次实体）
 - **代码位置**：[`src/model/turn.rs`](../src/model/turn.rs)
 - **核心职责**：
-  - 交互轮次与计费结算锚点；
-  - 支持分支历史：携带可选的 `parent_turn_id: Option<String>`；
+  - 交互轮次与计费结算锚点，也是身份与元数据的唯一归属层；
   - 角色归属：`role: Role`（`User`, `Assistant`, `Tool`, `System`）；
   - 包含该轮次的 Token 核算：[`TokenUsage`](../src/model/turn.rs)（`prompt_tokens`, `completion_tokens`, `total_tokens`, `cached_tokens`, `reasoning_tokens`）；
   - 承载轮次级强类型供应商元数据：`meta: TurnMeta`。
 
-### 1.3 Message（消息实体）
+### 1.3 Message（内容分组值对象）
 - **代码位置**：[`src/model/message.rs`](../src/model/message.rs)
 - **核心职责**：
-  - 标准通信协议消息单元，拥有全局唯一 `id`；
-  - 包含多模态内容块流：`parts: Vec<ContentPart>`；
-  - 承载消息级强类型供应商元数据：`meta: MessageMeta`。
+  - 轮次内的内容分组单元，只持有多模态内容块流：`parts: Vec<ContentPart>`；
+  - 不持有身份、角色与元数据：角色由所属 `Turn` 确定，供应商原生条目 ID 归 `TurnMeta` 所有，避免同一事实存在两处表示。
 
 ---
 
@@ -123,18 +116,17 @@ Gemini 原生的 `groundingChunks` 与 `groundingSupports` 在适配器层直接
 
 代码位置：[`src/model/meta.rs`](../src/model/meta.rs)
 
-系统按四层层级结构为供应商定义强类型数据，不使用弱类型 `HashMap<String, serde_json::Value>`：
+供应商元数据统一挂在轮次级 `TurnMeta` 上，使用强类型结构体，不使用弱类型 `HashMap<String, serde_json::Value>`：
 
 ### 3.1 OpenAI Responses API 元数据
 - **`ResponseTurnMeta`**：
-  - `response_id: String`：服务端状态追踪核心锚点；
+  - `response_id: Option<String>`：服务端状态追踪核心锚点；
   - `previous_response_id: Option<String>`：上一轮响应 ID，用于增量对话继承；
-  - `status: Option<String>`：响应状态（如 `completed`, `in_progress`）；
+  - `status: String`：响应状态（如 `completed`, `in_progress`）；
   - `service_tier: Option<String>`：服务档位；
-  - `system_fingerprint: Option<String>`：后端系统指纹；
-  - `reasoning_effort: Option<String>`：推理强度（`minimal`, `low`, `medium`, `high`, `xhigh` 等）。
-- **`ResponseMessageMeta`**：
-  - `item_id: Option<String>`：Responses 报文中各条消息的唯一条目 ID。
+  - `reasoning_effort: Option<String>`：推理强度（`minimal`, `low`, `medium`, `high`, `xhigh` 等）；
+  - `store: bool`：服务端是否保存该响应，决定 `response_id` 能否用于下一轮链式续接；
+  - `output_items: Vec<ResponseOutputItem>`：原样保留的官方输出条目（message / reasoning / function_call / web_search_call 及其 `item_id`），用于按协议要求回传。
 
 ### 3.2 Anthropic Messages API 元数据
 - **`AnthropicTurnMeta`**：
@@ -148,6 +140,5 @@ Gemini 原生的 `groundingChunks` 与 `groundingSupports` 在适配器层直接
   - `safety_ratings: Vec<GeminiSafetyRating>`：安全评级指标列表；
   - `code_execution_result: Option<GeminiCodeExecutionResult>`：Gemini 内置代码沙盒执行输出。
 
-> 消息级元数据当前仅保留 Responses 的 `ResponseMessageMeta`（`item_id` 链式绑定）；
-> Anthropic / Gemini 的消息级元数据（`ephemeral_cache`、`thought_signature`）
-> 待对应功能真正落地时再引入。
+> 元数据只存在于轮次级：通用内容供调度与展示，强类型原生数据供对应供应商回传，
+> 两者所有权清晰，统一模型无需覆盖每个厂商字段。

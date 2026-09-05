@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::content::ContentPart;
-use super::meta::MessageMeta;
 use super::tool::ToolResult;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -16,37 +14,20 @@ pub enum Role {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
-    pub id: String,
-    pub role: Role,
     pub parts: Vec<ContentPart>,
-    #[serde(default)]
-    pub meta: MessageMeta,
 }
 
 impl Message {
-    pub fn new(role: Role, parts: Vec<ContentPart>) -> Self {
-        Self {
-            id: format!("msg_{}", Uuid::new_v4().simple()),
-            role,
-            parts,
-            meta: MessageMeta::default(),
-        }
+    pub fn new(parts: Vec<ContentPart>) -> Self {
+        Self { parts }
     }
 
-    pub fn user(text: impl Into<String>) -> Self {
-        Self::new(Role::User, vec![ContentPart::text(text)])
-    }
-
-    pub fn system(text: impl Into<String>) -> Self {
-        Self::new(Role::System, vec![ContentPart::text(text)])
-    }
-
-    pub fn assistant(parts: Vec<ContentPart>) -> Self {
-        Self::new(Role::Assistant, parts)
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::new(vec![ContentPart::text(text)])
     }
 
     pub fn tool_result(tool_result: ToolResult) -> Self {
-        Self::new(Role::Tool, vec![ContentPart::ToolResult(tool_result)])
+        Self::new(vec![ContentPart::ToolResult(tool_result)])
     }
 
     pub fn text_content(&self) -> String {

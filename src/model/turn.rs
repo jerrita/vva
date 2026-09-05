@@ -18,8 +18,6 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Turn {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_turn_id: Option<String>,
     pub role: Role,
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -29,10 +27,9 @@ pub struct Turn {
 }
 
 impl Turn {
-    pub fn new(role: Role, messages: Vec<Message>, parent_turn_id: Option<String>) -> Self {
+    pub fn new(role: Role, messages: Vec<Message>) -> Self {
         Self {
             id: format!("turn_{}", Uuid::new_v4().simple()),
-            parent_turn_id,
             role,
             messages,
             usage: None,
@@ -40,12 +37,12 @@ impl Turn {
         }
     }
 
-    pub fn user_turn(message: Message, parent_turn_id: Option<String>) -> Self {
-        Self::new(Role::User, vec![message], parent_turn_id)
+    pub fn user_turn(message: Message) -> Self {
+        Self::new(Role::User, vec![message])
     }
 
-    pub fn assistant_turn(messages: Vec<Message>, parent_turn_id: Option<String>) -> Self {
-        Self::new(Role::Assistant, messages, parent_turn_id)
+    pub fn assistant_turn(messages: Vec<Message>) -> Self {
+        Self::new(Role::Assistant, messages)
     }
 
     /// 获取 OpenAI Responses 链式调用 ID（仅在服务端启用 store 时有效）

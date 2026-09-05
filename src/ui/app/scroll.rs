@@ -1,6 +1,15 @@
 use super::App;
 
 impl App {
+    /// 当前生效的滚动偏移（自动吸底时即最大偏移）
+    pub fn chat_scroll(&self) -> usize {
+        if self.auto_scroll {
+            self.max_scroll
+        } else {
+            self.scroll_offset.min(self.max_scroll)
+        }
+    }
+
     /// 更新当前对话流的可视区与最大可滚动行数，自适应维持滚动位置
     pub fn update_viewport(&mut self, max_scroll: usize, viewport_height: usize) {
         self.max_scroll = max_scroll;

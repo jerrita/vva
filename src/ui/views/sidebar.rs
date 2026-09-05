@@ -137,7 +137,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.sidebar_area = Rect {
+    app.sidebar.area = Rect {
         x: inner.x,
         y: inner.y,
         width: inner.width,
@@ -145,9 +145,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
     };
 
     if inner.width < 15 || inner.height < 10 {
-        app.sidebar_area = Rect::default();
-        app.sidebar_lines.clear();
-        app.clear_sidebar_selection();
+        app.sidebar.reset();
         return;
     }
 
@@ -165,10 +163,10 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
 
     let (_context_limit, ratio, percent) = context_usage(&app.stats);
     let mut lines = build_sidebar_lines(app, info);
-    if let Some(selection) = app.sidebar_selection.get() {
+    if let Some(selection) = app.sidebar.selection.get() {
         apply_selection_highlight(&mut lines, selection);
     }
-    app.sidebar_lines = lines.clone();
+    app.sidebar.lines = lines.clone();
 
     let separator = || {
         Block::default()
@@ -225,9 +223,9 @@ mod tests {
     async fn render_sidebar_keeps_selectable_text_lines() {
         let mut ta = create_test_app("test-model", None, None, false).await;
         let app = &mut ta.app;
-        app.start_sidebar_selection(0, 7);
-        app.update_sidebar_selection(0, 14);
-        app.finish_sidebar_selection();
+        app.sidebar.selection.start(0, 7);
+        app.sidebar.selection.update(0, 14);
+        app.sidebar.selection.finish();
 
         let info = SidebarInfo {
             session_id: "session-id",
@@ -242,9 +240,9 @@ mod tests {
             .draw(|frame| render_sidebar(app, frame, Rect::new(0, 0, 30, 25), &info))
             .unwrap();
 
-        assert_eq!(app.sidebar_area, Rect::new(1, 1, 29, 22));
+        assert_eq!(app.sidebar.area, Rect::new(1, 1, 29, 22));
         assert_eq!(
-            app.sidebar_selection.selection,
+            app.sidebar.selection.selection,
             Some(TextSelection::new(
                 TextCoord { line: 0, col: 7 },
                 TextCoord { line: 0, col: 14 }
@@ -252,8 +250,8 @@ mod tests {
         );
         assert_eq!(
             crate::ui::views::chat::extract_selected_text(
-                &app.sidebar_lines,
-                app.sidebar_selection.get().unwrap(),
+                &app.sidebar.lines,
+                app.sidebar.selection.get().unwrap(),
             ),
             Some("Example".to_string())
         );
