@@ -53,6 +53,7 @@
    - **禁止非标字段猜测链**：不编写类似 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等猜测链。官方文档未定义的字段，不在代码中编写猜测逻辑。
 3. **UI / Harness 调度层零兜底**：
    - 会话任务发布 `SessionView` 快照，UI 直接渲染其中的已完成轮次与流式草稿，不维护第二份聊天历史，也不在轮次结束时重载历史覆盖界面。界面未展现内容时排查适配器转换逻辑。
+   - 领域 `WebSearchCall` 与 `TurnMeta.output_items` 解耦：前者对齐流式条目完成快照，后者保存 completed 原生 output 以回传。
 4. **单测 Mock 真实性约束**：
    - 单元测试 Mock 报文对照厂商官方标准规范构造，不在生产代码中为错误测试数据添加容错分支。
 

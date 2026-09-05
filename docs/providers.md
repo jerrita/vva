@@ -54,8 +54,9 @@ pub trait Provider: Send + Sync {
   - 上传增量用户消息与未结算的工具返回，减少网络往返负载与 Token 消耗。
 
 ### 2.2 原生 Web Search 与注脚
-- 原生启用 `"tools": [{ "type": "web_search" }]`；
-- 流式输出中解析 `response.web_search_call` 事件，记录查询状态；
+- 原生启用 `"tools": [{ "type": "web_search" }]`，请求 `include: ["web_search_call.action.sources"]`；
+- 流式 `response.output_item.done` 将官方 item 投影为领域 `WebSearchCall`，并作为 `AgentEvent` 发布；落盘领域条目沿用该快照；
+- `response.completed.output` 原样写入 `TurnMeta.output_items`，供协议回传；
 - 返回的文本如果携带官方的 `url_citation` 注脚，直接提取 `url`, `title`, `start_index`, `end_index` 并封装入 `Annotation::UrlCitation`。
 
 ### 2.3 GLM Coding Plan

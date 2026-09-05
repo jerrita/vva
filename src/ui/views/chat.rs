@@ -304,6 +304,10 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
                 lines.extend(wrapped);
 
+                if matches!(call.action, WebSearchAction::OpenPage { .. }) {
+                    continue;
+                }
+
                 // Citation titles on the left, domains aligned to the right.
                 for (url, title) in &summary.1 {
                     if !call_covers_url(call, url) {
@@ -917,9 +921,9 @@ mod tests {
         assert!(text.contains(&format!("[web_find] {url} / matching words")));
         assert!(!text.contains("sources)"));
         assert!(!text.contains("unused query"));
-        assert_eq!(text.matches("Annotation title").count(), 2);
+        assert_eq!(text.matches("Annotation title").count(), 1);
         let open_group = text.split("Between actions").next().unwrap();
-        assert!(open_group.contains("Annotation title"));
+        assert!(!open_group.contains("Annotation title"));
         assert!(!open_group.contains("Unmatched title"));
         let find_group = text
             .split("[web_find]")
@@ -942,7 +946,7 @@ mod tests {
                         && line.spans.last().unwrap().style.fg == Some(Color::DarkGray)
                 })
                 .collect();
-            assert_eq!(source_rows.len(), 2);
+            assert_eq!(source_rows.len(), 1);
             for line in source_rows {
                 assert_eq!(line.width(), width);
             }
