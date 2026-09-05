@@ -11,8 +11,8 @@ use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, Message, ResponseMessageContent, ResponseOutputItem,
     ResponseReasoningContent, ResponseReasoningSummary, ResponseTurnMeta, ResponseWebSearchAction,
-    Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchCall,
-    WebSearchSource,
+    Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchAction,
+    WebSearchCall, WebSearchSource,
 };
 
 pub struct ResponseProvider {
@@ -317,41 +317,10 @@ impl ResponseProvider {
 
         for item in &native_output_items {
             match item {
-                ResponseOutputItem::WebSearchCall { id, action, .. } => {
-                    let (query, sources) = match action {
-                        ResponseWebSearchAction::Search {
-                            query,
-                            queries,
-                            sources,
-                        } => {
-                            let q = query.clone().unwrap_or_else(|| queries.join(", "));
-                            let srcs = sources
-                                .iter()
-                                .map(|src| WebSearchSource {
-                                    url: src.url.clone(),
-                                    title: src.url.clone(),
-                                    snippet: None,
-                                })
-                                .collect();
-                            (q, srcs)
-                        }
-                        ResponseWebSearchAction::OpenPage { url } => (
-                            url.clone(),
-                            vec![WebSearchSource {
-                                url: url.clone(),
-                                title: url.clone(),
-                                snippet: None,
-                            }],
-                        ),
-                        ResponseWebSearchAction::FindInPage { .. } => (String::new(), Vec::new()),
-                    };
-
-                    parts.push(ContentPart::WebSearchCall(WebSearchCall {
-                        id: id.clone(),
-                        query,
-                        status: SearchStatus::Completed,
-                        sources,
-                    }));
+                ResponseOutputItem::WebSearchCall { id, status, action } => {
+                    parts.push(ContentPart::WebSearchCall(project_web_search_call(
+                        id, status, action,
+                    )?));
                 }
                 ResponseOutputItem::Reasoning {
                     summary, content, ..
@@ -541,7 +510,20 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             }
             "response.output_text.delta" => {
                 let delta = require_str(&json, "delta")?;
-                self.forwarder.text(delta).await;
+                let text_id = response_text_id(&json)?;
+                self.forwarder.text(&text_id, delta).await;
+                Ok(())
+            }
+            "response.output_text.annotation.added" => {
+                let text_id = response_text_id(&json)?;
+                let annotation = require_value(&json, "annotation")?;
+                if require_str(annotation, "type")? == "url_citation" {
+                    let annotation: Annotation = serde_json::from_value(annotation.clone())
+                        .map_err(|e| {
+                            ProviderError::Protocol(format!("Invalid URL citation: {e}"))
+                        })?;
+                    self.forwarder.citation(&text_id, annotation).await;
+                }
                 Ok(())
             }
             "response.reasoning_summary_part.added" => {
@@ -558,26 +540,92 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                 self.forwarder.thought(delta).await;
                 Ok(())
             }
+            "response.output_item.done" => {
+                let item = require_value(&json, "item")?;
+                if require_str(item, "type")? == "web_search_call" {
+                    let item: ResponseOutputItem =
+                        serde_json::from_value(item.clone()).map_err(|e| {
+                            ProviderError::Protocol(format!(
+                                "Invalid Responses API output item: {e}"
+                            ))
+                        })?;
+                    if let ResponseOutputItem::WebSearchCall { id, status, action } = item {
+                        self.forwarder
+                            .web_search_call(project_web_search_call(&id, &status, &action)?)
+                            .await;
+                    }
+                }
+                Ok(())
+            }
             "response.completed" => {
                 let resp_obj = require_value(&json, "response")?;
                 let parsed = self.provider.parse_response(resp_obj.clone())?;
-                for msg in &parsed.messages {
-                    for part in &msg.parts {
-                        if let ContentPart::Text { annotations, .. } = part {
-                            for ann in annotations {
-                                if let Annotation::UrlCitation { title, url, .. } = ann {
-                                    self.forwarder.citation(title, url).await;
-                                }
-                            }
-                        }
-                    }
-                }
                 self.completed = Some(parsed);
                 Ok(())
             }
             _ => Ok(()),
         }
     }
+}
+
+fn response_text_id(json: &serde_json::Value) -> Result<String, ProviderError> {
+    Ok(format!(
+        "{}:{}",
+        require_str(json, "item_id")?,
+        require_u64(json, "content_index")?
+    ))
+}
+
+/// 流式条目和最终响应共用同一领域投影。
+fn project_web_search_call(
+    id: &str,
+    status: &str,
+    action: &ResponseWebSearchAction,
+) -> Result<WebSearchCall, ProviderError> {
+    let status = match status {
+        "in_progress" | "searching" => SearchStatus::Searching,
+        "completed" => SearchStatus::Completed,
+        "failed" => SearchStatus::Failed,
+        _ => {
+            return Err(ProviderError::Protocol(format!(
+                "Invalid web search status: {status}"
+            )));
+        }
+    };
+    let (action, query, sources) = match action {
+        ResponseWebSearchAction::Search {
+            query,
+            queries,
+            sources,
+        } => (
+            WebSearchAction::Search,
+            query.clone().unwrap_or_else(|| queries.join(", ")),
+            sources
+                .iter()
+                .map(|src| WebSearchSource::new(&src.url, &src.url, None))
+                .collect(),
+        ),
+        ResponseWebSearchAction::OpenPage { url } => (
+            WebSearchAction::OpenPage { url: url.clone() },
+            String::new(),
+            Vec::new(),
+        ),
+        ResponseWebSearchAction::FindInPage { url, pattern } => (
+            WebSearchAction::FindInPage {
+                url: url.clone(),
+                pattern: pattern.clone(),
+            },
+            String::new(),
+            Vec::new(),
+        ),
+    };
+    Ok(WebSearchCall {
+        id: id.to_string(),
+        action,
+        query,
+        status,
+        sources,
+    })
 }
 
 #[cfg(test)]
@@ -1149,5 +1197,252 @@ mod tests {
         assert!(
             matches!(result, Err(ProviderError::Protocol(msg)) if msg.contains("Missing 'summary_index'"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_stream_search_and_citations_arrive_before_completion() {
+        let provider = ResponseProvider::new("test-key");
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut handler = ResponseStreamHandler {
+            provider: &provider,
+            forwarder: EventForwarder::new(Some(tx)),
+            completed: None,
+        };
+        let search = serde_json::json!({
+            "id": "ws_1", "type": "web_search_call", "status": "completed",
+            "action": {"type": "search", "query": "Rust release",
+                "sources": [{"type": "url", "url": "https://www.rust-lang.org/"}]}
+        });
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_item.done", "output_index": 0,
+                "sequence_number": 1, "item": search
+            }))
+            .await
+            .unwrap();
+        let call = match rx.try_recv().unwrap() {
+            AgentEvent::WebSearchCall(call) => call,
+            event => panic!("unexpected event: {event:?}"),
+        };
+        assert_eq!(call.id, "ws_1");
+        assert_eq!(call.sources.len(), 1);
+
+        let annotation = serde_json::json!({
+            "type": "url_citation", "title": "Rust", "url": "https://www.rust-lang.org/",
+            "start_index": 0, "end_index": 4
+        });
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_text.delta", "item_id": "msg_1",
+                "output_index": 1, "content_index": 0, "sequence_number": 2,
+                "delta": "Rust"
+            }))
+            .await
+            .unwrap();
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_text.annotation.added", "item_id": "msg_1",
+                "output_index": 1, "content_index": 0, "annotation_index": 0,
+                "sequence_number": 3, "annotation": annotation
+            }))
+            .await
+            .unwrap();
+        assert!(
+            matches!(rx.try_recv().unwrap(), AgentEvent::Text { text_id, delta }
+            if text_id == "msg_1:0" && delta == "Rust")
+        );
+        let citation: Annotation = serde_json::from_value(annotation.clone()).unwrap();
+        assert!(
+            matches!(rx.try_recv().unwrap(), AgentEvent::Citation { text_id, annotation }
+            if text_id == "msg_1:0" && annotation == citation)
+        );
+        assert!(handler.completed.is_none());
+
+        handler.on_event(serde_json::json!({
+            "type": "response.completed", "sequence_number": 4,
+            "response": {"id": "resp_1", "status": "completed", "output": [
+                search,
+                {"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": "Rust", "annotations": [annotation]}]}
+            ]}
+        })).await.unwrap();
+        let response = handler.completed.as_ref().unwrap();
+        assert_eq!(
+            response.messages[0].parts[0],
+            ContentPart::WebSearchCall(call)
+        );
+        assert_eq!(
+            response.messages[0].parts[1],
+            ContentPart::Text {
+                text: "Rust".into(),
+                annotations: vec![citation],
+            }
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_stream_rejects_invalid_url_citation() {
+        let provider = ResponseProvider::new("test-key");
+        let mut handler = ResponseStreamHandler {
+            provider: &provider,
+            forwarder: EventForwarder::default(),
+            completed: None,
+        };
+        let result = handler.on_event(serde_json::json!({
+            "type": "response.output_text.annotation.added", "item_id": "msg_1",
+            "output_index": 0, "content_index": 0, "annotation_index": 0,
+            "sequence_number": 1,
+            "annotation": {"type": "url_citation", "title": "Rust", "url": "https://www.rust-lang.org/"}
+        })).await;
+        assert!(
+            matches!(result, Err(ProviderError::Protocol(message)) if message.contains("start_index"))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_handler_reports_web_search_call_on_item_done() {
+        let provider = ResponseProvider::new("test-key");
+        let (tx, mut rx) = mpsc::channel::<AgentEvent>(16);
+        let mut handler = ResponseStreamHandler {
+            provider: &provider,
+            forwarder: EventForwarder::new(Some(tx)),
+            completed: None,
+        };
+
+        // 每个搜索条目完成时独立上报，保留动作类型。
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "web_search_call",
+                    "id": "ws_1",
+                    "status": "completed",
+                    "action": {"type": "search", "query": "GPT-6 release date"}
+                }
+            }))
+            .await
+            .unwrap();
+        match rx.try_recv() {
+            Ok(AgentEvent::WebSearchCall(call)) => {
+                assert_eq!(call.id, "ws_1");
+                assert_eq!(call.query, "GPT-6 release date");
+                assert_eq!(call.action, WebSearchAction::Search);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 打开页面保留目标 URL，message 等其余项不产生搜索事件。
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "web_search_call",
+                    "id": "ws_2",
+                    "status": "completed",
+                    "action": {"type": "open_page", "url": "https://openai.com/index/gpt-6/"}
+                }
+            }))
+            .await
+            .unwrap();
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_item.done",
+                "item": {"id": "msg_1", "type": "message", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": "Answer", "annotations": []}]}
+            }))
+            .await
+            .unwrap();
+        match rx.try_recv() {
+            Ok(AgentEvent::WebSearchCall(call)) => {
+                assert_eq!(
+                    call.action,
+                    WebSearchAction::OpenPage {
+                        url: "https://openai.com/index/gpt-6/".into(),
+                    }
+                );
+                assert!(call.query.is_empty());
+                assert!(call.sources.is_empty());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_web_actions_match_stream_final_and_storage() {
+        let provider = ResponseProvider::new("test-key");
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut handler = ResponseStreamHandler {
+            provider: &provider,
+            forwarder: EventForwarder::new(Some(tx)),
+            completed: None,
+        };
+        let actions = [
+            serde_json::json!({"type": "search", "queries": ["query A", "query B"], "sources": [
+                {"type": "url", "url": "https://example.com/a"},
+                {"type": "url", "url": "https://example.com/b"}
+            ]}),
+            serde_json::json!({"type": "open_page", "url": "https://example.com/a"}),
+            serde_json::json!({"type": "find_in_page", "url": "https://example.com/a", "pattern": "battery"}),
+        ];
+        let mut items = Vec::new();
+        let mut streamed = Vec::new();
+        for (index, action) in actions.into_iter().enumerate() {
+            let item = serde_json::json!({
+                "type": "web_search_call", "id": format!("ws_{index}"), "status": "completed", "action": action
+            });
+            handler
+                .on_event(serde_json::json!({
+                    "type": "response.output_item.done", "output_index": index,
+                    "sequence_number": index, "item": item
+                }))
+                .await
+                .unwrap();
+            let AgentEvent::WebSearchCall(call) = rx.try_recv().unwrap() else {
+                panic!("expected search event");
+            };
+            assert_eq!(call.id, format!("ws_{index}"));
+            let encoded = serde_json::to_value(&call).unwrap();
+            assert_eq!(
+                serde_json::from_value::<WebSearchCall>(encoded).unwrap(),
+                call
+            );
+            streamed.push(ContentPart::WebSearchCall(call));
+            items.push(item);
+        }
+        let ContentPart::WebSearchCall(search) = &streamed[0] else {
+            unreachable!()
+        };
+        assert_eq!(search.action, WebSearchAction::Search);
+        assert_eq!(search.query, "query A, query B");
+        assert_eq!(search.sources.len(), 2);
+        let ContentPart::WebSearchCall(open) = &streamed[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            open.action,
+            WebSearchAction::OpenPage {
+                url: "https://example.com/a".into()
+            }
+        );
+        assert!(open.sources.is_empty());
+        let ContentPart::WebSearchCall(find) = &streamed[2] else {
+            unreachable!()
+        };
+        assert_eq!(
+            find.action,
+            WebSearchAction::FindInPage {
+                url: "https://example.com/a".into(),
+                pattern: "battery".into(),
+            }
+        );
+        assert!(find.sources.is_empty());
+        let final_response = provider
+            .parse_response(serde_json::json!({
+                "id": "resp_1", "status": "completed", "output": items,
+            }))
+            .unwrap();
+        assert_eq!(final_response.messages[0].parts, streamed);
     }
 }

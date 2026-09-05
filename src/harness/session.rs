@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use super::agent::{AgentEngine, capability_notices, generate_title};
 use crate::config::AppConfig;
 use crate::event::AgentEvent;
-use crate::model::{Annotation, ContentPart, Message, Role, Session, Turn};
+use crate::model::{ContentPart, Message, Role, Session, Turn};
 use crate::storage::SessionStore;
 
 type Reply = oneshot::Sender<Result<(), String>>;
@@ -191,6 +191,7 @@ impl SessionManager {
             stop: None,
             notified: HashSet::new(),
             title_task: None,
+            text_parts: HashMap::new(),
         };
         tokio::spawn(task.run(rx));
         Arc::new(ManagedSession {
@@ -294,6 +295,8 @@ struct SessionTask {
     stop: Option<(bool, Reply)>,
     notified: HashSet<String>,
     title_task: Option<tokio::task::JoinHandle<()>>,
+    /// 响应内文本标识到草稿部件的映射，供增量与引用共同定位。
+    text_parts: HashMap<String, usize>,
 }
 
 impl SessionTask {
@@ -312,7 +315,18 @@ impl SessionTask {
 
     async fn event(&mut self, event: AgentEvent) {
         // 文本与思考增量按节流发布，其余事件改变结构或状态，立即发布
-        let is_delta = matches!(event, AgentEvent::Thought(_) | AgentEvent::Text(_));
+        let is_delta = matches!(event, AgentEvent::Thought(_) | AgentEvent::Text { .. });
+        let text_part = match &event {
+            AgentEvent::Text { text_id, .. } | AgentEvent::Citation { text_id, .. } => {
+                let index = *self.text_parts.entry(text_id.clone()).or_insert_with(|| {
+                    let index = self.view.draft.len();
+                    self.view.draft.push(ContentPart::text(""));
+                    index
+                });
+                Some(index)
+            }
+            _ => None,
+        };
         match &event {
             AgentEvent::Thought(text) => {
                 self.view.state = RunState::Thinking;
@@ -322,33 +336,30 @@ impl SessionTask {
                     self.view.draft.push(ContentPart::reasoning(text, None));
                 }
             }
-            AgentEvent::Text(text) => {
+            AgentEvent::Text { delta, .. } => {
                 self.view.state = RunState::Responding;
-                if let Some(ContentPart::Text { text: content, .. }) = self.view.draft.last_mut() {
-                    content.push_str(text);
-                } else {
-                    self.view.draft.push(ContentPart::text(text));
+                if let ContentPart::Text { text, .. } = &mut self.view.draft[text_part.unwrap()] {
+                    text.push_str(delta);
                 }
             }
-            AgentEvent::Citation { title, url } => {
-                if !matches!(self.view.draft.last(), Some(ContentPart::Text { .. })) {
-                    self.view.draft.push(ContentPart::text(""));
-                }
-                if let Some(ContentPart::Text { annotations, .. }) = self.view.draft.last_mut()
-                    && !annotations
-                        .iter()
-                        .any(|a| matches!(a, Annotation::UrlCitation { url: u, .. } if u == url))
+            AgentEvent::Citation { annotation, .. } => {
+                if let ContentPart::Text { annotations, .. } = &mut self.view.draft[text_part.unwrap()]
+                    && !annotations.contains(annotation)
                 {
-                    annotations.push(Annotation::UrlCitation {
-                        title: title.clone(),
-                        url: url.clone(),
-                        start_index: 0,
-                        end_index: 0,
-                    });
+                    annotations.push(annotation.clone());
                 }
             }
             AgentEvent::ToolExecuting { name, .. } => {
                 self.view.state = RunState::Tool(name.clone())
+            }
+            AgentEvent::WebSearchCall(call) => {
+                if let Some(ContentPart::WebSearchCall(existing)) = self.view.draft.iter_mut()
+                    .find(|part| matches!(part, ContentPart::WebSearchCall(existing) if existing.id == call.id))
+                {
+                    *existing = call.clone();
+                } else {
+                    self.view.draft.push(ContentPart::WebSearchCall(call.clone()));
+                }
             }
             AgentEvent::ToolFinished { .. } => {}
             AgentEvent::Notice(text) | AgentEvent::Error(text) => {
@@ -515,6 +526,7 @@ impl SessionTask {
         }
         let tools = engine.tools.definitions();
         for _ in 0..15 {
+            self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
             let context = self.view.session.clone();
@@ -646,5 +658,173 @@ impl SessionTask {
         if let Some(task) = self.title_task {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Annotation, SearchStatus, WebSearchAction, WebSearchCall, WebSearchSource};
+    use crate::storage::jsonl::JsonlSessionStore;
+
+    fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
+        let workspace = std::env::temp_dir().join(format!("vva-events-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(JsonlSessionStore::new(&workspace).unwrap());
+        let view = SessionView {
+            revision: 0,
+            session: Arc::new(Session::new(workspace, None)),
+            draft: Vec::new(),
+            notices: Vec::new(),
+            state: RunState::Idle,
+            persisted: false,
+        };
+        let (view_tx, view_rx) = watch::channel(Arc::new(view.clone()));
+        let (commands, _rx) = mpsc::channel(1);
+        let task = SessionTask {
+            view,
+            view_tx,
+            store,
+            config: Arc::new(AppConfig::default()),
+            commands: commands.downgrade(),
+            dirty: false,
+            cli: None,
+            stop: None,
+            notified: HashSet::new(),
+            title_task: None,
+            text_parts: HashMap::new(),
+        };
+        (task, view_rx)
+    }
+
+    #[tokio::test]
+    async fn late_citations_target_text_id_and_deduplicate_only_exact_spans() {
+        let (mut task, mut view_rx) = event_task();
+        task.event(AgentEvent::Text {
+            text_id: "first".into(),
+            delta: "Alpha ".into(),
+        })
+        .await;
+        assert!(!view_rx.has_changed().unwrap());
+        task.publish_throttled();
+        assert!(view_rx.has_changed().unwrap());
+        assert_eq!(
+            view_rx.borrow_and_update().draft,
+            vec![ContentPart::text("Alpha ")]
+        );
+
+        let search = WebSearchCall::completed("search", "sources", Vec::new());
+        task.event(AgentEvent::WebSearchCall(search.clone())).await;
+        task.event(AgentEvent::Text {
+            text_id: "second".into(),
+            delta: "Other text".into(),
+        })
+        .await;
+        task.event(AgentEvent::Text {
+            text_id: "first".into(),
+            delta: "Beta".into(),
+        })
+        .await;
+
+        let first = Annotation::UrlCitation {
+            url: "https://example.com/source".into(),
+            title: "Source".into(),
+            start_index: 0,
+            end_index: 5,
+        };
+        let second = Annotation::UrlCitation {
+            url: "https://example.com/source".into(),
+            title: "Source".into(),
+            start_index: 6,
+            end_index: 10,
+        };
+        for annotation in [&first, &first, &second, &second] {
+            view_rx.borrow_and_update();
+            task.event(AgentEvent::Citation {
+                text_id: "first".into(),
+                annotation: annotation.clone(),
+            })
+            .await;
+            assert!(view_rx.has_changed().unwrap());
+        }
+
+        let published = view_rx.borrow_and_update().clone();
+        assert_eq!(
+            published.draft,
+            vec![
+                ContentPart::Text {
+                    text: "Alpha Beta".into(),
+                    annotations: vec![first, second],
+                },
+                ContentPart::WebSearchCall(search),
+                ContentPart::text("Other text"),
+            ]
+        );
+        assert!(matches!(published.state, RunState::Responding));
+        assert!(published.session.turns.is_empty());
+        assert!(!published.persisted);
+        std::fs::remove_dir_all(&published.session.workspace_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_snapshots_update_in_place_and_publish_before_completion() {
+        let (mut task, mut view_rx) = event_task();
+        let pending = WebSearchCall {
+            action: WebSearchAction::Search,
+            id: "search".into(),
+            query: String::new(),
+            status: SearchStatus::Pending,
+            sources: Vec::new(),
+        };
+        task.event(AgentEvent::WebSearchCall(pending.clone())).await;
+        assert!(view_rx.has_changed().unwrap());
+        let initial = view_rx.borrow_and_update().clone();
+        assert_eq!(
+            initial.draft,
+            vec![ContentPart::WebSearchCall(pending.clone())]
+        );
+
+        task.event(AgentEvent::Text {
+            text_id: "answer".into(),
+            delta: "Draft answer".into(),
+        })
+        .await;
+        let other = WebSearchCall::completed("other-search", "other query", Vec::new());
+        task.event(AgentEvent::WebSearchCall(other.clone())).await;
+
+        let searching = WebSearchCall {
+            query: "updated query".into(),
+            status: SearchStatus::Searching,
+            ..pending
+        };
+        let completed = WebSearchCall::completed(
+            "search",
+            "final query",
+            vec![WebSearchSource::new(
+                "https://example.com/source",
+                "Source",
+                Some("Result snippet".into()),
+            )],
+        );
+        for snapshot in [searching, completed.clone(), completed] {
+            let revision = view_rx.borrow_and_update().revision;
+            task.event(AgentEvent::WebSearchCall(snapshot.clone()))
+                .await;
+            assert!(view_rx.has_changed().unwrap());
+            let published = view_rx.borrow_and_update().clone();
+            assert_eq!(published.revision, revision + 1);
+            assert_eq!(
+                published.draft,
+                vec![
+                    ContentPart::WebSearchCall(snapshot),
+                    ContentPart::text("Draft answer"),
+                    ContentPart::WebSearchCall(other.clone()),
+                ]
+            );
+            assert!(matches!(published.state, RunState::Responding));
+            assert!(published.session.turns.is_empty());
+            assert!(!published.persisted);
+        }
+        assert_eq!(initial.draft.len(), 1);
+        std::fs::remove_dir_all(&task.view.session.workspace_root).unwrap();
     }
 }

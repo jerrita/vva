@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use vva::config::{AppConfig, home_dir, load_config};
 use vva::harness::{AgentEvent, SessionManager};
-use vva::model::{Annotation, ContentPart};
+use vva::model::{Annotation, ContentPart, WebSearchAction};
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::ui::run_tui;
@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         use std::io::Write;
                         let _ = std::io::stdout().flush();
                     }
-                    AgentEvent::Text(text) => {
+                    AgentEvent::Text { delta: text, .. } => {
                         in_thought = false;
                         if !in_text {
                             println!("\n💬 [Assistant]");
@@ -177,8 +177,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         use std::io::Write;
                         let _ = std::io::stdout().flush();
                     }
-                    AgentEvent::Citation { title, url } => {
-                        println!("\n🔗 [Citation] {} ({})", title, url);
+                    AgentEvent::Citation { annotation, .. } => {
+                        if let Annotation::UrlCitation { title, url, .. } = annotation {
+                            println!("\n🔗 [Citation] {} ({})", title, url);
+                        }
                     }
                     AgentEvent::Notice(notice) => {
                         eprintln!("\n⚠️  [Notice] {notice}");
@@ -187,6 +189,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         in_thought = false;
                         in_text = false;
                         println!("\n⚙️ [Tool Calling] {}({})", name, args);
+                    }
+                    AgentEvent::WebSearchCall(call) => {
+                        in_thought = false;
+                        in_text = false;
+                        match &call.action {
+                            WebSearchAction::Search => println!(
+                                "\n[web_search] {} ({} sources)",
+                                call.query,
+                                call.sources.len()
+                            ),
+                            WebSearchAction::OpenPage { url } => println!("\n[web_open] {url}"),
+                            WebSearchAction::FindInPage { url, pattern } => {
+                                println!("\n[web_find] {url} / {pattern}")
+                            }
+                        }
                     }
                     AgentEvent::ToolFinished {
                         name,
@@ -317,11 +334,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     );
                                 }
                                 ContentPart::WebSearchCall(call) => {
-                                    println!(
-                                        "    🌐 [WebSearchCall]: Query='{}' Sources={}",
-                                        call.query,
-                                        call.sources.len()
-                                    );
+                                    match &call.action {
+                                        WebSearchAction::Search => println!(
+                                            "    [web_search] {} ({} sources)",
+                                            call.query,
+                                            call.sources.len()
+                                        ),
+                                        WebSearchAction::OpenPage { url } => {
+                                            println!("    [web_open] {url}")
+                                        }
+                                        WebSearchAction::FindInPage { url, pattern } => {
+                                            println!("    [web_find] {url} / {pattern}")
+                                        }
+                                    }
                                     for src in &call.sources {
                                         println!("       - {} ({})", src.title, src.url);
                                     }

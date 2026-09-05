@@ -9,7 +9,7 @@ use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
     Message, Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta,
-    WebSearchCall, WebSearchSource,
+    WebSearchAction, WebSearchCall, WebSearchSource,
 };
 
 pub struct GeminiProvider {
@@ -429,6 +429,7 @@ impl GeminiAccumulator {
                 }
                 None => {
                     self.search_call = Some(WebSearchCall {
+                        action: WebSearchAction::Search,
                         id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
                         query: joined,
                         status: SearchStatus::Completed,
@@ -457,8 +458,8 @@ impl GeminiAccumulator {
                             };
                             if !self.citations.contains(&ann) {
                                 self.pending_events.push(AgentEvent::Citation {
-                                    title: src.title.clone(),
-                                    url: src.url.clone(),
+                                    text_id: "text".into(),
+                                    annotation: ann.clone(),
                                 });
                                 self.citations.push(ann);
                             }
@@ -480,7 +481,10 @@ impl GeminiAccumulator {
                 }
             } else if let Some(text) = p["text"].as_str() {
                 self.text.push_str(text);
-                self.pending_events.push(AgentEvent::Text(text.to_string()));
+                self.pending_events.push(AgentEvent::Text {
+                    text_id: "text".into(),
+                    delta: text.to_string(),
+                });
             } else if let Some(fc) = p.get("functionCall") {
                 self.tool_calls.push(ToolCall {
                     id: format!("call_{}", uuid::Uuid::new_v4().simple()),

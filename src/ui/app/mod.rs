@@ -100,7 +100,7 @@ impl App {
             matched_commands: Vec::new(),
             selected_command_index: 0,
             stats,
-            thinking_concise: false,
+            thinking_concise: true,
             last_key_input_time: None,
             input_inner_area: Rect::default(),
             prompt_history: Vec::new(),

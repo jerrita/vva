@@ -90,6 +90,9 @@ pub enum Annotation {
 pub struct WebSearchCall {
     pub id: String,
     pub query: String,
+    /// 已持久化的旧条目缺少动作字段，沿用其搜索展示。
+    #[serde(default)]
+    pub action: WebSearchAction,
     pub status: SearchStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<WebSearchSource>,
@@ -104,10 +107,25 @@ impl WebSearchCall {
         Self {
             id: id.into(),
             query: query.into(),
+            action: WebSearchAction::Search,
             status: SearchStatus::Completed,
             sources,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WebSearchAction {
+    #[default]
+    Search,
+    OpenPage {
+        url: String,
+    },
+    FindInPage {
+        url: String,
+        pattern: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -134,5 +152,22 @@ impl WebSearchSource {
             title: title.into(),
             snippet,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persisted_search_without_action_remains_readable() {
+        let call: WebSearchCall = serde_json::from_value(serde_json::json!({
+            "id": "ws_old", "query": "query", "status": "completed",
+            "sources": [{"url": "https://example.com", "title": "Example"}]
+        }))
+        .unwrap();
+        assert_eq!(call.action, WebSearchAction::Search);
+        assert_eq!(call.query, "query");
+        assert_eq!(call.sources.len(), 1);
     }
 }

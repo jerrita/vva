@@ -534,7 +534,7 @@ impl SseEventHandler for AnthropicStreamHandler {
                                 )));
                             }
                         }
-                        self.forwarder.text(t).await;
+                        self.forwarder.text(&idx.to_string(), t).await;
                     }
                     "signature_delta" => {
                         let sig = require_str(delta, "signature")?;

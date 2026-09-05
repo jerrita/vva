@@ -1,3 +1,6 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -5,15 +8,94 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::model::{Annotation, ContentPart, Role};
+use crate::model::{Annotation, ContentPart, Role, WebSearchAction, WebSearchCall};
 use crate::ui::app::{App, TextCoord, TextSelection, char_in_column_range};
 use crate::ui::markdown::{render_markdown, wrap_spans_to_lines};
+use crate::ui::text::truncate;
 
 /// 聊天流正文可用宽度（右侧留出一列给滚动条）
 pub fn chat_text_width(area: Rect) -> usize {
     (area.width as usize).saturating_sub(1)
+}
+
+/// 用户消息引用块的底色与左侧色条颜色
+const USER_BLOCK_BG: Color = Color::Rgb(28, 32, 40);
+const USER_BLOCK_BAR: Color = Color::Rgb(96, 149, 239);
+
+/// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
+fn user_block_row(spans: Vec<Span<'static>>, max_width: usize) -> Line<'static> {
+    let bar_style = Style::default().fg(USER_BLOCK_BAR).bg(USER_BLOCK_BG);
+    let base = Style::default().bg(USER_BLOCK_BG);
+    let mut width = 1;
+    let mut out = vec![Span::styled("▌", bar_style)];
+    for span in spans {
+        width += span.content.width();
+        out.push(span);
+    }
+    if max_width > width {
+        out.push(Span::styled(" ".repeat(max_width - width), base));
+    }
+    Line::from(out)
+}
+
+/// 以左侧色条引用块渲染用户消息（含上下留白行），与模型输出形成区块级区分
+fn push_user_block(lines: &mut Vec<Line<'static>>, text: &str, max_width: usize) {
+    let text_style = Style::default()
+        .fg(Color::Rgb(226, 229, 234))
+        .bg(USER_BLOCK_BG);
+    let inner_width = max_width.saturating_sub(3);
+    lines.push(user_block_row(Vec::new(), max_width));
+    for l in text.lines() {
+        let spans = vec![Span::styled(l.to_string(), text_style)];
+        for line in wrap_spans_to_lines(&spans, inner_width, "   ", "   ") {
+            let mut spans = line.spans;
+            if let Some(indent) = spans.first_mut() {
+                indent.style = text_style;
+            }
+            lines.push(user_block_row(spans, max_width));
+        }
+    }
+    lines.push(user_block_row(Vec::new(), max_width));
+}
+
+/// 从 URL 提取展示用域名（去协议、端口与 www. 前缀）
+fn url_display_domain(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = host.split(':').next().unwrap_or(host);
+    host.strip_prefix("www.").unwrap_or(host)
+}
+
+/// Collect cited URLs in first-appearance order within a response.
+fn search_citations<'a>(
+    parts: impl IntoIterator<Item = &'a ContentPart>,
+) -> Vec<(&'a str, &'a str)> {
+    let mut seen = HashSet::new();
+    let mut citations = Vec::new();
+    for part in parts {
+        if let ContentPart::Text { annotations, .. } = part {
+            for a in annotations {
+                if let Annotation::UrlCitation { url, title, .. } = a
+                    && seen.insert(url.as_str())
+                {
+                    citations.push((url.as_str(), title.as_str()));
+                }
+            }
+        }
+    }
+    citations
+}
+
+fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
+    match &call.action {
+        WebSearchAction::Search => call.sources.iter().any(|source| source.url == url),
+        WebSearchAction::OpenPage { url: action_url }
+        | WebSearchAction::FindInPage {
+            url: action_url, ..
+        } => action_url == url,
+    }
 }
 
 /// 构建对话流的 Ratatui 文本行列表（支持 Markdown 渲染、CJK 安全折行与多级缩进）
@@ -53,32 +135,47 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
         .session
         .turns
         .iter()
-        .flat_map(|turn| {
-            turn.messages
-                .iter()
-                .flat_map(move |message| message.parts.iter().map(move |part| (turn.role, part)))
+        .map(|turn| {
+            (
+                turn.role,
+                turn.messages
+                    .iter()
+                    .flat_map(|m| m.parts.iter())
+                    .collect::<Vec<_>>(),
+            )
         })
-        .chain(app.view.draft.iter().map(|part| (Role::Assistant, part)));
-    for (role, part) in parts {
+        .chain(std::iter::once((
+            Role::Assistant,
+            app.view.draft.iter().collect(),
+        )))
+        .flat_map(|(role, parts)| {
+            let calls = parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::WebSearchCall(call) => Some(call),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let summary = Arc::new((calls, search_citations(parts.iter().copied())));
+            parts
+                .into_iter()
+                .map(move |part| (role, part, summary.clone()))
+        });
+    let mut prev_reasoning = false;
+    for (role, part, summary) in parts {
         match (role, part) {
             (Role::User, ContentPart::Text { text, .. }) => {
+                prev_reasoning = false;
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "You",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                for l in text.lines() {
-                    let spans = vec![Span::styled(
-                        l.to_string(),
-                        Style::default().fg(Color::White),
-                    )];
-                    let wrapped = wrap_spans_to_lines(&spans, max_width, "   ", "   ");
-                    lines.extend(wrapped);
-                }
+                push_user_block(&mut lines, text, max_width);
             }
             (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
+                // 连续思考段归为一段：仅组首插入空行分隔，组内紧密堆叠
+                let group_start = !prev_reasoning;
+                prev_reasoning = true;
+                if group_start {
+                    lines.push(Line::from(""));
+                }
                 // 各思考段落（协议层以空行分隔）独立渲染 markdown 并统一弱化为灰色斜体
                 // （Style::patch 语义下 fg 覆盖、修饰符并集，加粗等强调得以保留）
                 let body_style = Style::default()
@@ -87,30 +184,28 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 let prefix_style = Style::default()
                     .fg(Color::Rgb(140, 140, 140))
                     .add_modifier(Modifier::BOLD | Modifier::ITALIC);
-                // "+ Thought: " 前缀占 11 列，渲染时预留
-                let paragraphs: Vec<Vec<Line<'static>>> = content
-                    .split("\n\n")
-                    .filter(|p| !p.trim().is_empty())
-                    .map(|p| {
-                        let mut ls = render_markdown(p, max_width.saturating_sub(11));
-                        for line in &mut ls {
-                            for span in &mut line.spans {
-                                span.style = span.style.patch(body_style);
-                            }
-                        }
-                        ls
-                    })
-                    .collect();
 
-                lines.push(Line::from(""));
                 if app.thinking_concise {
-                    let mut spans = vec![Span::styled("Thinking: ", prefix_style)];
-                    match paragraphs.first().and_then(|ls| ls.first()) {
-                        Some(first) => spans.extend(first.spans.iter().cloned()),
-                        None => spans.push(Span::styled("Thinking...", body_style)),
+                    // hidden 模式：整组合并为单行标记，段落内容隐藏
+                    if group_start {
+                        lines.push(Line::from(vec![Span::styled("+ Thought:", prefix_style)]));
                     }
-                    lines.push(Line::from(spans));
                 } else {
+                    // "+ Thought: " 前缀占 11 列，渲染时预留
+                    let paragraphs: Vec<Vec<Line<'static>>> = content
+                        .split("\n\n")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(|p| {
+                            let mut ls = render_markdown(p, max_width.saturating_sub(11));
+                            for line in &mut ls {
+                                for span in &mut line.spans {
+                                    span.style = span.style.patch(body_style);
+                                }
+                            }
+                            ls
+                        })
+                        .collect();
+
                     // OpenCode 风格：每个思考段落一条独立的 `+ Thought:` 行
                     let mut any = false;
                     for para in &paragraphs {
@@ -129,6 +224,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
+                prev_reasoning = false;
                 let name = &call.name;
                 let args = &call.arguments;
                 lines.push(Line::from(""));
@@ -146,6 +242,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 lines.extend(wrapped);
             }
             (Role::Tool, ContentPart::ToolResult(result)) => {
+                prev_reasoning = false;
                 let is_error = &result.is_error;
                 let result = &result.content;
                 let status_color = if *is_error { Color::Red } else { Color::Green };
@@ -181,11 +278,65 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     ]));
                 }
             }
+            (Role::Assistant, ContentPart::WebSearchCall(call)) => {
+                prev_reasoning = false;
+                let (label, detail) = match &call.action {
+                    WebSearchAction::Search => (
+                        "[web_search]",
+                        format!("{} ({} sources)", call.query, call.sources.len()),
+                    ),
+                    WebSearchAction::OpenPage { url } => ("[web_open]", url.clone()),
+                    WebSearchAction::FindInPage { url, pattern } => {
+                        ("[web_find]", format!("{url} / {pattern}"))
+                    }
+                };
+                lines.push(Line::from(""));
+                let spans = vec![
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
+                ];
+                let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
+                lines.extend(wrapped);
+
+                // Citation titles on the left, domains aligned to the right.
+                for (url, title) in &summary.1 {
+                    if !call_covers_url(call, url) {
+                        continue;
+                    }
+                    let domain = url_display_domain(url);
+                    let title = title.trim();
+                    let title = if title.is_empty() || title == *url {
+                        domain
+                    } else {
+                        title
+                    };
+                    let domain = truncate(domain, max_width.saturating_sub(4) / 2);
+                    let right_w = domain.width();
+                    let title_max = max_width.saturating_sub(3 + right_w + 1);
+                    let title = truncate(title, title_max);
+                    let pad = title_max - title.width() + 1;
+                    lines.push(Line::from(vec![
+                        Span::raw("   "),
+                        Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
+                        Span::raw(" ".repeat(pad)),
+                        Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
+                    ]));
+                }
+            }
             (Role::Assistant, ContentPart::Text { text, annotations }) => {
+                prev_reasoning = false;
                 let citations: Vec<_> = annotations
                     .iter()
                     .filter_map(|a| {
-                        if let Annotation::UrlCitation { title, url, .. } = a {
+                        if let Annotation::UrlCitation { title, url, .. } = a
+                            && !summary.0.iter().any(|call| call_covers_url(call, url))
+                        {
                             Some((title, url))
                         } else {
                             None
@@ -193,15 +344,10 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     })
                     .collect();
                 lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "Assistant",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )]));
                 let md_lines = render_markdown(text, max_width);
                 lines.extend(md_lines);
 
+                // Citations not covered by a call remain below the text.
                 if !citations.is_empty() {
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
@@ -228,6 +374,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     }
                 }
             }
+            // WebSearchCall 等未渲染的 part 不打断思考分组的连续性
             _ => {}
         }
     }
@@ -435,6 +582,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::WebSearchSource;
     use crate::ui::app::TextCoord;
 
     async fn create_test_app() -> App {
@@ -456,8 +604,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_thinking_renders_one_thought_line_per_part() {
+    async fn test_thinking_grouping_and_concise_modes() {
         let mut app = create_test_app().await;
+        app.thinking_concise = false;
         // 模拟协议层输出：各 summary part 带原始 markdown 标记，以空行（段落边界）分隔
         app.add_part(
             Role::Assistant,
@@ -489,16 +638,341 @@ mod tests {
         });
         assert!(bold_in_first);
 
-        // concise 模式：单行预览展示首个思考段落，同样不含 markdown 标记
-        app.thinking_concise = true;
+        // 追加搜索调用与第二个思考 part：搜索块渲染为分组边界，前后思考各自成段。
+        // 搜索调用、思考与带注脚的正文同属一轮，来源由同轮注脚提供。
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+            Role::Assistant,
+            vec![
+                crate::model::Message::new(vec![ContentPart::WebSearchCall(
+                    WebSearchCall::completed(
+                        "ws_1",
+                        "深圳天气",
+                        vec![WebSearchSource::new(
+                            "https://weather.cma.cn/web/weather/59493.html",
+                            "Uncited candidate",
+                            None,
+                        )],
+                    ),
+                )]),
+                crate::model::Message::new(vec![ContentPart::reasoning(
+                    "**Cross-checking sources**".to_string(),
+                    None,
+                )]),
+                crate::model::Message::new(vec![ContentPart::Text {
+                    text: "今天深圳多云转晴。".to_string(),
+                    annotations: vec![Annotation::UrlCitation {
+                        title: "深圳市气象局".into(),
+                        url: "https://weather.cma.cn/web/weather/59493.html".into(),
+                        start_index: 0,
+                        end_index: 1,
+                    }],
+                }]),
+            ],
+        ));
         let lines = build_chat_lines(&app, 80);
+        let header_idx: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "+ Thought: "))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(header_idx.len(), 3);
+
+        // 同组思考行之间无空行
+        for line in &lines[header_idx[0] + 1..header_idx[1]] {
+            assert!(
+                !line.spans.is_empty() && line.spans.iter().any(|s| !s.content.trim().is_empty())
+            );
+        }
+        // 搜索块出现在两组思考之间，来源行左侧为注脚补齐的网页标题、域名右对齐至可用宽度
+        let search_idx = lines
+            .iter()
+            .position(|l| l.spans.iter().any(|s| s.content == "[web_search]"))
+            .expect("web search block rendered");
+        assert!(search_idx > header_idx[1] && search_idx < header_idx[2]);
+        let source_row = &lines[search_idx + 1];
+        assert!(
+            source_row
+                .spans
+                .iter()
+                .any(|s| s.content.contains("深圳市气象局"))
+        );
+        let last = source_row.spans.last().unwrap();
+        assert_eq!(last.content, "weather.cma.cn");
+        let row_width: usize = source_row.spans.iter().map(|s| s.content.width()).sum();
+        assert_eq!(row_width, 80);
+
+        // 轮次内已有搜索调用：正文后的末尾来源汇总不再渲染
         let all_text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(all_text.contains("Thinking: "));
-        assert!(all_text.contains("Requesting Shenzhen weather forecast"));
+        assert!(all_text.contains("今天深圳多云转晴"));
+        assert!(all_text.contains("深圳天气 (1 sources)"));
+        assert!(!all_text.contains("candidate"));
+        assert!(!all_text.contains("Sources / Citations"));
+
+        // concise 模式：搜索块两侧的思考各自合并为单行标记，段落内容隐藏
+        app.thinking_concise = true;
+        let lines = build_chat_lines(&app, 80);
+        let headers = lines
+            .iter()
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought:"))
+            .count();
+        assert_eq!(headers, 2);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(!all_text.contains("Requesting Shenzhen weather forecast"));
         assert!(!all_text.contains("**"));
+    }
+
+    #[tokio::test]
+    async fn test_separate_search_calls_track_draft_citations_and_turn_boundaries() {
+        let mut app = create_test_app().await;
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft = vec![
+            ContentPart::text("Before search"),
+            ContentPart::WebSearchCall(WebSearchCall::completed(
+                "ws_1",
+                "query A; query A2",
+                vec![
+                    WebSearchSource::new(
+                        "https://candidate.example/page",
+                        "Uncited candidate",
+                        None,
+                    ),
+                    WebSearchSource::new(
+                        "https://www.cited.example/page",
+                        "Source title must not appear",
+                        None,
+                    ),
+                ],
+            )),
+            ContentPart::text("Between searches"),
+            ContentPart::WebSearchCall(WebSearchCall::completed(
+                "ws_2",
+                "query B",
+                vec![
+                    WebSearchSource::new("https://www.cited.example/page", "Ignored", None),
+                    WebSearchSource::new("https://other.example/page", "Ignored", None),
+                ],
+            )),
+        ];
+        app.refresh_chat_lines(100);
+        let text = |lines: &[Line<'_>]| -> String {
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+                .collect()
+        };
+        let initial = text(&app.chat.lines);
+        assert_eq!(initial.matches("[web_search]").count(), 2);
+        assert!(initial.contains("[web_search] query A; query A2 (2 sources)"));
+        assert!(initial.contains("[web_search] query B (2 sources)"));
+        assert!(!initial.contains("candidate"));
+        assert!(initial.find("Before search").unwrap() < initial.find("[web_search]").unwrap());
+        assert!(initial.find("[web_search]").unwrap() < initial.find("Between searches").unwrap());
+        assert!(initial.find("Between searches").unwrap() < initial.find("query B").unwrap());
+
+        let citation = Annotation::UrlCitation {
+            url: "https://www.cited.example/page".into(),
+            title: "Provided title".into(),
+            start_index: 0,
+            end_index: 1,
+        };
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft.push(ContentPart::Text {
+            text: "Answer".into(),
+            annotations: vec![citation.clone()],
+        });
+        app.refresh_chat_lines(100);
+        let updated = text(&app.chat.lines);
+        assert!(updated.contains("query A; query A2 (2 sources)"));
+        assert!(updated.contains("query B (2 sources)"));
+        assert_eq!(updated.matches("Provided title").count(), 2);
+        assert!(updated.contains("cited.example"));
+        assert!(!updated.contains("candidate"));
+
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft.push(ContentPart::Text {
+            text: "More".into(),
+            annotations: vec![
+                citation,
+                Annotation::UrlCitation {
+                    url: "https://other.example/page".into(),
+                    title: String::new(),
+                    start_index: 0,
+                    end_index: 1,
+                },
+                Annotation::UrlCitation {
+                    url: "https://unmatched.example/page".into(),
+                    title: "Unmatched reference".into(),
+                    start_index: 0,
+                    end_index: 1,
+                },
+            ],
+        });
+        app.refresh_chat_lines(100);
+        let rendered = text(&app.chat.lines);
+        assert_eq!(rendered.matches("[web_search]").count(), 2);
+        assert!(rendered.contains("query A; query A2 (2 sources)"));
+        assert!(rendered.contains("query B (2 sources)"));
+        assert_eq!(rendered.matches("Provided title").count(), 2);
+        let first_group = rendered.split("Between searches").next().unwrap();
+        assert!(first_group.contains("Provided title"));
+        assert!(!first_group.contains("other.example"));
+        let second_group = rendered.split("query B (2 sources)").nth(1).unwrap();
+        assert!(second_group.contains("Provided title"));
+        assert!(second_group.contains("other.example"));
+        assert!(!rendered.contains("Source title must not appear"));
+        assert!(!rendered.contains("Ignored"));
+        let listing = rendered.split("Sources / Citations:").nth(1).unwrap();
+        assert!(listing.contains("Unmatched reference - https://unmatched.example/page"));
+        assert!(!listing.contains("Provided title"));
+        assert!(!listing.contains("other.example"));
+
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        let messages = std::mem::take(&mut view.draft)
+            .into_iter()
+            .map(|part| crate::model::Message::new(vec![part]))
+            .collect();
+        Arc::make_mut(&mut view.session)
+            .append_turn(crate::model::Turn::new(Role::Assistant, messages));
+        app.refresh_chat_lines(100);
+        assert_eq!(text(&app.chat.lines), rendered);
+
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft
+            .push(ContentPart::WebSearchCall(WebSearchCall::completed(
+                "ws_3",
+                "query C",
+                vec![WebSearchSource::new(
+                    "https://www.cited.example/page",
+                    "Ignored",
+                    None,
+                )],
+            )));
+        app.refresh_chat_lines(100);
+        let separate = text(&app.chat.lines);
+        assert_eq!(separate.matches("[web_search]").count(), 3);
+        assert!(separate.contains("query A; query A2 (2 sources)"));
+        assert!(separate.contains("query C (1 sources)"));
+        assert_eq!(separate.matches("Provided title").count(), 2);
+        assert!(
+            !separate
+                .split("query C (1 sources)")
+                .nth(1)
+                .unwrap()
+                .contains("Provided title")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open_and_find_match_action_urls() {
+        let mut app = create_test_app().await;
+        let url = "https://www.example.com/page";
+        let mut open = WebSearchCall::completed("open", "unused query", vec![]);
+        open.action = WebSearchAction::OpenPage { url: url.into() };
+        let mut find = WebSearchCall::completed("find", "unused query", vec![]);
+        find.action = WebSearchAction::FindInPage {
+            url: url.into(),
+            pattern: "matching words".into(),
+        };
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft = vec![
+            ContentPart::WebSearchCall(open),
+            ContentPart::text("Between actions"),
+            ContentPart::WebSearchCall(find),
+            ContentPart::Text {
+                text: "Answer".into(),
+                annotations: vec![
+                    Annotation::UrlCitation {
+                        url: url.into(),
+                        title: "Annotation title".into(),
+                        start_index: 0,
+                        end_index: 1,
+                    },
+                    Annotation::UrlCitation {
+                        url: "https://unmatched.example/page".into(),
+                        title: "Unmatched title".into(),
+                        start_index: 0,
+                        end_index: 1,
+                    },
+                ],
+            },
+        ];
+        let lines = build_chat_lines(&app, 100);
+        let text: String = lines.iter().map(|line| line.to_string()).collect();
+        assert!(text.contains(&format!("[web_open] {url}")));
+        assert!(text.contains(&format!("[web_find] {url} / matching words")));
+        assert!(!text.contains("sources)"));
+        assert!(!text.contains("unused query"));
+        assert_eq!(text.matches("Annotation title").count(), 2);
+        let open_group = text.split("Between actions").next().unwrap();
+        assert!(open_group.contains("Annotation title"));
+        assert!(!open_group.contains("Unmatched title"));
+        let find_group = text
+            .split("[web_find]")
+            .nth(1)
+            .unwrap()
+            .split("Answer")
+            .next()
+            .unwrap();
+        assert!(find_group.contains("Annotation title"));
+        assert!(!find_group.contains("Unmatched title"));
+        let listing = text.split("Sources / Citations:").nth(1).unwrap();
+        assert!(listing.contains("Unmatched title"));
+        assert!(!listing.contains("Annotation title"));
+        for width in [20, 30] {
+            let narrow = build_chat_lines(&app, width);
+            let source_rows: Vec<_> = narrow
+                .iter()
+                .filter(|line| {
+                    line.spans.len() == 4
+                        && line.spans.last().unwrap().style.fg == Some(Color::DarkGray)
+                })
+                .collect();
+            assert_eq!(source_rows.len(), 2);
+            for line in source_rows {
+                assert_eq!(line.width(), width);
+            }
+        }
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        let parts = std::mem::take(&mut view.draft);
+        Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+            Role::Assistant,
+            vec![crate::model::Message::new(parts)],
+        ));
+        assert_eq!(build_chat_lines(&app, 100), lines);
+    }
+
+    #[tokio::test]
+    async fn test_user_message_block_rendering() {
+        let mut app = create_test_app().await;
+        app.add_part(Role::User, ContentPart::text("hello"));
+        let lines = build_chat_lines(&app, 80);
+        let block_rows: Vec<_> = lines
+            .iter()
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "▌"))
+            .collect();
+        // 上下留白行与内容行均以色条起头，整行填充块底色至可用宽度
+        assert!(block_rows.len() >= 3);
+        for row in &block_rows {
+            let width: usize = row.spans.iter().map(|s| s.content.width()).sum();
+            assert_eq!(width, 80);
+            assert!(row.spans.iter().any(|s| s.style.bg == Some(USER_BLOCK_BG)));
+        }
     }
 
     #[tokio::test]
@@ -532,12 +1006,6 @@ fn main() {
 
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
-
-        // 检查 Assistant 标头存在
-        let has_assistant_header = lines
-            .iter()
-            .any(|l| l.spans.iter().any(|s| s.content.contains("Assistant")));
-        assert!(has_assistant_header);
 
         // 检查渲染出的 Markdown 内容
         let all_text: String = lines
@@ -614,10 +1082,6 @@ def stream_test():
 
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
-        let has_assistant = lines
-            .iter()
-            .any(|l| l.spans.iter().any(|s| s.content.contains("Assistant")));
-        assert!(has_assistant);
     }
 
     #[tokio::test]

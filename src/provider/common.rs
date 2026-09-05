@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 
 use super::ProviderError;
 use crate::event::AgentEvent;
+use crate::model::{Annotation, WebSearchCall};
 
 /// 增量事件转发器：统一封装 `Option<Sender>` 的转发样板。
 /// 全部走 `send().await` 以保留背压语义（通道满时等待而非丢弃事件）。
@@ -26,20 +27,31 @@ impl EventForwarder {
         }
     }
 
-    pub async fn text(&self, delta: &str) {
+    pub async fn text(&self, text_id: &str, delta: &str) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(AgentEvent::Text(delta.to_string())).await;
+            let _ = tx
+                .send(AgentEvent::Text {
+                    text_id: text_id.to_string(),
+                    delta: delta.to_string(),
+                })
+                .await;
         }
     }
 
-    pub async fn citation(&self, title: &str, url: &str) {
+    pub async fn citation(&self, text_id: &str, annotation: Annotation) {
         if let Some(tx) = &self.tx {
             let _ = tx
                 .send(AgentEvent::Citation {
-                    title: title.to_string(),
-                    url: url.to_string(),
+                    text_id: text_id.to_string(),
+                    annotation,
                 })
                 .await;
+        }
+    }
+
+    pub async fn web_search_call(&self, call: WebSearchCall) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(AgentEvent::WebSearchCall(call)).await;
         }
     }
 }
