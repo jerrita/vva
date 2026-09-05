@@ -138,6 +138,11 @@
           "cost": { "input": 0.15, "output": 0.5, "cache_read": 0.03 }
         }
       }
+    },
+    // GLM Coding Plan：只需 api_key，自动配置 glm-5.3 / glm-5.3-flash
+    // Responses 端点 https://open.bigmodel.cn/api/v1，原生 web_search
+    "glm-coding-plan": {
+      "api_key": "${ZAI_API_KEY}"
     }
   }
 }

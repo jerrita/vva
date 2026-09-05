@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// GLM Coding Plan 供应商节点 id；配置中仅填 `api_key` 时按此 id 识别并自动补全。
+pub const GLM_CODING_PLAN_PROVIDER_ID: &str = "glm-coding-plan";
+/// Codex / Responses 原生端点，支持 `web_search`。
+pub const GLM_CODING_PLAN_BASE_URL: &str = "https://open.bigmodel.cn/api/v1";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -9,6 +14,20 @@ pub enum ProviderType {
     Response,
     Anthropic,
     Gemini,
+    /// 智谱 GLM Coding Plan：底层走 OpenAI Responses 协议
+    #[serde(rename = "glm-coding-plan")]
+    GlmCodingPlan,
+}
+
+impl ProviderType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Response => "response",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::GlmCodingPlan => "glm-coding-plan",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -49,8 +68,86 @@ impl AppConfig {
             }
         }
 
+        self.hydrate_builtin_providers();
         self
     }
+
+    /// 为内置供应商预设补全 type / base_url / 模型清单。已显式声明的字段与模型不被覆盖。
+    pub fn hydrate_builtin_providers(&mut self) {
+        for (id, cfg) in self.providers.iter_mut() {
+            if !is_glm_coding_plan_provider(id, cfg.provider_type) {
+                continue;
+            }
+            cfg.provider_type = Some(ProviderType::GlmCodingPlan);
+            if cfg.base_url.is_empty() {
+                cfg.base_url = GLM_CODING_PLAN_BASE_URL.to_string();
+            }
+            for (model_id, model_cfg) in glm_coding_plan_builtin_models() {
+                cfg.models.entry(model_id).or_insert(model_cfg);
+            }
+        }
+    }
+}
+
+fn is_glm_coding_plan_provider(id: &str, provider_type: Option<ProviderType>) -> bool {
+    match provider_type {
+        Some(ProviderType::GlmCodingPlan) => true,
+        Some(ProviderType::Response) | None => id == GLM_CODING_PLAN_PROVIDER_ID,
+        Some(_) => false,
+    }
+}
+
+fn glm_coding_plan_builtin_models() -> HashMap<String, ModelConfig> {
+    let mut models = HashMap::new();
+    models.insert(
+        "glm-5.3".into(),
+        ModelConfig {
+            name: "GLM 5.3".into(),
+            model_type_override: None,
+            modalities: Some(ModalitiesConfig {
+                input: vec!["text".into()],
+                output: Vec::new(),
+            }),
+            reasoning: true,
+            limit: Some(ModelLimitConfig {
+                context: 1_000_000,
+                output: 128_000,
+            }),
+            variants: Some(vec!["low".into(), "high".into(), "max".into()]),
+            cost: Some(ModelCostConfig {
+                input: 1.4,
+                output: 4.4,
+                cache_read: Some(0.26),
+                cache_write: None,
+                context_over_200k: None,
+            }),
+        },
+    );
+    models.insert(
+        "glm-5.3-flash".into(),
+        ModelConfig {
+            name: "GLM 5.3 Flash".into(),
+            model_type_override: None,
+            modalities: Some(ModalitiesConfig {
+                input: vec!["text".into(), "image".into(), "video".into(), "pdf".into()],
+                output: Vec::new(),
+            }),
+            reasoning: true,
+            limit: Some(ModelLimitConfig {
+                context: 1_000_000,
+                output: 128_000,
+            }),
+            variants: Some(vec!["low".into(), "high".into(), "max".into()]),
+            cost: Some(ModelCostConfig {
+                input: 0.15,
+                output: 0.5,
+                cache_read: Some(0.03),
+                cache_write: None,
+                context_over_200k: None,
+            }),
+        },
+    );
+    models
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

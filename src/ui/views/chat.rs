@@ -418,11 +418,7 @@ mod tests {
         let lines = build_chat_lines(&app, 80);
         let thought_lines: Vec<_> = lines
             .iter()
-            .filter(|l| {
-                l.spans
-                    .first()
-                    .is_some_and(|s| s.content == "+ Thought: ")
-            })
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought: "))
             .collect();
         assert_eq!(thought_lines.len(), 2);
 
@@ -434,10 +430,9 @@ mod tests {
         assert!(all_text.contains("Requesting Shenzhen weather forecast"));
         assert!(all_text.contains("Drafting cautious forecast"));
         assert!(!all_text.contains("**"));
-        let bold_in_first = thought_lines[0]
-            .spans
-            .iter()
-            .any(|s| s.content.contains("Requesting") && s.style.add_modifier.contains(Modifier::BOLD));
+        let bold_in_first = thought_lines[0].spans.iter().any(|s| {
+            s.content.contains("Requesting") && s.style.add_modifier.contains(Modifier::BOLD)
+        });
         assert!(bold_in_first);
 
         // concise 模式：单行预览展示首个思考段落，同样不含 markdown 标记

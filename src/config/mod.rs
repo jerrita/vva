@@ -4,7 +4,10 @@ pub mod resolver;
 
 use std::path::{Path, PathBuf};
 
-pub use model::{AppConfig, GlobalSettings, ModelConfig, ProviderConfig, ProviderType};
+pub use model::{
+    AppConfig, GLM_CODING_PLAN_BASE_URL, GLM_CODING_PLAN_PROVIDER_ID, GlobalSettings, ModelConfig,
+    ProviderConfig, ProviderType,
+};
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::{ResolvedModel, ResolvedProviderInfo, resolve_provider};
 
@@ -295,6 +298,23 @@ mod tests {
             .expect("resolve luna");
         assert_eq!(resolved_luna.selected_variant.as_deref(), Some("medium"));
         assert_eq!(resolved_luna.provider.name(), "response");
+
+        // glm-coding-plan 仅填 api_key 时补全端点与内置模型
+        let glm = config
+            .providers
+            .get("glm-coding-plan")
+            .expect("glm-coding-plan exists");
+        assert_eq!(glm.base_url, GLM_CODING_PLAN_BASE_URL);
+        let glm_resolved = config
+            .resolve_model("glm-coding-plan/glm-5.3-flash", None)
+            .expect("resolve glm-5.3-flash");
+        assert_eq!(
+            glm_resolved
+                .provider
+                .endpoint_url("glm-5.3-flash", true)
+                .unwrap(),
+            format!("{GLM_CODING_PLAN_BASE_URL}/responses")
+        );
     }
 
     #[test]

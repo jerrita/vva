@@ -88,7 +88,7 @@ impl App {
                         provider_id: p_id.clone(),
                         model_id: m_id.clone(),
                         display_name: m_cfg.name.clone(),
-                        provider_type: format!("{:?}", effective_type).to_lowercase(),
+                        provider_type: effective_type.as_str().to_string(),
                         reasoning: m_cfg.reasoning,
                         context_limit: m_cfg.limit.as_ref().map(|l| l.context),
                         variants: m_cfg.variants.clone(),

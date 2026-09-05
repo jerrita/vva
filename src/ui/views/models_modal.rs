@@ -160,7 +160,7 @@ pub fn render_models_modal(app: &App, frame: &mut Frame, area: Rect) {
             row_style
         } else {
             Style::default().fg(match item.provider_type.as_str() {
-                "response" => Color::Green,
+                "response" | "glm-coding-plan" => Color::Green,
                 "anthropic" => Color::Magenta,
                 "gemini" => Color::Blue,
                 _ => Color::DarkGray,

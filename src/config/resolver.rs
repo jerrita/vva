@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::model::{AppConfig, ModelConfig, ProviderType};
+use super::model::{AppConfig, GLM_CODING_PLAN_BASE_URL, ModelConfig, ProviderType};
 use super::parser::ConfigError;
 use crate::provider::Provider;
 use crate::provider::anthropic::AnthropicProvider;
@@ -81,9 +81,11 @@ impl AppConfig {
                 None
             }
         } else if let Some(valid_vars) = &model_cfg.variants {
-            // 默认优先选择 medium 或首选档位
+            // 默认优先 medium；无 medium 时取 max（GLM 等官方默认档）
             if valid_vars.iter().any(|v| v == "medium") {
                 Some("medium".to_string())
+            } else if valid_vars.iter().any(|v| v == "max") {
+                Some("max".to_string())
             } else {
                 valid_vars.first().cloned()
             }
@@ -100,9 +102,14 @@ impl AppConfig {
         let api_key = provider_cfg.api_key.trim();
 
         let provider_inst: Arc<dyn Provider> = match effective_type {
-            ProviderType::Response => {
+            ProviderType::Response | ProviderType::GlmCodingPlan => {
+                let default_url = if effective_type == ProviderType::GlmCodingPlan {
+                    GLM_CODING_PLAN_BASE_URL
+                } else {
+                    "https://api.openai.com/v1"
+                };
                 let url = if base_url.is_empty() {
-                    "https://api.openai.com/v1".to_string()
+                    default_url.to_string()
                 } else if base_url.ends_with("/v1") || base_url.ends_with("/responses") {
                     base_url.to_string()
                 } else {

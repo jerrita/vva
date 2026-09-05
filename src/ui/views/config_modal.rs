@@ -70,8 +70,7 @@ pub fn render_config_modal(app: &App, frame: &mut Frame, area: Rect) {
         Span::styled("Action", Style::default().fg(Color::DarkGray)),
     ]));
 
-    let (start_idx, visible) =
-        visible_window(state.selected_index, list_area.height as usize);
+    let (start_idx, visible) = visible_window(state.selected_index, list_area.height as usize);
 
     for (i, item) in state
         .filtered_items

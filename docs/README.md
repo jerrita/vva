@@ -44,6 +44,7 @@
    - 系统环境变量插值展开 (`${VAR}`)
    - `{provider_id}/{model_id}` 模型寻址与协议覆写机制
    - 推理强度档位（variants）校验与 URL 端点自动规范化
+   - 内置供应商预设（`glm-coding-plan` 仅填 api_key）
 
 6. **[现代化终端用户界面设计 (ui.md)](ui.md)**
    - 单例 `SessionManager` 与并发后台 Agent 运行机制

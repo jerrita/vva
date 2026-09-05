@@ -37,9 +37,12 @@
   - 上传增量用户消息与未结算的工具返回，减少网络往返负载与 Token 消耗。
 
 ### 2.2 原生 Web Search 与注脚
-- 原生启用 `"tools": [{ "type": "web_search_preview" }]`；
+- 原生启用 `"tools": [{ "type": "web_search" }]`；
 - 流式输出中解析 `response.web_search_call` 事件，记录查询状态；
 - 返回的文本如果携带官方的 `url_citation` 注脚，直接提取 `url`, `title`, `start_index`, `end_index` 并封装入 `Annotation::UrlCitation`。
+
+### 2.3 GLM Coding Plan
+配置 `type: "glm-coding-plan"` 或供应商 id `glm-coding-plan` 时，路由到同一 Responses 适配器，默认端点 `https://open.bigmodel.cn/api/v1`（官方 Codex Responses），以使用原生联网搜索。
 
 ---
 

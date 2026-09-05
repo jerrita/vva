@@ -114,7 +114,8 @@ pub fn interpolate_env_vars(input: &str) -> String {
 pub fn parse_config_str(input: &str) -> Result<AppConfig, ConfigError> {
     let stripped = strip_jsonc_comments(input);
     let interpolated = interpolate_env_vars(&stripped);
-    let config: AppConfig = serde_json::from_str(&interpolated)?;
+    let mut config: AppConfig = serde_json::from_str(&interpolated)?;
+    config.hydrate_builtin_providers();
     Ok(config)
 }
 

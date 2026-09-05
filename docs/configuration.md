@@ -61,3 +61,32 @@ vva 支持分层配置加载机制：
 ### 3.4 URL 端点规范化
 - 根据供应商类型自动规范化 URL 端点（自动去除重复斜杠，自动适配 `/v1` 或 `/v1beta`）；
 - 避免因用户在 `base_url` 结尾多写或少写 `/` 导致 HTTP 404。
+
+### 3.5 内置供应商预设：`glm-coding-plan`
+GLM Coding Plan 只需填写 `api_key`。解析时按供应商 id `glm-coding-plan` 或 `type: "glm-coding-plan"` 识别，并自动补全：
+- 协议：OpenAI Responses（底层复用 `ResponseProvider`）
+- 端点：`https://open.bigmodel.cn/api/v1`（Codex Responses，原生 `web_search`）
+- 模型：`glm-5.3`、`glm-5.3-flash`（已声明的同名模型不被覆盖）
+
+```jsonc
+{
+  "providers": {
+    "glm-coding-plan": {
+      "api_key": "${ZAI_API_KEY}"
+    }
+  }
+}
+```
+
+自定义节点 id 时显式声明 `type`：
+
+```jsonc
+{
+  "providers": {
+    "zhipu": {
+      "type": "glm-coding-plan",
+      "api_key": "${ZAI_API_KEY}"
+    }
+  }
+}
+```

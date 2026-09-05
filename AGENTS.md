@@ -68,9 +68,9 @@ src/
 ├── main.rs                 # CLI 命令行入口 (vva run, vva session list/inspect)
 ├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
 │   ├── mod.rs              # load_config 自动寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
-│   ├── model.rs            # AppConfig, ProviderConfig (provider_type 为 Option，合并时仅显式声明才覆写), ModelConfig
+│   ├── model.rs            # AppConfig, ProviderConfig (provider_type 为 Option，合并时仅显式声明才覆写), ModelConfig；glm-coding-plan 预设补全
 │   ├── parser.rs           # strip_jsonc_comments 与 interpolate_env_vars
-│   └── resolver.rs         # resolve_model 寻址路由与 Provider 动态构造
+│   └── resolver.rs         # resolve_model 寻址路由与 Provider 动态构造（含 glm-coding-plan → Responses）
 ├── model/                  # 领域模型与强类型体系
 │   ├── mod.rs              # 模块导出与通用类型
 │   ├── meta.rs             # Response, Anthropic, Gemini 专属强类型元数据 (轮次级)
