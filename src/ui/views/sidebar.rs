@@ -47,10 +47,17 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         .and_then(|name| name.to_str())
         .unwrap_or(info.workspace);
 
-    let model_display = if info.model.is_empty() {
-        "Default".to_string()
-    } else {
-        truncate(info.model, 20)
+    // model 为 "provider/model" 规格，拆分展示；缺 provider 或为空时回退占位
+    let (provider_display, model_display) = match info.model.split_once('/') {
+        Some((provider, model)) => (truncate(provider, 18), truncate(model, 20)),
+        None => (
+            "Default".to_string(),
+            if info.model.is_empty() {
+                "Default".to_string()
+            } else {
+                truncate(info.model, 20)
+            },
+        ),
     };
 
     let (context_limit, _ratio, percent) = context_usage(&app.stats);
@@ -81,6 +88,11 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
     );
     lines[6] = label_value("Model", model_display, Style::default().fg(Color::Green));
     lines[7] = label_value(
+        "Provider",
+        provider_display,
+        Style::default().fg(Color::Cyan),
+    );
+    lines[8] = label_value(
         "Variant",
         info.variant.unwrap_or("none").to_string(),
         Style::default().fg(Color::Magenta),
@@ -150,7 +162,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(6),
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(4),
             Constraint::Length(3),
