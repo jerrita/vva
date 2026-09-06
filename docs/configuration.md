@@ -9,6 +9,8 @@ vva 支持分层配置加载机制：
 2. **全局用户配置**：用户主目录下的 `~/.vva/config.jsonc` 或 `~/.vva/config.json`；
 3. **缺省模板参考**：源码根目录下的 `config.example.jsonc`。
 
+运行时偏好写入 `~/.vva/state.json`（`last_model` / `last_variant`）。切换模型、切换会话或新建会话时更新；下次启动未传 `--model` 时沿用该选择，无法解析时使用 `settings.default`。
+
 ---
 
 ## 2. 核心解析特性

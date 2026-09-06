@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 use super::agent::{AgentEngine, capability_notices, generate_title};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, AppState};
 use crate::event::AgentEvent;
 use crate::model::{ContentPart, Message, Role, Session, Turn};
 use crate::storage::SessionStore;
@@ -141,6 +141,7 @@ pub struct SessionManager {
     store: Arc<dyn SessionStore>,
     config: Arc<AppConfig>,
     workspace: PathBuf,
+    state_path: PathBuf,
     sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
 }
 
@@ -149,11 +150,13 @@ impl SessionManager {
         store: Arc<dyn SessionStore>,
         config: AppConfig,
         workspace: impl Into<PathBuf>,
+        state_path: impl Into<PathBuf>,
     ) -> Self {
         Self {
             store,
             config: Arc::new(config),
             workspace: workspace.into(),
+            state_path: state_path.into(),
             sessions: Mutex::new(HashMap::new()),
         }
     }
@@ -185,6 +188,7 @@ impl SessionManager {
             view_tx,
             store: self.store.clone(),
             config: self.config.clone(),
+            state_path: self.state_path.clone(),
             commands: commands.downgrade(),
             dirty: false,
             cli: None,
@@ -202,18 +206,23 @@ impl SessionManager {
     }
 
     pub async fn get_or_load(&self, id: &str) -> Result<Arc<ManagedSession>, String> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get(id) {
-            return Ok(session.clone());
-        }
-        let session = self
-            .store
-            .load_session(id)
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("Session not found: {id}"))?;
-        let handle = self.spawn(session, true);
-        sessions.insert(id.into(), handle.clone());
+        let handle = {
+            let mut sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get(id) {
+                session.clone()
+            } else {
+                let session = self
+                    .store
+                    .load_session(id)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("Session not found: {id}"))?;
+                let handle = self.spawn(session, true);
+                sessions.insert(id.into(), handle.clone());
+                handle
+            }
+        };
+        self.remember_session(&handle.snapshot().session);
         Ok(handle)
     }
 
@@ -242,6 +251,7 @@ impl SessionManager {
             }
             session.id = crate::model::generate_session_id();
         }
+        self.remember_session(&session);
         let handle = self.spawn(session, false);
         self.sessions
             .lock()
@@ -264,15 +274,44 @@ impl SessionManager {
                 Ok(handle)
             }
             None => {
-                self.create_session(
-                    model.unwrap_or_else(|| self.config.settings.default.clone()),
-                    variant,
-                    None,
-                    search.unwrap_or(true),
-                )
-                .await
+                let (model, variant) = self.new_session_model(model, variant);
+                self.create_session(model, variant, None, search.unwrap_or(true))
+                    .await
             }
         }
+    }
+
+    fn new_session_model(
+        &self,
+        model: Option<String>,
+        variant: Option<String>,
+    ) -> (String, Option<String>) {
+        if let Some(model) = model {
+            return (model, variant);
+        }
+        let state = AppState::load(&self.state_path);
+        if !state.last_model.is_empty() {
+            let inherited = variant.clone().or(state.last_variant.clone());
+            if self
+                .config
+                .resolve_model(&state.last_model, inherited.as_deref())
+                .is_ok()
+            {
+                return (state.last_model, inherited);
+            }
+            if self.config.resolve_model(&state.last_model, None).is_ok() {
+                return (state.last_model, variant);
+            }
+        }
+        (self.config.settings.default.clone(), variant)
+    }
+
+    fn remember_session(&self, session: &Session) {
+        AppState::persist_selection(
+            &self.state_path,
+            &session.current_model,
+            session.current_variant.as_deref(),
+        );
     }
 
     pub async fn delete_session(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
@@ -300,6 +339,7 @@ struct SessionTask {
     view_tx: watch::Sender<Arc<SessionView>>,
     store: Arc<dyn SessionStore>,
     config: Arc<AppConfig>,
+    state_path: PathBuf,
     commands: mpsc::WeakSender<Command>,
     /// 流式增量只置脏，由 drive 的节流 tick 或结构性变化触发发布
     dirty: bool,
@@ -422,6 +462,11 @@ impl SessionTask {
                 .resolve_model(target, selected.as_deref())
                 .map_err(|e| e.to_string())?;
             session.set_model(resolved.full_spec, selected);
+            AppState::persist_selection(
+                &self.state_path,
+                &session.current_model,
+                session.current_variant.as_deref(),
+            );
         }
         if let Some(search) = search {
             session.set_web_search(search);
@@ -684,13 +729,14 @@ mod tests {
     use super::*;
     use crate::model::{Annotation, SearchStatus, WebSearchAction, WebSearchCall, WebSearchSource};
     use crate::storage::jsonl::JsonlSessionStore;
+    use std::path::Path;
 
     fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
         let workspace = std::env::temp_dir().join(format!("vva-events-{}", uuid::Uuid::new_v4()));
         let store = Arc::new(JsonlSessionStore::new(&workspace).unwrap());
         let view = SessionView {
             revision: 0,
-            session: Arc::new(Session::new(workspace, None)),
+            session: Arc::new(Session::new(workspace.clone(), None)),
             draft: Vec::new(),
             notices: Vec::new(),
             state: RunState::Idle,
@@ -703,6 +749,7 @@ mod tests {
             view_tx,
             store,
             config: Arc::new(AppConfig::default()),
+            state_path: workspace.join("state.json"),
             commands: commands.downgrade(),
             dirty: false,
             cli: None,
@@ -844,5 +891,67 @@ mod tests {
         }
         assert_eq!(initial.draft.len(), 1);
         std::fs::remove_dir_all(&task.view.session.workspace_root).unwrap();
+    }
+
+    fn last_model_manager(dir: &Path) -> SessionManager {
+        let store = Arc::new(JsonlSessionStore::new(dir).unwrap());
+        let mut config = AppConfig::default();
+        config.settings.default = "openai/default_model".into();
+        config.providers.insert(
+            "openai".into(),
+            crate::config::ProviderConfig {
+                api_key: "test".into(),
+                ..Default::default()
+            },
+        );
+        SessionManager::new(store, config, dir, dir.join("state.json"))
+    }
+
+    #[tokio::test]
+    async fn new_session_uses_last_selected_model() {
+        let dir = std::env::temp_dir().join(format!("vva-last-model-{}", uuid::Uuid::new_v4()));
+        let mgr = last_model_manager(&dir);
+        let first = mgr
+            .create_session("openai/first".into(), Some("high".into()), None, true)
+            .await
+            .unwrap();
+        first
+            .configure(Some("openai/second".into()), Some(Some("low".into())), None)
+            .await
+            .unwrap();
+
+        let restarted = last_model_manager(&dir);
+        let next = restarted
+            .open_session(None, None, None, None)
+            .await
+            .unwrap();
+        let snap = next.snapshot();
+        assert_eq!(snap.session.current_model, "openai/second");
+        assert_eq!(snap.session.current_variant.as_deref(), Some("low"));
+
+        let explicit = restarted
+            .open_session(None, Some("openai/explicit".into()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(explicit.snapshot().session.current_model, "openai/explicit");
+
+        let alpha = restarted
+            .create_session("openai/alpha".into(), None, None, true)
+            .await
+            .unwrap();
+        restarted
+            .create_session("openai/beta".into(), None, None, true)
+            .await
+            .unwrap();
+        restarted.get_or_load(&alpha.id).await.unwrap();
+        let after_switch = last_model_manager(&dir)
+            .open_session(None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            after_switch.snapshot().session.current_model,
+            "openai/alpha"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

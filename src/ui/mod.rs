@@ -55,7 +55,12 @@ pub async fn run_tui(
     default_variant: Option<String>,
     enable_web_search: Option<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let session_mgr = Arc::new(SessionManager::new(store, app_config, workspace));
+    let session_mgr = Arc::new(SessionManager::new(
+        store,
+        app_config,
+        workspace,
+        crate::config::runtime_state_path(),
+    ));
 
     let initial_session = session_mgr
         .open_session(

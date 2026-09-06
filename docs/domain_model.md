@@ -53,6 +53,7 @@ classDiagram
     - `current_variant: Option<String>`（如 `Some("high")` 或 `None`）；
     - `web_search: bool`（保持工具/函数挂载与 prompt cache 一致）；
   - 恢复或切换会话时，继承历史记录中保存的模型、推理强度与网络搜索状态；
+  - 新建会话未显式指定模型时，沿用 `~/.vva/state.json` 中上次选用的模型与推理档位，无法解析时回落到 `settings.default`；
   - 携带工作空间路径 `workspace_root: PathBuf`，支持基于工程的工作空间会话过滤。
 
 ### 1.2 Turn（轮次实体）

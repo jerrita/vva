@@ -224,6 +224,7 @@ async fn test_session_resume_preserves_web_search_state() {
         store.clone(),
         crate::ui::test_support::test_config(),
         temp_dir.clone(),
+        temp_dir.join("state.json"),
     ));
 
     // 1. 创建 Session 1 并发送首条消息落盘，初始开启 web_search

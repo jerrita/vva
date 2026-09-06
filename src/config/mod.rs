@@ -1,6 +1,7 @@
 pub mod model;
 pub mod parser;
 pub mod resolver;
+pub mod state;
 
 use std::path::{Path, PathBuf};
 
@@ -10,6 +11,7 @@ pub use model::{
 };
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::ResolvedModel;
+pub use state::{AppState, runtime_state_path};
 
 /// 无任何配置文件可用时的新会话兜底模型规格。
 /// 必须是不带 provider 前缀的裸模型名，使环境变量路由（OPENAI_API_KEY 直连）仍可解析。

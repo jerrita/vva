@@ -25,6 +25,7 @@ pub(crate) async fn create_test_app(
         store,
         config.unwrap_or_else(test_config),
         temp_dir.clone(),
+        temp_dir.join("state.json"),
     ));
     let session = session_mgr
         .create_session(model.into(), variant.map(str::to_string), None, web_search)

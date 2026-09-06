@@ -70,7 +70,8 @@ src/
 │   ├── mod.rs              # load_config 自动寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
 │   ├── model.rs            # AppConfig, ProviderConfig (provider_type 为 Option，合并时仅显式声明才覆写), ModelConfig；glm-coding-plan 预设补全
 │   ├── parser.rs           # strip_jsonc_comments 与 interpolate_env_vars
-│   └── resolver.rs         # resolve_model 只做配置解析并返回 ResolvedModel；Provider 由 ResolvedModel::create_provider 单独构造
+│   ├── resolver.rs         # resolve_model 只做配置解析并返回 ResolvedModel；Provider 由 ResolvedModel::create_provider 单独构造
+│   └── state.rs            # 运行时偏好 (~/.vva/state.json)：上次选用的模型与推理档位
 ├── model/                  # 领域模型与强类型体系
 │   ├── mod.rs              # 模块导出与通用类型
 │   ├── meta.rs             # Response, Anthropic, Gemini 专属强类型轮次元数据 (含 ResponseOutputItem 原生条目链)
