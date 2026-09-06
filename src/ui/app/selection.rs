@@ -10,7 +10,7 @@ pub struct TextCoord {
 }
 
 /// 鼠标拖拽文本选区
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextSelection {
     pub anchor: TextCoord,
     pub head: TextCoord,

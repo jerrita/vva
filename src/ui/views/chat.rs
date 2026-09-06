@@ -2,12 +2,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-};
+use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::model::{Annotation, ContentPart, Role, WebSearchAction, WebSearchCall};
@@ -23,6 +22,7 @@ pub fn chat_text_width(area: Rect) -> usize {
 /// 用户消息引用块的底色与左侧色条颜色
 const USER_BLOCK_BG: Color = Color::Rgb(28, 32, 40);
 const USER_BLOCK_BAR: Color = Color::Rgb(96, 149, 239);
+const SELECTION_STYLE: Style = Style::new().fg(Color::White).bg(Color::Rgb(60, 90, 140));
 
 /// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
 fn user_block_row(spans: Vec<Span<'static>>, max_width: usize) -> Line<'static> {
@@ -483,10 +483,6 @@ pub fn apply_selection_highlight_offset(
         return;
     }
 
-    let highlight_style = Style::default()
-        .bg(Color::Rgb(60, 90, 140))
-        .fg(Color::White);
-
     for (line_idx, line) in lines
         .iter_mut()
         .enumerate()
@@ -513,7 +509,7 @@ pub fn apply_selection_highlight_offset(
                         cur_buf.push(ch);
                     }
                     Some(sel) => {
-                        let style = if sel { highlight_style } else { span.style };
+                        let style = if sel { SELECTION_STYLE } else { span.style };
                         new_spans.push(Span::styled(std::mem::take(&mut cur_buf), style));
                         cur_buf.push(ch);
                         cur_is_selected = Some(is_selected);
@@ -529,7 +525,7 @@ pub fn apply_selection_highlight_offset(
             if let Some(sel) = cur_is_selected
                 && !cur_buf.is_empty()
             {
-                let style = if sel { highlight_style } else { span.style };
+                let style = if sel { SELECTION_STYLE } else { span.style };
                 new_spans.push(Span::styled(cur_buf, style));
             }
         }
@@ -538,10 +534,45 @@ pub fn apply_selection_highlight_offset(
     }
 }
 
+/// 在已绘制的可视行上覆盖选区底色，避免克隆行并重建 span
+fn overlay_selection(
+    buf: &mut Buffer,
+    area: Rect,
+    line_count: usize,
+    selection: &TextSelection,
+    scroll: usize,
+) {
+    if selection.is_empty() {
+        return;
+    }
+    let text_width = area.width.saturating_sub(1) as usize;
+    if text_width == 0 {
+        return;
+    }
+    for i in 0..line_count {
+        let Some((start_col, end_col)) = selection.line_column_range(scroll + i) else {
+            continue;
+        };
+        let start_col = start_col.min(text_width);
+        let end_col = end_col.min(text_width);
+        if start_col >= end_col {
+            continue;
+        }
+        buf.set_style(
+            Rect {
+                x: area.x + start_col as u16,
+                y: area.y + i as u16,
+                width: (end_col - start_col) as u16,
+                height: 1,
+            },
+            SELECTION_STYLE,
+        );
+    }
+}
+
 /// 对话与工具消息流视图（支持 Thinking 思考块、Tool 动作与结果、Assistant 最终回复 Markdown 渲染）
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     app.chat.area = area;
-    let block = Block::default().borders(Borders::NONE);
 
     app.refresh_chat_lines(chat_text_width(area));
     let total_lines = app.chat.lines.len();
@@ -551,17 +582,28 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     app.update_viewport(max_scroll, viewport_height);
 
     let scroll = app.chat_scroll();
-
-    // 只取可视窗口交给渲染：每帧工作量与视口高度相关，与历史长度无关
+    let start = scroll.min(total_lines);
     let end = (scroll + viewport_height).min(total_lines);
-    let mut window: Vec<Line<'static>> = app.chat.lines[scroll.min(total_lines)..end].to_vec();
-    if let Some(sel) = app.chat.selection.get() {
-        apply_selection_highlight_offset(&mut window, sel, scroll);
+    let selection = app.chat.selection.get().copied();
+    let text_width = area.width.saturating_sub(1);
+
+    {
+        let window = &app.chat.lines[start..end];
+        for (i, line) in window.iter().enumerate() {
+            frame.render_widget(
+                line,
+                Rect {
+                    x: area.x,
+                    y: area.y + i as u16,
+                    width: text_width,
+                    height: 1,
+                },
+            );
+        }
+        if let Some(sel) = selection {
+            overlay_selection(frame.buffer_mut(), area, window.len(), &sel, scroll);
+        }
     }
-
-    let paragraph = Paragraph::new(window).block(block);
-
-    frame.render_widget(paragraph, area);
 
     // 当内容超出可视区时，在右侧渲染滚动条
     if max_scroll > 0 {
@@ -1129,6 +1171,46 @@ def stream_test():
             .unwrap();
         let top_cell = terminal.backend().buffer().cell((79, 0)).unwrap();
         assert_eq!(top_cell.symbol(), "█");
+    }
+
+    #[tokio::test]
+    async fn test_render_chat_selection_overlay() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = create_test_app().await;
+        app.add_part(Role::User, ContentPart::text("hello world"));
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                render_chat(&mut app, f, f.area());
+            })
+            .unwrap();
+
+        let line_idx = app
+            .chat
+            .lines
+            .iter()
+            .position(|line| line.spans.iter().any(|span| span.content.contains("hello")))
+            .expect("user message rendered");
+        app.chat.selection.start(line_idx, 0);
+        app.chat.selection.update(line_idx, 5);
+        app.chat.selection.finish();
+
+        terminal
+            .draw(|f| {
+                render_chat(&mut app, f, f.area());
+            })
+            .unwrap();
+
+        let scroll = app.chat_scroll();
+        let row = (line_idx.saturating_sub(scroll)) as u16;
+        let cell = terminal.backend().buffer().cell((0, row)).unwrap();
+        assert_eq!(cell.bg, Color::Rgb(60, 90, 140));
+        let outside = terminal.backend().buffer().cell((6, row)).unwrap();
+        assert_ne!(outside.bg, Color::Rgb(60, 90, 140));
     }
 
     #[test]

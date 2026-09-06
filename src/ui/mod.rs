@@ -13,8 +13,8 @@ pub(crate) mod test_support;
 #[cfg(not(windows))]
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, EventStream, KeyCode,
-    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
+    DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEventKind,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
@@ -22,13 +22,13 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
     supports_keyboard_enhancement,
 };
-use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
 use crate::harness::SessionManager;
@@ -118,7 +118,7 @@ async fn run_app_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
 ) -> io::Result<()> {
-    let mut reader = EventStream::new();
+    let mut events = spawn_crossterm_events();
     let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
 
     loop {
@@ -220,9 +220,10 @@ async fn run_app_loop(
                 app.refresh_view();
             }
 
-            maybe_event = reader.next() => {
-                if let Some(Ok(crossterm_event)) = maybe_event {
-                    handle_crossterm_event(app, crossterm_event, &mut reader).await;
+            maybe_event = events.recv() => {
+                if let Some(crossterm_event) = maybe_event {
+                    handle_crossterm_event(app, crossterm_event, &mut events).await;
+                    drain_ready_events(app, &mut events).await;
                 }
             }
         }
@@ -231,7 +232,36 @@ async fn run_app_loop(
     Ok(())
 }
 
-async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &mut EventStream) {
+fn spawn_crossterm_events() -> mpsc::UnboundedReceiver<CrosstermEvent> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    std::thread::Builder::new()
+        .name("vva-crossterm-events".into())
+        .spawn(move || {
+            while let Ok(event) = crossterm::event::read() {
+                if tx.send(event).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("crossterm event thread");
+    rx
+}
+
+/// 排空通道中已到达的事件，避免拖拽等高频输入逐次全量重绘
+async fn drain_ready_events(app: &mut App, events: &mut mpsc::UnboundedReceiver<CrosstermEvent>) {
+    while let Ok(event) = events.try_recv() {
+        handle_crossterm_event(app, event, events).await;
+        if app.should_quit {
+            return;
+        }
+    }
+}
+
+async fn handle_crossterm_event(
+    app: &mut App,
+    event: CrosstermEvent,
+    events: &mut mpsc::UnboundedReceiver<CrosstermEvent>,
+) {
     if let CrosstermEvent::Mouse(mouse) = event {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
@@ -380,21 +410,13 @@ async fn handle_crossterm_event(app: &mut App, event: CrosstermEvent, reader: &m
                         app.insert_char('\n');
                     } else {
                         let upcoming_event = tokio::select! {
-                            next_ev = reader.next() => {
-                                if let Some(Ok(ev)) = next_ev {
-                                    Some(ev)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ = tokio::time::sleep(Duration::from_millis(15)) => {
-                                None
-                            }
+                            next_ev = events.recv() => next_ev,
+                            _ = tokio::time::sleep(Duration::from_millis(15)) => None,
                         };
 
                         if let Some(next_ev) = upcoming_event {
                             app.insert_char('\n');
-                            Box::pin(handle_crossterm_event(app, next_ev, reader)).await;
+                            Box::pin(handle_crossterm_event(app, next_ev, events)).await;
                         } else {
                             app.submit_input().await;
                         }
