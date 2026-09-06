@@ -9,8 +9,9 @@ use crate::ui::views::modal_shell::{
     render_modal_shell, selected_row_style,
 };
 
-/// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位
-pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area: Rect) {
+/// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位；
+/// 返回列表区几何供鼠标命中测试
+pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area: Rect) -> Rect {
     // 顶部状态指示行
     let curr_model = &state.current_model;
     let curr_var = state.active_variant.as_deref().unwrap_or("none");
@@ -115,4 +116,6 @@ pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area
             ])
         },
     );
+
+    list_area
 }

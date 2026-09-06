@@ -9,8 +9,9 @@ use crate::ui::views::modal_shell::{
     render_modal_shell, selected_row_style,
 };
 
-/// 渲染 /config 模态弹窗，支持上下键或 j/k 浏览与调整各项会话配置（模型、推理档位、网络搜索等）
-pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Rect) {
+/// 渲染 /config 模态弹窗，支持上下键或 j/k 浏览与调整各项会话配置（模型、推理档位、网络搜索等）；
+/// 返回列表区几何供鼠标命中测试
+pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Rect) -> Rect {
     let top_line = Line::from(vec![
         Span::raw("  "),
         Span::styled(
@@ -103,4 +104,6 @@ pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Re
             ])
         },
     );
+
+    list_area
 }

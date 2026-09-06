@@ -50,6 +50,8 @@ pub struct App {
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
+    /// 当前弹窗列表区的渲染几何（每帧由弹窗视图回写，供鼠标命中测试）
+    pub modal_list_area: Rect,
     pub matched_commands: Vec<&'static SlashCommand>,
     pub selected_command_index: usize,
     pub stats: SidebarStats,
@@ -90,6 +92,7 @@ impl App {
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,
+            modal_list_area: Rect::default(),
             matched_commands: Vec::new(),
             selected_command_index: 0,
             stats,

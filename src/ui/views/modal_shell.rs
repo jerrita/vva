@@ -86,7 +86,7 @@ pub fn render_modal_list<'a, T>(
         }
     } else {
         let visible = area.height.saturating_sub(1) as usize;
-        let start = selected.saturating_sub(visible.saturating_sub(1));
+        let start = list_window_start(area.height, selected);
         lines.extend(
             items
                 .iter()
@@ -97,6 +97,31 @@ pub fn render_modal_list<'a, T>(
         );
     }
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// 列表可见窗口的起始偏移：保证选中行始终在窗口内（首行为表头）
+pub fn list_window_start(area_height: u16, selected: usize) -> usize {
+    let visible = area_height.saturating_sub(1) as usize;
+    selected.saturating_sub(visible.saturating_sub(1))
+}
+
+/// 弹窗列表命中测试：终端坐标 → 条目索引；表头行、越界与空列表返回 None
+pub fn modal_list_hit_index(
+    area: Rect,
+    items_len: usize,
+    selected: usize,
+    column: u16,
+    row: u16,
+) -> Option<usize> {
+    if items_len == 0 || !area.contains(ratatui::layout::Position { x: column, y: row }) {
+        return None;
+    }
+    let row_offset = (row - area.y) as usize;
+    if row_offset == 0 {
+        return None;
+    }
+    let index = list_window_start(area.height, selected) + row_offset - 1;
+    (index < items_len).then_some(index)
 }
 
 /// 列表行前缀与整行样式：选中 `> `（accent 底色反白）、活跃 `* `（黄色加粗）、普通 `  `（白色）
@@ -200,5 +225,22 @@ mod tests {
                 assert_eq!(actual.trim_end(), *expected);
             }
         }
+    }
+
+    #[test]
+    fn test_modal_list_hit_index() {
+        // 4 行列表区：首行表头 + 3 条可见条目，选中项 0（窗口从 0 开始）
+        let area = Rect::new(10, 5, 20, 4);
+        assert_eq!(modal_list_hit_index(area, 3, 0, 12, 6), Some(0));
+        assert_eq!(modal_list_hit_index(area, 3, 0, 12, 8), Some(2));
+        // 表头行与列表区外不命中
+        assert_eq!(modal_list_hit_index(area, 3, 0, 12, 5), None);
+        assert_eq!(modal_list_hit_index(area, 3, 0, 12, 9), None);
+        assert_eq!(modal_list_hit_index(area, 3, 0, 5, 6), None);
+        // 条目不足时越界行不命中；空列表不命中
+        assert_eq!(modal_list_hit_index(area, 2, 0, 12, 8), None);
+        assert_eq!(modal_list_hit_index(area, 0, 0, 12, 6), None);
+        // 选中项触发窗口滚动：选中 9、可见 3 条时窗口从 7 起
+        assert_eq!(modal_list_hit_index(area, 10, 9, 12, 6), Some(7));
     }
 }

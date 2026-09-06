@@ -131,6 +131,17 @@ impl ActiveModal {
         matches!(self, Self::None)
     }
 
+    /// 可过滤列表弹窗的访问视图（Help / None 无列表）
+    pub(crate) fn as_filterable_mut(&mut self) -> Option<&mut dyn FilterableModal> {
+        match self {
+            Self::Sessions(state) => Some(state),
+            Self::Models(state) => Some(state),
+            Self::Variants(state) => Some(state),
+            Self::Config(state) => Some(state),
+            Self::None | Self::Help => None,
+        }
+    }
+
     /// 读取当前选中项并转换为待执行动作
     pub(crate) fn activate(&self) -> ModalAction {
         match self {

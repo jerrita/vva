@@ -25,7 +25,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +40,7 @@ use views::chat::render_chat;
 use views::config_modal::render_config_modal;
 use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
+use views::modal_shell::modal_list_hit_index;
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
 use views::sidebar::{SidebarInfo, render_sidebar};
@@ -188,15 +189,19 @@ async fn run_app_loop(
                 app.sidebar.reset();
             }
 
-            match &app.modal {
+            // 弹窗视图回写列表区几何，供鼠标命中测试
+            app.modal_list_area = match &app.modal {
                 ActiveModal::Sessions(state) => render_sessions_modal(state, frame, size),
                 ActiveModal::Models(state) => {
                     render_models_modal(state, session_model, frame, size)
                 }
                 ActiveModal::Variants(state) => render_variants_modal(state, frame, size),
                 ActiveModal::Config(state) => render_config_modal(state, frame, size),
-                ActiveModal::Help => render_help_modal(frame, size),
-                ActiveModal::None => {}
+                ActiveModal::Help => {
+                    render_help_modal(frame, size);
+                    Rect::default()
+                }
+                ActiveModal::None => Rect::default(),
             }
         })?;
         let updates = hyperlinks.prepare(
@@ -266,14 +271,24 @@ async fn handle_crossterm_event(
     if let CrosstermEvent::Mouse(mouse) = event {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                app.scroll_up(3);
+                if app.modal.is_none() {
+                    app.scroll_up(3);
+                } else {
+                    app.modal.apply_input(ModalInput::NavigateUp);
+                }
             }
             MouseEventKind::ScrollDown => {
-                app.scroll_down(3);
+                if app.modal.is_none() {
+                    app.scroll_down(3);
+                } else {
+                    app.modal.apply_input(ModalInput::NavigateDown);
+                }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if app.modal.is_none() {
                     handle_mouse_left_down(app, mouse);
+                } else {
+                    handle_modal_click(app, mouse).await;
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -501,6 +516,29 @@ async fn handle_crossterm_event(
             }
             _ => {}
         }
+    }
+}
+
+/// 弹窗列表左键点击：命中条目则选中，再次点击已选中条目即确认
+async fn handle_modal_click(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    let (items_len, selected) = match app.modal.as_filterable_mut() {
+        Some(modal) => (modal.filtered_len(), *modal.selected_index_mut()),
+        None => return,
+    };
+    let Some(index) = modal_list_hit_index(
+        app.modal_list_area,
+        items_len,
+        selected,
+        mouse.column,
+        mouse.row,
+    ) else {
+        return;
+    };
+    if index == selected {
+        let action = app.modal.activate();
+        apply_modal_action(app, action).await;
+    } else if let Some(modal) = app.modal.as_filterable_mut() {
+        *modal.selected_index_mut() = index;
     }
 }
 

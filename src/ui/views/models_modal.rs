@@ -10,13 +10,14 @@ use crate::ui::views::modal_shell::{
     render_modal_shell,
 };
 
-/// 渲染 /model 模态弹窗，支持上下键或 j/k 浏览选择当前配置中的可用模型
+/// 渲染 /model 模态弹窗，支持上下键或 j/k 浏览选择当前配置中的可用模型；
+/// 返回列表区几何供鼠标命中测试
 pub fn render_models_modal(
     state: &ModelsModalState,
     current_model: &str,
     frame: &mut Frame,
     area: Rect,
-) {
+) -> Rect {
     // 顶部当前状态行
     let top_line = Line::from(vec![
         Span::raw("  "),
@@ -178,4 +179,6 @@ pub fn render_models_modal(
             ])
         },
     );
+
+    list_area
 }

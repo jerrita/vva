@@ -10,8 +10,9 @@ use crate::ui::views::modal_shell::{
     render_modal_shell, selected_row_style,
 };
 
-/// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程
-pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area: Rect) {
+/// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程；
+/// 返回列表区几何供鼠标命中测试
+pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area: Rect) -> Rect {
     let title = match state.scope {
         ProjectScope::CurrentProject => " Select Session to Resume (Per Project) ",
         ProjectScope::AllProjects => " Select Session to Resume (All Projects) ",
@@ -150,4 +151,6 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
             ])
         },
     );
+
+    list_area
 }
