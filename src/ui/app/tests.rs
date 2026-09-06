@@ -26,11 +26,6 @@ async fn test_slash_command_model_execution() {
     app.submit_input().await;
     let curr = app.active_session.snapshot().session.current_model.clone();
     assert_eq!(curr, "openai/target_model");
-    assert!(
-        app.notices
-            .iter()
-            .any(|text| text.contains("Switched model to 'target_model'"))
-    );
 
     let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
@@ -106,11 +101,6 @@ async fn test_slash_command_variant_execution() {
         .current_variant
         .clone();
     assert_eq!(curr, Some("high".to_string()));
-    assert!(
-        app.notices
-            .iter()
-            .any(|text| text.contains("Set reasoning variant to 'high'"))
-    );
 
     // 3. /variant none 重置为 None
     app.set_input("/variant none");

@@ -74,11 +74,6 @@ impl App {
     /// 切换思考过程展示模式（/thinking 命令与 Config 弹窗共用）
     pub fn toggle_thinking_display(&mut self) {
         self.thinking_concise = !self.thinking_concise;
-        let mode_str = if self.thinking_concise {
-            "concise (1 line)"
-        } else {
-            "full"
-        };
         if let ActiveModal::Config(cm) = &mut self.modal {
             cm.update_item_value(
                 ConfigItemKind::ThinkingDisplay,
@@ -90,8 +85,6 @@ impl App {
                 .to_string(),
             );
         }
-        self.notices
-            .push(format!("Thinking display mode set to {mode_str}."));
     }
 
     /// 处理斜杠命令分发

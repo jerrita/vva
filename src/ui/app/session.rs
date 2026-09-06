@@ -98,10 +98,7 @@ impl App {
             .configure(Some(model.into()), Some(variant), None)
             .await
         {
-            Ok(()) => {
-                self.refresh_view();
-                self.notices.push(format!("Switched model to '{model}'"));
-            }
+            Ok(()) => self.refresh_view(),
             Err(error) => self.notices.push(error),
         }
     }
@@ -143,13 +140,7 @@ impl App {
             .configure(None, Some(variant.clone()), None)
             .await
         {
-            Ok(()) => {
-                self.refresh_view();
-                self.notices.push(format!(
-                    "Set reasoning variant to '{}'",
-                    variant.as_deref().unwrap_or("none")
-                ));
-            }
+            Ok(()) => self.refresh_view(),
             Err(error) => self.notices.push(error),
         }
     }
