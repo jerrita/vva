@@ -125,15 +125,12 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
 
 /// 右侧边栏：展示 Session ID、Workspace、缓存、上下文窗口、Token 消耗与 Cost 估算
 pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &SidebarInfo) {
-    let block = Block::default()
-        .borders(Borders::LEFT)
-        .border_style(Style::default().fg(Color::Rgb(60, 60, 65)))
-        .title(Span::styled(
-            " Details ",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        ));
+    let block = super::panel_block().title(Span::styled(
+        " Details ",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    ));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -240,7 +237,7 @@ mod tests {
             .draw(|frame| render_sidebar(app, frame, Rect::new(0, 0, 30, 25), &info))
             .unwrap();
 
-        assert_eq!(app.sidebar.area, Rect::new(1, 1, 29, 22));
+        assert_eq!(app.sidebar.area, Rect::new(1, 1, 28, 22));
         assert_eq!(
             app.sidebar.selection.selection,
             Some(TextSelection::new(

@@ -5,15 +5,20 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState};
+use ratatui::widgets::{Padding, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::model::{Annotation, ContentPart, Role, WebSearchAction, WebSearchCall};
 use crate::ui::app::{App, TextCoord, TextSelection, char_in_column_range};
 use crate::ui::markdown::{render_markdown, wrap_spans_to_lines};
 use crate::ui::text::truncate;
+use crate::ui::views::header::session_title_line;
+use crate::ui::views::{PANEL_BORDER, panel_block};
 
-/// 聊天流正文可用宽度（右侧留出一列给滚动条）
+const SCROLLBAR_THUMB: &str = "│";
+const SCROLLBAR_TRACK: &str = "│";
+
+/// 聊天流正文可用宽度（右侧留出一列空白）
 pub fn chat_text_width(area: Rect) -> usize {
     (area.width as usize).saturating_sub(1)
 }
@@ -559,11 +564,29 @@ fn overlay_selection(
 
 /// 对话与工具消息流视图（支持 Thinking 思考块、Tool 动作与结果、Assistant 最终回复 Markdown 渲染）
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
-    app.chat.area = area;
+    let title = app.view.session.title.as_deref().unwrap_or("");
+    let block = panel_block()
+        .title(session_title_line(app, title))
+        .padding(Padding::new(1, 1, 1, 0));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    app.refresh_chat_lines(chat_text_width(area));
+    let viewport = if inner.width > 1 && inner.height > 0 {
+        inner
+    } else {
+        area
+    };
+    app.chat.area = viewport;
+    app.scrollbar_area = Rect::new(
+        area.right().saturating_sub(1),
+        viewport.y,
+        u16::from(area.width > 0),
+        viewport.height,
+    );
+
+    app.refresh_chat_lines(chat_text_width(viewport));
     let total_lines = app.chat.lines.len();
-    let viewport_height = area.height as usize;
+    let viewport_height = viewport.height as usize;
     let max_scroll = total_lines.saturating_sub(viewport_height);
 
     app.update_viewport(max_scroll, viewport_height);
@@ -572,7 +595,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     let start = scroll.min(total_lines);
     let end = (scroll + viewport_height).min(total_lines);
     let selection = app.chat.selection.get().copied();
-    let text_width = area.width.saturating_sub(1);
+    let text_width = viewport.width.saturating_sub(1);
 
     {
         let window = &app.chat.lines[start..end];
@@ -580,35 +603,37 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
             frame.render_widget(
                 line,
                 Rect {
-                    x: area.x,
-                    y: area.y + i as u16,
+                    x: viewport.x,
+                    y: viewport.y + i as u16,
                     width: text_width,
                     height: 1,
                 },
             );
         }
         if let Some(sel) = selection {
-            overlay_selection(frame.buffer_mut(), area, window.len(), &sel, scroll);
+            overlay_selection(frame.buffer_mut(), viewport, window.len(), &sel, scroll);
         }
     }
 
-    // 当内容超出可视区时，在右侧渲染滚动条
+    // 轨道与右边框重合，保留上下圆角。
     if max_scroll > 0 {
         let mut scrollbar_state = ScrollbarState::new(max_scroll).position(scroll);
 
         let thumb_color = if app.is_dragging_scrollbar {
             Color::Rgb(150, 180, 225)
         } else {
-            Color::Rgb(100, 110, 130)
+            Color::Rgb(130, 140, 158)
         };
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
+            .thumb_symbol(SCROLLBAR_THUMB)
+            .track_symbol(Some(SCROLLBAR_TRACK))
             .thumb_style(Style::default().fg(thumb_color))
-            .track_style(Style::default().fg(Color::Rgb(35, 38, 46)));
+            .track_style(Style::default().fg(PANEL_BORDER));
 
-        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+        frame.render_stateful_widget(scrollbar, app.scrollbar_area, &mut scrollbar_state);
     }
 }
 
@@ -1240,26 +1265,43 @@ def stream_test():
             .unwrap();
 
         // 验证视口和滚动状态已自动计算，并且处于底部
+        let viewport = Rect::new(2, 2, 76, 7);
         assert!(app.max_scroll > 0);
-        assert_eq!(app.viewport_height, 10);
+        assert_eq!(app.viewport_height, 7);
         assert!(app.auto_scroll);
         assert_eq!(app.scroll_offset, app.max_scroll);
-        assert_eq!(app.chat.area, Rect::new(0, 0, 80, 10));
+        assert_eq!(app.chat.area, viewport);
 
-        // 验证滚到底时，滚动条滑块位于最底部行 (y=9)
+        // 验证滚到底时，滚动条滑块位于视口最底部行
+        let bar_x = 79;
+        assert_eq!(
+            app.scrollbar_area,
+            Rect::new(bar_x, viewport.y, 1, viewport.height)
+        );
         let buffer = terminal.backend().buffer();
-        let last_cell = buffer.cell((79, 9)).unwrap();
-        assert_eq!(last_cell.symbol(), "█");
+        let last_cell = buffer
+            .cell((bar_x, viewport.y + viewport.height - 1))
+            .unwrap();
+        assert_eq!(last_cell.symbol(), SCROLLBAR_THUMB);
+        assert_eq!(last_cell.fg, Color::Rgb(130, 140, 158));
+        assert_eq!(buffer.cell((bar_x, viewport.y)).unwrap().fg, PANEL_BORDER);
+        assert_eq!(buffer.cell((77, viewport.y)).unwrap().symbol(), " ");
+        assert_eq!(buffer.cell((bar_x, 9)).unwrap().symbol(), "╯");
 
-        // 滚到顶时，滚动条滑块位于最顶部行 (y=0)
+        // 滚到顶时，滚动条滑块位于视口最顶部行
         app.scroll_to_top();
         terminal
             .draw(|f| {
                 render_chat(&mut app, f, f.area());
             })
             .unwrap();
-        let top_cell = terminal.backend().buffer().cell((79, 0)).unwrap();
-        assert_eq!(top_cell.symbol(), "█");
+        let top_cell = terminal
+            .backend()
+            .buffer()
+            .cell((bar_x, viewport.y))
+            .unwrap();
+        assert_eq!(top_cell.symbol(), SCROLLBAR_THUMB);
+        assert_eq!(top_cell.fg, Color::Rgb(130, 140, 158));
     }
 
     #[tokio::test]
@@ -1295,10 +1337,11 @@ def stream_test():
             .unwrap();
 
         let scroll = app.chat_scroll();
-        let row = (line_idx.saturating_sub(scroll)) as u16;
-        let cell = terminal.backend().buffer().cell((0, row)).unwrap();
+        let area = app.chat.area;
+        let row = area.y + (line_idx.saturating_sub(scroll)) as u16;
+        let cell = terminal.backend().buffer().cell((area.x, row)).unwrap();
         assert_eq!(cell.bg, Color::Rgb(60, 90, 140));
-        let outside = terminal.backend().buffer().cell((6, row)).unwrap();
+        let outside = terminal.backend().buffer().cell((area.x + 6, row)).unwrap();
         assert_ne!(outside.bg, Color::Rgb(60, 90, 140));
     }
 

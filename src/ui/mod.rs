@@ -37,7 +37,6 @@ use app::{ActiveModal, App};
 use modals::{ModalAction, ModalInput, classify_modal_key};
 use views::chat::render_chat;
 use views::config_modal::render_config_modal;
-use views::header::render_header;
 use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
 use views::models_modal::render_models_modal;
@@ -139,52 +138,41 @@ async fn run_app_loop(
         terminal.draw(|frame| {
             let size = frame.area();
 
-            // 宽屏时 (>= 90 宽) 渲染右侧详情边栏；窄屏自动隐藏
-            let (main_area, sidebar_area) = if size.width >= 90 {
-                let chunks = Layout::default()
+            let input_lines = app.input.line_count();
+            // 输入区：圆角输入框 (边框 2 + 文本行) + 状态栏 1
+            let max_text_rows = ((size.height.saturating_sub(8)) / 2).clamp(1, 12) as usize;
+            let text_rows = input_lines.clamp(1, max_text_rows);
+            let input_area_height = (text_rows as u16) + 3;
+
+            let rows = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(5), Constraint::Length(input_area_height)])
+                .split(size);
+
+            // 宽屏时 (>= 90 宽) 上半区切出右侧详情边栏，与主窗口齐平
+            let (chat_area, sidebar_area) = if size.width >= 90 {
+                let cols = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Min(60), Constraint::Length(30)])
-                    .split(size);
-                (chunks[0], Some(chunks[1]))
+                    .spacing(1)
+                    .split(rows[0]);
+                (cols[0], Some(cols[1]))
             } else {
-                (size, None)
+                (rows[0], None)
             };
 
-            let input_lines = app.input.line_count();
-            // 输入区由 3 部分构成：上方状态栏(1行) + 输入框(边框2行 + 文本行) + 下方状态栏(1行)
-            // 文本行数动态自适应，最多不超过 (main_area.height - 8) / 2（在 1 到 12 行之间）
-            let max_text_rows = ((main_area.height.saturating_sub(8)) / 2).clamp(1, 12) as usize;
-            let text_rows = input_lines.clamp(1, max_text_rows);
-            let input_area_height = (text_rows as u16) + 4;
+            render_chat(app, frame, chat_area);
 
-            // 主工作区垂直三段切分：顶部 Title + 中间对话流 + 底部输入区
-            let main_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),                 // 顶部栏 (Title)
-                    Constraint::Min(5),                    // 对话区
-                    Constraint::Length(input_area_height), // 输入区动态高度
-                ])
-                .split(main_area);
-
-            // 1. 顶部栏 (Title)
-            render_header(app, frame, main_chunks[0], session_title);
-
-            // 2. 中间对话流
-            render_chat(app, frame, main_chunks[1]);
-
-            // 3. 底部输入区 (含上方 Agent/WebSearch 状态、命令浮层、输入框、下方模型状态)
             render_input_area(
                 app,
                 frame,
-                main_chunks[2],
+                rows[1],
                 session_model,
                 session_variant.as_deref(),
                 &session_workspace,
                 &status_text,
             );
 
-            // 4. 右侧边栏
             if let Some(sidebar_rect) = sidebar_area {
                 let info = SidebarInfo {
                     session_id,
@@ -198,15 +186,14 @@ async fn run_app_loop(
                 app.sidebar.reset();
             }
 
-            // 5. 模态弹窗层
             match &app.modal {
-                ActiveModal::Sessions(state) => render_sessions_modal(state, frame, main_area),
+                ActiveModal::Sessions(state) => render_sessions_modal(state, frame, size),
                 ActiveModal::Models(state) => {
-                    render_models_modal(state, session_model, frame, main_area)
+                    render_models_modal(state, session_model, frame, size)
                 }
-                ActiveModal::Variants(state) => render_variants_modal(state, frame, main_area),
-                ActiveModal::Config(state) => render_config_modal(state, frame, main_area),
-                ActiveModal::Help => render_help_modal(frame, main_area),
+                ActiveModal::Variants(state) => render_variants_modal(state, frame, size),
+                ActiveModal::Config(state) => render_config_modal(state, frame, size),
+                ActiveModal::Help => render_help_modal(frame, size),
                 ActiveModal::None => {}
             }
         })?;
@@ -636,12 +623,14 @@ fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
     }
 
     // 3. 聊天流：滚动条列启动拖拽，正文区启动文本选区
+    if rect_hit(app.scrollbar_area, column, row) && app.max_scroll > 0 {
+        app.is_dragging_scrollbar = true;
+        app.scroll_to_ratio(scrollbar_ratio(app, row));
+        return;
+    }
     if app.chat.hit(column, row) {
-        let scrollbar_col = app.chat.area.x + app.chat.area.width.saturating_sub(1);
-        if column + 1 >= scrollbar_col && app.max_scroll > 0 {
-            app.is_dragging_scrollbar = true;
-            app.scroll_to_ratio(scrollbar_ratio(app, row));
-        } else if column < scrollbar_col {
+        let text_end = app.chat.area.x + app.chat.area.width.saturating_sub(1);
+        if column < text_end {
             app.is_dragging_scrollbar = false;
             let (row_offset, col_offset) = app.chat.offsets(column, row);
             app.chat
@@ -666,8 +655,8 @@ fn rect_hit(area: ratatui::layout::Rect, column: u16, row: u16) -> bool {
 
 /// 滚动条行位置转换为滚动比例
 fn scrollbar_ratio(app: &App, row: u16) -> f64 {
-    let track_height = app.chat.area.height as usize;
-    let row_offset = (row as usize).saturating_sub(app.chat.area.y as usize);
+    let track_height = app.scrollbar_area.height as usize;
+    let row_offset = (row as usize).saturating_sub(app.scrollbar_area.y as usize);
     row_offset as f64 / track_height.saturating_sub(1).max(1) as f64
 }
 
@@ -675,10 +664,10 @@ fn scrollbar_ratio(app: &App, row: u16) -> f64 {
 fn handle_mouse_left_drag(app: &mut App, mouse: crossterm::event::MouseEvent) {
     let (column, row) = (mouse.column, mouse.row);
 
-    if app.is_dragging_scrollbar && app.max_scroll > 0 && app.chat.area.height > 0 {
+    if app.is_dragging_scrollbar && app.max_scroll > 0 && app.scrollbar_area.height > 0 {
         let clamped_row = row.clamp(
-            app.chat.area.y,
-            app.chat.area.y + app.chat.area.height.saturating_sub(1),
+            app.scrollbar_area.y,
+            app.scrollbar_area.y + app.scrollbar_area.height.saturating_sub(1),
         );
         app.scroll_to_ratio(scrollbar_ratio(app, clamped_row));
     } else if app.is_selecting_input && app.input_inner_area.height > 0 {

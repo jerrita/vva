@@ -2,13 +2,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 
 use crate::ui::app::App;
 use crate::ui::command::command_row;
 use crate::ui::views::modal_shell::selected_row_style;
+use crate::ui::views::{PANEL_BORDER, panel_block};
 
-/// 复合输入区：状态指示条 + 命令浮层 + 输入框 + 底部元数据栏
+/// 复合输入区：圆角输入框，状态与元信息在框下方
 pub fn render_input_area(
     app: &mut App,
     frame: &mut Frame,
@@ -18,18 +19,22 @@ pub fn render_input_area(
     workspace: &str,
     status_text: &str,
 ) {
-    let inner_box_height = area.height.saturating_sub(2);
+    let is_running = app.active_session.is_running();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1), // 输入框上方状态栏 (Agent 运行状态 / 网络搜索)
-            Constraint::Length(inner_box_height), // 输入框
-            Constraint::Length(1), // 输入框下方状态栏 (模型/推理档位/提示)
-        ])
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
         .split(area);
 
-    // 1. 输入框上方状态行
-    let is_running = app.active_session.is_running();
+    let block = panel_block()
+        .border_style(Style::default().fg(if is_running {
+            Color::Yellow
+        } else {
+            PANEL_BORDER
+        }))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(chunks[0]);
+    frame.render_widget(block, chunks[0]);
+
     let agent_status_spans = if is_running {
         let text = if status_text.is_empty() {
             "Working..."
@@ -64,30 +69,14 @@ pub fn render_input_area(
         Span::styled("🌐 Web Search: Off  ", Style::default().fg(Color::DarkGray))
     };
 
-    let mut top_line_spans = agent_status_spans;
-    top_line_spans.push(Span::raw("    "));
-    top_line_spans.push(web_search_span);
+    let mut status_spans = agent_status_spans;
+    status_spans.push(Span::raw("    "));
+    status_spans.push(web_search_span);
 
-    let top_bar = Paragraph::new(Line::from(top_line_spans));
-    frame.render_widget(top_bar, chunks[0]);
-
-    // 2. 输入框 (支持多行与视口滚动)
-    let input_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(if is_running {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::Rgb(80, 80, 85))
-        });
-
-    let inner_width = chunks[1].width.saturating_sub(2) as usize;
-    let inner_height = chunks[1].height.saturating_sub(2) as usize;
-    app.input_inner_area = Rect {
-        x: chunks[1].x + 1,
-        y: chunks[1].y + 1,
-        width: inner_width as u16,
-        height: inner_height as u16,
-    };
+    let text = inner;
+    let inner_width = text.width as usize;
+    let inner_height = text.height as usize;
+    app.input_inner_area = text;
     let (cursor_row, cursor_col) = app.input.cursor_line_and_col();
 
     // 视口平滑滚动计算
@@ -112,7 +101,6 @@ pub fn render_input_area(
             "Type a prompt or / for commands... (Enter to send, Ctrl+Enter for newline)",
             Style::default().fg(Color::Rgb(100, 100, 105)),
         )]))
-        .block(input_block)
     } else if let Some((sel_start, sel_end)) = app.input.selection_range() {
         let text_lines: Vec<&str> = app.input.text.split('\n').collect();
         let sel_style = Style::default()
@@ -134,15 +122,12 @@ pub fn render_input_area(
         }
 
         Paragraph::new(ratatui::text::Text::from(rendered_lines))
-            .block(input_block)
             .scroll((scroll_y as u16, scroll_x as u16))
     } else {
-        Paragraph::new(app.input.as_str())
-            .block(input_block)
-            .scroll((scroll_y as u16, scroll_x as u16))
+        Paragraph::new(app.input.as_str()).scroll((scroll_y as u16, scroll_x as u16))
     };
 
-    frame.render_widget(input_p, chunks[1]);
+    frame.render_widget(input_p, text);
 
     // 绘制光标 (基于行号和列显示宽度定位，正确支持多行、视口滚动及全角 CJK 字符)
     if !is_running
@@ -153,37 +138,29 @@ pub fn render_input_area(
     {
         let row_offset = (cursor_row - scroll_y) as u16;
         let col_offset = cursor_col.saturating_sub(scroll_x) as u16;
-        let cursor_x = chunks[1].x + 1 + col_offset;
-        let cursor_y = chunks[1].y + 1 + row_offset;
-        if cursor_x < chunks[1].x + chunks[1].width - 1
-            && cursor_y < chunks[1].y + chunks[1].height - 1
-        {
+        let cursor_x = text.x + col_offset;
+        let cursor_y = text.y + row_offset;
+        if cursor_x < text.x + text.width && cursor_y < text.y + text.height {
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 
-    // 3. 输入框下方状态行 (模型、推理强度、项目)
     let ws_name = std::path::Path::new(workspace)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(workspace);
-
     let variant_str = variant.unwrap_or("default");
-    // 命令提示由输入 `/` 触发的命令浮层展示，底部状态栏仅保留会话元信息
-    let bottom_line = Line::from(vec![
-        Span::styled("🤖 ", Style::default().fg(Color::Cyan)),
-        Span::styled(model, Style::default().fg(Color::White)),
-        Span::styled("  ⚡ ", Style::default().fg(Color::Magenta)),
-        Span::styled(variant_str, Style::default().fg(Color::White)),
-        Span::styled("  📂 ", Style::default().fg(Color::DarkGray)),
-        Span::styled(ws_name, Style::default().fg(Color::DarkGray)),
-    ]);
-    let bottom_bar = Paragraph::new(bottom_line);
-    frame.render_widget(bottom_bar, chunks[2]);
+    status_spans.push(Span::raw("    "));
+    status_spans.push(Span::styled("🤖 ", Style::default().fg(Color::Cyan)));
+    status_spans.push(Span::styled(model, Style::default().fg(Color::White)));
+    status_spans.push(Span::styled("  ⚡ ", Style::default().fg(Color::Magenta)));
+    status_spans.push(Span::styled(variant_str, Style::default().fg(Color::White)));
+    status_spans.push(Span::styled("  📂 ", Style::default().fg(Color::DarkGray)));
+    status_spans.push(Span::styled(ws_name, Style::default().fg(Color::DarkGray)));
+    frame.render_widget(Paragraph::new(Line::from(status_spans)), chunks[1]);
 
-    // 4. 命令浮层 (Claude Code / OpenCode 风格)
     if !app.matched_commands.is_empty() {
-        render_command_palette(app, frame, chunks[1]);
+        render_command_palette(app, frame, chunks[0]);
     }
 }
 

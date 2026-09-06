@@ -42,6 +42,7 @@ pub struct App {
     pub max_scroll: usize,
     pub viewport_height: usize,
     pub is_dragging_scrollbar: bool,
+    pub scrollbar_area: Rect,
     /// 聊天流面板：渲染与复制共用行缓冲，流式更新只重建历史前缀之后的内容
     pub chat: TextPane,
     pub chat_cache: ChatCache,
@@ -82,6 +83,7 @@ impl App {
             max_scroll: 0,
             viewport_height: 0,
             is_dragging_scrollbar: false,
+            scrollbar_area: Rect::default(),
             chat: TextPane::default(),
             chat_cache: ChatCache::default(),
             sidebar: TextPane::default(),

@@ -1,17 +1,14 @@
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::ui::app::App;
 
-/// 渲染顶部标题栏，展示当前 Session 标题
-pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
+/// 主窗口标题：会话名与运行态
+pub fn session_title_line(app: &App, title: &str) -> Line<'static> {
     let title_display = if title.trim().is_empty() {
-        "Untitled Session"
+        "Untitled Session".to_string()
     } else {
-        title
+        title.to_string()
     };
 
     let is_running = app.active_session.is_running();
@@ -21,8 +18,8 @@ pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
         Color::DarkGray
     };
 
-    let line = Line::from(vec![
-        Span::styled("  💬 ", Style::default().fg(Color::Cyan)),
+    Line::from(vec![
+        Span::styled(" 💬 ", Style::default().fg(Color::Cyan)),
         Span::styled(
             title_display,
             Style::default()
@@ -30,13 +27,9 @@ pub fn render_header(app: &App, frame: &mut Frame, area: Rect, title: &str) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            if is_running { " (Active)" } else { "" },
+            if is_running { " (Active)" } else { "" }.to_string(),
             Style::default().fg(status_color),
         ),
-    ]);
-
-    let block = Block::default().borders(Borders::NONE);
-
-    let paragraph = Paragraph::new(line).block(block);
-    frame.render_widget(paragraph, area);
+        Span::raw(" "),
+    ])
 }
