@@ -1,7 +1,6 @@
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
 /// 将包含 CJK 与普通字符的 Span 切割并按终端可用宽度安全折行
@@ -53,16 +52,10 @@ pub fn wrap_spans_to_lines(
             }
 
             // 追加到当前行
-            if let Some(last) = current_spans.last_mut() {
-                if last.style == style {
-                    let mut merged = last.content.to_string();
-                    merged.push_str(&token);
-                    last.content = Cow::Owned(merged);
-                } else {
-                    current_spans.push(Span::styled(token, style));
-                }
+            if let Some(last) = current_spans.last_mut().filter(|last| last.style == style) {
+                last.content.to_mut().push_str(token);
             } else {
-                current_spans.push(Span::styled(token, style));
+                current_spans.push(Span::styled(token.to_owned(), style));
             }
             current_width += tok_w;
         }
@@ -83,39 +76,24 @@ pub fn wrap_spans_to_lines(
 /// - 连续的 ASCII 空格
 /// - 连续的 ASCII 非空白字符（英文单词、数字、ASCII 标点）
 /// - 每一个非 ASCII 字符（如中文汉字、全角标点、Emoji）作为一个独立折行断点
-fn tokenize_text(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut ascii_buf = String::new();
-    let mut in_whitespace = false;
-
-    for ch in text.chars() {
-        if ch.is_ascii() {
-            let is_ws = ch.is_ascii_whitespace();
-            if ascii_buf.is_empty() {
-                ascii_buf.push(ch);
-                in_whitespace = is_ws;
-            } else if in_whitespace == is_ws {
-                ascii_buf.push(ch);
-            } else {
-                tokens.push(std::mem::take(&mut ascii_buf));
-                ascii_buf.push(ch);
-                in_whitespace = is_ws;
-            }
+fn tokenize_text(text: &str) -> impl Iterator<Item = &str> {
+    let mut remaining = text;
+    std::iter::from_fn(move || {
+        let mut chars = remaining.char_indices();
+        let (_, first) = chars.next()?;
+        let end = if first.is_ascii() {
+            chars
+                .find(|(_, ch)| {
+                    !ch.is_ascii() || ch.is_ascii_whitespace() != first.is_ascii_whitespace()
+                })
+                .map_or(remaining.len(), |(idx, _)| idx)
         } else {
-            // 遇到非 ASCII 字符，先刷新已缓冲的 ASCII 单词
-            if !ascii_buf.is_empty() {
-                tokens.push(std::mem::take(&mut ascii_buf));
-            }
-            // 每个非 ASCII 字符（CJK 等）独立成 token
-            tokens.push(ch.to_string());
-        }
-    }
-
-    if !ascii_buf.is_empty() {
-        tokens.push(ascii_buf);
-    }
-
-    tokens
+            first.len_utf8()
+        };
+        let (token, rest) = remaining.split_at(end);
+        remaining = rest;
+        Some(token)
+    })
 }
 
 /// 检查字符是否属于标点符号（含 ASCII 标点与常见全角 CJK 标点）
@@ -837,5 +815,60 @@ fn test() {
         assert!(text.contains("italic"));
         assert!(text.contains("deleted"));
         assert!(text.contains("`inline code`"));
+    }
+
+    #[test]
+    fn test_tokenize_text_boundary_cases() {
+        let cases: &[(&str, &[&str])] = &[
+            ("", &[]),
+            ("   \t\r\n", &["   \t\r\n"]),
+            ("hello world", &["hello", " ", "world"]),
+            ("hello  \t  world", &["hello", "  \t  ", "world"]),
+            ("a中b文c", &["a", "中", "b", "文", "c"]),
+            ("🦀Rust中文", &["🦀", "Rust", "中", "文"]),
+            ("e\u{301}x", &["e", "\u{301}", "x"]),
+            ("foo\t\r\nbar", &["foo", "\t\r\n", "bar"]),
+        ];
+
+        for &(input, expected) in cases {
+            let actual: Vec<&str> = tokenize_text(input).collect();
+            assert_eq!(actual, expected, "failed on input: {:?}", input);
+        }
+    }
+
+    #[test]
+    fn test_wrap_spans_style_and_indent_preservation() {
+        let s1 = Style::default().fg(Color::Red);
+        let s2 = Style::default().fg(Color::Green);
+
+        let spans = vec![
+            Span::styled("hello", s1),
+            Span::styled(" world", s1),
+            Span::styled(" test", s2),
+        ];
+        let lines = wrap_spans_to_lines(&spans, 80, "> ", "  ");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 3);
+        assert_eq!(lines[0].spans[0].content, "> ");
+        assert_eq!(lines[0].spans[1].content, "hello world");
+        assert_eq!(lines[0].spans[1].style, s1);
+        assert_eq!(lines[0].spans[2].content, " test");
+        assert_eq!(lines[0].spans[2].style, s2);
+
+        let spans = [
+            Span::styled("一二三四五六七八", s1),
+            Span::styled("九十一二三四五六", s2),
+        ];
+        assert_eq!(
+            wrap_spans_to_lines(&spans, 20, "• ", "  "),
+            vec![
+                Line::from(vec![
+                    Span::raw("• "),
+                    Span::styled("一二三四五六七八", s1),
+                    Span::styled("九", s2)
+                ]),
+                Line::from(vec![Span::raw("  "), Span::styled("十一二三四五六", s2)]),
+            ]
+        );
     }
 }

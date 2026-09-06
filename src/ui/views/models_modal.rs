@@ -2,13 +2,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 use crate::ui::modals::ModelsModalState;
 use crate::ui::text::truncate;
 use crate::ui::views::modal_shell::{
-    ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
-    visible_window,
+    ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
+    render_modal_shell,
 };
 
 /// 渲染 /model 模态弹窗，支持上下键或 j/k 浏览选择当前配置中的可用模型
@@ -71,16 +70,6 @@ pub fn render_models_modal(
         ]),
     );
 
-    // 模型列表渲染
-    if state.filtered_models.is_empty() {
-        frame.render_widget(
-            Paragraph::new(empty_state("No models match the filter.", None)),
-            list_area,
-        );
-        return;
-    }
-
-    let mut lines = Vec::new();
     let show_details = list_area.width >= 70;
     let provider_width: usize = if show_details { 14 } else { 12 };
     let protocol_width: usize = 10;
@@ -97,7 +86,7 @@ pub fn render_models_modal(
     };
 
     // 表头
-    lines.push(Line::from(vec![
+    let header = Line::from(vec![
         Span::raw("  "),
         Span::styled(
             format!("{:<name_width$}", "Name"),
@@ -124,71 +113,69 @@ pub fn render_models_modal(
         } else {
             Span::raw("")
         },
-    ]));
+    ]);
 
-    let (start_idx, visible) = visible_window(state.selected_index, list_area.height as usize);
+    render_modal_list(
+        frame,
+        list_area,
+        &state.filtered_models,
+        state.selected_index,
+        header,
+        Some(("No models match the filter.", None)),
+        |i, item| {
+            let is_selected = i == state.selected_index;
+            let is_active = item.full_id == current_model;
 
-    for (i, item) in state
-        .filtered_models
-        .iter()
-        .enumerate()
-        .skip(start_idx)
-        .take(visible)
-    {
-        let is_selected = i == state.selected_index;
-        let is_active = item.full_id == current_model;
+            let (prefix, row_style) = list_row_affix(is_selected, is_active, Color::Cyan);
 
-        let (prefix, row_style) = list_row_affix(is_selected, is_active, Color::Cyan);
+            let short_name = truncate(&item.display_name, name_width);
+            let short_provider = truncate(&item.provider_id, provider_width);
 
-        let short_name = truncate(&item.display_name, name_width);
-        let short_provider = truncate(&item.provider_id, provider_width);
+            let context_str = match item.context_limit {
+                Some(ctx) if ctx >= 1_000_000 => format!("{}M", ctx / 1_000_000),
+                Some(ctx) if ctx >= 1_000 => format!("{}k", ctx / 1_000),
+                Some(ctx) => ctx.to_string(),
+                None => "-".to_string(),
+            };
 
-        let context_str = match item.context_limit {
-            Some(ctx) if ctx >= 1_000_000 => format!("{}M", ctx / 1_000_000),
-            Some(ctx) if ctx >= 1_000 => format!("{}k", ctx / 1_000),
-            Some(ctx) => ctx.to_string(),
-            None => "-".to_string(),
-        };
+            let variants_str = match &item.variants {
+                Some(vars) if !vars.is_empty() => vars.join(", "),
+                _ => "-".to_string(),
+            };
 
-        let variants_str = match &item.variants {
-            Some(vars) if !vars.is_empty() => vars.join(", "),
-            _ => "-".to_string(),
-        };
+            let protocol_style = if is_selected {
+                row_style
+            } else {
+                Style::default().fg(match item.provider_type.as_str() {
+                    "response" => Color::Green,
+                    "anthropic" => Color::Magenta,
+                    "gemini" => Color::Blue,
+                    _ => Color::DarkGray,
+                })
+            };
 
-        let protocol_style = if is_selected {
-            row_style
-        } else {
-            Style::default().fg(match item.provider_type.as_str() {
-                "response" => Color::Green,
-                "anthropic" => Color::Magenta,
-                "gemini" => Color::Blue,
-                _ => Color::DarkGray,
-            })
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(prefix, row_style),
-            Span::styled(format!("{:<name_width$}", short_name), row_style),
-            Span::styled(format!("{:<provider_width$}", short_provider), row_style),
-            Span::styled(
-                format!(
-                    "{:<protocol_width$}",
-                    truncate(&item.provider_type, protocol_width)
+            Line::from(vec![
+                Span::styled(prefix, row_style),
+                Span::styled(format!("{:<name_width$}", short_name), row_style),
+                Span::styled(format!("{:<provider_width$}", short_provider), row_style),
+                Span::styled(
+                    format!(
+                        "{:<protocol_width$}",
+                        truncate(&item.provider_type, protocol_width)
+                    ),
+                    protocol_style,
                 ),
-                protocol_style,
-            ),
-            if show_details {
-                Span::styled(format!("{:<context_width$}", context_str), row_style)
-            } else {
-                Span::raw("")
-            },
-            if show_details {
-                Span::styled(truncate(&variants_str, variants_width), row_style)
-            } else {
-                Span::raw("")
-            },
-        ]));
-    }
-
-    frame.render_widget(Paragraph::new(lines), list_area);
+                if show_details {
+                    Span::styled(format!("{:<context_width$}", context_str), row_style)
+                } else {
+                    Span::raw("")
+                },
+                if show_details {
+                    Span::styled(truncate(&variants_str, variants_width), row_style)
+                } else {
+                    Span::raw("")
+                },
+            ])
+        },
+    );
 }

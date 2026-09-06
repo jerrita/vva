@@ -103,11 +103,11 @@ src/
 │   └── session.rs          # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
 └── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── app/                # App 响应式控制器、状态机与子系统调度
-    │   ├── mod.rs          # App 结构体定义、生命周期与模块导出 (ChatCacheKey 行缓存失效依据)
+    │   ├── mod.rs          # App 结构体定义、生命周期与模块导出
     │   ├── session.rs      # 会话切换、SessionView 快照刷新与模态框状态调度
     │   ├── editor.rs       # 输入缓冲编辑、光标移动与斜杠命令补全
     │   ├── dispatch.rs     # 用户提交、斜杠命令路由与会话请求分发
-    │   ├── pane.rs         # TextPane 可选中文本面板 (命中判定/选区/行缓存)，聊天流与侧边栏共用
+    │   ├── pane.rs         # TextPane 可选中文本面板与 ChatCache 历史前缀缓存 (命中判定/选区/行缓存)
     │   ├── selection.rs    # TextCoord/TextSelection/SelectionTracker 与剪贴板
     │   ├── scroll.rs       # 视口滚动与坐标映射
     │   ├── tests.rs        # App 完整自动化单元测试集

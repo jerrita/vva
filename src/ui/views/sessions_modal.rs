@@ -2,13 +2,12 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 use crate::ui::modals::{ProjectScope, SessionsModalState};
 use crate::ui::text::truncate;
 use crate::ui::views::modal_shell::{
-    ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
-    selected_row_style, visible_window,
+    ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
+    render_modal_shell, selected_row_style,
 };
 
 /// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程
@@ -81,21 +80,8 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
         ]),
     );
 
-    // 会话列表渲染
-    if state.filtered_sessions.is_empty() {
-        frame.render_widget(
-            Paragraph::new(empty_state(
-                "No sessions match this scope and filter.",
-                Some("Press [Tab] to toggle to All Projects or start chatting to create a new session."),
-            )),
-            list_area,
-        );
-        return;
-    }
-
-    let mut lines = Vec::new();
     // 表头
-    lines.push(Line::from(vec![
+    let header = Line::from(vec![
         Span::raw("  "),
         Span::styled(
             format!("{:<16}", "Session ID"),
@@ -117,48 +103,51 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
             format!("{:<10}", "Created"),
             Style::default().fg(Color::DarkGray),
         ),
-    ]));
+    ]);
 
-    let (start_idx, visible) = visible_window(state.selected_index, list_area.height as usize);
-
-    for (i, item) in state
-        .filtered_sessions
-        .iter()
-        .enumerate()
-        .skip(start_idx)
-        .take(visible)
-    {
-        let is_selected = i == state.selected_index;
-        let (prefix, row_style) = list_row_affix(is_selected, false, Color::Cyan);
-
-        let short_id = truncate(&item.id, 14);
-        let title_raw = item.title.as_deref().unwrap_or("Untitled");
-        let short_title = truncate(title_raw, 24);
-        let short_model = if item.current_model.is_empty() {
-            "-".to_string()
-        } else {
-            truncate(&item.current_model, 16)
-        };
-        let created_str = item.created_at.format("%m-%d %H:%M").to_string();
-
-        let turn_color = if is_selected {
-            Color::Black
-        } else {
-            Color::Yellow
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(prefix, row_style),
-            Span::styled(format!("{:<16}", short_id), row_style),
-            Span::styled(format!("{:<26}", short_title), row_style),
-            Span::styled(
-                format!("{:<6}", item.turn_count),
-                Style::default().fg(turn_color),
+    render_modal_list(
+        frame,
+        list_area,
+        &state.filtered_sessions,
+        state.selected_index,
+        header,
+        Some((
+            "No sessions match this scope and filter.",
+            Some(
+                "Press [Tab] to toggle to All Projects or start chatting to create a new session.",
             ),
-            Span::styled(format!("{:<18}", short_model), row_style),
-            Span::styled(format!("{:<10}", created_str), row_style),
-        ]));
-    }
+        )),
+        |i, item| {
+            let is_selected = i == state.selected_index;
+            let (prefix, row_style) = list_row_affix(is_selected, false, Color::Cyan);
 
-    frame.render_widget(Paragraph::new(lines), list_area);
+            let short_id = truncate(&item.id, 14);
+            let title_raw = item.title.as_deref().unwrap_or("Untitled");
+            let short_title = truncate(title_raw, 24);
+            let short_model = if item.current_model.is_empty() {
+                "-".to_string()
+            } else {
+                truncate(&item.current_model, 16)
+            };
+            let created_str = item.created_at.format("%m-%d %H:%M").to_string();
+
+            let turn_color = if is_selected {
+                Color::Black
+            } else {
+                Color::Yellow
+            };
+
+            Line::from(vec![
+                Span::styled(prefix, row_style),
+                Span::styled(format!("{:<16}", short_id), row_style),
+                Span::styled(format!("{:<26}", short_title), row_style),
+                Span::styled(
+                    format!("{:<6}", item.turn_count),
+                    Style::default().fg(turn_color),
+                ),
+                Span::styled(format!("{:<18}", short_model), row_style),
+                Span::styled(format!("{:<10}", created_str), row_style),
+            ])
+        },
+    );
 }

@@ -63,22 +63,40 @@ pub fn render_modal_shell<'a>(
     chunks[1]
 }
 
-/// 列表空态提示：留空一行 + 黄色主文案 + 可选的深灰补充说明行
-pub fn empty_state(message: &str, extra: Option<&str>) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("   "),
-            Span::styled(message.to_owned(), Style::default().fg(Color::Yellow)),
-        ]),
-    ];
-    if let Some(extra) = extra {
-        lines.push(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(extra.to_owned(), Style::default().fg(Color::DarkGray)),
-        ]));
+/// 统一列表的表头、可见窗口与空态；条目样式由各弹窗提供。
+pub fn render_modal_list<'a, T>(
+    frame: &mut Frame,
+    area: Rect,
+    items: &[T],
+    selected: usize,
+    header: Line<'a>,
+    empty: Option<(&str, Option<&str>)>,
+    mut row: impl FnMut(usize, &T) -> Line<'a>,
+) {
+    let mut lines = vec![header];
+    if let Some((message, extra)) = empty.filter(|_| items.is_empty()) {
+        lines = vec![Line::from("")];
+        for (text, color) in [(Some(message), Color::Yellow), (extra, Color::DarkGray)] {
+            if let Some(text) = text {
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(text.to_owned(), Style::default().fg(color)),
+                ]));
+            }
+        }
+    } else {
+        let visible = area.height.saturating_sub(1) as usize;
+        let start = selected.saturating_sub(visible.saturating_sub(1));
+        lines.extend(
+            items
+                .iter()
+                .enumerate()
+                .skip(start)
+                .take(visible)
+                .map(|(i, item)| row(i, item)),
+        );
     }
-    lines
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// 列表行前缀与整行样式：选中 `> `（accent 底色反白）、活跃 `* `（黄色加粗）、普通 `  `（白色）
@@ -138,33 +156,49 @@ pub fn selected_row_style(accent: Color) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// 计算选中项可见的滚动窗口：(起始下标, 可见条数)。
-/// 首行保留给表头，选中项滚出视口下方时窗口跟随。
-pub fn visible_window(selected: usize, viewport_height: usize) -> (usize, usize) {
-    let visible = viewport_height.saturating_sub(1);
-    let start = if visible > 0 && selected >= visible {
-        selected - visible + 1
-    } else {
-        0
-    };
-    (start, visible)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_visible_window_reserves_header_row() {
-        // 视口 2 行 = 表头 1 行 + 仅剩 1 条可见（回归：过滤后单条目曾渲染 0 行）
-        assert_eq!(visible_window(0, 2), (0, 1));
-        assert_eq!(visible_window(0, 1), (0, 0));
-
-        // 未滚动时从头展示
-        assert_eq!(visible_window(0, 11), (0, 10));
-
-        // 选中项滚出视口下方时窗口跟随
-        assert_eq!(visible_window(9, 11), (0, 10));
-        assert_eq!(visible_window(10, 11), (1, 10));
+    fn test_modal_list_rendering() {
+        let items: &[usize] = &[0, 1, 2, 3, 4];
+        for (items, selected, height, empty, expected) in [
+            (items, 0, 0, None, ["", "", ""]),
+            (items, 0, 1, None, ["header", "", ""]),
+            (items, 0, 2, None, ["header", "0", ""]),
+            (items, 4, 3, None, ["header", "3", "4"]),
+            (&[][..], 0, 3, None, ["header", "", ""]),
+            (&[][..], 0, 3, Some(("empty", None)), ["", "   empty", ""]),
+            (
+                &[][..],
+                0,
+                3,
+                Some(("empty", Some("extra"))),
+                ["", "   empty", "   extra"],
+            ),
+        ] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(8, 3)).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_modal_list(
+                        frame,
+                        Rect::new(0, 0, 8, height),
+                        items,
+                        selected,
+                        Line::from("header"),
+                        empty,
+                        |_, item| Line::from(item.to_string()),
+                    );
+                })
+                .unwrap();
+            for (y, expected) in expected.iter().enumerate() {
+                let actual: String = (0..8)
+                    .map(|x| terminal.backend().buffer()[(x, y as u16)].symbol())
+                    .collect();
+                assert_eq!(actual.trim_end(), *expected);
+            }
+        }
     }
 }

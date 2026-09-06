@@ -88,7 +88,7 @@ pub fn render_input_area(
         width: inner_width as u16,
         height: inner_height as u16,
     };
-    let (cursor_row, cursor_col) = app.cursor_line_and_col();
+    let (cursor_row, cursor_col) = app.input.cursor_line_and_col();
 
     // 视口平滑滚动计算
     let mut scroll_y = app.input.scroll_y.get();

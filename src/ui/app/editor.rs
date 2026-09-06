@@ -39,11 +39,6 @@ impl App {
         self.update_command_matches();
     }
 
-    pub fn set_cursor_from_mouse(&mut self, target_row: usize, target_visual_col: usize) -> usize {
-        self.input
-            .set_cursor_from_visual_coord(target_row, target_visual_col)
-    }
-
     /// 向上轮换历史 Prompt
     pub fn history_previous(&mut self) {
         if self.prompt_history.is_empty() {
@@ -82,38 +77,6 @@ impl App {
                 self.set_input(&draft);
             }
         }
-    }
-
-    pub fn move_cursor_left(&mut self) {
-        self.input.move_cursor_left();
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        self.input.move_cursor_right();
-    }
-
-    pub fn move_cursor_up(&mut self) {
-        self.input.move_cursor_up();
-    }
-
-    pub fn move_cursor_down(&mut self) {
-        self.input.move_cursor_down();
-    }
-
-    pub fn move_cursor_home(&mut self) {
-        self.input.move_cursor_home();
-    }
-
-    pub fn move_cursor_end(&mut self) {
-        self.input.move_cursor_end();
-    }
-
-    pub fn input_line_count(&self) -> usize {
-        self.input.line_count()
-    }
-
-    pub fn cursor_line_and_col(&self) -> (usize, usize) {
-        self.input.cursor_line_and_col()
     }
 
     pub fn set_input(&mut self, s: &str) {

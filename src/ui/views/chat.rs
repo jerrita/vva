@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -98,81 +97,34 @@ fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
     }
 }
 
-/// 构建对话流的 Ratatui 文本行列表（支持 Markdown 渲染、CJK 安全折行与多级缩进）
-pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let max_width = max_width.max(20);
-
-    if app
-        .view
-        .session
-        .turns
-        .iter()
-        .all(|t| t.role == Role::System)
-        && app.view.draft.is_empty()
-    {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Start typing a prompt or use ",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                "/",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " to access commands (/sessions to resume).",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
-
-    let parts = app
-        .view
-        .session
-        .turns
-        .iter()
-        .map(|turn| {
-            (
-                turn.role,
-                turn.messages
-                    .iter()
-                    .flat_map(|m| m.parts.iter())
-                    .collect::<Vec<_>>(),
-            )
+/// 轮次内统一汇总引用；思考分组状态延续到下一轮或草稿。
+pub(crate) fn append_parts<'a>(
+    lines: &mut Vec<Line<'static>>,
+    role: Role,
+    parts: impl Iterator<Item = &'a ContentPart> + Clone,
+    max_width: usize,
+    thinking_concise: bool,
+    prev_reasoning: &mut bool,
+) {
+    let calls = parts
+        .clone()
+        .filter_map(|part| match part {
+            ContentPart::WebSearchCall(call) => Some(call),
+            _ => None,
         })
-        .chain(std::iter::once((
-            Role::Assistant,
-            app.view.draft.iter().collect(),
-        )))
-        .flat_map(|(role, parts)| {
-            let calls = parts
-                .iter()
-                .filter_map(|p| match p {
-                    ContentPart::WebSearchCall(call) => Some(call),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let summary = Arc::new((calls, search_citations(parts.iter().copied())));
-            parts
-                .into_iter()
-                .map(move |part| (role, part, summary.clone()))
-        });
-    let mut prev_reasoning = false;
-    for (role, part, summary) in parts {
+        .collect::<Vec<_>>();
+    let citations = search_citations(parts.clone());
+    for part in parts {
         match (role, part) {
             (Role::User, ContentPart::Text { text, .. }) => {
-                prev_reasoning = false;
+                *prev_reasoning = false;
                 lines.push(Line::from(""));
-                push_user_block(&mut lines, text, max_width);
+                push_user_block(lines, text, max_width);
             }
             (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
                 // 连续思考段归为一段：仅组首插入空行分隔，组内紧密堆叠
-                let group_start = !prev_reasoning;
-                prev_reasoning = true;
+                let group_start = !*prev_reasoning;
+                *prev_reasoning = true;
                 if group_start {
                     lines.push(Line::from(""));
                 }
@@ -185,7 +137,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                     .fg(Color::Rgb(140, 140, 140))
                     .add_modifier(Modifier::BOLD | Modifier::ITALIC);
 
-                if app.thinking_concise {
+                if thinking_concise {
                     // hidden 模式：整组合并为单行标记，段落内容隐藏
                     if group_start {
                         lines.push(Line::from(vec![Span::styled("+ Thought:", prefix_style)]));
@@ -224,7 +176,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
-                prev_reasoning = false;
+                *prev_reasoning = false;
                 let name = &call.name;
                 let args = &call.arguments;
                 lines.push(Line::from(""));
@@ -242,7 +194,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 lines.extend(wrapped);
             }
             (Role::Tool, ContentPart::ToolResult(result)) => {
-                prev_reasoning = false;
+                *prev_reasoning = false;
                 let is_error = &result.is_error;
                 let result = &result.content;
                 let status_color = if *is_error { Color::Red } else { Color::Green };
@@ -279,7 +231,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 }
             }
             (Role::Assistant, ContentPart::WebSearchCall(call)) => {
-                prev_reasoning = false;
+                *prev_reasoning = false;
                 let (label, detail) = match &call.action {
                     WebSearchAction::Search => (
                         "[web_search]",
@@ -309,7 +261,7 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 }
 
                 // Citation titles on the left, domains aligned to the right.
-                for (url, title) in &summary.1 {
+                for (url, title) in &citations {
                     if !call_covers_url(call, url) {
                         continue;
                     }
@@ -334,12 +286,12 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
                 }
             }
             (Role::Assistant, ContentPart::Text { text, annotations }) => {
-                prev_reasoning = false;
+                *prev_reasoning = false;
                 let citations: Vec<_> = annotations
                     .iter()
                     .filter_map(|a| {
                         if let Annotation::UrlCitation { title, url, .. } = a
-                            && !summary.0.iter().any(|call| call_covers_url(call, url))
+                            && !calls.iter().any(|call| call_covers_url(call, url))
                         {
                             Some((title, url))
                         } else {
@@ -382,7 +334,44 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
             _ => {}
         }
     }
-    for text in &app.notices {
+}
+
+pub(crate) fn append_chat_tail(
+    lines: &mut Vec<Line<'static>>,
+    view: &crate::harness::SessionView,
+    notices: &[String],
+    max_width: usize,
+    thinking_concise: bool,
+    mut prev_reasoning: bool,
+) {
+    if view.session.turns.iter().all(|t| t.role == Role::System) && view.draft.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Start typing a prompt or use ",
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                "/",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " to access commands (/sessions to resume).",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+    append_parts(
+        lines,
+        Role::Assistant,
+        view.draft.iter(),
+        max_width,
+        thinking_concise,
+        &mut prev_reasoning,
+    );
+    for text in notices {
         lines.push(Line::from(""));
         let spans = vec![Span::styled(
             text.clone(),
@@ -393,8 +382,6 @@ pub fn build_chat_lines(app: &App, max_width: usize) -> Vec<Line<'static>> {
         let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
         lines.extend(wrapped);
     }
-
-    lines
 }
 
 /// 从渲染完成的文本行中提取处于选区范围内的纯文本内容（按行保留视觉对齐并去除尾随空白）
@@ -630,6 +617,31 @@ mod tests {
     use super::*;
     use crate::model::WebSearchSource;
     use crate::ui::app::TextCoord;
+    use std::sync::Arc;
+
+    fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let mut prev_reasoning = false;
+        for turn in &app.view.session.turns {
+            append_parts(
+                &mut lines,
+                turn.role,
+                turn.messages.iter().flat_map(|m| &m.parts),
+                width.max(20),
+                app.thinking_concise,
+                &mut prev_reasoning,
+            );
+        }
+        append_chat_tail(
+            &mut lines,
+            &app.view,
+            &app.notices,
+            width.max(20),
+            app.thinking_concise,
+            prev_reasoning,
+        );
+        lines
+    }
 
     async fn create_test_app() -> App {
         crate::ui::test_support::create_test_app("init_model", None, None, false)
@@ -647,6 +659,83 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(joined.contains("Start typing a prompt"));
+    }
+
+    #[tokio::test]
+    async fn test_chat_cache_preserves_history_and_layout() {
+        let mut ta =
+            crate::ui::test_support::create_test_app("init_model", None, None, false).await;
+        let app = &mut ta.app;
+        let check = |app: &mut App, width| {
+            let expected = build_chat_lines(app, width);
+            app.refresh_chat_lines(width);
+            assert_eq!(app.chat.lines, expected);
+        };
+        check(app, 80);
+        app.add_part(
+            Role::User,
+            ContentPart::text("History 中文与 English words ".repeat(4)),
+        );
+        app.add_part(
+            Role::Assistant,
+            ContentPart::reasoning("**First thought**", None),
+        );
+        check(app, 80);
+        let history_text = |app: &App| {
+            app.chat
+                .lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .find(|span| span.content.contains("History"))
+                .unwrap()
+                .content
+                .as_ptr()
+        };
+        let history = history_text(app);
+        for draft in [
+            vec![ContentPart::reasoning("**Next thought**", None)],
+            vec![
+                ContentPart::reasoning("**Next thought**", None),
+                ContentPart::text("**Answer**"),
+            ],
+            vec![],
+        ] {
+            let view = Arc::make_mut(&mut app.view);
+            view.revision += 1;
+            view.draft = draft;
+            check(app, 80);
+            assert_eq!(history_text(app), history);
+        }
+        app.notices.push("Local notice".into());
+        check(app, 80);
+        app.notices.clear();
+        check(app, 80);
+        assert_eq!(history_text(app), history);
+
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft
+            .push(ContentPart::reasoning("**Next thought**", None));
+        for concise in [false, true] {
+            app.thinking_concise = concise;
+            for width in [30, 120, 80] {
+                check(app, width);
+            }
+        }
+        // 会话内容替换时，即使轮次数与视图版本相同也必须重建历史。
+        let session = Arc::make_mut(&mut Arc::make_mut(&mut app.view).session);
+        session.turns[0] =
+            crate::model::Turn::user_turn(crate::model::Message::text("Replacement"));
+        check(app, 80);
+        app.attach_session(app.active_session.clone());
+        check(app, 80);
+        assert!(
+            app.chat
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("Start typing"))
+        );
+        std::fs::remove_dir_all(ta.temp_dir).unwrap();
     }
 
     #[tokio::test]

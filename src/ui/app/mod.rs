@@ -10,7 +10,7 @@ use crate::ui::command::SlashCommand;
 pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
-pub use pane::TextPane;
+pub use pane::{ChatCache, TextPane};
 pub use selection::{
     SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
     get_clipboard_text, set_clipboard_text,
@@ -25,15 +25,6 @@ pub mod session;
 
 #[cfg(test)]
 mod tests;
-
-/// 聊天流行缓存的失效依据：会话视图版本、渲染宽度、思考展示模式与本地通知数量
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ChatCacheKey {
-    pub revision: u64,
-    pub width: usize,
-    pub thinking_concise: bool,
-    pub notices: usize,
-}
 
 /// TUI 交互式应用全局状态与控制中枢
 pub struct App {
@@ -51,9 +42,9 @@ pub struct App {
     pub max_scroll: usize,
     pub viewport_height: usize,
     pub is_dragging_scrollbar: bool,
-    /// 聊天流面板：行缓存按 chat_cache_key 失效，渲染与复制读同一份
+    /// 聊天流面板：渲染与复制共用行缓冲，流式更新只重建历史前缀之后的内容
     pub chat: TextPane,
-    pub chat_cache_key: ChatCacheKey,
+    pub chat_cache: ChatCache,
     pub sidebar: TextPane,
     pub spinner_frame: usize,
     pub should_quit: bool,
@@ -92,7 +83,7 @@ impl App {
             viewport_height: 0,
             is_dragging_scrollbar: false,
             chat: TextPane::default(),
-            chat_cache_key: ChatCacheKey::default(),
+            chat_cache: ChatCache::default(),
             sidebar: TextPane::default(),
             spinner_frame: 0,
             should_quit: false,

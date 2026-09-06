@@ -150,7 +150,7 @@ async fn run_app_loop(
                 (size, None)
             };
 
-            let input_lines = app.input_line_count();
+            let input_lines = app.input.line_count();
             // 输入区由 3 部分构成：上方状态栏(1行) + 输入框(边框2行 + 文本行) + 下方状态栏(1行)
             // 文本行数动态自适应，最多不超过 (main_area.height - 8) / 2（在 1 到 12 行之间）
             let max_text_rows = ((main_area.height.saturating_sub(8)) / 2).clamp(1, 12) as usize;
@@ -379,10 +379,10 @@ async fn handle_crossterm_event(
             }
             // Ctrl+A / Ctrl+E 光标首尾移动
             KeyCode::Char(_) if is_ctrl_key(&key, 'a') => {
-                app.move_cursor_home();
+                app.input.move_cursor_home();
             }
             KeyCode::Char(_) if is_ctrl_key(&key, 'e') => {
-                app.move_cursor_end();
+                app.input.move_cursor_end();
             }
             // Ctrl+K / Ctrl+U 清空输入框内容
             KeyCode::Char(_) if is_ctrl_key(&key, 'k') || is_ctrl_key(&key, 'u') => {
@@ -450,13 +450,13 @@ async fn handle_crossterm_event(
                 app.delete();
             }
             KeyCode::Left => {
-                app.move_cursor_left();
+                app.input.move_cursor_left();
             }
             KeyCode::Right => {
-                app.move_cursor_right();
+                app.input.move_cursor_right();
             }
             KeyCode::Up => {
-                let (row, _) = app.cursor_line_and_col();
+                let (row, _) = app.input.cursor_line_and_col();
                 if app.input.is_empty() || app.history_index.is_some() || row == 0 {
                     if !app.prompt_history.is_empty() {
                         app.history_previous();
@@ -464,32 +464,32 @@ async fn handle_crossterm_event(
                         app.scroll_up(2);
                     }
                 } else {
-                    app.move_cursor_up();
+                    app.input.move_cursor_up();
                 }
             }
             KeyCode::Down => {
-                let (row, _) = app.cursor_line_and_col();
-                let line_count = app.input_line_count();
+                let (row, _) = app.input.cursor_line_and_col();
+                let line_count = app.input.line_count();
                 if app.history_index.is_some() {
                     app.history_next();
                 } else if app.input.is_empty() {
                     app.scroll_down(2);
                 } else if row + 1 < line_count {
-                    app.move_cursor_down();
+                    app.input.move_cursor_down();
                 }
             }
             KeyCode::Home => {
                 if app.input.is_empty() {
                     app.scroll_to_top();
                 } else {
-                    app.move_cursor_home();
+                    app.input.move_cursor_home();
                 }
             }
             KeyCode::End => {
                 if app.input.is_empty() {
                     app.scroll_to_bottom();
                 } else {
-                    app.move_cursor_end();
+                    app.input.move_cursor_end();
                 }
             }
             KeyCode::PageUp => {
@@ -617,7 +617,7 @@ fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
     if rect_hit(app.input_inner_area, column, row) {
         let rel_row = (row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
         let rel_col = (column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
-        let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
+        let char_pos = app.input.set_cursor_from_visual_coord(rel_row, rel_col);
         app.start_input_selection(char_pos);
         app.chat.selection.clear();
         app.sidebar.selection.clear();
@@ -689,7 +689,7 @@ fn handle_mouse_left_drag(app: &mut App, mouse: crossterm::event::MouseEvent) {
         };
         let rel_col =
             (column.saturating_sub(app.input_inner_area.x)) as usize + app.input.scroll_x.get();
-        let char_pos = app.set_cursor_from_mouse(rel_row, rel_col);
+        let char_pos = app.input.set_cursor_from_visual_coord(rel_row, rel_col);
         app.update_input_selection(char_pos);
     } else if app.chat.selection.is_selecting() && app.chat.area.height > 0 {
         // 拖拽越过聊天区边界时自动滚动

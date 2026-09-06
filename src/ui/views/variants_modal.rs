@@ -2,12 +2,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 use crate::ui::modals::VariantsModalState;
 use crate::ui::views::modal_shell::{
-    ModalShellSpec, empty_state, filter_line, footer_hints, list_row_affix, render_modal_shell,
-    selected_row_style, visible_window,
+    ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
+    render_modal_shell, selected_row_style,
 };
 
 /// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位
@@ -74,58 +73,46 @@ pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area
         ]),
     );
 
-    // 档位列表渲染
-    if state.filtered_variants.is_empty() {
-        frame.render_widget(
-            Paragraph::new(empty_state("No variants match the filter.", None)),
-            list_area,
-        );
-        return;
-    }
-
-    let mut lines = Vec::new();
     // 表头
-    lines.push(Line::from(vec![
+    let header = Line::from(vec![
         Span::raw("  "),
         Span::styled(
             format!("{:<28}", "Variant / Effort"),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled("Status", Style::default().fg(Color::DarkGray)),
-    ]));
+    ]);
 
-    let (start_idx, visible) = visible_window(state.selected_index, list_area.height as usize);
+    render_modal_list(
+        frame,
+        list_area,
+        &state.filtered_variants,
+        state.selected_index,
+        header,
+        Some(("No variants match the filter.", None)),
+        |i, item| {
+            let is_selected = i == state.selected_index;
+            let is_active = item.id.as_ref() == state.active_variant.as_ref();
 
-    for (i, item) in state
-        .filtered_variants
-        .iter()
-        .enumerate()
-        .skip(start_idx)
-        .take(visible)
-    {
-        let is_selected = i == state.selected_index;
-        let is_active = item.id.as_ref() == state.active_variant.as_ref();
+            let (prefix, row_style) = list_row_affix(is_selected, is_active, Color::Magenta);
 
-        let (prefix, row_style) = list_row_affix(is_selected, is_active, Color::Magenta);
+            let status_str = if is_active { "[active]" } else { "-" };
 
-        let status_str = if is_active { "[active]" } else { "-" };
+            let status_style = if is_selected {
+                selected_row_style(Color::Magenta)
+            } else if is_active {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
 
-        let status_style = if is_selected {
-            selected_row_style(Color::Magenta)
-        } else if is_active {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(prefix, row_style),
-            Span::styled(format!("{:<28}", item.display_name), row_style),
-            Span::styled(status_str, status_style),
-        ]));
-    }
-
-    frame.render_widget(Paragraph::new(lines), list_area);
+            Line::from(vec![
+                Span::styled(prefix, row_style),
+                Span::styled(format!("{:<28}", item.display_name), row_style),
+                Span::styled(status_str, status_style),
+            ])
+        },
+    );
 }

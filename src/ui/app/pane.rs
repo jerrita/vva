@@ -1,8 +1,10 @@
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
+use std::sync::{Arc, Weak};
 
 use super::selection::SelectionTracker;
-use crate::ui::views::chat::extract_selected_text;
+use crate::model::Session;
+use crate::ui::views::chat::{append_chat_tail, append_parts, extract_selected_text};
 
 /// 可选中文本面板：渲染行、命中区域与选区是同一件事的三个侧面。
 /// 聊天流与侧边栏共用该结构，交互代码按面板列表派发而不逐个枚举目标。
@@ -44,19 +46,58 @@ impl TextPane {
     }
 }
 
+/// 仅记录历史前缀边界及其排版状态，不另存文本或持有旧会话快照。
+#[derive(Default)]
+pub struct ChatCache {
+    session: Weak<Session>,
+    revision: u64,
+    width: usize,
+    thinking_concise: bool,
+    notices: usize,
+    history_lines: usize,
+    prev_reasoning: bool,
+}
+
 impl super::App {
-    /// 按缓存键重建聊天流渲染行；键未变化时复用上一帧结果
+    /// 历史随会话快照和布局失效，草稿与通知随视图版本更新。
     pub fn refresh_chat_lines(&mut self, width: usize) {
-        let key = super::ChatCacheKey {
-            revision: self.view.revision,
-            width,
-            thinking_concise: self.thinking_concise,
-            notices: self.notices.len(),
-        };
-        if key == self.chat_cache_key && !self.chat.lines.is_empty() {
+        let width = width.max(20);
+        let cache = &mut self.chat_cache;
+        let session = Arc::downgrade(&self.view.session);
+        if !cache.session.ptr_eq(&session)
+            || cache.width != width
+            || cache.thinking_concise != self.thinking_concise
+            || self.chat.lines.is_empty()
+        {
+            self.chat.lines.clear();
+            cache.prev_reasoning = false;
+            for turn in &self.view.session.turns {
+                append_parts(
+                    &mut self.chat.lines,
+                    turn.role,
+                    turn.messages.iter().flat_map(|m| &m.parts),
+                    width,
+                    self.thinking_concise,
+                    &mut cache.prev_reasoning,
+                );
+            }
+            cache.history_lines = self.chat.lines.len();
+            cache.session = session;
+            cache.width = width;
+            cache.thinking_concise = self.thinking_concise;
+        } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
             return;
         }
-        self.chat_cache_key = key;
-        self.chat.lines = crate::ui::views::chat::build_chat_lines(self, width);
+        self.chat.lines.truncate(cache.history_lines);
+        append_chat_tail(
+            &mut self.chat.lines,
+            &self.view,
+            &self.notices,
+            width,
+            self.thinking_concise,
+            cache.prev_reasoning,
+        );
+        cache.revision = self.view.revision;
+        cache.notices = self.notices.len();
     }
 }
