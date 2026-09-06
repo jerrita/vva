@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 
 use super::selection::SelectionTracker;
 use crate::model::Session;
+use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{append_chat_tail, append_parts, extract_selected_text};
 
 /// 可选中文本面板：渲染行、命中区域与选区是同一件事的三个侧面。
@@ -12,6 +13,7 @@ use crate::ui::views::chat::{append_chat_tail, append_parts, extract_selected_te
 pub struct TextPane {
     pub area: Rect,
     pub lines: Vec<Line<'static>>,
+    pub links: Vec<LinkRegion>,
     pub selection: SelectionTracker,
 }
 
@@ -42,6 +44,7 @@ impl TextPane {
     pub fn reset(&mut self) {
         self.area = Rect::default();
         self.lines.clear();
+        self.links.clear();
         self.selection.clear();
     }
 }
@@ -70,10 +73,12 @@ impl super::App {
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
+            self.chat.links.clear();
             cache.prev_reasoning = false;
             for turn in &self.view.session.turns {
                 append_parts(
                     &mut self.chat.lines,
+                    &mut self.chat.links,
                     turn.role,
                     turn.messages.iter().flat_map(|m| &m.parts),
                     width,
@@ -89,8 +94,12 @@ impl super::App {
             return;
         }
         self.chat.lines.truncate(cache.history_lines);
+        self.chat
+            .links
+            .retain(|link| link.line < cache.history_lines);
         append_chat_tail(
             &mut self.chat.lines,
+            &mut self.chat.links,
             &self.view,
             &self.notices,
             width,

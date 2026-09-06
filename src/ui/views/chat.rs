@@ -10,7 +10,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::model::{Annotation, ContentPart, Role, WebSearchAction, WebSearchCall};
 use crate::ui::app::{App, TextCoord, TextSelection, char_in_column_range};
-use crate::ui::markdown::{render_markdown, wrap_spans_to_lines};
+use crate::ui::markdown::{LinkRegion, render_markdown, wrap_spans_to_lines};
 use crate::ui::text::truncate;
 use crate::ui::views::header::session_title_line;
 use crate::ui::views::{PANEL_BORDER, panel_block};
@@ -105,6 +105,7 @@ fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
 /// 轮次内统一汇总引用；思考分组状态延续到下一轮或草稿。
 pub(crate) fn append_parts<'a>(
     lines: &mut Vec<Line<'static>>,
+    links: &mut Vec<LinkRegion>,
     role: Role,
     parts: impl Iterator<Item = &'a ContentPart> + Clone,
     max_width: usize,
@@ -133,8 +134,6 @@ pub(crate) fn append_parts<'a>(
                 if group_start {
                     lines.push(Line::from(""));
                 }
-                // 各思考段落（协议层以空行分隔）独立渲染 markdown 并统一弱化为灰色斜体
-                // （Style::patch 语义下 fg 覆盖、修饰符并集，加粗等强调得以保留）
                 let body_style = Style::default()
                     .fg(Color::Rgb(120, 120, 120))
                     .add_modifier(Modifier::ITALIC);
@@ -142,42 +141,21 @@ pub(crate) fn append_parts<'a>(
                     .fg(Color::Rgb(140, 140, 140))
                     .add_modifier(Modifier::BOLD | Modifier::ITALIC);
 
-                if thinking_concise {
-                    // hidden 模式：整组合并为单行标记，段落内容隐藏
-                    if group_start {
-                        lines.push(Line::from(vec![Span::styled("+ Thought:", prefix_style)]));
+                if group_start {
+                    lines.push(Line::from(vec![Span::styled("+ Thought:", prefix_style)]));
+                }
+                if !thinking_concise {
+                    let (mut body, mut body_links) = render_markdown(content, max_width);
+                    for link in &mut body_links {
+                        link.line += lines.len();
                     }
-                } else {
-                    // "+ Thought: " 前缀占 11 列，渲染时预留
-                    let paragraphs: Vec<Vec<Line<'static>>> = content
-                        .split("\n\n")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(|p| {
-                            let mut ls = render_markdown(p, max_width.saturating_sub(11));
-                            for line in &mut ls {
-                                for span in &mut line.spans {
-                                    span.style = span.style.patch(body_style);
-                                }
-                            }
-                            ls
-                        })
-                        .collect();
-
-                    // OpenCode 风格：每个思考段落一条独立的 `+ Thought:` 行
-                    let mut any = false;
-                    for para in &paragraphs {
-                        let mut iter = para.iter();
-                        if let Some(first) = iter.next() {
-                            let mut spans = vec![Span::styled("+ Thought: ", prefix_style)];
-                            spans.extend(first.spans.iter().cloned());
-                            lines.push(Line::from(spans));
-                            lines.extend(iter.cloned());
-                            any = true;
+                    links.extend(body_links);
+                    for line in &mut body {
+                        for span in &mut line.spans {
+                            span.style = span.style.patch(body_style);
                         }
                     }
-                    if !any {
-                        lines.push(Line::from(vec![Span::styled("Thinking...", body_style)]));
-                    }
+                    lines.extend(body);
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
@@ -305,7 +283,11 @@ pub(crate) fn append_parts<'a>(
                     })
                     .collect();
                 lines.push(Line::from(""));
-                let md_lines = render_markdown(text, max_width);
+                let (md_lines, mut md_links) = render_markdown(text, max_width);
+                for link in &mut md_links {
+                    link.line += lines.len();
+                }
+                links.extend(md_links);
                 lines.extend(md_lines);
 
                 // Citations not covered by a call remain below the text.
@@ -343,6 +325,7 @@ pub(crate) fn append_parts<'a>(
 
 pub(crate) fn append_chat_tail(
     lines: &mut Vec<Line<'static>>,
+    links: &mut Vec<LinkRegion>,
     view: &crate::harness::SessionView,
     notices: &[String],
     max_width: usize,
@@ -370,6 +353,7 @@ pub(crate) fn append_chat_tail(
     }
     append_parts(
         lines,
+        links,
         Role::Assistant,
         view.draft.iter(),
         max_width,
@@ -650,6 +634,7 @@ mod tests {
         for turn in &app.view.session.turns {
             append_parts(
                 &mut lines,
+                &mut Vec::new(),
                 turn.role,
                 turn.messages.iter().flat_map(|m| &m.parts),
                 width.max(20),
@@ -659,6 +644,7 @@ mod tests {
         }
         append_chat_tail(
             &mut lines,
+            &mut Vec::new(),
             &app.view,
             &app.notices,
             width.max(20),
@@ -777,13 +763,22 @@ mod tests {
             ),
         );
 
-        // full 模式：每个思考段落一条独立的 `+ Thought:` 行
+        // Full mode keeps all paragraphs under one heading.
         let lines = build_chat_lines(&app, 80);
         let thought_lines: Vec<_> = lines
             .iter()
-            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought: "))
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought:"))
             .collect();
-        assert_eq!(thought_lines.len(), 2);
+        assert_eq!(thought_lines.len(), 1);
+        assert_eq!(thought_lines[0].to_string(), "+ Thought:");
+        let first_body = lines
+            .iter()
+            .find(|l| l.to_string().contains("Requesting"))
+            .unwrap();
+        assert_eq!(
+            first_body.to_string(),
+            "   Requesting Shenzhen weather forecast"
+        );
 
         // markdown 标记被渲染掉，加粗修饰保留，两段分行
         let all_text: String = lines
@@ -793,7 +788,7 @@ mod tests {
         assert!(all_text.contains("Requesting Shenzhen weather forecast"));
         assert!(all_text.contains("Drafting cautious forecast"));
         assert!(!all_text.contains("**"));
-        let bold_in_first = thought_lines[0].spans.iter().any(|s| {
+        let bold_in_first = first_body.spans.iter().any(|s| {
             s.content.contains("Requesting") && s.style.add_modifier.contains(Modifier::BOLD)
         });
         assert!(bold_in_first);
@@ -835,23 +830,16 @@ mod tests {
         let header_idx: Vec<usize> = lines
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "+ Thought: "))
+            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "+ Thought:"))
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(header_idx.len(), 3);
-
-        // 同组思考行之间无空行
-        for line in &lines[header_idx[0] + 1..header_idx[1]] {
-            assert!(
-                !line.spans.is_empty() && line.spans.iter().any(|s| !s.content.trim().is_empty())
-            );
-        }
+        assert_eq!(header_idx.len(), 2);
         // 搜索块出现在两组思考之间，来源行左侧为注脚补齐的网页标题、域名右对齐至可用宽度
         let search_idx = lines
             .iter()
             .position(|l| l.spans.iter().any(|s| s.content == "[web_search]"))
             .expect("web search block rendered");
-        assert!(search_idx > header_idx[1] && search_idx < header_idx[2]);
+        assert!(search_idx > header_idx[0] && search_idx < header_idx[1]);
         let source_row = &lines[search_idx + 1];
         assert!(
             source_row

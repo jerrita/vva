@@ -1,6 +1,7 @@
 pub mod app;
 pub mod command;
 pub mod history;
+mod hyperlinks;
 pub mod input;
 pub mod markdown;
 pub mod modals;
@@ -124,6 +125,7 @@ async fn run_app_loop(
 ) -> io::Result<()> {
     let mut events = spawn_crossterm_events();
     let mut tick_interval = tokio::time::interval(Duration::from_millis(100));
+    let mut hyperlinks = hyperlinks::Hyperlinks::default();
 
     loop {
         let view = app.view.clone();
@@ -135,7 +137,7 @@ async fn run_app_loop(
         let session_workspace = session.workspace_root.display().to_string();
         let status_text = view.state.status();
 
-        terminal.draw(|frame| {
+        let frame = terminal.draw(|frame| {
             let size = frame.area();
 
             let input_lines = app.input.line_count();
@@ -197,6 +199,13 @@ async fn run_app_loop(
                 ActiveModal::None => {}
             }
         })?;
+        let updates = hyperlinks.prepare(
+            frame.buffer,
+            &app.chat,
+            app.chat_scroll(),
+            app.modal.is_none(),
+        );
+        hyperlinks::write_updates(terminal.backend_mut(), &updates)?;
 
         if app.should_quit {
             break;

@@ -3,6 +3,46 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+#[derive(Debug, Clone)]
+pub struct LinkRegion {
+    pub line: usize,
+    pub columns: std::ops::Range<usize>,
+    pub url: String,
+}
+
+#[derive(Default)]
+struct MarkdownLinks {
+    active: Option<String>,
+    pending: std::collections::HashMap<usize, String>,
+    regions: Vec<LinkRegion>,
+}
+
+impl MarkdownLinks {
+    fn track(&mut self, span_index: usize) {
+        if let Some(url) = &self.active {
+            self.pending.insert(span_index, url.clone());
+        }
+    }
+
+    fn record(&mut self, span: usize, line: usize, column: usize, width: usize) {
+        if let Some(url) = self.pending.get(&span) {
+            if let Some(last) = self.regions.last_mut()
+                && last.line == line
+                && last.columns.end == column
+                && last.url == *url
+            {
+                last.columns.end += width;
+            } else {
+                self.regions.push(LinkRegion {
+                    line,
+                    columns: column..column + width,
+                    url: url.clone(),
+                });
+            }
+        }
+    }
+}
+
 /// 将包含 CJK 与普通字符的 Span 切割并按终端可用宽度安全折行
 /// initial_indent: 首行前缀（如 "   " 或 "   • "）
 /// cont_indent: 折行后续行前缀（如 "   " 或 "     "）
@@ -11,6 +51,22 @@ pub fn wrap_spans_to_lines(
     max_width: usize,
     initial_indent: &str,
     cont_indent: &str,
+) -> Vec<Line<'static>> {
+    wrap_spans(
+        spans,
+        max_width,
+        initial_indent,
+        cont_indent,
+        |_, _, _, _| {},
+    )
+}
+
+fn wrap_spans(
+    spans: &[Span<'static>],
+    max_width: usize,
+    initial_indent: &str,
+    cont_indent: &str,
+    mut record: impl FnMut(usize, usize, usize, usize),
 ) -> Vec<Line<'static>> {
     let max_width = max_width.max(20);
     let mut result: Vec<Line<'static>> = Vec::new();
@@ -21,7 +77,7 @@ pub fn wrap_spans_to_lines(
     let mut current_spans: Vec<Span<'static>> = vec![Span::raw(initial_indent.to_string())];
     let mut current_width = init_indent_w;
 
-    for span in spans {
+    for (span_index, span) in spans.iter().enumerate() {
         let style = span.style;
         let text = &span.content;
 
@@ -52,6 +108,7 @@ pub fn wrap_spans_to_lines(
             }
 
             // 追加到当前行
+            record(span_index, result.len(), current_width, tok_w);
             if let Some(last) = current_spans.last_mut().filter(|last| last.style == style) {
                 last.content.to_mut().push_str(token);
             } else {
@@ -232,7 +289,7 @@ fn normalize_cjk_bold_in_line(line: &str) -> String {
 }
 
 /// Markdown 原生渲染器：将 CommonMark 文本解析并排版为具备美化样式的 Ratatui Line 列表
-pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
+pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Vec<LinkRegion>) {
     let preprocessed = preprocess_cjk_markdown(input);
 
     let mut options = Options::empty();
@@ -248,7 +305,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
     let mut bold = false;
     let mut italic = false;
     let mut strikethrough = false;
-    let mut in_link = false;
+    let mut links = MarkdownLinks::default();
 
     // 当前块状态
     let mut current_heading_level: Option<HeadingLevel> = None;
@@ -272,7 +329,8 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
     let flush_paragraph = |spans: &mut Vec<Span<'static>>,
                            lines: &mut Vec<Line<'static>>,
                            list_stack: &[Option<u64>],
-                           in_bq: bool| {
+                           in_bq: bool,
+                           links: &mut MarkdownLinks| {
         if spans.is_empty() {
             return;
         }
@@ -289,9 +347,19 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
             ("   ".to_string(), "   ".to_string())
         };
 
-        let wrapped = wrap_spans_to_lines(spans, max_width, &init_indent, &cont_indent);
+        let offset = lines.len();
+        let wrapped = wrap_spans(
+            spans,
+            max_width,
+            &init_indent,
+            &cont_indent,
+            |span, line, col, width| {
+                links.record(span, offset + line, col, width);
+            },
+        );
         lines.extend(wrapped);
         spans.clear();
+        links.pending.clear();
     };
 
     for event in parser {
@@ -303,6 +371,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     if !output_lines.is_empty() {
                         output_lines.push(Line::from(""));
@@ -318,6 +387,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     list_stack.push(start_num);
                 }
@@ -327,6 +397,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                 }
                 Tag::BlockQuote(_) => {
@@ -335,6 +406,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     in_blockquote = true;
                 }
@@ -344,6 +416,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     in_code_block = true;
                     code_block_lang = match kind {
@@ -358,6 +431,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     in_table = true;
                     table_rows.clear();
@@ -374,7 +448,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                 Tag::Emphasis => italic = true,
                 Tag::Strong => bold = true,
                 Tag::Strikethrough => strikethrough = true,
-                Tag::Link { .. } => in_link = true,
+                Tag::Link { dest_url, .. } => links.active = Some(dest_url.into_string()),
                 _ => {}
             },
 
@@ -409,6 +483,12 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                     };
 
                     let mut heading_spans = vec![Span::raw("   "), Span::styled(icon, style)];
+                    let mut column = 3 + icon.width();
+                    for (index, span) in pending_spans.iter().enumerate() {
+                        links.record(index, output_lines.len(), column, span.width());
+                        column += span.width();
+                    }
+                    links.pending.clear();
                     heading_spans.append(&mut pending_spans);
                     output_lines.push(Line::from(heading_spans));
                     output_lines.push(Line::from(""));
@@ -419,6 +499,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     output_lines.push(Line::from(""));
                 }
@@ -428,6 +509,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     list_stack.pop();
                     if list_stack.is_empty() {
@@ -440,6 +522,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     if let Some(Some(n)) = list_stack.last_mut() {
                         *n += 1;
@@ -451,6 +534,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                         &mut output_lines,
                         &list_stack,
                         in_blockquote,
+                        &mut links,
                     );
                     in_blockquote = false;
                     output_lines.push(Line::from(""));
@@ -510,7 +594,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                 TagEnd::Emphasis => italic = false,
                 TagEnd::Strong => bold = false,
                 TagEnd::Strikethrough => strikethrough = false,
-                TagEnd::Link => in_link = false,
+                TagEnd::Link => links.active = None,
                 _ => {}
             },
 
@@ -536,7 +620,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                     if strikethrough {
                         style = style.add_modifier(Modifier::CROSSED_OUT);
                     }
-                    if in_link {
+                    if links.active.is_some() {
                         style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
                     }
                     if in_blockquote {
@@ -545,6 +629,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                             .add_modifier(Modifier::ITALIC);
                     }
 
+                    links.track(pending_spans.len());
                     pending_spans.push(Span::styled(text.to_string(), style));
                 }
             }
@@ -553,10 +638,12 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                 let code_style = Style::default()
                     .fg(Color::Rgb(240, 195, 110))
                     .bg(Color::Rgb(40, 44, 52));
+                links.track(pending_spans.len());
                 pending_spans.push(Span::styled(format!("`{code}`"), code_style));
             }
 
             Event::SoftBreak | Event::HardBreak => {
+                links.track(pending_spans.len());
                 pending_spans.push(Span::raw(" "));
             }
 
@@ -566,6 +653,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
                     &mut output_lines,
                     &list_stack,
                     in_blockquote,
+                    &mut links,
                 );
                 let w = max_width.saturating_sub(6).max(10);
                 output_lines.push(Line::from(vec![
@@ -585,6 +673,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
         &mut output_lines,
         &list_stack,
         in_blockquote,
+        &mut links,
     );
 
     // 去除末尾冗余空行
@@ -598,7 +687,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> Vec<Line<'static>> {
         }
     }
 
-    output_lines
+    (output_lines, links.regions)
 }
 
 /// 格式化渲染美观的 Unicode 表格
@@ -690,9 +779,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn links_follow_wrapping_and_keep_distinct_destinations() {
+        let (lines, links) = render_markdown(
+            "- [中文 **bold** long link label](https://example.com/first) [same](https://example.com/a)[same](https://example.com/b)",
+            24,
+        );
+        let text_for = |url: &str| {
+            links
+                .iter()
+                .filter(|link| link.url == url)
+                .map(|link| {
+                    let mut column = 0;
+                    lines[link.line]
+                        .spans
+                        .iter()
+                        .flat_map(|span| span.content.chars())
+                        .filter(|ch| {
+                            let hit = link.columns.contains(&column);
+                            column += unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(0);
+                            hit
+                        })
+                        .collect::<String>()
+                })
+                .collect::<String>()
+        };
+        assert_eq!(
+            text_for("https://example.com/first"),
+            "中文 bold long linklabel"
+        );
+        assert_eq!(text_for("https://example.com/a"), "same");
+        assert_eq!(text_for("https://example.com/b"), "same");
+        assert!(
+            links
+                .iter()
+                .filter(|link| link.url.ends_with("/first"))
+                .count()
+                > 1
+        );
+        for link in &links {
+            assert!(link.columns.start >= 5);
+            assert!(link.columns.end <= 24);
+        }
+    }
+
+    #[test]
+    fn heading_and_inline_code_links_preserve_targets() {
+        let (_, links) = render_markdown(
+            "# [Title](https://example.com/title)\n\n[`code`](https://example.com/code) plain",
+            80,
+        );
+        assert_eq!(links.len(), 2);
+        assert_eq!(links[0].line, 0);
+        assert_eq!(links[0].columns, 5..10);
+        assert_eq!(links[1].columns, 3..9);
+        assert_eq!(links[1].url, "https://example.com/code");
+    }
+
+    #[test]
     fn test_markdown_headings_clean_presentation() {
         let md = "# Title 1\n## Title 2\n### 国内新闻";
-        let lines = render_markdown(md, 80);
+        let (lines, _) = render_markdown(md, 80);
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -707,7 +853,7 @@ mod tests {
     #[test]
     fn test_markdown_chinese_list_no_orphan_bullet() {
         let md = "- 中小企业政策：工信部等十部门印发促进中小企业发展“十五五”规划，提出到2030年推动规上中小企业人均营收累计增长约15%，并计划设立国家中小企业发展基金二期，支持“投早、投小、投长期、投硬科技”。([finance.eastmoney.com](https://finance.eastmoney.com/a/123.html))\n- 外交与出访：重要外事活动新闻报道。";
-        let lines = render_markdown(md, 60);
+        let (lines, _) = render_markdown(md, 60);
 
         // 验证 bullet 与中文在同一行开头连接，不产生孤立 bullet 独占一行
         for line in &lines {
@@ -728,7 +874,7 @@ mod tests {
     #[test]
     fn test_markdown_cjk_bold_with_punctuation_rendered_properly() {
         let md = "* **防汛防台风：**中央气象台继续发布暴雨黄色预警。\n* **政策与经济：**十部门联合印发促进规划。\n* **提示！**请务必注意防范。";
-        let lines = render_markdown(md, 80);
+        let (lines, _) = render_markdown(md, 80);
 
         // 验证没有未闭合的字面量 **
         let all_text: String = lines
@@ -772,7 +918,7 @@ fn test() {
 | Alice | Admin |
 | Bob | User |
 "#;
-        let lines = render_markdown(md, 80);
+        let (lines, _) = render_markdown(md, 80);
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
@@ -806,7 +952,7 @@ fn test() {
     #[test]
     fn test_markdown_inline_formatting() {
         let md = "This is **bold**, *italic*, ~~deleted~~, and `inline code`. > Quote block";
-        let lines = render_markdown(md, 80);
+        let (lines, _) = render_markdown(md, 80);
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
