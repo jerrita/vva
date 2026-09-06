@@ -18,13 +18,15 @@ vva 默认采用 **JSONL (JSON Lines) 追加写存储引擎**（[`JsonlSessionSt
 
 ### 2.1 文件路径与命名
 - **根存储目录**：`~/.vva/sessions/`（或测试指定的独立目录）
-- **文件命名规范**：`~/.vva/sessions/{session_id}.jsonl`
+- **项目目录**：`~/.vva/sessions/{project_key}/`，`project_key` 由工作空间绝对路径编码（路径分隔符替换为 `-`）
+- **会话文件**：`~/.vva/sessions/{project_key}/{session_id}.jsonl`，`session_id` 为 `sess_` + 5 位小写十六进制
+- **Scratch Pad**：`~/.vva/sessions/{project_key}/scratch/`，每个项目一份，路径写入 System Prompt
 
 ### 2.2 行级记录布局 (Line Layout)
 每个 `.jsonl` 文件严格遵循以下两段式结构：
 
 ```
-Line 1:      {"type":"header","id":"sess_xxx","title":"Refactor","workspace_root":"/path","created_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true}
+Line 1:      {"type":"header","id":"sess_a1b2c","title":"Refactor","workspace_root":"/path","created_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true}
 Line 2:      {"type":"turn","id":"turn_001","role":"user","messages":[{"parts":[...]}],"meta":{}}
 Line 3:      {"type":"turn","id":"turn_002","role":"assistant","messages":[{"parts":[...]}],"usage":{...},"meta":{"response":{"response_id":"resp_123",...}}}
 Line 4..N:   {"type":"turn",...}
@@ -61,6 +63,9 @@ pub trait SessionStore: Send + Sync {
 
     /// 删除指定会话文件
     async fn delete_session(&self, session_id: &str) -> Result<(), StoreError>;
+
+    /// 确保项目目录与 scratch 文件夹存在，返回 scratch 路径
+    async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError>;
 }
 ```
 
@@ -71,6 +76,6 @@ pub trait SessionStore: Send + Sync {
 1. **抗进程崩溃**：
    - 使用 `OpenOptions::new().append(true)` 打开文件，单轮写入附带换行符并刷新缓冲区。进程终止时保留已完成轮次。
 2. **轻量会话列表检索 (`list_sessions`)**：
-   - 提取会话列表或在 TUI `/sessions` 弹窗展示时，**仅反序列化各 `.jsonl` 文件的首行**（获取 `SessionHeader`）；`turn_count` 按剩余字节流中的换行符计数得出，不解析消息体、不分配行字符串。
+   - 提取会话列表或在 TUI `/sessions` 弹窗展示时，扫描各项目子目录中的 `.jsonl` 文件，**仅反序列化首行**（获取 `SessionHeader`）；`turn_count` 按剩余字节流中的换行符计数得出，不解析消息体、不分配行字符串。
 3. **零数据兜底保证**：
    - 解析记录时使用枚举分发（`JsonlRecord`），检测到损坏行返回强类型 `StoreError`，不吞没错误或替换为空数据。

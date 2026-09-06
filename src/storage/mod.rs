@@ -1,9 +1,12 @@
 pub mod jsonl;
 
 use async_trait::async_trait;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::model::{Session, SessionSummary, Turn};
+
+pub use jsonl::{SCRATCH_DIR, project_key};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -35,4 +38,7 @@ pub trait SessionStore: Send + Sync {
 
     /// 列出所有存储的会话概要
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError>;
+
+    /// 确保项目目录与 scratch 文件夹存在，返回 scratch 路径
+    async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError>;
 }

@@ -64,7 +64,7 @@
 src/
 ├── lib.rs                  # 核心模块导出
 ├── event.rs                # AgentEvent 统一事件流词汇表 (Provider 流式增量 + Harness 工具/Notice/Aborted 事件)
-├── system.rs               # 系统环境信息采集与系统提示组装 (日期 / OS / arch / workspace)
+├── system.rs               # 系统环境信息采集与系统提示组装 (日期 / OS / arch / workspace / scratch)
 ├── main.rs                 # CLI 命令行入口 (vva run [prompt], vva session list/inspect)
 ├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
 │   ├── mod.rs              # load_config 自动寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
@@ -81,7 +81,7 @@ src/
 │   └── tool.rs             # ToolCall, ToolResult, ToolDefinition
 ├── storage/                # 存储抽象与实现
 │   ├── mod.rs              # SessionStore Trait
-│   └── jsonl.rs            # JsonlSessionStore 行级追加写引擎 (Header 重写经临时文件原子替换)
+│   └── jsonl.rs            # JsonlSessionStore 按项目目录存储 (sessions/{project_key}/{sess_xxxxx}.jsonl + scratch/)
 ├── provider/               # 供应商适配器层 (原生协议直通)
 │   ├── mod.rs              # Provider Trait (capabilities/complete/complete_stream)、能力声明与共享 HTTP Client (超时)
 │   ├── common.rs           # 跨供应商共享辅助 (EventForwarder 背压转发 / require_* 严格读取 / RoleBlockMerger)

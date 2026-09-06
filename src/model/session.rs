@@ -35,6 +35,14 @@ pub struct Session {
     pub turns: Vec<Turn>,
 }
 
+const SESSION_ID_SUFFIX_LEN: usize = 5;
+
+/// `sess_` + 5 位小写十六进制
+pub fn generate_session_id() -> String {
+    let hex = Uuid::new_v4().simple().to_string();
+    format!("sess_{}", &hex[..SESSION_ID_SUFFIX_LEN])
+}
+
 impl Session {
     pub fn new(workspace_root: impl Into<PathBuf>, title: Option<String>) -> Self {
         Self::with_model(workspace_root, title, String::new(), None, true)
@@ -49,7 +57,7 @@ impl Session {
     ) -> Self {
         let now = Utc::now();
         Self {
-            id: format!("sess_{}", Uuid::new_v4().simple()),
+            id: generate_session_id(),
             title,
             workspace_root: workspace_root.into(),
             created_at: now,

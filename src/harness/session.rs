@@ -228,8 +228,20 @@ impl SessionManager {
             .config
             .resolve_model(&model, variant.as_deref())
             .map_err(|e| e.to_string())?;
-        let session =
+        let mut session =
             Session::with_model(&self.workspace, title, resolved.full_spec, variant, search);
+        for _ in 0..8 {
+            if self
+                .store
+                .load_session(&session.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                break;
+            }
+            session.id = crate::model::generate_session_id();
+        }
         let handle = self.spawn(session, false);
         self.sessions
             .lock()
@@ -446,10 +458,16 @@ impl SessionTask {
         if !self.view.persisted {
             let mut session = (*self.view.session).clone();
             let workspace = session.workspace_root.clone();
-            let system =
-                tokio::task::spawn_blocking(move || crate::system::build_system_prompt(&workspace))
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let scratch = self
+                .store
+                .ensure_scratch(&workspace)
+                .await
+                .map_err(|e| e.to_string())?;
+            let system = tokio::task::spawn_blocking(move || {
+                crate::system::build_system_prompt(&workspace, &scratch)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
             session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
             if generate {
                 session.title = Some(crate::model::provisional_title(prompt));

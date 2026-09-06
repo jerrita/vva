@@ -19,24 +19,28 @@ impl SystemInfo {
     }
 
     /// 转换为固定 System Prompt 文本
-    pub fn to_system_prompt(&self, workspace: &Path) -> String {
+    pub fn to_system_prompt(&self, workspace: &Path, scratch: &Path) -> String {
         format!(
             "You are vva, an expert AI coding harness assistant.\n\n\
              ## Environment Context\n\
              - Date: {}\n\
              - Operating System: {} ({})\n\
-             - Workspace Root: {}\n",
+             - Workspace Root: {}\n\
+             - Scratch Pad: {}\n\n\
+             The scratch pad is a persistent directory for this project. \
+             Read and write files there for durable notes and working artifacts.\n",
             self.date,
             self.os,
             self.arch,
-            workspace.display()
+            workspace.display(),
+            scratch.display()
         )
     }
 }
 
 /// 生成当前工作空间下的固定 System Prompt
-pub fn build_system_prompt(workspace: &Path) -> String {
-    SystemInfo::collect().to_system_prompt(workspace)
+pub fn build_system_prompt(workspace: &Path, scratch: &Path) -> String {
+    SystemInfo::collect().to_system_prompt(workspace, scratch)
 }
 
 fn get_current_date() -> String {
@@ -174,5 +178,23 @@ fn get_os_info() -> String {
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn system_prompt_includes_workspace_and_scratch() {
+        let info = SystemInfo {
+            date: "2026-09-06".into(),
+            os: "Linux".into(),
+            arch: "x86_64".into(),
+        };
+        let prompt = info.to_system_prompt(Path::new("/ws"), Path::new("/data/scratch"));
+        assert!(prompt.contains("Workspace Root: /ws"));
+        assert!(prompt.contains("Scratch Pad: /data/scratch"));
     }
 }

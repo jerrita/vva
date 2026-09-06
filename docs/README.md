@@ -28,7 +28,7 @@
    - OpenAI Responses / Anthropic / Gemini 专属强类型元数据定义
 
 3. **[JSONL 追加写存储引擎 (storage.md)](storage.md)**
-   - 存储文件规范：`~/.vva/sessions/{session_id}.jsonl`
+   - 存储文件规范：`~/.vva/sessions/{project_key}/{session_id}.jsonl`，项目级 `scratch/`
    - `JsonlRecord::Header` 与 `JsonlRecord::Turn` 双记录布局
    - 追加写安全性、进程中断容灾与流式加载
 

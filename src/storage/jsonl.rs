@@ -6,14 +6,46 @@ use std::path::{Path, PathBuf};
 use super::{SessionStore, StoreError};
 use crate::model::{JsonlRecord, Session, SessionHeader, SessionSummary, Turn};
 
+pub const SCRATCH_DIR: &str = "scratch";
+
 /// JSONL 追加写存储引擎。
 ///
-/// 文件布局：首行 Header 记录 + 逐行 Turn 记录。Header 变更（标题生成、模型切换）
+/// 文件布局：`{base}/{project_key}/{session_id}.jsonl`，同目录 `scratch/` 为项目便签。
+/// 首行 Header 记录 + 逐行 Turn 记录。Header 变更（标题生成、模型切换）
 /// 时整体重写文件——JSONL 首行长度不定、无法原地替换，以低频写放大换取格式
 /// 简单。重写经同目录临时文件落盘后 rename 替换，中途失败保留原文件。
 /// 磁盘 IO 均通过 `spawn_blocking` 执行，避免阻塞异步运行时。
 pub struct JsonlSessionStore {
     base_dir: PathBuf,
+}
+
+/// 将工作空间路径编码为文件系统安全的项目目录名
+pub fn project_key(workspace: &Path) -> String {
+    let resolved = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut key = String::new();
+    for ch in resolved.to_string_lossy().chars() {
+        match ch {
+            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => {
+                if !key.ends_with('-') {
+                    key.push('-');
+                }
+            }
+            c if c.is_control() => {
+                if !key.ends_with('-') {
+                    key.push('-');
+                }
+            }
+            c => key.push(c),
+        }
+    }
+    let key = key.trim_matches('-').to_string();
+    if key.is_empty() {
+        "workspace".into()
+    } else {
+        key
+    }
 }
 
 impl JsonlSessionStore {
@@ -35,15 +67,42 @@ where
         .map_err(|e| StoreError::TaskJoin(e.to_string()))?
 }
 
-fn session_path(base_dir: &Path, session_id: &str) -> PathBuf {
-    base_dir.join(format!("{session_id}.jsonl"))
+fn project_dir(base_dir: &Path, workspace: &Path) -> PathBuf {
+    base_dir.join(project_key(workspace))
+}
+
+fn session_file_name(session_id: &str) -> String {
+    format!("{session_id}.jsonl")
+}
+
+fn find_session_path(base_dir: &Path, session_id: &str) -> Option<PathBuf> {
+    let name = session_file_name(session_id);
+    if let Ok(projects) = fs::read_dir(base_dir) {
+        for project in projects.flatten() {
+            let project_path = project.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+            let candidate = project_path.join(&name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    let legacy = base_dir.join(&name);
+    legacy.is_file().then_some(legacy)
+}
+
+fn ensure_scratch_sync(project_dir: &Path) -> Result<PathBuf, StoreError> {
+    let scratch = project_dir.join(SCRATCH_DIR);
+    fs::create_dir_all(&scratch)?;
+    Ok(scratch)
 }
 
 fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError> {
-    let path = session_path(base_dir, &session.id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let dir = project_dir(base_dir, &session.workspace_root);
+    let path = dir.join(session_file_name(&session.id));
+    ensure_scratch_sync(&dir)?;
 
     // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
     let temp_path = path.with_extension("jsonl.tmp");
@@ -63,14 +122,17 @@ fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError
     drop(file);
 
     fs::rename(&temp_path, &path)?;
+
+    let legacy = base_dir.join(session_file_name(&session.id));
+    if legacy != path && legacy.is_file() {
+        fs::remove_file(legacy)?;
+    }
     Ok(())
 }
 
 fn append_turn_sync(base_dir: &Path, session_id: &str, turn: &Turn) -> Result<(), StoreError> {
-    let path = session_path(base_dir, session_id);
-    if !path.exists() {
-        return Err(StoreError::NotFound(session_id.to_string()));
-    }
+    let path = find_session_path(base_dir, session_id)
+        .ok_or_else(|| StoreError::NotFound(session_id.to_string()))?;
 
     let mut file = OpenOptions::new().create(false).append(true).open(&path)?;
 
@@ -83,10 +145,9 @@ fn append_turn_sync(base_dir: &Path, session_id: &str, turn: &Turn) -> Result<()
 }
 
 fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session>, StoreError> {
-    let path = session_path(base_dir, session_id);
-    if !path.exists() {
+    let Some(path) = find_session_path(base_dir, session_id) else {
         return Ok(None);
-    }
+    };
 
     let file = File::open(&path)?;
     let reader = BufReader::new(file);
@@ -136,9 +197,51 @@ fn count_lines(reader: &mut BufReader<File>) -> usize {
 }
 
 fn delete_session_sync(base_dir: &Path, session_id: &str) -> Result<(), StoreError> {
-    let path = session_path(base_dir, session_id);
-    if path.exists() {
+    if let Some(path) = find_session_path(base_dir, session_id) {
         fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn collect_summaries(dir: &Path, summaries: &mut Vec<SessionSummary>) -> Result<(), StoreError> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
+        let mut reader = BufReader::new(file);
+        let mut first_line = String::new();
+        let parsed_header = reader.read_line(&mut first_line).ok().and_then(|_| {
+            match serde_json::from_str::<JsonlRecord>(&first_line) {
+                Ok(JsonlRecord::Header(header)) => Some(header),
+                _ => {
+                    eprintln!(
+                        "warning: corrupt session header, skipped: {}",
+                        path.display()
+                    );
+                    None
+                }
+            }
+        });
+        if let Some(header) = parsed_header {
+            let turn_count = count_lines(&mut reader);
+            summaries.push(SessionSummary {
+                id: header.id,
+                title: header.title,
+                workspace_root: header.workspace_root,
+                created_at: header.created_at,
+                turn_count,
+                current_model: header.current_model,
+                current_variant: header.current_variant,
+                web_search: header.web_search,
+            });
+        }
     }
     Ok(())
 }
@@ -150,46 +253,14 @@ fn list_sessions_sync(base_dir: &Path) -> Result<Vec<SessionSummary>, StoreError
         return Ok(summaries);
     }
 
+    collect_summaries(base_dir, &mut summaries)?;
     for entry in fs::read_dir(base_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
-            && let Ok(file) = File::open(&path)
-        {
-            let mut reader = BufReader::new(file);
-            let mut first_line = String::new();
-            let parsed_header = reader.read_line(&mut first_line).ok().and_then(|_| {
-                let line = first_line;
-                match serde_json::from_str::<JsonlRecord>(&line) {
-                    Ok(JsonlRecord::Header(header)) => Some(header),
-                    // 损坏的 Header 不再静默吞没：显式告警后跳过该文件
-                    _ => {
-                        eprintln!(
-                            "warning: corrupt session header, skipped: {}",
-                            path.display()
-                        );
-                        None
-                    }
-                }
-            });
-            if let Some(header) = parsed_header {
-                // 轮次数按剩余换行符统计：不反序列化消息体，长会话文件同样廉价
-                let turn_count = count_lines(&mut reader);
-                summaries.push(SessionSummary {
-                    id: header.id,
-                    title: header.title,
-                    workspace_root: header.workspace_root,
-                    created_at: header.created_at,
-                    turn_count,
-                    current_model: header.current_model,
-                    current_variant: header.current_variant,
-                    web_search: header.web_search,
-                });
-            }
+        let project_path = entry?.path();
+        if project_path.is_dir() {
+            collect_summaries(&project_path, &mut summaries)?;
         }
     }
 
-    // 按创建时间倒序排列
     summaries.sort_by_key(|b| std::cmp::Reverse(b.created_at));
     Ok(summaries)
 }
@@ -224,6 +295,11 @@ impl SessionStore for JsonlSessionStore {
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError> {
         let base_dir = self.base_dir.clone();
         run_blocking(move || list_sessions_sync(&base_dir)).await
+    }
+
+    async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError> {
+        let dir = project_dir(&self.base_dir, workspace);
+        run_blocking(move || ensure_scratch_sync(&dir)).await
     }
 }
 
@@ -290,7 +366,15 @@ mod tests {
         assert_eq!(loaded.turns.len(), 2);
         assert_eq!(loaded.latest_openai_response_id(), Some("resp_001xyz"));
 
-        // 检查摘要列表
+        let project = temp_dir.join(project_key(Path::new("/tmp/repo")));
+        assert!(project.join(format!("{}.jsonl", session.id)).is_file());
+        assert!(project.join(SCRATCH_DIR).is_dir());
+        let scratch = store
+            .ensure_scratch(Path::new("/tmp/repo"))
+            .await
+            .expect("scratch");
+        assert_eq!(scratch, project.join(SCRATCH_DIR));
+
         let summaries = store.list_sessions().await.expect("list sessions");
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, session.id);
@@ -299,7 +383,40 @@ mod tests {
         assert!(summaries[0].web_search);
         assert_eq!(summaries[0].turn_count, 2);
 
-        // 清理临时目录
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn sessions_from_different_projects_use_separate_dirs() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("vva_test_{}", uuid::Uuid::new_v4().simple()));
+        let store = JsonlSessionStore::new(&temp_dir).expect("init store");
+
+        let a = Session::new(PathBuf::from("/tmp/project_a"), Some("A".into()));
+        let b = Session::new(PathBuf::from("/tmp/project_b"), Some("B".into()));
+        store.save_header(&a).await.expect("save a");
+        store.save_header(&b).await.expect("save b");
+
+        let dir_a = temp_dir.join(project_key(Path::new("/tmp/project_a")));
+        let dir_b = temp_dir.join(project_key(Path::new("/tmp/project_b")));
+        assert_ne!(dir_a, dir_b);
+        assert!(dir_a.join(format!("{}.jsonl", a.id)).is_file());
+        assert!(dir_b.join(format!("{}.jsonl", b.id)).is_file());
+        assert!(dir_a.join(SCRATCH_DIR).is_dir());
+        assert!(dir_b.join(SCRATCH_DIR).is_dir());
+
+        let summaries = store.list_sessions().await.expect("list");
+        assert_eq!(summaries.len(), 2);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn project_key_encodes_path_separators() {
+        assert_eq!(
+            project_key(Path::new("/no-such-vva-ws/user/proj")),
+            "no-such-vva-ws-user-proj"
+        );
+        assert_eq!(project_key(Path::new("/")), "workspace");
     }
 }

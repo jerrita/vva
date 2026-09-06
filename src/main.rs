@@ -234,18 +234,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             SessionAction::List => {
                 let sessions = store.list_sessions().await?;
                 println!(
-                    "{:<36} | {:<20} | {:<8} | {:<5} | {:<16} | Title / Workspace",
+                    "{:<12} | {:<20} | {:<8} | {:<5} | {:<16} | Title / Workspace",
                     "Session ID", "Model", "Variant", "Turns", "Created At"
                 );
                 println!(
-                    "{:-<36}-+-{:-<20}-+-{:-<8}-+-{:-<5}-+-{:-<16}-+-{:-<30}",
+                    "{:-<12}-+-{:-<20}-+-{:-<8}-+-{:-<5}-+-{:-<16}-+-{:-<30}",
                     "", "", "", "", "", ""
                 );
                 for s in sessions {
                     let title = s.title.as_deref().unwrap_or("Untitled");
                     let variant_str = s.current_variant.as_deref().unwrap_or("-");
                     println!(
-                        "{:<36} | {:<20} | {:<8} | {:<5} | {:<16} | {} ({})",
+                        "{:<12} | {:<20} | {:<8} | {:<5} | {:<16} | {} ({})",
                         s.id,
                         s.current_model,
                         variant_str,
