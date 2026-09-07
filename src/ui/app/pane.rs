@@ -220,12 +220,21 @@ impl super::App {
                     .collect::<Vec<_>>();
                 let last_assistant = response_turns.last().copied();
                 let first_collapsed_assistant = response_turns.first().copied();
-                let final_reply_start =
-                    last_assistant.and_then(|index| final_reply_start(&turns[index]));
+                let final_reply = last_assistant.and_then(|index| final_reply_range(&turns[index]));
+                let last_part_count = last_assistant
+                    .map(|index| {
+                        turns[index]
+                            .messages
+                            .iter()
+                            .flat_map(|message| &message.parts)
+                            .count()
+                    })
+                    .unwrap_or(0);
                 let response_elapsed_ms = last_assistant.and_then(|index| turns[index].worked_ms);
                 let response_group_id = last_assistant.map(|index| turns[index].id.as_str());
-                let has_work =
-                    final_reply_start.is_some_and(|start| response_turns.len() > 1 || start > 0);
+                let has_work = final_reply.is_some_and(|(start, end)| {
+                    response_turns.len() > 1 || start > 0 || end < last_part_count
+                });
                 let collapse_response = (range[1] < turns.len() || responses_collapsed)
                     && has_work
                     && response_elapsed_ms.is_some()
@@ -284,12 +293,11 @@ impl super::App {
                             .iter()
                             .flat_map(|message| &message.parts)
                             .collect::<Vec<_>>();
+                        let (start, end) = final_reply.expect("completed response has final text");
                         append_parts(
                             &mut render,
                             turn.role,
-                            parts[final_reply_start.expect("completed response has final text")..]
-                                .iter()
-                                .copied(),
+                            parts[start..end].iter().copied(),
                             &mut cache.render_state,
                         );
                     }
@@ -356,15 +364,22 @@ fn turn_is_system_reminder(turn: &crate::model::Turn) -> bool {
     })
 }
 
-fn final_reply_start(turn: &crate::model::Turn) -> Option<usize> {
-    let parts = turn.messages.iter().flat_map(|message| &message.parts);
-    let mut count = 0;
-    let mut start = 0;
-    for part in parts {
-        count += 1;
-        if !matches!(part, crate::model::ContentPart::Text { .. }) {
-            start = count;
+fn final_reply_range(turn: &crate::model::Turn) -> Option<(usize, usize)> {
+    let mut last_run = None;
+    let mut run_start = None;
+    let mut index = 0;
+    for part in turn.messages.iter().flat_map(|message| &message.parts) {
+        if matches!(part, crate::model::ContentPart::Text { .. }) {
+            if run_start.is_none() {
+                run_start = Some(index);
+            }
+        } else if let Some(start) = run_start.take() {
+            last_run = Some((start, index));
         }
+        index += 1;
     }
-    (start < count).then_some(start)
+    if let Some(start) = run_start {
+        last_run = Some((start, index));
+    }
+    last_run
 }

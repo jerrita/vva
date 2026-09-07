@@ -471,6 +471,68 @@ async fn test_completed_single_turn_work_collapses_before_final_reply() {
 }
 
 #[tokio::test]
+async fn test_completed_response_collapses_text_before_web_search() {
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    app.thinking_concise = false;
+    let view = std::sync::Arc::make_mut(&mut app.view);
+    let session = std::sync::Arc::make_mut(&mut view.session);
+
+    let mut response = crate::model::Turn::assistant_turn(vec![crate::model::Message::new(vec![
+        crate::model::ContentPart::reasoning("Searching", None),
+        crate::model::ContentPart::text("Final reply"),
+        crate::model::ContentPart::WebSearchCall(crate::model::WebSearchCall::completed(
+            "search_1",
+            "release date",
+            Vec::new(),
+        )),
+        crate::model::ContentPart::reasoning("Reviewing results", None),
+        crate::model::ContentPart::WebSearchCall(crate::model::WebSearchCall::completed(
+            "search_2",
+            "source threshold",
+            Vec::new(),
+        )),
+    ])]);
+    response.elapsed_ms = Some(2_000);
+    response.worked_ms = Some(2_000);
+    session.append_turn(response);
+    view.revision += 1;
+
+    app.refresh_chat_lines(80);
+    let rendered = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("> Worked 2s"));
+    assert!(!rendered.contains("Searching"));
+    assert!(!rendered.contains("release date"));
+    assert!(!rendered.contains("Reviewing results"));
+    assert!(!rendered.contains("source threshold"));
+    assert!(rendered.contains("Final reply"));
+
+    let line = app.chat_cache.response_hits[0].line_start;
+    assert!(app.handle_response_click(line));
+    app.refresh_chat_lines(80);
+    let rendered = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Searching"));
+    assert!(rendered.contains("release date"));
+    assert!(rendered.contains("Reviewing results"));
+    assert!(rendered.contains("source threshold"));
+    assert!(rendered.contains("Final reply"));
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
 async fn test_app_scroll_control_and_clamping() {
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;

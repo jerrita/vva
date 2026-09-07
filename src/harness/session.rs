@@ -431,18 +431,49 @@ impl SessionTask {
         }
     }
 
+    fn text_part_index(&mut self, text_id: &str, relocate: bool) -> usize {
+        let index = if let Some(&index) = self.text_parts.get(text_id) {
+            index
+        } else {
+            let index = self.view.draft.len();
+            self.view.draft.push(ContentPart::text(""));
+            self.text_parts.insert(text_id.to_string(), index);
+            index
+        };
+        if relocate {
+            self.relocate_text_part(index)
+        } else {
+            index
+        }
+    }
+
+    fn relocate_text_part(&mut self, index: usize) -> usize {
+        if index + 1 == self.view.draft.len()
+            || self.view.draft[index + 1..]
+                .iter()
+                .any(|part| matches!(part, ContentPart::Text { .. }))
+        {
+            return index;
+        }
+        let part = self.view.draft.remove(index);
+        self.view.draft.push(part);
+        let new_index = self.view.draft.len() - 1;
+        for mapped in self.text_parts.values_mut() {
+            if *mapped == index {
+                *mapped = new_index;
+            } else if *mapped > index {
+                *mapped -= 1;
+            }
+        }
+        new_index
+    }
+
     async fn event(&mut self, event: AgentEvent) {
         // 文本与思考增量按节流发布，其余事件改变结构或状态，立即发布
         let is_delta = matches!(event, AgentEvent::Thought(_) | AgentEvent::Text { .. });
         let text_part = match &event {
-            AgentEvent::Text { text_id, .. } | AgentEvent::Citation { text_id, .. } => {
-                let index = *self.text_parts.entry(text_id.clone()).or_insert_with(|| {
-                    let index = self.view.draft.len();
-                    self.view.draft.push(ContentPart::text(""));
-                    index
-                });
-                Some(index)
-            }
+            AgentEvent::Text { text_id, .. } => Some(self.text_part_index(text_id, true)),
+            AgentEvent::Citation { text_id, .. } => Some(self.text_part_index(text_id, false)),
             _ => None,
         };
         match &event {
@@ -1030,6 +1061,37 @@ mod tests {
         assert!(matches!(published.state, RunState::Responding));
         assert!(published.session.turns.is_empty());
         assert!(!published.persisted);
+        std::fs::remove_dir_all(&published.session.workspace_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn continued_text_after_search_moves_behind_work() {
+        let (mut task, mut view_rx) = event_task();
+        task.event(AgentEvent::Thought("plan".into())).await;
+        task.event(AgentEvent::Text {
+            text_id: "answer".into(),
+            delta: "early ".into(),
+        })
+        .await;
+        let search = WebSearchCall::completed("search", "query", Vec::new());
+        task.event(AgentEvent::WebSearchCall(search.clone())).await;
+        task.event(AgentEvent::Thought("review".into())).await;
+        task.event(AgentEvent::Text {
+            text_id: "answer".into(),
+            delta: "later".into(),
+        })
+        .await;
+        task.publish_throttled();
+        let published = view_rx.borrow_and_update().clone();
+        assert_eq!(
+            published.draft,
+            vec![
+                ContentPart::reasoning("plan", None),
+                ContentPart::WebSearchCall(search),
+                ContentPart::reasoning("review", None),
+                ContentPart::text("early later"),
+            ]
+        );
         std::fs::remove_dir_all(&published.session.workspace_root).unwrap();
     }
 
