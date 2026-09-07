@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::model::{Session, SessionSummary, Turn};
 
-pub use jsonl::{SCRATCH_DIR, project_key};
+pub use jsonl::{SCRATCH_DIR, TOOL_OUTPUTS_DIR, project_key};
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -41,4 +41,7 @@ pub trait SessionStore: Send + Sync {
 
     /// 确保项目目录与 scratch 文件夹存在，返回 scratch 路径
     async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError>;
+
+    /// 确保项目目录与 tool_outputs 文件夹存在，返回 tool_outputs 路径
+    async fn ensure_tool_outputs(&self, workspace: &Path) -> Result<PathBuf, StoreError>;
 }

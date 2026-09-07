@@ -10,13 +10,30 @@ use std::path::{Path, PathBuf};
 use super::Tool;
 
 const MAX_RESULTS: usize = 1_000;
+const MAX_BRACE_ALTS: usize = 256;
 const GLOB_OPTIONS: MatchOptions = MatchOptions {
     case_sensitive: true,
     require_literal_separator: true,
     require_literal_leading_dot: false,
 };
 
+fn strip_wrapping_quotes(mut value: &str) -> &str {
+    loop {
+        let bytes = value.as_bytes();
+        if bytes.len() < 2 {
+            return value;
+        }
+        let quote = bytes[0];
+        if (quote == b'"' || quote == b'\'') && bytes[bytes.len() - 1] == quote {
+            value = &value[1..value.len() - 1];
+            continue;
+        }
+        return value;
+    }
+}
+
 pub fn resolve_path(working_dir: &Path, path: &str) -> PathBuf {
+    let path = strip_wrapping_quotes(path);
     if path.is_empty() || path == "." {
         return working_dir.to_path_buf();
     }
@@ -67,8 +84,105 @@ fn relative_to<'a>(root: &'a Path, path: &'a Path, root_is_file: bool) -> &'a Pa
     }
 }
 
-fn matches_glob(pattern: &Pattern, path: &Path) -> bool {
-    pattern.matches_path_with(path, GLOB_OPTIONS)
+fn expand_braces(pattern: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    expand_braces_into(pattern, &mut out)?;
+    Ok(out)
+}
+
+fn expand_braces_into(pattern: &str, out: &mut Vec<String>) -> Result<(), String> {
+    if out.len() >= MAX_BRACE_ALTS {
+        return Err(format!(
+            "brace expansion exceeded {MAX_BRACE_ALTS} alternatives"
+        ));
+    }
+    match next_expandable_group(pattern) {
+        None => {
+            out.push(pattern.to_string());
+            Ok(())
+        }
+        Some((start, end, alts)) => {
+            let prefix = &pattern[..start];
+            let suffix = &pattern[end..];
+            for alt in alts {
+                expand_braces_into(&format!("{prefix}{alt}{suffix}"), out)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn next_expandable_group(pattern: &str) -> Option<(usize, usize, Vec<String>)> {
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 1;
+            if i < bytes.len() {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i] == b'{'
+            && let Some((end, alts)) = parse_brace_alts(pattern, i)
+        {
+            return Some((i, end, alts));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_brace_alts(pattern: &str, start: usize) -> Option<(usize, Vec<String>)> {
+    let bytes = pattern.as_bytes();
+    let mut depth = 0;
+    let mut alt_start = start + 1;
+    let mut alts = Vec::new();
+    let mut has_comma = false;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                i += 1;
+                if i < bytes.len() {
+                    i += 1;
+                }
+                continue;
+            }
+            b'{' => depth += 1,
+            b',' if depth == 1 => {
+                has_comma = true;
+                alts.push(pattern[alt_start..i].to_string());
+                alt_start = i + 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if !has_comma {
+                        return None;
+                    }
+                    alts.push(pattern[alt_start..i].to_string());
+                    return Some((i + 1, alts));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_glob_patterns(pattern: &str) -> Result<Vec<Pattern>, String> {
+    expand_braces(strip_wrapping_quotes(pattern))?
+        .into_iter()
+        .map(|item| Pattern::new(&item).map_err(|error| error.to_string()))
+        .collect()
+}
+
+fn matches_any(patterns: &[Pattern], path: &Path) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| pattern.matches_path_with(path, GLOB_OPTIONS))
 }
 
 fn unified_diff(path: &Path, original: &str, updated: &str) -> String {
@@ -148,16 +262,17 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file. Lines are returned with 1-indexed line numbers."
+        r#"Read an existing UTF-8 text file; use Glob to locate files and Grep to search their contents. Returns lines prefixed with 1-indexed line numbers. Use offset and limit for a specific range; by default the entire file is returned. An offset beyond EOF returns empty text. Directories and non-UTF-8 files produce errors. Numbered output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
+Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/main.rs","offset":1,"limit":200}."#
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "format": "path", "description": "Path to the file" },
-                "offset": { "type": "integer", "description": "Optional 1-indexed first line" },
-                "limit": { "type": "integer", "description": "Optional maximum number of lines" }
+                "path": { "type": "string", "format": "path", "description": "Existing text file path, absolute or workspace-relative." },
+                "offset": { "type": "integer", "description": "First line to read, 1-indexed. Omit to start at line 1; use a positive integer." },
+                "limit": { "type": "integer", "description": "Maximum number of lines to return. Omit to read through EOF; 0 returns no lines." }
             },
             "required": ["path"]
         })
@@ -215,15 +330,16 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create a new file with the given content. Fails if the file already exists."
+        r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. The parent directory must already exist; this tool does not create directories and fails if the target exists. Returns the created file path.
+Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","content":"pub fn example() {}\n"}."#
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "format": "path", "description": "Path to the new file" },
-                "content": { "type": "string", "description": "Complete file content" }
+                "path": { "type": "string", "format": "path", "description": "New file path, absolute or workspace-relative, with an existing parent directory." },
+                "content": { "type": "string", "description": "Complete literal file contents. Use JSON escapes for newlines and quotes; do not include Markdown fences unless they belong in the file." }
             },
             "required": ["path", "content"]
         })
@@ -271,17 +387,18 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace exact text in an existing file, optionally replacing every occurrence."
+        r#"Replace exact text in an existing UTF-8 file. Read the file first and copy the target text without the displayed line-number prefixes. Matching is literal, including whitespace and newlines; regular expressions are not supported. By default old_string must occur exactly once; include enough context to make it unique, or set replace_all to true to replace every occurrence. Fails if old_string is empty, absent, or identical to new_string. Returns a unified diff after writing the change.
+Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","old_string":"let count = 1;","new_string":"let count = 2;"}."#
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "format": "path", "description": "Path to the file" },
-                "old_string": { "type": "string", "description": "Exact text to replace" },
-                "new_string": { "type": "string", "description": "Replacement text" },
-                "replace_all": { "type": "boolean", "description": "Replace every exact occurrence instead of requiring one match" }
+                "path": { "type": "string", "format": "path", "description": "Existing text file path, absolute or workspace-relative." },
+                "old_string": { "type": "string", "description": "Nonempty literal text to replace, preserving exact whitespace. Must match once unless replace_all is true. Exclude Read's line-number prefixes." },
+                "new_string": { "type": "string", "description": "Literal replacement text, different from old_string. Use an empty string to delete the matched text." },
+                "replace_all": { "type": "boolean", "description": "Defaults to false, requiring exactly one match. Set true only when every occurrence should be replaced." }
             },
             "required": ["path", "old_string", "new_string"]
         })
@@ -346,15 +463,16 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find workspace files matching a glob pattern."
+        r#"Find files by path pattern; use Grep to search file contents. Matches are case-sensitive and relative to the search root. Supports *, ?, character classes such as [ab], ** as a full path component for recursive matching, and brace expansion such as **/*.{rs,md,toml}. A single * does not cross directory separators. Extglobs are unsupported.
+Returns sorted file paths, at most 1000, with a truncation marker when more match. Empty output means no matches. Hidden and gitignored files are included; directory symlinks are not traversed during recursion. Example arguments: {"pattern":"**/*.{rs,md}","path":"src"}. Shell variables and ~ are not expanded."#
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Glob pattern, including ** for recursive matches" },
-                "path": { "type": "string", "format": "path", "description": "Optional directory to search" }
+                "pattern": { "type": "string", "description": "Case-sensitive glob relative to path, e.g. **/*.rs, **/*.{rs,md,toml}, or Cargo.toml. Supports *, ?, [...], recursive **, and {a,b} expansion. Extglobs are unsupported." },
+                "path": { "type": "string", "format": "path", "description": "Search root: a directory or a single file, absolute or workspace-relative. Omit for the workspace root. Shell variables and ~ are not expanded." }
             },
             "required": ["pattern"]
         })
@@ -364,16 +482,17 @@ impl Tool for GlobTool {
         let args: GlobArgs = serde_json::from_str(arguments)
             .map_err(|error| format!("Invalid arguments for Glob: {error}"))?;
         let root = resolve_path(&self.working_dir, args.path.as_deref().unwrap_or("."));
-        let pattern = Pattern::new(&args.pattern)
+        let patterns = parse_glob_patterns(&args.pattern)
             .map_err(|error| format!("Invalid glob pattern: {error}"))?;
         let root_is_file = root.is_file();
         let mut files = Vec::new();
         collect_files(&root, &mut files)?;
         let mut matches: Vec<_> = files
             .into_iter()
-            .filter(|path| matches_glob(&pattern, relative_to(&root, path, root_is_file)))
+            .filter(|path| matches_any(&patterns, relative_to(&root, path, root_is_file)))
             .collect();
         matches.sort();
+        matches.dedup();
 
         let truncated = matches.len() > MAX_RESULTS;
         matches.truncate(MAX_RESULTS);
@@ -415,16 +534,18 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search file contents with a regular expression."
+        r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
+Optionally restrict files with include, a glob relative to the search root. Glob syntax supports *, ?, character classes, recursive **, and brace expansion such as **/*.{rs,md,toml}. Extglobs are unsupported. Hidden and gitignored files are included; directory symlinks are not traversed during recursion.
+Returns path:line: text with 1-indexed line numbers, capped at 1000 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Regular expression to search for" },
-                "path": { "type": "string", "format": "path", "description": "Optional directory to search" },
-                "include": { "type": "string", "description": "Optional glob restricting searched files" }
+                "pattern": { "type": "string", "description": "Rust regex applied to each line. Use foo|bar for alternatives and (?i) for case-insensitivity. JSON-escape backslashes; lookaround and backreferences are unsupported." },
+                "path": { "type": "string", "format": "path", "description": "Search root: a directory or a single file, absolute or workspace-relative. Omit for the workspace root. Shell variables and ~ are not expanded." },
+                "include": { "type": "string", "description": "Optional case-sensitive glob relative to path, e.g. **/*.rs or **/*.{rs,md}. Omit to search all files. Supports *, ?, [...], recursive **, and {a,b} expansion. Extglobs are unsupported." }
             },
             "required": ["pattern"]
         })
@@ -439,7 +560,7 @@ impl Tool for GrepTool {
         let include = args
             .include
             .as_deref()
-            .map(Pattern::new)
+            .map(parse_glob_patterns)
             .transpose()
             .map_err(|error| format!("Invalid include pattern: {error}"))?;
         let root_is_file = root.is_file();
@@ -452,7 +573,7 @@ impl Tool for GrepTool {
             let relative = relative_to(&root, &path, root_is_file);
             if include
                 .as_ref()
-                .is_some_and(|pattern| !matches_glob(pattern, relative))
+                .is_some_and(|patterns| !matches_any(patterns, relative))
             {
                 continue;
             }
@@ -486,6 +607,83 @@ mod tests {
         let tool = GlobTool::new(&root);
         let result = tool.execute(r#"{"pattern":"**/*.rs"}"#).await.unwrap();
         assert_eq!(result, root.join("src/lib.rs").display().to_string());
+        let quoted = tool.execute(r#"{"pattern":"\"**/*.rs\""}"#).await.unwrap();
+        assert_eq!(quoted, root.join("src/lib.rs").display().to_string());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strip_wrapping_quotes_peels_paired_quotes() {
+        assert_eq!(strip_wrapping_quotes(r#""src/lib.rs""#), "src/lib.rs");
+        assert_eq!(strip_wrapping_quotes("'src/lib.rs'"), "src/lib.rs");
+        assert_eq!(strip_wrapping_quotes(r#""'src/lib.rs'""#), "src/lib.rs");
+        assert_eq!(strip_wrapping_quotes("src/lib.rs"), "src/lib.rs");
+        assert_eq!(strip_wrapping_quotes(r#""src/lib.rs"#), r#""src/lib.rs"#);
+    }
+
+    #[tokio::test]
+    async fn read_strips_quoted_path() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "hello").unwrap();
+
+        let tool = ReadTool::new(&root);
+        let result = tool.execute(r#"{"path":"\"src/lib.rs\""}"#).await.unwrap();
+        assert_eq!(result, "1: hello");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expand_braces_splits_comma_groups() {
+        assert_eq!(
+            expand_braces("**/*.{rs,md,toml}").unwrap(),
+            ["**/*.rs", "**/*.md", "**/*.toml"]
+        );
+        assert_eq!(expand_braces("Cargo.toml").unwrap(), ["Cargo.toml"]);
+        assert_eq!(expand_braces("{a}").unwrap(), ["{a}"]);
+        assert_eq!(expand_braces("{a,{b,c}}").unwrap(), ["a", "b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn glob_expands_brace_alternatives() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn example() {}").unwrap();
+        fs::write(root.join("src/readme.md"), "# readme").unwrap();
+        fs::write(root.join("src/lib.txt"), "example").unwrap();
+
+        let tool = GlobTool::new(&root);
+        let result = tool.execute(r#"{"pattern":"**/*.{rs,md}"}"#).await.unwrap();
+        let mut lines: Vec<String> = result.lines().map(str::to_owned).collect();
+        lines.sort();
+        let mut expected = vec![
+            root.join("src/lib.rs").display().to_string(),
+            root.join("src/readme.md").display().to_string(),
+        ];
+        expected.sort();
+        assert_eq!(lines, expected);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn grep_include_expands_braces() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "needle in rust").unwrap();
+        fs::write(root.join("src/readme.md"), "needle in markdown").unwrap();
+        fs::write(root.join("src/lib.txt"), "needle in text").unwrap();
+
+        let tool = GrepTool::new(&root);
+        let result = tool
+            .execute(r#"{"pattern":"needle","include":"**/*.{rs,md}"}"#)
+            .await
+            .unwrap();
+        assert!(result.contains("src/lib.rs"));
+        assert!(result.contains("src/readme.md"));
+        assert!(!result.contains("src/lib.txt"));
 
         fs::remove_dir_all(root).unwrap();
     }

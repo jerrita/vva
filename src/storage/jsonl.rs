@@ -7,10 +7,11 @@ use super::{SessionStore, StoreError};
 use crate::model::{JsonlRecord, Session, SessionHeader, SessionSummary, Turn};
 
 pub const SCRATCH_DIR: &str = "scratch";
+pub const TOOL_OUTPUTS_DIR: &str = "tool_outputs";
 
 /// JSONL 追加写存储引擎。
 ///
-/// 文件布局：`{base}/{project_key}/{session_id}.jsonl`，同目录 `scratch/` 为项目便签。
+/// 文件布局：`{base}/{project_key}/{session_id}.jsonl`，同目录 `scratch/` 为项目便签、`tool_outputs/` 为大工具输出。
 /// 首行 Header 记录 + 逐行 Turn 记录。Header 变更（标题生成、模型切换）
 /// 时整体重写文件——JSONL 首行长度不定、无法原地替换，以低频写放大换取格式
 /// 简单。重写经同目录临时文件落盘后 rename 替换，中途失败保留原文件。
@@ -93,16 +94,17 @@ fn find_session_path(base_dir: &Path, session_id: &str) -> Option<PathBuf> {
     legacy.is_file().then_some(legacy)
 }
 
-fn ensure_scratch_sync(project_dir: &Path) -> Result<PathBuf, StoreError> {
-    let scratch = project_dir.join(SCRATCH_DIR);
-    fs::create_dir_all(&scratch)?;
-    Ok(scratch)
+fn ensure_subdir_sync(project_dir: &Path, name: &str) -> Result<PathBuf, StoreError> {
+    let path = project_dir.join(name);
+    fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError> {
     let dir = project_dir(base_dir, &session.workspace_root);
     let path = dir.join(session_file_name(&session.id));
-    ensure_scratch_sync(&dir)?;
+    ensure_subdir_sync(&dir, SCRATCH_DIR)?;
+    ensure_subdir_sync(&dir, TOOL_OUTPUTS_DIR)?;
 
     // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
     let temp_path = path.with_extension("jsonl.tmp");
@@ -299,7 +301,12 @@ impl SessionStore for JsonlSessionStore {
 
     async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError> {
         let dir = project_dir(&self.base_dir, workspace);
-        run_blocking(move || ensure_scratch_sync(&dir)).await
+        run_blocking(move || ensure_subdir_sync(&dir, SCRATCH_DIR)).await
+    }
+
+    async fn ensure_tool_outputs(&self, workspace: &Path) -> Result<PathBuf, StoreError> {
+        let dir = project_dir(&self.base_dir, workspace);
+        run_blocking(move || ensure_subdir_sync(&dir, TOOL_OUTPUTS_DIR)).await
     }
 }
 
@@ -369,11 +376,17 @@ mod tests {
         let project = temp_dir.join(project_key(Path::new("/tmp/repo")));
         assert!(project.join(format!("{}.jsonl", session.id)).is_file());
         assert!(project.join(SCRATCH_DIR).is_dir());
+        assert!(project.join(TOOL_OUTPUTS_DIR).is_dir());
         let scratch = store
             .ensure_scratch(Path::new("/tmp/repo"))
             .await
             .expect("scratch");
         assert_eq!(scratch, project.join(SCRATCH_DIR));
+        let tool_outputs = store
+            .ensure_tool_outputs(Path::new("/tmp/repo"))
+            .await
+            .expect("tool_outputs");
+        assert_eq!(tool_outputs, project.join(TOOL_OUTPUTS_DIR));
 
         let summaries = store.list_sessions().await.expect("list sessions");
         assert_eq!(summaries.len(), 1);

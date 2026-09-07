@@ -588,7 +588,12 @@ impl SessionTask {
     }
 
     async fn start(&mut self, prompt: &str) -> Result<AgentEngine, String> {
-        let engine = AgentEngine::new(&self.config, &self.view.session)?;
+        let tool_outputs = self
+            .store
+            .ensure_tool_outputs(&self.view.session.workspace_root)
+            .await
+            .map_err(|e| e.to_string())?;
+        let engine = AgentEngine::new(&self.config, &self.view.session, tool_outputs)?;
         let generate = self.view.session.title.is_none();
         if !self.view.persisted {
             let mut session = (*self.view.session).clone();

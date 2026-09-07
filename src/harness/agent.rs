@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
@@ -34,13 +35,20 @@ pub(super) struct AgentEngine {
 }
 
 impl AgentEngine {
-    pub fn new(config: &AppConfig, session: &Session) -> Result<Self, String> {
+    pub fn new(
+        config: &AppConfig,
+        session: &Session,
+        tool_outputs: PathBuf,
+    ) -> Result<Self, String> {
         let resolved = config
             .resolve_model(&session.current_model, session.current_variant.as_deref())
             .map_err(|e| e.to_string())?;
         Ok(Self {
             provider: resolved.create_provider(),
-            tools: ToolRegistry::with_workspace_defaults(&session.workspace_root),
+            tools: ToolRegistry::with_workspace_defaults(
+                &session.workspace_root,
+                Some(tool_outputs),
+            ),
             options: CompletionOptions {
                 model: resolved.model_id,
                 reasoning_effort: resolved.selected_variant,

@@ -5,7 +5,10 @@ use crate::model::{ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+pub const MAX_INLINE_OUTPUT_BYTES: usize = 32 * 1024;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -26,18 +29,21 @@ pub trait Tool: Send + Sync {
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    tool_outputs: Option<PathBuf>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: BTreeMap::new(),
+            tool_outputs: None,
         }
     }
 
     /// 注册工作空间默认工具集。
-    pub fn with_workspace_defaults(workspace: &std::path::Path) -> Self {
+    pub fn with_workspace_defaults(workspace: &Path, tool_outputs: Option<PathBuf>) -> Self {
         let mut registry = Self::new();
+        registry.tool_outputs = tool_outputs;
         registry.register(Arc::new(crate::tools::filesystem::ReadTool::new(workspace)));
         registry.register(Arc::new(crate::tools::filesystem::WriteTool::new(
             workspace,
@@ -69,17 +75,57 @@ impl ToolRegistry {
     }
 
     pub async fn execute_call(&self, call: &ToolCall) -> ToolResult {
-        match self.get(&call.name) {
-            Some(tool) => match validate_arguments(&call.arguments, &tool.parameters()) {
-                Ok(()) => match tool.execute(&call.arguments).await {
-                    Ok(content) => ToolResult::success(&call.id, content),
-                    Err(err) => ToolResult::error(&call.id, err),
-                },
-                Err(err) => ToolResult::error(&call.id, err),
-            },
-            None => ToolResult::error(&call.id, format!("Tool not found: {}", call.name)),
+        let Some(tool) = self.get(&call.name) else {
+            return ToolResult::error(&call.id, format!("Tool not found: {}", call.name));
+        };
+        if let Err(err) = validate_arguments(&call.arguments, &tool.parameters()) {
+            return ToolResult::error(&call.id, err);
+        }
+
+        let (content, is_error) = match tool.execute(&call.arguments).await {
+            Ok(content) => (content, false),
+            Err(content) => (content, true),
+        };
+        let content =
+            match inline_or_spill(self.tool_outputs.as_deref(), tool.name(), content, is_error) {
+                Ok(content) => content,
+                Err(err) => return ToolResult::error(&call.id, err),
+            };
+        if is_error {
+            ToolResult::error(&call.id, content)
+        } else {
+            ToolResult::success(&call.id, content)
         }
     }
+}
+
+fn inline_or_spill(
+    dir: Option<&Path>,
+    tool: &str,
+    content: String,
+    is_error: bool,
+) -> Result<String, String> {
+    let Some(dir) = dir else {
+        return Ok(content);
+    };
+    if content.len() <= MAX_INLINE_OUTPUT_BYTES {
+        return Ok(content);
+    }
+    std::fs::create_dir_all(dir).map_err(|error| {
+        format!(
+            "Failed to create tool output directory {}: {error}",
+            dir.display()
+        )
+    })?;
+    let path = dir.join(format!("{tool}_{}.txt", uuid::Uuid::new_v4().simple()));
+    std::fs::write(&path, &content)
+        .map_err(|error| format!("Failed to save tool output {}: {error}", path.display()))?;
+    let kind = if is_error { "Error output" } else { "Output" };
+    Ok(format!(
+        "{kind} too large ({} bytes; limit {MAX_INLINE_OUTPUT_BYTES}). Full output saved to {}. Use Read or Grep on that path.",
+        content.len(),
+        path.display()
+    ))
 }
 
 fn validate_arguments(arguments: &str, schema: &Value) -> Result<(), String> {
@@ -198,7 +244,7 @@ mod tests {
 
     #[test]
     fn validate_call_rejects_malformed_edit_path() {
-        let registry = ToolRegistry::with_workspace_defaults(std::path::Path::new("/tmp"));
+        let registry = ToolRegistry::with_workspace_defaults(std::path::Path::new("/tmp"), None);
         let call = ToolCall::new(
             "call_1",
             "Edit",
@@ -209,5 +255,59 @@ mod tests {
             registry.validate_call(&call),
             Err("Parameter path must be a valid file path".to_string())
         );
+    }
+
+    struct BlobTool {
+        error: bool,
+    }
+
+    #[async_trait]
+    impl Tool for BlobTool {
+        fn name(&self) -> &str {
+            "Dump"
+        }
+        fn description(&self) -> &str {
+            "test tool"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn execute(&self, _arguments: &str) -> Result<String, String> {
+            let blob = "x".repeat(MAX_INLINE_OUTPUT_BYTES + 1);
+            if self.error { Err(blob) } else { Ok(blob) }
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_call_spills_oversize_output() {
+        for error in [false, true] {
+            let dir =
+                std::env::temp_dir().join(format!("vva-tool-outputs-{}", uuid::Uuid::new_v4()));
+            let mut registry = ToolRegistry::new();
+            registry.tool_outputs = Some(dir.clone());
+            registry.register(Arc::new(BlobTool { error }));
+
+            let result = registry
+                .execute_call(&ToolCall::new("call_1", "Dump", "{}"))
+                .await;
+
+            assert_eq!(result.is_error, error);
+            assert!(result.content.contains(&dir.display().to_string()));
+            assert!(result.content.contains("Use Read or Grep on that path."));
+            let kind = if error { "Error output" } else { "Output" };
+            assert!(result.content.starts_with(kind));
+            let saved = std::fs::read_dir(&dir)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path();
+            assert_eq!(
+                std::fs::read_to_string(&saved).unwrap().len(),
+                MAX_INLINE_OUTPUT_BYTES + 1
+            );
+
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

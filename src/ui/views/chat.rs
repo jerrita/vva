@@ -167,7 +167,22 @@ fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) ->
         return arguments.to_string();
     };
     match name {
-        "Read" | "Write" => json_str(&args, "path")
+        "Read" => {
+            let path = json_str(&args, "path")
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| arguments.to_string());
+            let offset = args
+                .get("offset")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(1);
+            let limit = args
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .map(|limit| limit.to_string())
+                .unwrap_or_else(|| "all".into());
+            format!("{path} [offset={offset}, limit={limit}]")
+        }
+        "Write" => json_str(&args, "path")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
         "Edit" => match (
@@ -1590,10 +1605,29 @@ mod tests {
             80,
         );
         let text = joined(&lines);
-        assert!(text.contains("* Read README.md"));
+        assert!(text.contains("* Read README.md [offset=1, limit=all]"));
         assert!(!text.contains("→ Read"));
         assert!(!text.contains("hello"));
         assert!(!text.contains("Output:"));
+    }
+
+    #[test]
+    fn tool_read_shows_requested_range() {
+        let call = ToolCall::new(
+            "c1",
+            "Read",
+            r#"{"path":"src/main.rs","offset":10,"limit":20}"#,
+        );
+        let result = ToolResult::success("c1", "10: hello");
+        let mut results = HashMap::new();
+        results.insert(result.tool_call_id.clone(), &result);
+        let (lines, _) = render_tools(
+            &[ContentPart::ToolCall(call)],
+            &results,
+            &HashMap::new(),
+            80,
+        );
+        assert!(joined(&lines).contains("* Read src/main.rs [offset=10, limit=20]"));
     }
 
     #[test]
