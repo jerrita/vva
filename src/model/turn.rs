@@ -45,6 +45,14 @@ impl Turn {
         Self::new(Role::Assistant, messages)
     }
 
+    pub fn text_content(&self) -> String {
+        self.messages
+            .iter()
+            .map(|message| message.text_content())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// 获取 OpenAI Responses 链式调用 ID（仅在服务端启用 store 时有效）
     pub fn openai_response_id(&self) -> Option<&str> {
         let meta = self.meta.response.as_ref()?;

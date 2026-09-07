@@ -3,6 +3,7 @@ pub mod config_modal;
 pub mod header;
 pub mod help_modal;
 pub mod input_area;
+pub mod message_modal;
 pub mod modal_shell;
 pub mod models_modal;
 pub mod sessions_modal;

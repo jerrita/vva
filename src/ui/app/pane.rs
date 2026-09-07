@@ -49,6 +49,20 @@ impl TextPane {
     }
 }
 
+/// 历史用户消息在聊天行缓冲中的区间，供点击命中 Revert / Fork
+#[derive(Debug, Clone, Copy)]
+pub struct UserMessageHit {
+    pub turn_index: usize,
+    pub line_start: usize,
+    pub line_end: usize,
+}
+
+impl UserMessageHit {
+    pub fn contains(self, line: usize) -> bool {
+        line >= self.line_start && line < self.line_end
+    }
+}
+
 /// 仅记录历史前缀边界及其排版状态，不另存文本或持有旧会话快照。
 #[derive(Default)]
 pub struct ChatCache {
@@ -59,6 +73,16 @@ pub struct ChatCache {
     notices: usize,
     history_lines: usize,
     render_state: RenderState,
+    pub(crate) user_hits: Vec<UserMessageHit>,
+}
+
+impl ChatCache {
+    pub fn user_hit_at(&self, line: usize) -> Option<UserMessageHit> {
+        self.user_hits
+            .iter()
+            .copied()
+            .find(|hit| hit.contains(line))
+    }
 }
 
 impl super::App {
@@ -75,7 +99,9 @@ impl super::App {
             self.chat.lines.clear();
             self.chat.links.clear();
             cache.render_state = RenderState::default();
-            for turn in &self.view.session.turns {
+            cache.user_hits.clear();
+            for (turn_index, turn) in self.view.session.turns.iter().enumerate() {
+                let line_start = self.chat.lines.len();
                 append_parts(
                     &mut self.chat.lines,
                     &mut self.chat.links,
@@ -85,6 +111,13 @@ impl super::App {
                     self.thinking_concise,
                     &mut cache.render_state,
                 );
+                if turn.role == crate::model::Role::User {
+                    cache.user_hits.push(UserMessageHit {
+                        turn_index,
+                        line_start,
+                        line_end: self.chat.lines.len(),
+                    });
+                }
             }
             cache.history_lines = self.chat.lines.len();
             cache.session = session;

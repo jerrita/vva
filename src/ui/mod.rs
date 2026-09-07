@@ -40,6 +40,7 @@ use views::chat::render_chat;
 use views::config_modal::render_config_modal;
 use views::help_modal::render_help_modal;
 use views::input_area::render_input_area;
+use views::message_modal::{render_fork_title_modal, render_message_action_modal};
 use views::modal_shell::modal_list_hit_index;
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
@@ -193,6 +194,13 @@ async fn run_app_loop(
                 }
                 ActiveModal::Variants(state) => render_variants_modal(state, frame, size),
                 ActiveModal::Config(state) => render_config_modal(state, frame, size),
+                ActiveModal::MessageAction(state) => {
+                    render_message_action_modal(state, frame, size)
+                }
+                ActiveModal::ForkTitle(state) => {
+                    render_fork_title_modal(state, frame, size);
+                    Rect::default()
+                }
                 ActiveModal::Help => {
                     render_help_modal(frame, size);
                     Rect::default()
@@ -299,8 +307,16 @@ async fn handle_crossterm_event(
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                let user_click = (app.modal.is_none()
+                    && app.chat.selection.is_selecting()
+                    && app.chat.selection.get().is_some_and(|sel| sel.is_empty()))
+                .then(|| app.chat.selection.get().map(|sel| sel.anchor.line))
+                .flatten();
                 app.is_dragging_scrollbar = false;
                 app.finish_selections();
+                if let Some(line) = user_click {
+                    app.open_message_action_at_line(line);
+                }
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 if app.copy_active_selection() {
@@ -514,7 +530,7 @@ async fn handle_crossterm_event(
                 app.scroll_down(step);
             }
             KeyCode::Esc => {
-                escape_clear(app);
+                handle_escape(app).await;
             }
             _ => {}
         }
@@ -553,6 +569,39 @@ async fn handle_modal_key(app: &mut App, code: KeyCode) {
         ActiveModal::Help => {
             if matches!(code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
                 app.modal = ActiveModal::None;
+            }
+            return;
+        }
+        ActiveModal::MessageAction(_) => match code {
+            KeyCode::Esc => ModalInput::Close,
+            KeyCode::Enter => ModalInput::Activate,
+            KeyCode::Up | KeyCode::Char('k') => ModalInput::NavigateUp,
+            KeyCode::Down | KeyCode::Char('j') => ModalInput::NavigateDown,
+            _ => return,
+        },
+        ActiveModal::ForkTitle(_) if matches!(code, KeyCode::Esc | KeyCode::Enter) => {
+            if matches!(code, KeyCode::Esc) {
+                if let ActiveModal::ForkTitle(state) =
+                    std::mem::replace(&mut app.modal, ActiveModal::None)
+                {
+                    app.modal = ActiveModal::MessageAction(state.into_message_action());
+                }
+            } else {
+                let action = app.modal.activate();
+                apply_modal_action(app, action).await;
+            }
+            return;
+        }
+        ActiveModal::ForkTitle(state) => {
+            match code {
+                KeyCode::Backspace => state.title.backspace(),
+                KeyCode::Delete => state.title.delete(),
+                KeyCode::Left => state.title.move_cursor_left(),
+                KeyCode::Right => state.title.move_cursor_right(),
+                KeyCode::Home => state.title.move_cursor_home(),
+                KeyCode::End => state.title.move_cursor_end(),
+                KeyCode::Char(c) if !c.is_control() => state.title.insert_char(c),
+                _ => {}
             }
             return;
         }
@@ -643,6 +692,15 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
         }
         ModalAction::ToggleWebSearch => app.set_web_search(None).await,
         ModalAction::ToggleThinkingDisplay => app.toggle_thinking_display(),
+        ModalAction::RevertTurn { turn_index, prompt } => {
+            app.revert_user_turn(turn_index, prompt).await;
+        }
+        ModalAction::OpenForkTitle { turn_index, prompt } => {
+            app.open_fork_title(turn_index, prompt);
+        }
+        ModalAction::ConfirmFork { turn_index, title } => {
+            app.fork_user_turn(turn_index, title).await;
+        }
         ModalAction::None => {}
     }
 }
@@ -656,6 +714,17 @@ fn is_ctrl_key(key: &crossterm::event::KeyEvent, canonical: char) -> bool {
                 || c == (canonical as u8 & 0x1f) as char
         }
         _ => false,
+    }
+}
+
+/// Esc 在生成时中止当前轮；空闲时级联清除界面选区与输入。
+async fn handle_escape(app: &mut App) {
+    if app.active_session.is_running() {
+        if let Err(error) = app.active_session.abort_current().await {
+            app.notices.push(error);
+        }
+    } else {
+        escape_clear(app);
     }
 }
 

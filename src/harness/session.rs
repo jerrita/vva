@@ -64,6 +64,10 @@ enum Command {
         delete: bool,
         reply: Reply,
     },
+    Revert {
+        turn_index: usize,
+        reply: Reply,
+    },
     Title(String),
 }
 
@@ -133,6 +137,11 @@ impl ManagedSession {
             reply,
         })
         .await
+    }
+
+    pub async fn revert(&self, turn_index: usize) -> Result<(), String> {
+        self.request(|reply| Command::Revert { turn_index, reply })
+            .await
     }
 }
 
@@ -332,6 +341,63 @@ impl SessionManager {
     ) -> Result<(), String> {
         handle.submit(prompt, None).await
     }
+
+    /// 从指定用户轮次处分叉：新会话持有该轮次之前的历史，原会话不变。
+    pub async fn fork_session(
+        &self,
+        source: &ManagedSession,
+        turn_index: usize,
+        title: String,
+    ) -> Result<Arc<ManagedSession>, String> {
+        if source.is_running() {
+            return Err("Session is currently running another prompt".into());
+        }
+        let origin = source.snapshot().session.clone();
+        if turn_index >= origin.turns.len() {
+            return Err("Turn not found".into());
+        }
+        if origin.turns[turn_index].role != Role::User {
+            return Err("Can only fork from a user message".into());
+        }
+        let title = title.trim();
+        let title = if title.is_empty() {
+            crate::model::provisional_title(&origin.turns[turn_index].text_content())
+        } else {
+            title.to_string()
+        };
+        let mut session = Session::with_model(
+            origin.workspace_root.clone(),
+            Some(title),
+            origin.current_model.clone(),
+            origin.current_variant.clone(),
+            origin.web_search,
+        );
+        for _ in 0..8 {
+            if self
+                .store
+                .load_session(&session.id)
+                .await
+                .map_err(|e| e.to_string())?
+                .is_none()
+            {
+                break;
+            }
+            session.id = crate::model::generate_session_id();
+        }
+        session.turns = origin.turns[..turn_index].to_vec();
+        session.updated_at = chrono::Utc::now();
+        self.store
+            .save_header(&session)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.remember_session(&session);
+        let handle = self.spawn(session, true);
+        self.sessions
+            .lock()
+            .await
+            .insert(handle.id.clone(), handle.clone());
+        Ok(handle)
+    }
 }
 
 struct SessionTask {
@@ -497,6 +563,30 @@ impl SessionTask {
         Ok(())
     }
 
+    async fn revert(&mut self, turn_index: usize) -> Result<(), String> {
+        if !matches!(self.view.state, RunState::Idle) {
+            return Err("Session is currently running another prompt".into());
+        }
+        let mut session = (*self.view.session).clone();
+        if turn_index >= session.turns.len() {
+            return Err("Turn not found".into());
+        }
+        if session.turns[turn_index].role != Role::User {
+            return Err("Can only revert a user message".into());
+        }
+        session.truncate_turns(turn_index);
+        if self.view.persisted {
+            self.store
+                .save_header(&session)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        self.view.session = Arc::new(session);
+        self.view.draft.clear();
+        self.publish();
+        Ok(())
+    }
+
     async fn start(&mut self, prompt: &str) -> Result<AgentEngine, String> {
         let engine = AgentEngine::new(&self.config, &self.view.session)?;
         let generate = self.view.session.title.is_none();
@@ -569,7 +659,7 @@ impl SessionTask {
                 command = commands.recv() => match command {
                     Some(Command::Configure { model, variant, search, reply }) => { let _ = reply.send(self.configure(model, variant, search).await); }
                     Some(Command::Title(title)) => if let Err(error) = self.title(title).await { self.event(AgentEvent::Notice(error)).await; },
-                    Some(Command::Submit { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
+                    Some(Command::Submit { reply, .. }) | Some(Command::Revert { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
                     Some(Command::Stop { delete, reply }) => { self.stop = Some((delete, reply)); self.publish_throttled(); return None; }
                     None => { self.publish_throttled(); return None; }
                 }
@@ -710,6 +800,9 @@ impl SessionTask {
                     if let Err(error) = self.title(title).await {
                         self.event(AgentEvent::Notice(error)).await;
                     }
+                }
+                Command::Revert { turn_index, reply } => {
+                    let _ = reply.send(self.revert(turn_index).await);
                 }
                 Command::Stop { delete, reply } => {
                     if self.stop(delete, reply).await {
@@ -952,6 +1045,74 @@ mod tests {
             after_switch.snapshot().session.current_model,
             "openai/alpha"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    async fn seeded_session(dir: &Path) -> (SessionManager, Arc<ManagedSession>, String) {
+        let store = Arc::new(JsonlSessionStore::new(dir).unwrap());
+        let mut session = Session::with_model(
+            dir,
+            Some("Origin".into()),
+            "openai/default_model",
+            Some("high".into()),
+            true,
+        );
+        session.append_turn(Turn::new(Role::System, vec![Message::text("sys")]));
+        session.append_turn(Turn::user_turn(Message::text("first")));
+        session.append_turn(Turn::assistant_turn(vec![Message::text("a1")]));
+        session.append_turn(Turn::user_turn(Message::text("second")));
+        session.append_turn(Turn::assistant_turn(vec![Message::text("a2")]));
+        let id = session.id.clone();
+        store.save_header(&session).await.unwrap();
+        let mut config = AppConfig::default();
+        config.settings.default = "openai/default_model".into();
+        config.providers.insert(
+            "openai".into(),
+            crate::config::ProviderConfig {
+                api_key: "test".into(),
+                ..Default::default()
+            },
+        );
+        let mgr = SessionManager::new(store, config, dir, dir.join("state.json"));
+        let handle = mgr.get_or_load(&id).await.unwrap();
+        (mgr, handle, id)
+    }
+
+    #[tokio::test]
+    async fn revert_truncates_from_user_turn_and_persists() {
+        let dir = std::env::temp_dir().join(format!("vva-revert-{}", uuid::Uuid::new_v4()));
+        let (mgr, handle, id) = seeded_session(&dir).await;
+        handle.revert(3).await.unwrap();
+        let snap = handle.snapshot();
+        assert_eq!(snap.session.turns.len(), 3);
+        assert_eq!(snap.session.turns[2].text_content(), "a1");
+        let loaded = mgr.store().load_session(&id).await.unwrap().unwrap();
+        assert_eq!(loaded.turns.len(), 3);
+        assert_eq!(loaded.turns[1].text_content(), "first");
+        assert!(handle.revert(0).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn fork_copies_prefix_and_leaves_origin() {
+        let dir = std::env::temp_dir().join(format!("vva-fork-{}", uuid::Uuid::new_v4()));
+        let (mgr, handle, id) = seeded_session(&dir).await;
+        let forked = mgr
+            .fork_session(&handle, 3, "Branched".into())
+            .await
+            .unwrap();
+        let origin = handle.snapshot();
+        let branch = forked.snapshot();
+        assert_eq!(origin.session.turns.len(), 5);
+        assert_eq!(origin.session.title.as_deref(), Some("Origin"));
+        assert_eq!(branch.session.turns.len(), 3);
+        assert_eq!(branch.session.title.as_deref(), Some("Branched"));
+        assert_eq!(branch.session.current_model, "openai/default_model");
+        assert_eq!(branch.session.current_variant.as_deref(), Some("high"));
+        assert_ne!(forked.id, id);
+        let loaded = mgr.store().load_session(&forked.id).await.unwrap().unwrap();
+        assert_eq!(loaded.turns.len(), 3);
+        assert_eq!(loaded.title.as_deref(), Some("Branched"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

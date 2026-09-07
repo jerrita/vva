@@ -175,4 +175,59 @@ impl App {
             self.thinking_concise,
         ));
     }
+
+    /// 单击历史用户消息：打开 Revert / Fork 选择
+    pub fn open_message_action_at_line(&mut self, line: usize) {
+        if self.active_session.is_running() {
+            return;
+        }
+        let Some(hit) = self.chat_cache.user_hit_at(line) else {
+            return;
+        };
+        let Some(turn) = self.view.session.turns.get(hit.turn_index) else {
+            return;
+        };
+        if turn.role != crate::model::Role::User {
+            return;
+        }
+        self.modal = ActiveModal::MessageAction(MessageActionState::new(
+            hit.turn_index,
+            turn.text_content(),
+        ));
+    }
+
+    pub async fn revert_user_turn(&mut self, turn_index: usize, prompt: String) {
+        self.modal = ActiveModal::None;
+        match self.active_session.revert(turn_index).await {
+            Ok(()) => {
+                self.refresh_view();
+                self.set_input(&prompt);
+                self.scroll_to_bottom();
+            }
+            Err(error) => self.notices.push(error),
+        }
+    }
+
+    pub fn open_fork_title(&mut self, turn_index: usize, prompt: String) {
+        let default = self
+            .view
+            .session
+            .title
+            .clone()
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| crate::model::provisional_title(&prompt));
+        self.modal = ActiveModal::ForkTitle(ForkTitleState::new(turn_index, prompt, &default));
+    }
+
+    pub async fn fork_user_turn(&mut self, turn_index: usize, title: String) {
+        self.modal = ActiveModal::None;
+        match self
+            .session_mgr
+            .fork_session(&self.active_session, turn_index, title)
+            .await
+        {
+            Ok(handle) => self.attach_session(handle),
+            Err(error) => self.notices.push(error),
+        }
+    }
 }

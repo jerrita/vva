@@ -74,6 +74,12 @@ impl Session {
         self.turns.push(turn);
     }
 
+    /// 丢弃 `len` 之后的轮次（含），用于 Revert / Fork 截取前缀
+    pub fn truncate_turns(&mut self, len: usize) {
+        self.turns.truncate(len);
+        self.updated_at = Utc::now();
+    }
+
     /// 更新会话当前绑定的模型与推理强度档位
     pub fn set_model(&mut self, model: impl Into<String>, variant: Option<String>) {
         self.current_model = model.into();

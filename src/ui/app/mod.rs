@@ -10,7 +10,7 @@ use crate::ui::command::SlashCommand;
 pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
-pub use pane::{ChatCache, TextPane};
+pub use pane::{ChatCache, TextPane, UserMessageHit};
 pub use selection::{
     SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
     get_clipboard_text, set_clipboard_text,

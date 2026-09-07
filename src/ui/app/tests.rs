@@ -357,3 +357,105 @@ async fn test_prompt_history_rotation_and_draft_restore() {
 
     let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
+
+#[tokio::test]
+async fn test_user_message_hits_and_revert_fills_input() {
+    let temp_dir = std::env::temp_dir().join(format!("vva_revert_ui_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+    let mut session = crate::model::Session::with_model(
+        &temp_dir,
+        Some("Origin".into()),
+        "openai/test_model",
+        None,
+        false,
+    );
+    session.append_turn(crate::model::Turn::new(
+        crate::model::Role::System,
+        vec![crate::model::Message::text("sys")],
+    ));
+    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
+        "first",
+    )));
+    session.append_turn(crate::model::Turn::assistant_turn(vec![
+        crate::model::Message::text("a1"),
+    ]));
+    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
+        "second prompt",
+    )));
+    session.append_turn(crate::model::Turn::assistant_turn(vec![
+        crate::model::Message::text("a2"),
+    ]));
+    let id = session.id.clone();
+    store.save_header(&session).await.unwrap();
+    let session_mgr = Arc::new(SessionManager::new(
+        store,
+        crate::ui::test_support::test_config(),
+        temp_dir.clone(),
+        temp_dir.join("state.json"),
+    ));
+    let handle = session_mgr.get_or_load(&id).await.unwrap();
+    let mut app = App::new(session_mgr, handle).await;
+
+    app.refresh_chat_lines(80);
+    assert_eq!(app.chat_cache.user_hits.len(), 2);
+    let first_hit = app.chat_cache.user_hits[0];
+    app.open_message_action_at_line(first_hit.line_start);
+    assert!(matches!(app.modal, ActiveModal::MessageAction(_)));
+
+    app.revert_user_turn(3, "second prompt".into()).await;
+    assert!(app.modal.is_none());
+    assert_eq!(app.input.as_str(), "second prompt");
+    assert_eq!(app.view.session.turns.len(), 3);
+    assert_eq!(app.view.session.turns[2].text_content(), "a1");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_fork_user_turn_creates_titled_session() {
+    let temp_dir = std::env::temp_dir().join(format!("vva_fork_ui_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+    let mut session = crate::model::Session::with_model(
+        &temp_dir,
+        Some("Origin".into()),
+        "openai/test_model",
+        Some("high".into()),
+        true,
+    );
+    session.append_turn(crate::model::Turn::new(
+        crate::model::Role::System,
+        vec![crate::model::Message::text("sys")],
+    ));
+    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
+        "first",
+    )));
+    session.append_turn(crate::model::Turn::assistant_turn(vec![
+        crate::model::Message::text("a1"),
+    ]));
+    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
+        "second",
+    )));
+    let origin_id = session.id.clone();
+    store.save_header(&session).await.unwrap();
+    let session_mgr = Arc::new(SessionManager::new(
+        store,
+        crate::ui::test_support::test_config(),
+        temp_dir.clone(),
+        temp_dir.join("state.json"),
+    ));
+    let handle = session_mgr.get_or_load(&origin_id).await.unwrap();
+    let mut app = App::new(session_mgr, handle).await;
+
+    app.fork_user_turn(3, "Branched".into()).await;
+    assert_ne!(app.active_session.id, origin_id);
+    assert_eq!(app.view.session.title.as_deref(), Some("Branched"));
+    assert_eq!(app.view.session.turns.len(), 3);
+    assert_eq!(app.view.session.current_variant.as_deref(), Some("high"));
+
+    let origin = app.session_mgr.get_or_load(&origin_id).await.unwrap();
+    assert_eq!(origin.snapshot().session.turns.len(), 4);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

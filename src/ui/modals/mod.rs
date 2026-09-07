@@ -1,4 +1,5 @@
 pub mod config;
+pub mod message;
 pub mod models;
 pub mod sessions;
 pub mod variants;
@@ -6,6 +7,7 @@ pub mod variants;
 use crossterm::event::KeyCode;
 
 pub use config::{ConfigItemKind, ConfigModalState, ConfigSettingItem};
+pub use message::{ForkTitleState, MESSAGE_ACTIONS, MessageActionState};
 pub use models::{ModelItem, ModelsModalState};
 pub use sessions::{ProjectScope, SessionsModalState};
 pub use variants::{VariantItem, VariantsModalState};
@@ -110,6 +112,8 @@ pub enum ActiveModal {
     Models(ModelsModalState),
     Variants(VariantsModalState),
     Config(ConfigModalState),
+    MessageAction(MessageActionState),
+    ForkTitle(ForkTitleState),
     Help,
 }
 
@@ -125,6 +129,9 @@ pub(crate) enum ModalAction {
     OpenVariants,
     ToggleWebSearch,
     ToggleThinkingDisplay,
+    RevertTurn { turn_index: usize, prompt: String },
+    OpenForkTitle { turn_index: usize, prompt: String },
+    ConfirmFork { turn_index: usize, title: String },
 }
 
 impl ActiveModal {
@@ -139,7 +146,8 @@ impl ActiveModal {
             Self::Models(state) => Some(state),
             Self::Variants(state) => Some(state),
             Self::Config(state) => Some(state),
-            Self::None | Self::Help => None,
+            Self::MessageAction(state) => Some(state),
+            Self::None | Self::Help | Self::ForkTitle(_) => None,
         }
     }
 
@@ -165,6 +173,23 @@ impl ActiveModal {
                 Some(ConfigItemKind::ThinkingDisplay) => ModalAction::ToggleThinkingDisplay,
                 None => ModalAction::None,
             },
+            Self::MessageAction(state) => {
+                if state.is_fork() {
+                    ModalAction::OpenForkTitle {
+                        turn_index: state.turn_index,
+                        prompt: state.prompt.clone(),
+                    }
+                } else {
+                    ModalAction::RevertTurn {
+                        turn_index: state.turn_index,
+                        prompt: state.prompt.clone(),
+                    }
+                }
+            }
+            Self::ForkTitle(state) => ModalAction::ConfirmFork {
+                turn_index: state.turn_index,
+                title: state.title.text.clone(),
+            },
             Self::None | Self::Help => ModalAction::None,
         }
     }
@@ -175,9 +200,13 @@ impl ActiveModal {
                 .pending_delete()
                 .map(|session_id| ModalAction::DeleteSession(session_id.to_string()))
                 .unwrap_or(ModalAction::None),
-            Self::None | Self::Models(_) | Self::Variants(_) | Self::Config(_) | Self::Help => {
-                ModalAction::None
-            }
+            Self::None
+            | Self::Models(_)
+            | Self::Variants(_)
+            | Self::Config(_)
+            | Self::Help
+            | Self::MessageAction(_)
+            | Self::ForkTitle(_) => ModalAction::None,
         }
     }
 
@@ -188,7 +217,8 @@ impl ActiveModal {
             Self::Models(state) => input.apply(state),
             Self::Variants(state) => input.apply(state),
             Self::Config(state) => input.apply(state),
-            Self::None | Self::Help => {}
+            Self::MessageAction(state) => input.apply(state),
+            Self::None | Self::Help | Self::ForkTitle(_) => {}
         }
     }
 }
