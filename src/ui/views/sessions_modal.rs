@@ -2,6 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::ui::modals::{ProjectScope, SessionsModalState};
 use crate::ui::text::truncate;
@@ -9,6 +10,10 @@ use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell, selected_row_style,
 };
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
+}
 
 /// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程；
 /// 返回列表区几何供鼠标命中测试
@@ -69,29 +74,20 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
     } else {
         header_lines.push(filter_line(&state.query, Color::Cyan));
         footer_hints(&[
-            (
-                " [↑/↓/j/k] ",
-                Style::default().fg(Color::Cyan),
-                "Navigate  ",
-            ),
-            (
-                " [Tab] ",
-                Style::default().fg(Color::Cyan),
-                "Toggle Scope  ",
-            ),
+            (" [↑↓] ", Style::default().fg(Color::Cyan), "Nav  "),
+            (" [Tab] ", Style::default().fg(Color::Cyan), "Scope  "),
             (
                 " [Enter] ",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
-                "Resume Session  ",
+                "Resume  ",
             ),
             (
                 " [d] ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 "Delete  ",
             ),
-            (" [type] ", Style::default().fg(Color::Cyan), "Filter  "),
             (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
         ])
     };
@@ -110,29 +106,51 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
         footer,
     );
 
+    let id_width = 16;
+    let turns_width = 6;
+    let created_width = 11;
+    let fixed_width = 2 + id_width + turns_width + created_width;
+    let available_title_width = (list_area.width as usize).saturating_sub(fixed_width);
+    let title_width = state
+        .filtered_sessions
+        .iter()
+        .map(|item| item.title.as_deref().unwrap_or("Untitled").width())
+        .max()
+        .unwrap_or(0)
+        .max("Title / Prompt".width())
+        .min(available_title_width);
+    let remaining_width = available_title_width.saturating_sub(title_width);
+    let right_padding = remaining_width.min(2);
+    let distributable_width = remaining_width - right_padding;
+    let column_gap = distributable_width / 3;
+    let final_gap = column_gap + distributable_width % 3;
+    let gap = " ".repeat(column_gap);
+    let final_gap = " ".repeat(final_gap);
+    let right_padding = " ".repeat(right_padding);
+
     // 表头
     let header = Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            format!("{:<16}", "Session ID"),
+            pad_to_width("Session ID", id_width),
             Style::default().fg(Color::DarkGray),
         ),
+        Span::raw(gap.clone()),
         Span::styled(
-            format!("{:<26}", "Title / Prompt"),
+            pad_to_width("Title / Prompt", title_width),
             Style::default().fg(Color::DarkGray),
         ),
+        Span::raw(gap.clone()),
         Span::styled(
-            format!("{:<6}", "Turns"),
+            pad_to_width("Turns", turns_width),
             Style::default().fg(Color::DarkGray),
         ),
+        Span::raw(final_gap.clone()),
         Span::styled(
-            format!("{:<18}", "Model"),
+            pad_to_width("Created", created_width),
             Style::default().fg(Color::DarkGray),
         ),
-        Span::styled(
-            format!("{:<10}", "Created"),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::raw(right_padding.clone()),
     ]);
 
     render_modal_list(
@@ -151,32 +169,29 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
             let is_selected = i == state.selected_index;
             let (prefix, row_style) = list_row_affix(is_selected, false, Color::Cyan);
 
-            let short_id = truncate(&item.id, 14);
+            let short_id = truncate(&item.id, id_width - 2);
             let title_raw = item.title.as_deref().unwrap_or("Untitled");
-            let short_title = truncate(title_raw, 24);
-            let short_model = if item.current_model.is_empty() {
-                "-".to_string()
-            } else {
-                truncate(&item.current_model, 16)
-            };
+            let short_title = truncate(title_raw, title_width);
             let created_str = item.created_at.format("%m-%d %H:%M").to_string();
-
-            let turn_color = if is_selected {
-                Color::Black
+            let turns_style = if is_selected {
+                row_style
             } else {
-                Color::Yellow
+                Style::default().fg(Color::Yellow)
             };
 
             Line::from(vec![
                 Span::styled(prefix, row_style),
-                Span::styled(format!("{:<16}", short_id), row_style),
-                Span::styled(format!("{:<26}", short_title), row_style),
+                Span::styled(pad_to_width(&short_id, id_width), row_style),
+                Span::styled(gap.clone(), row_style),
+                Span::styled(pad_to_width(&short_title, title_width), row_style),
+                Span::styled(gap.clone(), row_style),
                 Span::styled(
-                    format!("{:<6}", item.turn_count),
-                    Style::default().fg(turn_color),
+                    pad_to_width(&item.turn_count.to_string(), turns_width),
+                    turns_style,
                 ),
-                Span::styled(format!("{:<18}", short_model), row_style),
-                Span::styled(format!("{:<10}", created_str), row_style),
+                Span::styled(final_gap.clone(), row_style),
+                Span::styled(pad_to_width(&created_str, created_width), row_style),
+                Span::styled(right_padding.clone(), row_style),
             ])
         },
     );
