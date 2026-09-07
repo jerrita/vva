@@ -363,12 +363,29 @@ fn push_tool_block(
     truncated
 }
 
+fn default_tool_expand(name: &str) -> Option<ToolExpand> {
+    match name {
+        "Edit" => Some(ToolExpand::Full),
+        "Shell" => Some(ToolExpand::Preview),
+        _ => None,
+    }
+}
+
 fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let result = render.results.get(&call.id).copied();
-    let expand = render.expand.get(&call.id).copied();
-    let expanded = expand.is_some();
+    let expand = render
+        .expand
+        .get(&call.id)
+        .copied()
+        .or_else(|| default_tool_expand(&call.name));
+    let has_content_block = expand.is_some();
+    let expanded = !matches!(expand, Some(ToolExpand::Hidden) | None);
     let detail = tool_call_detail(&call.name, &call.arguments, result);
-    let arrow = if expanded { "↓ " } else { "→ " };
+    let arrow = if has_content_block {
+        if expanded { "↓ " } else { "→ " }
+    } else {
+        "* "
+    };
     let name_style = if result.is_some_and(|result| result.is_error) {
         Style::default()
             .fg(Color::Rgb(220, 100, 100))
@@ -426,14 +443,17 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
         block_end = render.lines.len();
         render.lines.push(Line::from(""));
     }
-    render.hits.push(ToolHit {
-        id: call.id.clone(),
-        header_start,
-        header_end,
-        block_start,
-        block_end,
-        truncated,
-    });
+    if has_content_block {
+        render.hits.push(ToolHit {
+            id: call.id.clone(),
+            header_start,
+            header_end,
+            block_start,
+            block_end,
+            truncated,
+            full_only: call.name == "Edit",
+        });
+    }
 }
 
 enum EditRow<'a> {
@@ -1535,7 +1555,8 @@ mod tests {
             80,
         );
         let text = joined(&lines);
-        assert!(text.contains("→ Read README.md"));
+        assert!(text.contains("* Read README.md"));
+        assert!(!text.contains("→ Read"));
         assert!(!text.contains("hello"));
         assert!(!text.contains("Output:"));
     }
@@ -1550,12 +1571,12 @@ mod tests {
         let result = ToolResult::success("c1", "Done");
         let mut results = HashMap::new();
         results.insert(result.tool_call_id.clone(), &result);
-        let mut expand = HashMap::new();
-        expand.insert("c1".into(), ToolExpand::Preview);
+        let expand = HashMap::new();
 
         let (lines, _) = render_tools(&[ContentPart::ToolCall(call)], &results, &expand, 80);
 
         assert_eq!(joined(&lines).matches("src/main.rs").count(), 1);
+        assert!(!joined(&lines).contains("Click to expand"));
         assert!(
             lines
                 .iter()
@@ -1582,11 +1603,12 @@ mod tests {
             &HashMap::new(),
             80,
         );
-        assert!(joined(&lines).contains("→ Glob \"**/*.rs\" (3 matches)"));
+        assert!(joined(&lines).contains("* Glob \"**/*.rs\" (3 matches)"));
+        assert!(!joined(&lines).contains("→ Glob"));
     }
 
     #[test]
-    fn tool_shell_collapsed_shows_intent() {
+    fn tool_shell_defaults_to_preview() {
         let call = ToolCall::new(
             "c1",
             "Shell",
@@ -1602,9 +1624,9 @@ mod tests {
             80,
         );
         let text = joined(&lines);
-        assert!(text.contains("→ Shell count lines"));
-        assert!(!text.contains("wc -l"));
-        assert!(!text.contains("src/result.ts"));
+        assert!(text.contains("↓ Shell count lines"));
+        assert!(text.contains("$ wc -l src/*.ts"));
+        assert!(text.contains("26 src/result.ts"));
     }
 
     #[test]

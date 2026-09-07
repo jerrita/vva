@@ -199,32 +199,72 @@ impl App {
         ));
     }
 
-    /// 单击工具标题行展开/折叠；单击 block 在预览与全文间切换。
+    /// 单击工具标题行隐藏内容块；隐藏后再次单击恢复默认展示。Shell 预览块单击可展开全文。
     pub fn handle_tool_click(&mut self, line: usize) -> bool {
         let Some(hit) = self.chat_cache.tool_hit_at(line) else {
             return false;
         };
         let id = hit.id.clone();
         let truncated = hit.truncated;
+        let full_only = hit.full_only;
         if hit.contains_header(line) {
-            match self.tool_expand.get(&id).copied() {
-                None => {
-                    self.tool_expand.insert(id, super::ToolExpand::Preview);
-                }
-                Some(_) => {
-                    self.tool_expand.remove(&id);
-                }
+            let mode = self.tool_expand.get(&id).copied().unwrap_or(if full_only {
+                super::ToolExpand::Full
+            } else {
+                super::ToolExpand::Preview
+            });
+            if mode == super::ToolExpand::Hidden {
+                let default = if full_only {
+                    super::ToolExpand::Full
+                } else {
+                    super::ToolExpand::Preview
+                };
+                self.tool_expand.insert(id, default);
+            } else {
+                self.tool_expand.insert(id, super::ToolExpand::Hidden);
             }
             return true;
         }
-        match self.tool_expand.get(&id).copied() {
-            Some(super::ToolExpand::Preview) if truncated => {
-                self.tool_expand.insert(id, super::ToolExpand::Full);
+        let mode = self.tool_expand.get(&id).copied().unwrap_or(if full_only {
+            super::ToolExpand::Full
+        } else {
+            super::ToolExpand::Preview
+        });
+        if mode == super::ToolExpand::Preview && truncated {
+            self.tool_expand.insert(id, super::ToolExpand::Full);
+        }
+        true
+    }
+
+    /// 右击展开的工具块执行收折：Edit 直接隐藏；Shell 全文收为预览，预览再隐藏。
+    pub fn handle_tool_right_click(&mut self, line: usize) -> bool {
+        let Some(hit) = self.chat_cache.tool_hit_at(line) else {
+            return false;
+        };
+        if !hit.contains_block(line) {
+            return false;
+        }
+        let id = hit.id.clone();
+        let mode = self
+            .tool_expand
+            .get(&id)
+            .copied()
+            .unwrap_or(if hit.full_only {
+                super::ToolExpand::Full
+            } else {
+                super::ToolExpand::Preview
+            });
+        match mode {
+            super::ToolExpand::Full if hit.full_only => {
+                self.tool_expand.insert(id, super::ToolExpand::Hidden);
             }
-            Some(super::ToolExpand::Full) => {
+            super::ToolExpand::Full => {
                 self.tool_expand.insert(id, super::ToolExpand::Preview);
             }
-            _ => {}
+            super::ToolExpand::Preview => {
+                self.tool_expand.insert(id, super::ToolExpand::Hidden);
+            }
+            super::ToolExpand::Hidden => {}
         }
         true
     }

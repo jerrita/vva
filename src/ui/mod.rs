@@ -326,6 +326,12 @@ async fn handle_crossterm_event(
                     return;
                 }
                 if app.modal.is_none() {
+                    if app.chat.hit(mouse.column, mouse.row) {
+                        let (row_offset, _) = app.chat.offsets(mouse.column, mouse.row);
+                        if app.handle_tool_right_click(app.chat_scroll() + row_offset) {
+                            return;
+                        }
+                    }
                     // 右键档位标签：循环切换推理档位；其余区域保持粘贴语义
                     if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
                         app.cycle_variant().await;

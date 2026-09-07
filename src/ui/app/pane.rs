@@ -67,9 +67,10 @@ impl UserMessageHit {
     }
 }
 
-/// 工具行展开层级：缺省为折叠一行。
+/// 工具内容块展示层级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolExpand {
+    Hidden,
     Preview,
     Full,
 }
@@ -83,6 +84,7 @@ pub struct ToolHit {
     pub block_start: usize,
     pub block_end: usize,
     pub truncated: bool,
+    pub full_only: bool,
 }
 
 impl ToolHit {
