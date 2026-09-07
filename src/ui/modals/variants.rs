@@ -100,7 +100,7 @@ mod tests {
     fn test_variants_modal_navigation() {
         let v1 = VariantItem {
             id: None,
-            display_name: "none (default)".into(),
+            display_name: "default".into(),
             is_default: true,
         };
         let v2 = VariantItem {

@@ -82,6 +82,18 @@ impl AppConfig {
 
         // 校验或确定推理强度档位 (Variant)
         let selected_variant = if let Some(req_var) = requested_variant {
+            if req_var == "none"
+                && !model_cfg
+                    .variants
+                    .as_ref()
+                    .is_some_and(|variants| variants.iter().any(|variant| variant == req_var))
+            {
+                return Err(ConfigError::InvalidVariant {
+                    variant: req_var.to_string(),
+                    model: model_id.clone(),
+                    valid: model_cfg.variants.clone().unwrap_or_default(),
+                });
+            }
             if let Some(valid_vars) = &model_cfg.variants {
                 if !valid_vars.iter().any(|v| v == req_var) {
                     return Err(ConfigError::InvalidVariant {
@@ -95,15 +107,6 @@ impl AppConfig {
                 Some(req_var.to_string())
             } else {
                 None
-            }
-        } else if let Some(valid_vars) = &model_cfg.variants {
-            // 默认优先 medium；无 medium 时取 max（GLM 等官方默认档）
-            if valid_vars.iter().any(|v| v == "medium") {
-                Some("medium".to_string())
-            } else if valid_vars.iter().any(|v| v == "max") {
-                Some("max".to_string())
-            } else {
-                valid_vars.first().cloned()
             }
         } else {
             None

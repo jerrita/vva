@@ -131,14 +131,19 @@ impl App {
         {
             items.push(VariantItem {
                 id: None,
-                display_name: "none (default)".into(),
+                display_name: "default".into(),
                 is_default: true,
             });
-            items.extend(variants.into_iter().map(|id| VariantItem {
-                display_name: id.clone(),
-                id: Some(id),
-                is_default: false,
-            }));
+            items.extend(
+                variants
+                    .into_iter()
+                    .filter(|id| id != "default")
+                    .map(|id| VariantItem {
+                        display_name: id.clone(),
+                        id: Some(id),
+                        is_default: false,
+                    }),
+            );
         }
         self.modal = ActiveModal::Variants(VariantsModalState::new(
             session.current_model.clone(),
@@ -149,7 +154,7 @@ impl App {
 
     pub async fn switch_variant(&mut self, variant: Option<&str>) {
         let variant = variant
-            .filter(|v| !matches!(*v, "" | "none" | "default"))
+            .filter(|v| !matches!(*v, "" | "default"))
             .map(str::to_string);
         match self
             .active_session

@@ -3,6 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use crate::ui::app::App;
 use crate::ui::command::command_row;
@@ -120,11 +121,20 @@ pub fn render_input_area(
     } else {
         "web off"
     };
+    let footer = chunks[1];
+    let mut x = footer.x.saturating_add(1);
+    app.model_selector_area = selector_area(footer, x, model.width());
+    x = x.saturating_add(model.width() as u16);
+    let variant_label = format!(" ({variant})");
+    app.variant_selector_area = selector_area(footer, x, variant_label.width());
+    x = x.saturating_add(variant_label.width() as u16 + 3);
+    x = x.saturating_add(workspace.width() as u16 + 3);
+    app.web_toggle_area = selector_area(footer, x, web.width());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
             Span::styled(model, Style::default()),
-            Span::styled(format!(" ({variant})"), Style::default().fg(Color::Magenta)),
+            Span::styled(variant_label, Style::default().fg(Color::Magenta)),
             Span::styled(" • ", Style::default().fg(Color::DarkGray)),
             Span::styled(workspace.to_owned(), Style::default().fg(Color::DarkGray)),
             Span::styled(" • ", Style::default().fg(Color::DarkGray)),
@@ -139,6 +149,19 @@ pub fn render_input_area(
         ])),
         chunks[1],
     );
+}
+
+fn selector_area(footer: Rect, x: u16, width: usize) -> Rect {
+    Rect {
+        x,
+        y: footer.y,
+        width: footer
+            .x
+            .saturating_add(footer.width)
+            .saturating_sub(x)
+            .min(width as u16),
+        height: footer.height,
+    }
 }
 
 /// 按选区命中将单行文本切分为 normal / selected 两种样式的 span 序列

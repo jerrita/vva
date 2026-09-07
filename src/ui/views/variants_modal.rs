@@ -14,7 +14,7 @@ use crate::ui::views::modal_shell::{
 pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area: Rect) -> Rect {
     // 顶部状态指示行
     let curr_model = &state.current_model;
-    let curr_var = state.active_variant.as_deref().unwrap_or("none");
+    let curr_var = state.active_variant.as_deref().unwrap_or("default");
     let top_line = Line::from(vec![
         Span::raw("  "),
         Span::styled("Model: ", Style::default().fg(Color::DarkGray)),

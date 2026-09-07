@@ -303,8 +303,8 @@ mod tests {
             .resolve_model("a/claude-sonnet-4-6", None)
             .expect("resolve claude");
         assert_eq!(resolved_claude.create_provider().name(), "anthropic");
-        // variants 中包含 medium，默认选择 medium
-        assert_eq!(resolved_claude.selected_variant.as_deref(), Some("medium"));
+        // 未指定档位时保留模型服务端的默认推理行为
+        assert_eq!(resolved_claude.selected_variant, None);
 
         // 3. 验证非法 Variant 拦截
         let err = config

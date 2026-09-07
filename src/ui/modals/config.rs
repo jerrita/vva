@@ -48,7 +48,7 @@ impl ConfigModalState {
             ConfigSettingItem {
                 kind: ConfigItemKind::Variant,
                 name: "Reasoning Effort".to_string(),
-                current_value: current_variant.unwrap_or_else(|| "none".into()),
+                current_value: current_variant.unwrap_or_else(|| "default".into()),
                 description: "Select reasoning variant / thinking effort level".to_string(),
             },
             ConfigSettingItem {

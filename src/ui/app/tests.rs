@@ -95,7 +95,7 @@ async fn test_slash_command_variant_execution() {
                     "model-with-vars": {
                         "name": "Model With Variants",
                         "reasoning": true,
-                        "variants": ["low", "high"]
+                        "variants": ["none", "low", "high"]
                     },
                     "model-without-vars": {
                         "name": "Model Without Variants"
@@ -108,16 +108,17 @@ async fn test_slash_command_variant_execution() {
     let mut ta = create_test_app("prov/model-with-vars", None, Some(app_config), false).await;
     let app = &mut ta.app;
 
-    // 1. 无参 /variant 打开 Variants 模态框，包含 none (default) 与配置的 variants
+    // 1. 无参 /variant 打开 Variants 模态框，包含 default 与配置的 variants
     app.set_input("/variant");
     app.submit_input().await;
     let ActiveModal::Variants(vm) = &app.modal else {
         panic!("expected variants modal");
     };
-    assert_eq!(vm.variants.len(), 3);
+    assert_eq!(vm.variants.len(), 4);
     assert_eq!(vm.variants[0].id, None);
-    assert_eq!(vm.variants[1].id.as_deref(), Some("low"));
-    assert_eq!(vm.variants[2].id.as_deref(), Some("high"));
+    assert_eq!(vm.variants[1].id.as_deref(), Some("none"));
+    assert_eq!(vm.variants[2].id.as_deref(), Some("low"));
+    assert_eq!(vm.variants[3].id.as_deref(), Some("high"));
 
     // 2. 带参 /variant 切换推理档位
     app.set_input("/variant high");
@@ -130,7 +131,7 @@ async fn test_slash_command_variant_execution() {
         .clone();
     assert_eq!(curr, Some("high".to_string()));
 
-    // 3. /variant none 重置为 None
+    // 3. /variant none 显式禁用推理
     app.set_input("/variant none");
     app.submit_input().await;
     let curr_none = app
@@ -139,15 +140,26 @@ async fn test_slash_command_variant_execution() {
         .session
         .current_variant
         .clone();
-    assert_eq!(curr_none, None);
+    assert_eq!(curr_none.as_deref(), Some("none"));
 
-    // 4. 未配置 variants 的模型，模态框列表为空（不兜底）
+    // 4. /variant default 不发送推理档位
+    app.set_input("/variant default");
+    app.submit_input().await;
+    assert_eq!(app.active_session.snapshot().session.current_variant, None);
+
+    // 5. 未配置 variants 的模型，模态框列表为空（不兜底）
     let session_no_vars = app
         .session_mgr
         .create_session("prov/model-without-vars".into(), None, None, false)
         .await
         .unwrap();
     let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
+    assert!(
+        app.session_mgr
+            .app_config()
+            .resolve_model("prov/model-without-vars", Some("none"))
+            .is_err()
+    );
     app_no_vars.set_input("/variant");
     app_no_vars.submit_input().await;
     let ActiveModal::Variants(vm_empty) = &app_no_vars.modal else {

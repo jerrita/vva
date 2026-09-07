@@ -288,7 +288,7 @@ async fn handle_crossterm_event(
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if app.modal.is_none() {
-                    handle_mouse_left_down(app, mouse);
+                    handle_mouse_left_down(app, mouse).await;
                 } else {
                     handle_modal_click(app, mouse).await;
                 }
@@ -689,8 +689,21 @@ async fn handle_abort_or_quit(app: &mut App) {
 }
 
 /// 鼠标左键按下：按命中面板启动输入框 / 侧边栏 / 聊天流选区或滚动条拖拽
-fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
+async fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEvent) {
     let (column, row) = (mouse.column, mouse.row);
+
+    if rect_hit(app.model_selector_area, column, row) {
+        app.open_models_modal().await;
+        return;
+    }
+    if rect_hit(app.variant_selector_area, column, row) {
+        app.open_variants_modal().await;
+        return;
+    }
+    if rect_hit(app.web_toggle_area, column, row) {
+        app.set_web_search(None).await;
+        return;
+    }
 
     // 1. 输入框：定位光标并启动输入选区
     if rect_hit(app.input_inner_area, column, row) {

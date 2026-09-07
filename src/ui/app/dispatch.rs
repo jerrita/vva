@@ -51,11 +51,6 @@ impl App {
         }
         self.refresh_view();
 
-        let status = if self.view.session.web_search {
-            "ON"
-        } else {
-            "OFF"
-        };
         if let ActiveModal::Config(cm) = &mut self.modal {
             cm.update_item_value(
                 ConfigItemKind::WebSearch,
@@ -67,8 +62,6 @@ impl App {
                 .to_string(),
             );
         }
-        self.notices
-            .push(format!("Native web search is now {status}"));
     }
 
     /// 切换思考过程展示模式（/thinking 命令与 Config 弹窗共用）
