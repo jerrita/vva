@@ -229,6 +229,8 @@ pub(crate) fn collect_tool_results(view: &SessionView) -> HashMap<String, &ToolR
 
 const EDIT_DELETE: Style = Style::new().fg(Color::Rgb(220, 100, 100));
 const EDIT_INSERT: Style = Style::new().fg(Color::Rgb(100, 180, 110));
+const EDIT_DELETE_BG: Color = Color::Rgb(58, 37, 45);
+const EDIT_INSERT_BG: Color = Color::Rgb(30, 50, 63);
 const EDIT_SEP: Style = Style::new().fg(Color::DarkGray);
 const EDIT_INDENT: usize = 3;
 const EDIT_SEP_WIDTH: usize = 3;
@@ -255,7 +257,9 @@ fn fill_to_width(mut spans: Vec<Span<'static>>, max_width: usize) -> Line<'stati
     let mut width = 0;
     for span in &mut spans {
         width += span.content.width();
-        span.style = span.style.patch(bg);
+        if span.style.bg.is_none() {
+            span.style = span.style.patch(bg);
+        }
     }
     if inner > width {
         spans.push(Span::styled(" ".repeat(inner - width), bg));
@@ -309,13 +313,15 @@ fn push_tool_block(
     let hint_style = Style::default().fg(Color::Rgb(110, 110, 110));
     lines.push(tool_block_frame("╭", "╮", max_width));
     push_filled_blank(lines, max_width);
-    push_filled_text(
-        lines,
-        &tool_block_command(&call.name, &call.arguments),
-        cmd_style,
-        max_width,
-    );
-    push_filled_blank(lines, max_width);
+    if call.name != "Edit" {
+        push_filled_text(
+            lines,
+            &tool_block_command(&call.name, &call.arguments),
+            cmd_style,
+            max_width,
+        );
+        push_filled_blank(lines, max_width);
+    }
 
     let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };
     if call.name == "Edit" && !result.is_some_and(|result| result.is_error) {
@@ -371,12 +377,34 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
             .fg(Color::Rgb(210, 210, 210))
             .add_modifier(Modifier::BOLD)
     };
-    let spans = vec![
+    let detail_style = Style::default().fg(Color::Rgb(150, 150, 150));
+    let mut spans = vec![
         Span::styled(arrow, Style::default().fg(Color::Rgb(160, 160, 160))),
         Span::styled(call.name.clone(), name_style),
         Span::raw(" "),
-        Span::styled(detail, Style::default().fg(Color::Rgb(150, 150, 150))),
     ];
+    let edit_detail = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        .ok()
+        .filter(|_| call.name == "Edit")
+        .and_then(|args| {
+            Some((
+                json_str(&args, "path")?.to_string(),
+                line_count(json_str(&args, "new_string")?),
+                line_count(json_str(&args, "old_string")?),
+            ))
+        });
+    if let Some((path, inserted, deleted)) = edit_detail {
+        spans.extend([
+            Span::styled(path, detail_style),
+            Span::styled(" (", detail_style),
+            Span::styled(format!("+{inserted}"), EDIT_INSERT),
+            Span::styled(", ", detail_style),
+            Span::styled(format!("-{deleted}"), EDIT_DELETE),
+            Span::styled(")", detail_style),
+        ]);
+    } else {
+        spans.push(Span::styled(detail, detail_style));
+    }
     let header_start = render.lines.len();
     let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
     render.lines.extend(wrapped);
@@ -407,75 +435,224 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     });
 }
 
-fn wrap_by_width(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut rows = Vec::new();
-    let mut current = String::new();
-    let mut current_w = 0;
-    for ch in text.chars() {
-        let cw = ch.width().unwrap_or(0);
-        if cw > 0 && current_w + cw > width && !current.is_empty() {
-            rows.push(std::mem::take(&mut current));
-            current_w = 0;
+enum EditRow<'a> {
+    Context(&'a str),
+    Delete(&'a str),
+    Insert(&'a str),
+}
+
+fn edit_rows<'a>(old: &'a str, new: &'a str) -> Vec<EditRow<'a>> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut lcs = vec![vec![0; new_lines.len() + 1]; old_lines.len() + 1];
+    for i in (0..old_lines.len()).rev() {
+        for j in (0..new_lines.len()).rev() {
+            lcs[i][j] = if old_lines[i] == new_lines[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
         }
-        current.push(ch);
-        current_w += cw;
     }
-    rows.push(current);
+
+    let mut rows = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < old_lines.len() || j < new_lines.len() {
+        if i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
+            rows.push(EditRow::Context(old_lines[i]));
+            i += 1;
+            j += 1;
+        } else if i < old_lines.len() && (j == new_lines.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
+            rows.push(EditRow::Delete(old_lines[i]));
+            i += 1;
+        } else {
+            rows.push(EditRow::Insert(new_lines[j]));
+            j += 1;
+        }
+    }
     rows
 }
 
-fn pad_to_width(text: &str, width: usize) -> String {
-    let w = text.width();
-    if w >= width {
-        text.to_string()
-    } else {
-        format!("{text}{}", " ".repeat(width - w))
+fn edit_side_lines(
+    marker: &'static str,
+    text: &str,
+    marker_style: Style,
+    background: Option<Color>,
+    width: usize,
+    initial_indent: &str,
+    cont_indent: &str,
+) -> Vec<Line<'static>> {
+    let spans = vec![
+        Span::styled(marker, marker_style),
+        Span::raw(text.to_string()),
+    ];
+    let mut lines = wrap_spans_to_lines(&spans, width, initial_indent, cont_indent);
+    for line in &mut lines {
+        if let Some(background) = background {
+            for span in &mut line.spans {
+                span.style = span.style.bg(background);
+            }
+        }
+        let current = line
+            .spans
+            .iter()
+            .map(|span| span.content.width())
+            .sum::<usize>();
+        if current < width {
+            line.spans.push(Span::styled(
+                " ".repeat(width - current),
+                background.map_or_else(Style::default, |color| Style::default().bg(color)),
+            ));
+        }
     }
+    lines
+}
+
+fn push_edit_row(
+    lines: &mut Vec<Line<'static>>,
+    marker: &'static str,
+    text: &str,
+    marker_style: Style,
+    background: Option<Color>,
+    max_width: usize,
+) {
+    lines.extend(edit_side_lines(
+        marker,
+        text,
+        marker_style,
+        background,
+        max_width,
+        "   ",
+        "     ",
+    ));
 }
 
 fn push_edit_unified(lines: &mut Vec<Line<'static>>, old: &str, new: &str, max_width: usize) {
-    for line in old.lines() {
-        let spans = vec![Span::styled(format!("- {line}"), EDIT_DELETE)];
-        lines.extend(wrap_spans_to_lines(&spans, max_width, "   ", "     "));
-    }
-    for line in new.lines() {
-        let spans = vec![Span::styled(format!("+ {line}"), EDIT_INSERT)];
-        lines.extend(wrap_spans_to_lines(&spans, max_width, "   ", "     "));
+    for row in edit_rows(old, new) {
+        match row {
+            EditRow::Context(text) => {
+                push_edit_row(lines, "  ", text, Style::default(), None, max_width)
+            }
+            EditRow::Delete(text) => push_edit_row(
+                lines,
+                "- ",
+                text,
+                EDIT_DELETE,
+                Some(EDIT_DELETE_BG),
+                max_width,
+            ),
+            EditRow::Insert(text) => push_edit_row(
+                lines,
+                "+ ",
+                text,
+                EDIT_INSERT,
+                Some(EDIT_INSERT_BG),
+                max_width,
+            ),
+        }
     }
 }
 
-fn push_edit_columns(
+fn push_edit_column_pair(
     lines: &mut Vec<Line<'static>>,
-    old: &str,
-    new: &str,
+    left: Option<(&str, &'static str, Style, Color)>,
+    right: Option<(&str, &'static str, Style, Color)>,
     left_w: usize,
     right_w: usize,
 ) {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    let rows = old_lines.len().max(new_lines.len()).max(1);
+    let left_lines = match left {
+        Some((text, marker, style, background)) => {
+            edit_side_lines(marker, text, style, Some(background), left_w, "", "")
+        }
+        None => edit_side_lines("  ", "", Style::default(), None, left_w, "", ""),
+    };
+    let right_lines = match right {
+        Some((text, marker, style, background)) => {
+            edit_side_lines(marker, text, style, Some(background), right_w, "", "")
+        }
+        None => edit_side_lines("  ", "", Style::default(), None, right_w, "", ""),
+    };
+    let row_count = left_lines.len().max(right_lines.len());
+    for i in 0..row_count {
+        let mut spans = vec![Span::raw(" ".repeat(EDIT_INDENT))];
+        spans.extend(
+            left_lines
+                .get(i)
+                .map(|line| line.spans.clone())
+                .unwrap_or_else(|| vec![Span::raw(" ".repeat(left_w))]),
+        );
+        spans.push(Span::styled(" │ ", EDIT_SEP));
+        spans.extend(
+            right_lines
+                .get(i)
+                .map(|line| line.spans.clone())
+                .unwrap_or_else(|| vec![Span::raw(" ".repeat(right_w))]),
+        );
+        lines.push(Line::from(spans));
+    }
+}
+
+fn push_edit_change_block(
+    lines: &mut Vec<Line<'static>>,
+    deleted: &mut Vec<&str>,
+    inserted: &mut Vec<&str>,
+    left_w: usize,
+    right_w: usize,
+) {
+    let rows = deleted.len().max(inserted.len());
     for i in 0..rows {
-        let left_wrapped = wrap_by_width(old_lines.get(i).copied().unwrap_or(""), left_w);
-        let right_wrapped = wrap_by_width(new_lines.get(i).copied().unwrap_or(""), right_w);
-        let wrap_rows = left_wrapped.len().max(right_wrapped.len());
-        for j in 0..wrap_rows {
-            let left = pad_to_width(
-                left_wrapped.get(j).map(String::as_str).unwrap_or(""),
-                left_w,
-            );
-            let right = pad_to_width(
-                right_wrapped.get(j).map(String::as_str).unwrap_or(""),
-                right_w,
-            );
-            lines.push(Line::from(vec![
-                Span::raw("   "),
-                Span::styled(left, EDIT_DELETE),
-                Span::styled(" │ ", EDIT_SEP),
-                Span::styled(right, EDIT_INSERT),
-            ]));
+        push_edit_column_pair(
+            lines,
+            deleted
+                .get(i)
+                .map(|text| (*text, "- ", EDIT_DELETE, EDIT_DELETE_BG)),
+            inserted
+                .get(i)
+                .map(|text| (*text, "+ ", EDIT_INSERT, EDIT_INSERT_BG)),
+            left_w,
+            right_w,
+        );
+    }
+    deleted.clear();
+    inserted.clear();
+}
+
+fn push_edit_columns(lines: &mut Vec<Line<'static>>, old: &str, new: &str, max_width: usize) {
+    let available = max_width.saturating_sub(EDIT_INDENT + EDIT_SEP_WIDTH);
+    let left_w = available / 2;
+    let right_w = available - left_w;
+    let mut deleted = Vec::new();
+    let mut inserted = Vec::new();
+
+    for row in edit_rows(old, new) {
+        match row {
+            EditRow::Context(text) => {
+                push_edit_change_block(lines, &mut deleted, &mut inserted, left_w, right_w);
+                let left = edit_side_lines("  ", text, Style::default(), None, left_w, "", "");
+                let right = edit_side_lines("  ", text, Style::default(), None, right_w, "", "");
+                let row_count = left.len().max(right.len());
+                for i in 0..row_count {
+                    let mut spans = vec![Span::raw(" ".repeat(EDIT_INDENT))];
+                    spans.extend(
+                        left.get(i)
+                            .map(|line| line.spans.clone())
+                            .unwrap_or_else(|| vec![Span::raw(" ".repeat(left_w))]),
+                    );
+                    spans.push(Span::styled(" │ ", EDIT_SEP));
+                    spans.extend(
+                        right
+                            .get(i)
+                            .map(|line| line.spans.clone())
+                            .unwrap_or_else(|| vec![Span::raw(" ".repeat(right_w))]),
+                    );
+                    lines.push(Line::from(spans));
+                }
+            }
+            EditRow::Delete(text) => deleted.push(text),
+            EditRow::Insert(text) => inserted.push(text),
         }
     }
+    push_edit_change_block(lines, &mut deleted, &mut inserted, left_w, right_w);
 }
 
 fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: usize, cap: usize) {
@@ -490,11 +667,8 @@ fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: 
     };
 
     let start = lines.len();
-    let available = max_width.saturating_sub(EDIT_INDENT);
-    if available >= EDIT_MIN_COL * 2 + EDIT_SEP_WIDTH {
-        let left_w = (available - EDIT_SEP_WIDTH) / 2;
-        let right_w = available - EDIT_SEP_WIDTH - left_w;
-        push_edit_columns(lines, old, new, left_w, right_w);
+    if max_width >= EDIT_INDENT + EDIT_SEP_WIDTH + EDIT_MIN_COL * 2 {
+        push_edit_columns(lines, old, new, max_width);
     } else {
         push_edit_unified(lines, old, new, max_width);
     }
@@ -1174,10 +1348,47 @@ mod tests {
             20,
         );
         let text = joined(&lines);
+        assert!(text.contains("- old"));
+        assert!(text.contains("+ new"));
         assert!(text.contains("│"));
-        assert!(text.contains("old"));
-        assert!(text.contains("new"));
-        assert!(!text.contains("- old"));
+    }
+
+    #[test]
+    fn edit_detail_uses_standard_line_backgrounds() {
+        let mut lines = Vec::new();
+        push_edit_detail(
+            &mut lines,
+            r#"{"path":"a.rs","old_string":"same\nold","new_string":"same\nnew"}"#,
+            40,
+            20,
+        );
+
+        let context = lines
+            .iter()
+            .find(|line| line.to_string().contains("same"))
+            .unwrap();
+        let deleted = lines
+            .iter()
+            .find(|line| line.to_string().contains("- old"))
+            .unwrap();
+        let inserted = lines
+            .iter()
+            .find(|line| line.to_string().contains("+ new"))
+            .unwrap();
+
+        assert!(context.spans.iter().all(|span| span.style.bg.is_none()));
+        assert!(
+            deleted
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(EDIT_DELETE_BG))
+        );
+        assert!(
+            inserted
+                .spans
+                .iter()
+                .all(|span| span.style.bg == Some(EDIT_INSERT_BG))
+        );
     }
 
     fn render_tools(
@@ -1225,6 +1436,36 @@ mod tests {
         assert!(text.contains("→ Read README.md"));
         assert!(!text.contains("hello"));
         assert!(!text.contains("Output:"));
+    }
+
+    #[test]
+    fn edit_header_colors_counts_and_block_omits_path() {
+        let call = ToolCall::new(
+            "c1",
+            "Edit",
+            r#"{"path":"src/main.rs","old_string":"old\nline","new_string":"new\nlines\nhere"}"#,
+        );
+        let result = ToolResult::success("c1", "Done");
+        let mut results = HashMap::new();
+        results.insert(result.tool_call_id.clone(), &result);
+        let mut expand = HashMap::new();
+        expand.insert("c1".into(), ToolExpand::Preview);
+
+        let (lines, _) = render_tools(&[ContentPart::ToolCall(call)], &results, &expand, 80);
+
+        assert_eq!(joined(&lines).matches("src/main.rs").count(), 1);
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| { span.content == "+3" && span.style.fg == EDIT_INSERT.fg })
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| { span.content == "-2" && span.style.fg == EDIT_DELETE.fg })
+        );
     }
 
     #[test]
