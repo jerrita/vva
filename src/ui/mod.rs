@@ -132,17 +132,15 @@ async fn run_app_loop(
         let view = app.view.clone();
         let session = &view.session;
         let session_id = &session.id;
-        let session_title = session.title.as_deref().unwrap_or_default();
         let session_model = &session.current_model;
         let session_variant = &session.current_variant;
         let session_workspace = session.workspace_root.display().to_string();
-        let status_text = view.state.status();
 
         let frame = terminal.draw(|frame| {
             let size = frame.area();
 
             let input_lines = app.input.line_count();
-            // 输入区：圆角输入框 (边框 2 + 文本行) + 状态栏 1
+            // 输入区：圆角输入框（边框 2 + 文本行）与元信息行
             let max_text_rows = ((size.height.saturating_sub(8)) / 2).clamp(1, 12) as usize;
             let text_rows = input_lines.clamp(1, max_text_rows);
             let input_area_height = (text_rows as u16) + 3;
@@ -173,13 +171,11 @@ async fn run_app_loop(
                 session_model,
                 session_variant.as_deref(),
                 &session_workspace,
-                &status_text,
             );
 
             if let Some(sidebar_rect) = sidebar_area {
                 let info = SidebarInfo {
                     session_id,
-                    session_title,
                     workspace: &session_workspace,
                     model: session_model,
                     variant: session_variant.as_deref(),

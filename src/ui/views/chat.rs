@@ -623,8 +623,11 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let status = app.view.state.status();
+    let show_status = !status.is_empty() && inner.height > 1;
     let viewport = if inner.width > 1 && inner.height > 0 {
-        inner
+        let height = inner.height.saturating_sub(u16::from(show_status));
+        Rect { height, ..inner }
     } else {
         area
     };
@@ -686,6 +689,18 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
             .track_style(Style::default().fg(PANEL_BORDER));
 
         frame.render_stateful_widget(scrollbar, app.scrollbar_area, &mut scrollbar_state);
+    }
+
+    if show_status {
+        frame.render_widget(
+            Line::from(Span::styled(status, Style::default().fg(Color::Yellow))),
+            Rect {
+                x: inner.x,
+                y: inner.bottom().saturating_sub(1),
+                width: inner.width,
+                height: 1,
+            },
+        );
     }
 }
 

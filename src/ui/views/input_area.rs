@@ -9,7 +9,7 @@ use crate::ui::command::command_row;
 use crate::ui::views::modal_shell::selected_row_style;
 use crate::ui::views::{PANEL_BORDER, panel_block};
 
-/// 复合输入区：圆角输入框，状态与元信息在框下方
+/// 输入区：圆角输入框与模型元信息
 pub fn render_input_area(
     app: &mut App,
     frame: &mut Frame,
@@ -17,7 +17,6 @@ pub fn render_input_area(
     model: &str,
     variant: Option<&str>,
     workspace: &str,
-    status_text: &str,
 ) {
     let is_running = app.active_session.is_running();
     let chunks = Layout::default()
@@ -34,44 +33,6 @@ pub fn render_input_area(
         .padding(Padding::horizontal(1));
     let inner = block.inner(chunks[0]);
     frame.render_widget(block, chunks[0]);
-
-    let agent_status_spans = if is_running {
-        let text = if status_text.is_empty() {
-            "Working..."
-        } else {
-            status_text
-        };
-        vec![
-            Span::styled(
-                format!(" {} ", app.spinner_char()),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("Agent: {}", text),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]
-    } else {
-        vec![
-            Span::styled(" ● ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Idle", Style::default().fg(Color::DarkGray)),
-        ]
-    };
-
-    let web_search_span = if app.view.session.web_search {
-        Span::styled(
-            "🌐 Web Search: Enabled  ",
-            Style::default().fg(Color::Green),
-        )
-    } else {
-        Span::styled("🌐 Web Search: Off  ", Style::default().fg(Color::DarkGray))
-    };
-
-    let mut status_spans = agent_status_spans;
-    status_spans.push(Span::raw("    "));
-    status_spans.push(web_search_span);
 
     let text = inner;
     let inner_width = text.width as usize;
@@ -145,23 +106,39 @@ pub fn render_input_area(
         }
     }
 
-    let ws_name = std::path::Path::new(workspace)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(workspace);
-    let variant_str = variant.unwrap_or("default");
-    status_spans.push(Span::raw("    "));
-    status_spans.push(Span::styled("🤖 ", Style::default().fg(Color::Cyan)));
-    status_spans.push(Span::styled(model, Style::default().fg(Color::White)));
-    status_spans.push(Span::styled("  ⚡ ", Style::default().fg(Color::Magenta)));
-    status_spans.push(Span::styled(variant_str, Style::default().fg(Color::White)));
-    status_spans.push(Span::styled("  📂 ", Style::default().fg(Color::DarkGray)));
-    status_spans.push(Span::styled(ws_name, Style::default().fg(Color::DarkGray)));
-    frame.render_widget(Paragraph::new(Line::from(status_spans)), chunks[1]);
-
     if !app.matched_commands.is_empty() {
         render_command_palette(app, frame, chunks[0]);
     }
+
+    let workspace = std::path::Path::new(workspace)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(workspace);
+    let variant = variant.unwrap_or("default");
+    let web = if app.view.session.web_search {
+        "web"
+    } else {
+        "web off"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(model, Style::default()),
+            Span::styled(format!(" ({variant})"), Style::default().fg(Color::Magenta)),
+            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
+            Span::styled(workspace.to_owned(), Style::default().fg(Color::DarkGray)),
+            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                web,
+                Style::default().fg(if app.view.session.web_search {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                }),
+            ),
+        ])),
+        chunks[1],
+    );
 }
 
 /// 按选区命中将单行文本切分为 normal / selected 两种样式的 span 序列

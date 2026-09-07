@@ -2,7 +2,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::ui::app::App;
 use crate::ui::text::truncate;
@@ -11,16 +11,15 @@ use crate::ui::views::chat::apply_selection_highlight;
 /// 右侧边栏所需的会话元信息
 pub struct SidebarInfo<'a> {
     pub session_id: &'a str,
-    pub session_title: &'a str,
     pub workspace: &'a str,
     pub model: &'a str,
     pub variant: Option<&'a str>,
 }
 
-/// 标签值行：`Label: value`（标签固定 DarkGray，值样式由调用方给定）
+/// 标签值行：左侧留白后显示 `Label: value`（标签固定 DarkGray，值样式由调用方给定）
 fn label_value(label: &str, value: String, value_style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {label}: "), Style::default().fg(Color::DarkGray)),
         Span::styled(value, value_style),
     ])
 }
@@ -55,14 +54,25 @@ fn context_usage(stats: &crate::ui::history::SidebarStats) -> (u64, f64, u16) {
     (context_limit, ratio, (ratio * 100.0) as u16)
 }
 
+fn context_gauge_line(width: u16, ratio: f64, percent: u16) -> Line<'static> {
+    let bar_width = width.saturating_sub(7) as usize;
+    let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
+    Line::from(vec![
+        Span::raw(" ["),
+        Span::styled("#".repeat(filled), Style::default().fg(Color::Blue)),
+        Span::styled(
+            "-".repeat(bar_width - filled),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("] {percent}%"),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
 /// 构建侧边栏可见文本行，供渲染与复制共用。
 pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> {
-    let title_display = if info.session_title.trim().is_empty() {
-        "Untitled".to_string()
-    } else {
-        truncate(info.session_title, 18)
-    };
-
     let short_id = truncate(info.session_id, 16);
 
     let ws_display = std::path::Path::new(info.workspace)
@@ -83,54 +93,46 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         ),
     };
 
-    let (context_limit, _ratio, percent) = context_usage(&app.stats);
+    let (context_limit, _ratio, _percent) = context_usage(&app.stats);
     let cost_str = if app.stats.estimated_cost_usd > 0.0 {
         format!("${:.4}", app.stats.estimated_cost_usd)
     } else {
         "$0.0000".to_string()
     };
 
-    let mut lines = vec![Line::from(""); 22];
-    lines[0] = label_value(
-        "Title",
-        title_display,
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
-    lines[1] = label_value("Session", short_id, Style::default().fg(Color::Cyan));
-    lines[2] = label_value(
+    let mut lines = vec![Line::from(""); 20];
+    lines[0] = label_value("Session", short_id, Style::default().fg(Color::Cyan));
+    lines[1] = label_value(
         "Workspace",
         ws_display.to_string(),
         Style::default().fg(Color::White),
     );
-    lines[3] = label_value(
+    lines[2] = label_value(
         "Turns",
         format_number(app.stats.total_turns),
         Style::default().fg(Color::Yellow),
     );
-    lines[6] = label_value("Model", model_display, Style::default().fg(Color::Green));
-    lines[7] = label_value(
+    lines[4] = label_value("Model", model_display, Style::default().fg(Color::Green));
+    lines[5] = label_value(
         "Provider",
         provider_display,
         Style::default().fg(Color::Cyan),
     );
-    lines[8] = label_value(
+    lines[6] = label_value(
         "Variant",
         info.variant.unwrap_or("none").to_string(),
         Style::default().fg(Color::Magenta),
     );
-    lines[10] = label_value(
+    lines[8] = label_value(
         "Context",
         format!(
-            "{}/{} ({}%)",
+            "{} / {}",
             format_number(app.stats.context_tokens),
-            format_context_limit(context_limit),
-            percent
+            format_context_limit(context_limit)
         ),
         Style::default().fg(Color::White),
     );
-    lines[11] = label_value(
+    lines[9] = label_value(
         "In/Out",
         format!(
             "{} / {}",
@@ -139,17 +141,17 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         ),
         Style::default().fg(Color::Rgb(170, 170, 170)),
     );
-    lines[15] = label_value(
+    lines[13] = label_value(
         "Cache Read",
         format_number(app.stats.cache_read_tokens),
         Style::default().fg(Color::Cyan),
     );
-    lines[16] = label_value(
+    lines[14] = label_value(
         "Cache Write",
         format_number(app.stats.cache_write_tokens),
         Style::default().fg(Color::LightBlue),
     );
-    lines[19] = label_value(
+    lines[17] = label_value(
         "Est. Cost",
         cost_str,
         Style::default()
@@ -185,8 +187,8 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),
-            Constraint::Length(5),
+            Constraint::Length(4),
+            Constraint::Length(4),
             Constraint::Length(5),
             Constraint::Length(4),
             Constraint::Length(3),
@@ -208,11 +210,11 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
     };
 
     frame.render_widget(
-        Paragraph::new(lines[0..5].to_vec()).block(separator()),
+        Paragraph::new(lines[0..3].to_vec()).block(separator()),
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new(lines[6..9].to_vec()).block(separator()),
+        Paragraph::new(lines[4..7].to_vec()).block(separator()),
         chunks[1],
     );
 
@@ -224,25 +226,17 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
             Constraint::Min(0),
         ])
         .split(chunks[2]);
-    frame.render_widget(Paragraph::new(lines[10..12].to_vec()), token_chunks[0]);
-
-    let gauge = Gauge::default()
-        .ratio(ratio)
-        .gauge_style(Style::default().fg(if percent > 80 {
-            Color::Red
-        } else if percent > 50 {
-            Color::Yellow
-        } else {
-            Color::Blue
-        }))
-        .use_unicode(true);
-    frame.render_widget(gauge, token_chunks[1]);
+    frame.render_widget(Paragraph::new(lines[8..10].to_vec()), token_chunks[0]);
+    frame.render_widget(
+        Paragraph::new(context_gauge_line(token_chunks[1].width, ratio, percent)),
+        token_chunks[1],
+    );
 
     frame.render_widget(
-        Paragraph::new(lines[15..18].to_vec()).block(separator()),
+        Paragraph::new(lines[13..16].to_vec()).block(separator()),
         chunks[3],
     );
-    frame.render_widget(Paragraph::new(lines[19..22].to_vec()), chunks[4]);
+    frame.render_widget(Paragraph::new(lines[17..20].to_vec()), chunks[4]);
 }
 
 #[cfg(test)]
@@ -265,13 +259,12 @@ mod tests {
     async fn render_sidebar_keeps_selectable_text_lines() {
         let mut ta = create_test_app("test-model", None, None, false).await;
         let app = &mut ta.app;
-        app.sidebar.selection.start(0, 7);
-        app.sidebar.selection.update(0, 14);
+        app.sidebar.selection.start(0, 10);
+        app.sidebar.selection.update(0, 20);
         app.sidebar.selection.finish();
 
         let info = SidebarInfo {
             session_id: "session-id",
-            session_title: "Example",
             workspace: "C:/workspace",
             model: "test-model",
             variant: None,
@@ -286,8 +279,8 @@ mod tests {
         assert_eq!(
             app.sidebar.selection.selection,
             Some(TextSelection::new(
-                TextCoord { line: 0, col: 7 },
-                TextCoord { line: 0, col: 14 }
+                TextCoord { line: 0, col: 10 },
+                TextCoord { line: 0, col: 20 }
             ))
         );
         assert_eq!(
@@ -295,7 +288,7 @@ mod tests {
                 &app.sidebar.lines,
                 app.sidebar.selection.get().unwrap(),
             ),
-            Some("Example".to_string())
+            Some("session-id".to_string())
         );
 
         let _ = std::fs::remove_dir_all(&ta.temp_dir);

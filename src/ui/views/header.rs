@@ -19,7 +19,7 @@ pub fn session_title_line(app: &App, title: &str) -> Line<'static> {
     };
 
     Line::from(vec![
-        Span::styled(" 💬 ", Style::default().fg(Color::Cyan)),
+        Span::raw(" "),
         Span::styled(
             title_display,
             Style::default()
@@ -30,6 +30,6 @@ pub fn session_title_line(app: &App, title: &str) -> Line<'static> {
             if is_running { " (Active)" } else { "" }.to_string(),
             Style::default().fg(status_color),
         ),
-        Span::raw(" "),
+        Span::raw("  "),
     ])
 }
