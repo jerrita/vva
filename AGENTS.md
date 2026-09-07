@@ -93,10 +93,8 @@ src/
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
-│   ├── shell.rs            # Shell 执行共享骨架 (超时/输出上限/退出码检查)
-│   ├── bash.rs             # Bash 执行 (Unix)
-│   ├── powershell.rs       # PowerShell 执行 (Windows)
-│   └── file.rs             # 文件读写与查看
+│   ├── shell.rs            # Shell 执行 (超时/输出上限/退出码检查)
+│   └── filesystem.rs       # Read、Edit、Glob、Grep
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
 │   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions) 与 capability_notices 能力协商

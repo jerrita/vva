@@ -98,6 +98,171 @@ fn search_citations<'a>(
     citations
 }
 
+fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
+}
+
+fn line_count(text: &str) -> usize {
+    if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    }
+}
+
+fn tool_call_detail(name: &str, arguments: &str) -> String {
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return arguments.to_string();
+    };
+    match name {
+        "Read" => json_str(&args, "path")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
+        "Edit" => match (
+            json_str(&args, "path"),
+            json_str(&args, "old_string"),
+            json_str(&args, "new_string"),
+        ) {
+            (Some(path), Some(old_string), Some(new_string)) => format!(
+                "{path} (+{}, -{})",
+                line_count(new_string),
+                line_count(old_string)
+            ),
+            _ => arguments.to_string(),
+        },
+        "Glob" => json_str(&args, "pattern")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
+        "Grep" => {
+            let Some(pattern) = json_str(&args, "pattern") else {
+                return arguments.to_string();
+            };
+            match json_str(&args, "include") {
+                Some(include) if !include.is_empty() => format!("{include}, {pattern}"),
+                _ => pattern.to_string(),
+            }
+        }
+        "Shell" => json_str(&args, "intent")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
+        _ => arguments.to_string(),
+    }
+}
+
+const EDIT_DELETE: Style = Style::new().fg(Color::Rgb(220, 100, 100));
+const EDIT_INSERT: Style = Style::new().fg(Color::Rgb(100, 180, 110));
+const EDIT_SEP: Style = Style::new().fg(Color::DarkGray);
+const EDIT_INDENT: usize = 3;
+const EDIT_SEP_WIDTH: usize = 3;
+const EDIT_MIN_COL: usize = 20;
+const EDIT_DETAIL_LIMIT: usize = 20;
+
+fn wrap_by_width(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0;
+    for ch in text.chars() {
+        let cw = ch.width().unwrap_or(0);
+        if cw > 0 && current_w + cw > width && !current.is_empty() {
+            rows.push(std::mem::take(&mut current));
+            current_w = 0;
+        }
+        current.push(ch);
+        current_w += cw;
+    }
+    rows.push(current);
+    rows
+}
+
+fn pad_to_width(text: &str, width: usize) -> String {
+    let w = text.width();
+    if w >= width {
+        text.to_string()
+    } else {
+        format!("{text}{}", " ".repeat(width - w))
+    }
+}
+
+fn push_edit_unified(lines: &mut Vec<Line<'static>>, old: &str, new: &str, max_width: usize) {
+    for line in old.lines() {
+        let spans = vec![Span::styled(format!("- {line}"), EDIT_DELETE)];
+        lines.extend(wrap_spans_to_lines(&spans, max_width, "   ", "     "));
+    }
+    for line in new.lines() {
+        let spans = vec![Span::styled(format!("+ {line}"), EDIT_INSERT)];
+        lines.extend(wrap_spans_to_lines(&spans, max_width, "   ", "     "));
+    }
+}
+
+fn push_edit_columns(
+    lines: &mut Vec<Line<'static>>,
+    old: &str,
+    new: &str,
+    left_w: usize,
+    right_w: usize,
+) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let rows = old_lines.len().max(new_lines.len()).max(1);
+    for i in 0..rows {
+        let left_wrapped = wrap_by_width(old_lines.get(i).copied().unwrap_or(""), left_w);
+        let right_wrapped = wrap_by_width(new_lines.get(i).copied().unwrap_or(""), right_w);
+        let wrap_rows = left_wrapped.len().max(right_wrapped.len());
+        for j in 0..wrap_rows {
+            let left = pad_to_width(
+                left_wrapped.get(j).map(String::as_str).unwrap_or(""),
+                left_w,
+            );
+            let right = pad_to_width(
+                right_wrapped.get(j).map(String::as_str).unwrap_or(""),
+                right_w,
+            );
+            lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(left, EDIT_DELETE),
+                Span::styled(" │ ", EDIT_SEP),
+                Span::styled(right, EDIT_INSERT),
+            ]));
+        }
+    }
+}
+
+fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: usize) {
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return;
+    };
+    let Some(old) = json_str(&args, "old_string") else {
+        return;
+    };
+    let Some(new) = json_str(&args, "new_string") else {
+        return;
+    };
+
+    let start = lines.len();
+    let available = max_width.saturating_sub(EDIT_INDENT);
+    if available >= EDIT_MIN_COL * 2 + EDIT_SEP_WIDTH {
+        let left_w = (available - EDIT_SEP_WIDTH) / 2;
+        let right_w = available - EDIT_SEP_WIDTH - left_w;
+        push_edit_columns(lines, old, new, left_w, right_w);
+    } else {
+        push_edit_unified(lines, old, new, max_width);
+    }
+
+    let produced = lines.len() - start;
+    if produced > EDIT_DETAIL_LIMIT {
+        let hidden = produced - EDIT_DETAIL_LIMIT;
+        lines.truncate(start + EDIT_DETAIL_LIMIT);
+        lines.push(Line::from(vec![
+            Span::raw("     "),
+            Span::styled(
+                format!("... ({hidden} more lines hidden)"),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+}
+
 fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
     match &call.action {
         WebSearchAction::Search => call.sources.iter().any(|source| source.url == url),
@@ -178,7 +343,7 @@ pub(crate) fn append_parts<'a>(
                 state.prev_reasoning = false;
                 state.prev_text = false;
                 let name = &call.name;
-                let args = &call.arguments;
+                let detail = tool_call_detail(name, &call.arguments);
                 if needs_separator {
                     lines.push(Line::from(""));
                 }
@@ -190,10 +355,13 @@ pub(crate) fn append_parts<'a>(
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(" "),
-                    Span::styled(args.clone(), Style::default().fg(Color::Rgb(160, 160, 160))),
+                    Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
                 ];
                 let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
                 lines.extend(wrapped);
+                if name == "Edit" {
+                    push_edit_detail(lines, &call.arguments, max_width);
+                }
             }
             (Role::Tool, ContentPart::ToolResult(result)) => {
                 state.prev_reasoning = false;
@@ -710,6 +878,43 @@ mod tests {
     use crate::model::WebSearchSource;
     use crate::ui::app::TextCoord;
     use std::sync::Arc;
+
+    fn joined(lines: &[Line]) -> String {
+        lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn edit_detail_uses_unified_diff_when_narrow() {
+        let mut lines = Vec::new();
+        push_edit_detail(
+            &mut lines,
+            r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
+            40,
+        );
+        let text = joined(&lines);
+        assert!(text.contains("- old"));
+        assert!(text.contains("+ new"));
+        assert!(!text.contains("│"));
+    }
+
+    #[test]
+    fn edit_detail_uses_columns_when_wide() {
+        let mut lines = Vec::new();
+        push_edit_detail(
+            &mut lines,
+            r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
+            80,
+        );
+        let text = joined(&lines);
+        assert!(text.contains("│"));
+        assert!(text.contains("old"));
+        assert!(text.contains("new"));
+        assert!(!text.contains("- old"));
+    }
 
     #[test]
     fn test_user_block_copy_excludes_decoration() {

@@ -1,6 +1,4 @@
-pub mod bash;
-pub mod file;
-pub mod powershell;
+pub mod filesystem;
 pub mod shell;
 
 use crate::model::{ToolCall, ToolDefinition, ToolResult};
@@ -24,6 +22,7 @@ pub trait Tool: Send + Sync {
     }
 }
 
+#[derive(Clone)]
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
 }
@@ -35,17 +34,14 @@ impl ToolRegistry {
         }
     }
 
-    /// 注册工作空间默认 Coding 工具集（Shell 执行 + 文件读写）
+    /// 注册工作空间默认工具集。
     pub fn with_workspace_defaults(workspace: &std::path::Path) -> Self {
         let mut registry = Self::new();
-        #[cfg(windows)]
-        registry.register(Arc::new(crate::tools::powershell::PowerShellTool::new(
-            workspace,
-        )));
-        #[cfg(not(windows))]
-        registry.register(Arc::new(crate::tools::bash::BashTool::new(workspace)));
-        registry.register(Arc::new(crate::tools::file::FileViewTool::new(workspace)));
-        registry.register(Arc::new(crate::tools::file::FileEditTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::filesystem::ReadTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::filesystem::GlobTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::filesystem::GrepTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::shell::ShellTool::new(workspace)));
         registry
     }
 
@@ -103,9 +99,9 @@ mod tests {
     #[test]
     fn definitions_have_stable_name_order() {
         let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(NamedTool("powershell")));
-        registry.register(Arc::new(NamedTool("file_view")));
-        registry.register(Arc::new(NamedTool("file_write")));
+        registry.register(Arc::new(NamedTool("Shell")));
+        registry.register(Arc::new(NamedTool("Read")));
+        registry.register(Arc::new(NamedTool("Edit")));
 
         let names: Vec<_> = registry
             .definitions()
@@ -113,6 +109,6 @@ mod tests {
             .map(|definition| definition.name)
             .collect();
 
-        assert_eq!(names, ["file_view", "file_write", "powershell"]);
+        assert_eq!(names, ["Edit", "Read", "Shell"]);
     }
 }

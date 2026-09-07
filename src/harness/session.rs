@@ -712,18 +712,38 @@ impl SessionTask {
             if calls.is_empty() {
                 return Ok(true);
             }
-            for call in calls {
+            for call in &calls {
                 self.event(AgentEvent::ToolExecuting {
                     name: call.name.clone(),
                     args: call.arguments.clone(),
                 })
                 .await;
-                let Some(result) = self
-                    .drive(engine.tools.execute_call(&call), commands, &mut rx)
-                    .await
-                else {
-                    return Ok(false);
-                };
+            }
+            let tools = engine.tools.clone();
+            let mut set = tokio::task::JoinSet::new();
+            for (index, call) in calls.iter().cloned().enumerate() {
+                let tools = tools.clone();
+                set.spawn(async move { (index, tools.execute_call(&call).await) });
+            }
+            let count = calls.len();
+            let Some(results) = self
+                .drive(
+                    async move {
+                        let mut results = vec![None; count];
+                        while let Some(joined) = set.join_next().await {
+                            let (index, result) = joined.expect("tool task panicked");
+                            results[index] = Some(result);
+                        }
+                        results.into_iter().map(Option::unwrap).collect::<Vec<_>>()
+                    },
+                    commands,
+                    &mut rx,
+                )
+                .await
+            else {
+                return Ok(false);
+            };
+            for (call, result) in calls.into_iter().zip(results) {
                 self.event(AgentEvent::ToolFinished {
                     name: call.name,
                     result: result.content.clone(),
