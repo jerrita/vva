@@ -978,7 +978,8 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     let status = app.view.state.status();
     let show_status = !status.is_empty() && inner.height > 1;
     let viewport = if inner.width > 1 && inner.height > 0 {
-        let height = inner.height.saturating_sub(u16::from(show_status));
+        let status_height = if show_status { 2 } else { 0 };
+        let height = inner.height.saturating_sub(status_height);
         Rect { height, ..inner }
     } else {
         area
@@ -1045,7 +1046,10 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 
     if show_status {
         frame.render_widget(
-            Line::from(Span::styled(status, Style::default().fg(Color::Yellow))),
+            Line::from(Span::styled(
+                format!("{} {status}", app.spinner_char()),
+                Style::default().fg(Color::Yellow),
+            )),
             Rect {
                 x: inner.x,
                 y: inner.bottom().saturating_sub(1),
