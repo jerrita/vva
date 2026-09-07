@@ -1,18 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
-use crossterm::cursor::{RestorePosition, SavePosition};
+use crossterm::cursor::{Hide, RestorePosition, SavePosition, Show};
 use crossterm::queue;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell, CellDiffOption};
+use ratatui::layout::Rect;
 use unicode_width::UnicodeWidthStr;
 
 use super::app::TextPane;
 
 #[derive(Default)]
 pub(super) struct Hyperlinks {
-    // Screen coordinates are ordered by row, then column.
-    previous: BTreeSet<(u16, u16)>,
+    // Screen coordinates are ordered by row, then column. Each entry represents
+    // one rendered glyph rather than every terminal cell occupied by that glyph.
+    previous: BTreeMap<(u16, u16), LinkSnapshot>,
+    previous_area: Option<Rect>,
+}
+
+#[derive(Clone, PartialEq)]
+struct LinkSnapshot {
+    cell: Cell,
+    url: String,
 }
 
 pub(super) struct LinkUpdate {
@@ -58,25 +67,42 @@ impl Hyperlinks {
             }
         }
 
-        let mut touched = std::mem::take(&mut self.previous);
-        self.previous = current.keys().copied().collect();
-        touched.extend(&self.previous);
+        let force_repaint = self.previous_area != Some(buffer.area);
+        self.previous_area = Some(buffer.area);
+        let mut touched: BTreeSet<_> = self.previous.keys().copied().collect();
+        touched.extend(current.keys().copied());
         let rows: BTreeSet<_> = touched.iter().map(|&(y, _)| y).collect();
+        let mut next = BTreeMap::new();
         let mut updates = Vec::new();
         for y in rows {
             let mut x = buffer.area.x;
             while let Some(cell) = buffer.cell((x, y)) {
                 let end = x.saturating_add(cell.symbol().width().max(1) as u16);
-                // Paint wide glyphs once, including when an old link touches their second cell.
-                if cell.diff_option != CellDiffOption::Skip
-                    && (x..end).any(|col| touched.contains(&(y, col)))
-                {
-                    updates.push(LinkUpdate {
-                        x,
-                        y,
-                        cell: cell.clone(),
-                        url: current.get(&(y, x)).cloned(),
-                    });
+                if cell.diff_option != CellDiffOption::Skip {
+                    let url = (x..end).find_map(|col| current.get(&(y, col))).cloned();
+                    let previous = (x..end).find_map(|col| self.previous.get(&(y, col)));
+                    if let Some(url) = url {
+                        let snapshot = LinkSnapshot {
+                            cell: cell.clone(),
+                            url: url.clone(),
+                        };
+                        if force_repaint || previous != Some(&snapshot) {
+                            updates.push(LinkUpdate {
+                                x,
+                                y,
+                                cell: cell.clone(),
+                                url: Some(url),
+                            });
+                        }
+                        next.insert((y, x), snapshot);
+                    } else if previous.is_some() {
+                        updates.push(LinkUpdate {
+                            x,
+                            y,
+                            cell: cell.clone(),
+                            url: None,
+                        });
+                    }
                 }
                 if end <= x {
                     break;
@@ -84,12 +110,13 @@ impl Hyperlinks {
                 x = end;
             }
         }
+        self.previous = next;
         updates
     }
 }
 
 /// Ratatui diffs text/style only. Repaint linked cells from the completed frame so
-/// unchanged labels also receive new targets, and removed links are explicitly cleared.
+/// changed labels receive new targets, and removed links are explicitly cleared.
 pub(super) fn write_updates<W: Write>(
     backend: &mut CrosstermBackend<W>,
     updates: &[LinkUpdate],
@@ -97,22 +124,25 @@ pub(super) fn write_updates<W: Write>(
     if updates.is_empty() {
         return Ok(());
     }
-    queue!(backend, SavePosition)?;
-    for group in updates.chunk_by(|a, b| a.url == b.url) {
-        write!(
-            backend,
-            "\x1b]8;;{}\x1b\\",
-            group[0].url.as_deref().unwrap_or("")
-        )?;
-        backend.draw(
-            group
-                .iter()
-                .map(|update| (update.x, update.y, &update.cell)),
-        )?;
-        write!(backend, "\x1b]8;;\x1b\\")?;
-    }
-    queue!(backend, RestorePosition)?;
-    Write::flush(backend)
+    queue!(backend, SavePosition, Hide)?;
+    let repaint = (|| {
+        for group in updates.chunk_by(|a, b| a.url == b.url) {
+            write!(
+                backend,
+                "\x1b]8;;{}\x1b\\",
+                group[0].url.as_deref().unwrap_or("")
+            )?;
+            backend.draw(
+                group
+                    .iter()
+                    .map(|update| (update.x, update.y, &update.cell)),
+            )?;
+            write!(backend, "\x1b]8;;\x1b\\")?;
+        }
+        Ok(())
+    })();
+    let restore = queue!(backend, RestorePosition, Show).and_then(|()| Write::flush(backend));
+    repaint.and(restore)
 }
 
 #[cfg(test)]
@@ -138,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn osc8_output_preserves_wide_cells_style_and_cursor() {
+    fn osc8_output_preserves_wide_cells_style_and_hides_cursor() {
         let (buffer, pane) = fixture();
         let updates = Hyperlinks::default().prepare(&buffer, &pane, 10, true);
         assert_eq!(
@@ -150,10 +180,10 @@ mod tests {
         let mut backend = CrosstermBackend::new(&mut output);
         write_updates(&mut backend, &updates).unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(output.starts_with("\x1b7\x1b]8;;https://example.com/first\x1b\\"));
+        assert!(output.starts_with("\x1b7\x1b[?25l\x1b]8;;https://example.com/first\x1b\\"));
         assert!(output.contains('中'));
         assert!(output.contains('文'));
-        assert!(output.ends_with("\x1b]8;;\x1b\\\x1b8"));
+        assert!(output.ends_with("\x1b]8;;\x1b\\\x1b8\x1b[?25h"));
     }
 
     #[test]
@@ -161,6 +191,7 @@ mod tests {
         let (buffer, mut pane) = fixture();
         let mut links = Hyperlinks::default();
         links.prepare(&buffer, &pane, 10, true);
+        assert!(links.prepare(&buffer, &pane, 10, true).is_empty());
         pane.links[0].url = "https://example.com/second".into();
         let updates = links.prepare(&buffer, &pane, 10, true);
         assert!(

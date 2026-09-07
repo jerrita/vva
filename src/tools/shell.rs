@@ -64,7 +64,8 @@ mod tests {
     async fn test_run_shell_command_stdout_and_stderr() {
         let cmd = if cfg!(windows) {
             let mut c = tokio::process::Command::new("powershell");
-            c.arg("-Command").arg("Write-Output ok");
+            c.arg("-Command")
+                .arg("Write-Output ok; [Console]::Error.WriteLine('err')");
             c
         } else {
             let mut c = tokio::process::Command::new("bash");
@@ -74,6 +75,7 @@ mod tests {
         let out = run_shell_command(cmd).await.expect("run");
         assert!(out.contains("ok"));
         assert!(out.contains("STDERR:"));
+        assert!(out.contains("err"));
     }
 
     #[tokio::test]

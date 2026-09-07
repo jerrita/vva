@@ -373,7 +373,31 @@ pub(crate) fn append_chat_tail(
     }
 }
 
-/// 从渲染完成的文本行中提取处于选区范围内的纯文本内容（按行保留视觉对齐并去除尾随空白）
+/// 用户消息块仅允许选择正文列，排除色条、缩进和填充。
+fn selectable_columns(line: &Line) -> (usize, usize) {
+    let is_user_block = line
+        .spans
+        .first()
+        .is_some_and(|span| span.content == "▌" && span.style.fg == Some(USER_BLOCK_BAR));
+    if !is_user_block {
+        return (0, usize::MAX);
+    }
+    let mut col = 0;
+    let mut bounds = (0, 0);
+    for (index, span) in line.spans.iter().enumerate() {
+        let end = col + span.width();
+        if index >= 2 && span.style.fg.is_some() {
+            if bounds == (0, 0) {
+                bounds.0 = col;
+            }
+            bounds.1 = end;
+        }
+        col = end;
+    }
+    bounds
+}
+
+/// 从选区提取正文，保留视觉换行并去除尾随空白。
 pub fn extract_selected_text(lines: &[Line], selection: &TextSelection) -> Option<String> {
     if selection.is_empty() {
         return None;
@@ -387,6 +411,10 @@ pub fn extract_selected_text(lines: &[Line], selection: &TextSelection) -> Optio
 
     let end_idx = end.line.min(lines.len().saturating_sub(1));
     for (line_idx, line) in lines.iter().enumerate().take(end_idx + 1).skip(start.line) {
+        let bounds = selectable_columns(line);
+        if bounds == (0, 0) {
+            continue;
+        }
         let Some(range) = selection.line_column_range(line_idx) else {
             result_lines.push(String::new());
             continue;
@@ -397,7 +425,7 @@ pub fn extract_selected_text(lines: &[Line], selection: &TextSelection) -> Optio
 
         for span in &line.spans {
             for ch in span.content.chars() {
-                if char_in_column_range(ch, col, range) {
+                if char_in_column_range(ch, col, range) && char_in_column_range(ch, col, bounds) {
                     line_text.push(ch);
                 }
                 col += ch.width().unwrap_or(0);
@@ -469,6 +497,7 @@ pub fn apply_selection_highlight_offset(
             continue;
         };
 
+        let bounds = selectable_columns(line);
         let old_spans = std::mem::take(&mut line.spans);
         let mut new_spans: Vec<Span<'static>> = Vec::new();
         let mut col = 0;
@@ -478,7 +507,8 @@ pub fn apply_selection_highlight_offset(
             let mut cur_is_selected: Option<bool> = None;
 
             for ch in span.content.chars() {
-                let is_selected = char_in_column_range(ch, col, range);
+                let is_selected =
+                    char_in_column_range(ch, col, range) && char_in_column_range(ch, col, bounds);
 
                 match cur_is_selected {
                     Some(sel) if sel == is_selected => {
@@ -514,7 +544,7 @@ pub fn apply_selection_highlight_offset(
 fn overlay_selection(
     buf: &mut Buffer,
     area: Rect,
-    line_count: usize,
+    lines: &[Line],
     selection: &TextSelection,
     scroll: usize,
 ) {
@@ -525,12 +555,13 @@ fn overlay_selection(
     if text_width == 0 {
         return;
     }
-    for i in 0..line_count {
+    for (i, line) in lines.iter().enumerate() {
         let Some((start_col, end_col)) = selection.line_column_range(scroll + i) else {
             continue;
         };
-        let start_col = start_col.min(text_width);
-        let end_col = end_col.min(text_width);
+        let bounds = selectable_columns(line);
+        let start_col = start_col.max(bounds.0).min(text_width);
+        let end_col = end_col.min(bounds.1).min(text_width);
         if start_col >= end_col {
             continue;
         }
@@ -595,7 +626,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
             );
         }
         if let Some(sel) = selection {
-            overlay_selection(frame.buffer_mut(), viewport, window.len(), &sel, scroll);
+            overlay_selection(frame.buffer_mut(), viewport, window, &sel, scroll);
         }
     }
 
@@ -627,6 +658,32 @@ mod tests {
     use crate::model::WebSearchSource;
     use crate::ui::app::TextCoord;
     use std::sync::Arc;
+
+    #[test]
+    fn test_user_block_copy_excludes_decoration() {
+        let mut lines = Vec::new();
+        push_user_block(&mut lines, "看 https://example.com\ngpt 5.6 sol 额度", 80);
+        let start = TextCoord { line: 0, col: 0 };
+        let end = TextCoord {
+            line: lines.len() - 1,
+            col: 80,
+        };
+        for selection in [
+            TextSelection::new(start, end),
+            TextSelection::new(end, start),
+        ] {
+            assert_eq!(
+                extract_selected_text(&lines, &selection).as_deref(),
+                Some("看 https://example.com\ngpt 5.6 sol 额度")
+            );
+        }
+        let selection =
+            TextSelection::new(TextCoord { line: 1, col: 0 }, TextCoord { line: 1, col: 4 });
+        assert_eq!(
+            extract_selected_text(&lines, &selection).as_deref(),
+            Some("")
+        );
+    }
 
     fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
@@ -1328,7 +1385,9 @@ def stream_test():
         let area = app.chat.area;
         let row = area.y + (line_idx.saturating_sub(scroll)) as u16;
         let cell = terminal.backend().buffer().cell((area.x, row)).unwrap();
-        assert_eq!(cell.bg, Color::Rgb(60, 90, 140));
+        assert_eq!(cell.bg, USER_BLOCK_BG);
+        let text_cell = terminal.backend().buffer().cell((area.x + 4, row)).unwrap();
+        assert_eq!(text_cell.bg, Color::Rgb(60, 90, 140));
         let outside = terminal.backend().buffer().cell((area.x + 6, row)).unwrap();
         assert_ne!(outside.bg, Color::Rgb(60, 90, 140));
     }

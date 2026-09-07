@@ -25,6 +25,29 @@ fn label_value(label: &str, value: String, value_style: Style) -> Line<'static> 
     ])
 }
 
+fn format_number(value: impl ToString) -> String {
+    let digits = value.to_string();
+    let first_group_len = digits.len() % 3;
+    let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
+
+    for (index, ch) in digits.chars().enumerate() {
+        if index > 0 && index % 3 == first_group_len {
+            formatted.push(',');
+        }
+        formatted.push(ch);
+    }
+
+    formatted
+}
+
+fn format_context_limit(value: u64) -> String {
+    if value >= 1_000_000 && value.is_multiple_of(1_000_000) {
+        format!("{}M", format_number(value / 1_000_000))
+    } else {
+        format!("{}k", format_number(value / 1_000))
+    }
+}
+
 /// 上下文窗口占用：(context_limit, 占用比例 0.0-1.0, 百分比)
 fn context_usage(stats: &crate::ui::history::SidebarStats) -> (u64, f64, u16) {
     let context_limit = stats.context_limit.unwrap_or(200_000);
@@ -83,7 +106,7 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
     );
     lines[3] = label_value(
         "Turns",
-        app.stats.total_turns.to_string(),
+        format_number(app.stats.total_turns),
         Style::default().fg(Color::Yellow),
     );
     lines[6] = label_value("Model", model_display, Style::default().fg(Color::Green));
@@ -100,9 +123,9 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
     lines[10] = label_value(
         "Tokens",
         format!(
-            "{}/{}k ({}%)",
-            app.stats.total_tokens,
-            context_limit / 1000,
+            "{}/{} ({}%)",
+            format_number(app.stats.total_tokens),
+            format_context_limit(context_limit),
             percent
         ),
         Style::default().fg(Color::White),
@@ -111,18 +134,19 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         "In/Out",
         format!(
             "{} / {}",
-            app.stats.prompt_tokens, app.stats.completion_tokens
+            format_number(app.stats.prompt_tokens),
+            format_number(app.stats.completion_tokens)
         ),
         Style::default().fg(Color::Rgb(170, 170, 170)),
     );
     lines[15] = label_value(
         "Cache Read",
-        app.stats.cache_read_tokens.to_string(),
+        format_number(app.stats.cache_read_tokens),
         Style::default().fg(Color::Cyan),
     );
     lines[16] = label_value(
         "Cache Write",
-        app.stats.cache_write_tokens.to_string(),
+        format_number(app.stats.cache_write_tokens),
         Style::default().fg(Color::LightBlue),
     );
     lines[19] = label_value(
@@ -227,6 +251,15 @@ mod tests {
     use crate::ui::app::{TextCoord, TextSelection};
     use crate::ui::test_support::create_test_app;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn formats_sidebar_numbers() {
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(45_993), "45,993");
+        assert_eq!(format_number(1_000_000), "1,000,000");
+        assert_eq!(format_context_limit(200_000), "200k");
+        assert_eq!(format_context_limit(1_000_000), "1M");
+    }
 
     #[tokio::test]
     async fn render_sidebar_keeps_selectable_text_lines() {

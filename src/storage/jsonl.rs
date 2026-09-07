@@ -417,6 +417,6 @@ mod tests {
             project_key(Path::new("/no-such-vva-ws/user/proj")),
             "no-such-vva-ws-user-proj"
         );
-        assert_eq!(project_key(Path::new("/")), "workspace");
+        assert_eq!(project_key(Path::new("<>:\"|?*")), "workspace");
     }
 }

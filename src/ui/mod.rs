@@ -216,20 +216,26 @@ async fn run_app_loop(
             break;
         }
 
-        tokio::select! {
-            _ = tick_interval.tick() => {
-                app.tick();
-            }
+        loop {
+            tokio::select! {
+                _ = tick_interval.tick() => {
+                    if app.active_session.is_running() {
+                        app.tick();
+                        break;
+                    }
+                }
 
-            changed = app.view_rx.changed() => {
-                if changed.is_err() { break; }
-                app.refresh_view();
-            }
+                changed = app.view_rx.changed() => {
+                    if changed.is_err() { return Ok(()); }
+                    app.refresh_view();
+                    break;
+                }
 
-            maybe_event = events.recv() => {
-                if let Some(crossterm_event) = maybe_event {
+                maybe_event = events.recv() => {
+                    let Some(crossterm_event) = maybe_event else { return Ok(()); };
                     handle_crossterm_event(app, crossterm_event, &mut events).await;
                     drain_ready_events(app, &mut events).await;
+                    break;
                 }
             }
         }

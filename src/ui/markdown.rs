@@ -588,7 +588,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
                 }
                 TagEnd::Table => {
                     in_table = false;
-                    render_table(&table_rows, &mut output_lines);
+                    render_table(&table_rows, max_width, &mut output_lines);
                     output_lines.push(Line::from(""));
                 }
                 TagEnd::Emphasis => italic = false,
@@ -691,7 +691,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
 }
 
 /// 格式化渲染美观的 Unicode 表格
-fn render_table(rows: &[Vec<String>], output: &mut Vec<Line<'static>>) {
+fn render_table(rows: &[Vec<String>], max_width: usize, output: &mut Vec<Line<'static>>) {
     if rows.is_empty() {
         return;
     }
@@ -701,12 +701,25 @@ fn render_table(rows: &[Vec<String>], output: &mut Vec<Line<'static>>) {
         return;
     }
 
-    // 计算各列最大宽度
-    let mut col_widths = vec![4usize; col_count];
+    // 计算各列最大宽度，并将整表限制在可用区域内。
+    let mut col_widths = vec![1usize; col_count];
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
             col_widths[i] = col_widths[i].max(cell.width()).min(40);
         }
+    }
+    let border_and_padding = 3 * col_count + 4;
+    let content_width = max_width.saturating_sub(border_and_padding).max(col_count);
+    while col_widths.iter().sum::<usize>() > content_width {
+        let Some((widest, _)) = col_widths
+            .iter()
+            .enumerate()
+            .filter(|(_, width)| **width > 1)
+            .max_by_key(|(_, width)| **width)
+        else {
+            break;
+        };
+        col_widths[widest] -= 1;
     }
 
     let border_style = Style::default().fg(Color::Rgb(100, 100, 110));
@@ -729,22 +742,34 @@ fn render_table(rows: &[Vec<String>], output: &mut Vec<Line<'static>>) {
 
     // 数据行与分隔线
     for (row_idx, row) in rows.iter().enumerate() {
-        let mut line_spans = vec![Span::raw("   "), Span::styled("│", border_style)];
+        let wrapped_cells: Vec<Vec<String>> = col_widths
+            .iter()
+            .enumerate()
+            .map(|(col_idx, &width)| {
+                wrap_table_cell(row.get(col_idx).map(String::as_str).unwrap_or(""), width)
+            })
+            .collect();
+        let row_height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
 
-        for (col_idx, &w) in col_widths.iter().enumerate() {
-            let cell_content = row.get(col_idx).map(String::as_str).unwrap_or("");
-            let pad = w.saturating_sub(cell_content.width());
-            let padded_cell = format!(" {}{} ", cell_content, " ".repeat(pad));
-
-            let current_style = if row_idx == 0 {
-                header_style
-            } else {
-                cell_style
-            };
-            line_spans.push(Span::styled(padded_cell, current_style));
-            line_spans.push(Span::styled("│", border_style));
+        for line_idx in 0..row_height {
+            let mut line_spans = vec![Span::raw("   "), Span::styled("│", border_style)];
+            for (col_idx, &width) in col_widths.iter().enumerate() {
+                let content = wrapped_cells[col_idx]
+                    .get(line_idx)
+                    .map(String::as_str)
+                    .unwrap_or("");
+                let pad = width.saturating_sub(content.width());
+                let padded_cell = format!(" {content}{} ", " ".repeat(pad));
+                let current_style = if row_idx == 0 {
+                    header_style
+                } else {
+                    cell_style
+                };
+                line_spans.push(Span::styled(padded_cell, current_style));
+                line_spans.push(Span::styled("│", border_style));
+            }
+            output.push(Line::from(line_spans));
         }
-        output.push(Line::from(line_spans));
 
         // 表头下边框 ├──────┼──────┤
         if row_idx == 0 && rows.len() > 1 {
@@ -772,6 +797,32 @@ fn render_table(rows: &[Vec<String>], output: &mut Vec<Line<'static>>) {
         }
     }
     output.push(Line::from(vec![Span::styled(bot_border, border_style)]));
+}
+
+fn wrap_table_cell(cell: &str, max_width: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    let mut line_width = 0;
+
+    for ch in cell.chars() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if ch == '\n' || (line_width > 0 && line_width + width > max_width) {
+            while lines.last().is_some_and(|line| line.ends_with(' ')) {
+                lines.last_mut().unwrap().pop();
+            }
+            lines.push(String::new());
+            line_width = 0;
+            if ch == '\n' {
+                continue;
+            }
+        }
+        if line_width == 0 && ch.is_whitespace() {
+            continue;
+        }
+        lines.last_mut().unwrap().push(ch);
+        line_width += width;
+    }
+
+    lines
 }
 
 #[cfg(test)]
@@ -928,6 +979,29 @@ fn test() {
         assert!(text.contains("Alice"));
         assert!(text.contains("Admin"));
         assert!(text.contains("Bob"));
+    }
+
+    #[test]
+    fn table_wraps_long_cells_within_available_width() {
+        let md = "| 你问的 | 官方口径 | 实际情况 |\n\
+                  | --- | --- | --- |\n\
+                  | 每月多少 credits? | 无此数字 | Plus 套餐内用量不显示为 credits，只在触顶后才能加购 credits |\n\
+                  | 5 小时多少 credits? | 无此数字 | 5h 窗口与周额度是两道限制，重置的是窗口 |";
+        let max_width = 72;
+        let (lines, _) = render_markdown(md, max_width);
+
+        assert!(lines.iter().all(|line| line.width() <= max_width));
+        assert!(
+            lines.len() > 7,
+            "long table cells should create wrapped rows"
+        );
+
+        let text: String = lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect();
+        assert!(text.contains("触顶后"));
+        assert!(text.contains("两道限制"));
     }
 
     #[test]
