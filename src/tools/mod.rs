@@ -39,6 +39,9 @@ impl ToolRegistry {
     pub fn with_workspace_defaults(workspace: &std::path::Path) -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(crate::tools::filesystem::ReadTool::new(workspace)));
+        registry.register(Arc::new(crate::tools::filesystem::WriteTool::new(
+            workspace,
+        )));
         registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
         registry.register(Arc::new(crate::tools::filesystem::GlobTool::new(workspace)));
         registry.register(Arc::new(crate::tools::filesystem::GrepTool::new(workspace)));

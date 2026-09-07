@@ -135,7 +135,7 @@ fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) ->
         return arguments.to_string();
     };
     match name {
-        "Read" => json_str(&args, "path")
+        "Read" | "Write" => json_str(&args, "path")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
         "Edit" => match (
@@ -186,7 +186,7 @@ fn tool_block_command(name: &str, arguments: &str) -> String {
         "Shell" => json_str(&args, "command")
             .map(|command| format!("$ {command}"))
             .unwrap_or_else(|| arguments.to_string()),
-        "Read" | "Edit" => json_str(&args, "path")
+        "Read" | "Write" | "Edit" => json_str(&args, "path")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
         "Glob" => json_str(&args, "pattern")

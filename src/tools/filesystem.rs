@@ -3,6 +3,8 @@ use glob::{MatchOptions, Pattern};
 use regex::Regex;
 use serde::Deserialize;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::Tool;
@@ -185,6 +187,60 @@ impl Tool for ReadTool {
             .map(|(index, line)| format!("{}: {line}", start + index + 1))
             .collect::<Vec<_>>()
             .join("\n"))
+    }
+}
+
+pub struct WriteTool {
+    working_dir: PathBuf,
+}
+
+impl WriteTool {
+    pub fn new(working_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            working_dir: working_dir.into(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct WriteArgs {
+    path: String,
+    content: String,
+}
+
+#[async_trait]
+impl Tool for WriteTool {
+    fn name(&self) -> &str {
+        "Write"
+    }
+
+    fn description(&self) -> &str {
+        "Create a new file with the given content. Fails if the file already exists."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "format": "path", "description": "Path to the new file" },
+                "content": { "type": "string", "description": "Complete file content" }
+            },
+            "required": ["path", "content"]
+        })
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<String, String> {
+        let args: WriteArgs = serde_json::from_str(arguments)
+            .map_err(|error| format!("Invalid arguments for Write: {error}"))?;
+        let path = resolve_path(&self.working_dir, &args.path);
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| format!("Failed to create file {}: {error}", path.display()))?;
+        file.write_all(args.content.as_bytes())
+            .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
+        Ok(format!("Created file {}", path.display()))
     }
 }
 
@@ -456,6 +512,50 @@ mod tests {
                 "--- {0}\n+++ {0}\n@@ -1,3 +1,3 @@\n one\n-before\n+after\n three",
                 root.join("file.txt").display()
             )
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_creates_a_new_file() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+
+        let tool = WriteTool::new(&root);
+        let result = tool
+            .execute(r#"{"path":"file.txt","content":"hello\nworld"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("file.txt")).unwrap(),
+            "hello\nworld"
+        );
+        assert_eq!(
+            result,
+            format!("Created file {}", root.join("file.txt").display())
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_rejects_existing_file() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file.txt"), "existing").unwrap();
+
+        let tool = WriteTool::new(&root);
+        let error = tool
+            .execute(r#"{"path":"file.txt","content":"replacement"}"#)
+            .await
+            .unwrap_err();
+
+        assert!(error.starts_with("Failed to create file "));
+        assert_eq!(
+            fs::read_to_string(root.join("file.txt")).unwrap(),
+            "existing"
         );
 
         fs::remove_dir_all(root).unwrap();
