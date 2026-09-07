@@ -701,7 +701,7 @@ impl SessionTask {
             }
         }
         let tools = engine.tools.definitions();
-        for _ in 0..15 {
+        loop {
             self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
@@ -836,11 +836,6 @@ impl SessionTask {
                     .await?;
             }
         }
-        self.event(AgentEvent::Notice(
-            "Agent loop reached the iteration limit.".into(),
-        ))
-        .await;
-        Ok(true)
     }
 
     async fn stop(&mut self, delete: bool, reply: Reply) -> bool {
@@ -1247,16 +1242,16 @@ mod tests {
         task.start("hello").await.unwrap();
         let snap = task.view.session;
 
-        // Turn 0: System
-        assert_eq!(snap.turns[0].role, Role::System);
-        // Turn 1: Project AGENTS.md
-        assert_eq!(snap.turns[1].role, Role::User);
-        let rem = crate::system::parse_agents_reminder(&snap.turns[1].text_content()).unwrap();
-        assert_eq!(rem.kind, crate::system::AgentsReminderKind::Project);
-        assert!(rem.content.contains("project instructions"));
-        // Turn 2: User prompt
-        assert_eq!(snap.turns[2].role, Role::User);
-        assert_eq!(snap.turns[2].text_content(), "hello");
+        // 断言相对结构而非固定下标：存在全局 ~/.vva/AGENTS.md 的机器会多出一个 Global 轮次
+        assert_eq!(snap.turns.first().map(|t| t.role), Some(Role::System));
+        assert_eq!(snap.turns.last().map(|t| t.role), Some(Role::User));
+        assert_eq!(snap.turns.last().unwrap().text_content(), "hello");
+        let project = snap.turns[..snap.turns.len() - 1]
+            .iter()
+            .filter_map(|t| crate::system::parse_agents_reminder(&t.text_content()))
+            .find(|r| r.kind == crate::system::AgentsReminderKind::Project)
+            .expect("project AGENTS.md injected before user prompt");
+        assert!(project.content.contains("project instructions"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
