@@ -28,6 +28,12 @@ const USER_BLOCK_BG: Color = Color::Rgb(28, 32, 40);
 const USER_BLOCK_BAR: Color = Color::Rgb(96, 149, 239);
 const SELECTION_STYLE: Style = Style::new().fg(Color::White).bg(Color::Rgb(60, 90, 140));
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RenderState {
+    prev_reasoning: bool,
+    prev_text: bool,
+}
+
 /// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
 fn user_block_row(spans: Vec<Span<'static>>, max_width: usize) -> Line<'static> {
     let bar_style = Style::default().fg(USER_BLOCK_BAR).bg(USER_BLOCK_BG);
@@ -110,7 +116,7 @@ pub(crate) fn append_parts<'a>(
     parts: impl Iterator<Item = &'a ContentPart> + Clone,
     max_width: usize,
     thinking_concise: bool,
-    prev_reasoning: &mut bool,
+    state: &mut RenderState,
 ) {
     let calls = parts
         .clone()
@@ -123,14 +129,16 @@ pub(crate) fn append_parts<'a>(
     for part in parts {
         match (role, part) {
             (Role::User, ContentPart::Text { text, .. }) => {
-                *prev_reasoning = false;
+                state.prev_reasoning = false;
+                state.prev_text = false;
                 lines.push(Line::from(""));
                 push_user_block(lines, text, max_width);
             }
             (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
-                // 连续思考段归为一段：仅组首插入空行分隔，组内紧密堆叠
-                let group_start = !*prev_reasoning;
-                *prev_reasoning = true;
+                // 连续思考段归为一段，组间保留空行。
+                let group_start = !state.prev_reasoning;
+                state.prev_reasoning = true;
+                state.prev_text = false;
                 if group_start {
                     lines.push(Line::from(""));
                 }
@@ -139,10 +147,10 @@ pub(crate) fn append_parts<'a>(
                     .add_modifier(Modifier::ITALIC);
                 let prefix_style = Style::default()
                     .fg(Color::Rgb(140, 140, 140))
-                    .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+                    .add_modifier(Modifier::BOLD);
 
                 if group_start {
-                    lines.push(Line::from(vec![Span::styled("+ Thought:", prefix_style)]));
+                    lines.push(Line::from(vec![Span::styled("+ Thought", prefix_style)]));
                 }
                 if !thinking_concise {
                     let (mut body, mut body_links) = render_markdown(content, max_width);
@@ -159,13 +167,17 @@ pub(crate) fn append_parts<'a>(
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
-                *prev_reasoning = false;
+                let needs_separator = state.prev_reasoning || state.prev_text;
+                state.prev_reasoning = false;
+                state.prev_text = false;
                 let name = &call.name;
                 let args = &call.arguments;
-                lines.push(Line::from(""));
+                if needs_separator {
+                    lines.push(Line::from(""));
+                }
                 let spans = vec![
                     Span::styled(
-                        format!("[{}]", name),
+                        name.clone(),
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
@@ -177,7 +189,8 @@ pub(crate) fn append_parts<'a>(
                 lines.extend(wrapped);
             }
             (Role::Tool, ContentPart::ToolResult(result)) => {
-                *prev_reasoning = false;
+                state.prev_reasoning = false;
+                state.prev_text = false;
                 let is_error = &result.is_error;
                 let result = &result.content;
                 let status_color = if *is_error { Color::Red } else { Color::Green };
@@ -214,18 +227,22 @@ pub(crate) fn append_parts<'a>(
                 }
             }
             (Role::Assistant, ContentPart::WebSearchCall(call)) => {
-                *prev_reasoning = false;
+                let needs_separator = state.prev_reasoning || state.prev_text;
+                state.prev_reasoning = false;
+                state.prev_text = false;
                 let (label, detail) = match &call.action {
                     WebSearchAction::Search => (
-                        "[web_search]",
+                        "web_search",
                         format!("{} ({} sources)", call.query, call.sources.len()),
                     ),
-                    WebSearchAction::OpenPage { url } => ("[web_open]", url.clone()),
+                    WebSearchAction::OpenPage { url } => ("web_open", url.clone()),
                     WebSearchAction::FindInPage { url, pattern } => {
-                        ("[web_find]", format!("{url} / {pattern}"))
+                        ("web_find", format!("{url} / {pattern}"))
                     }
                 };
-                lines.push(Line::from(""));
+                if needs_separator {
+                    lines.push(Line::from(""));
+                }
                 let spans = vec![
                     Span::styled(
                         label,
@@ -269,7 +286,8 @@ pub(crate) fn append_parts<'a>(
                 }
             }
             (Role::Assistant, ContentPart::Text { text, annotations }) => {
-                *prev_reasoning = false;
+                state.prev_reasoning = false;
+                state.prev_text = true;
                 let citations: Vec<_> = annotations
                     .iter()
                     .filter_map(|a| {
@@ -330,7 +348,7 @@ pub(crate) fn append_chat_tail(
     notices: &[String],
     max_width: usize,
     thinking_concise: bool,
-    mut prev_reasoning: bool,
+    mut state: RenderState,
 ) {
     if view.session.turns.iter().all(|t| t.role == Role::System) && view.draft.is_empty() {
         lines.push(Line::from(""));
@@ -358,7 +376,7 @@ pub(crate) fn append_chat_tail(
         view.draft.iter(),
         max_width,
         thinking_concise,
-        &mut prev_reasoning,
+        &mut state,
     );
     for text in notices {
         lines.push(Line::from(""));
@@ -370,6 +388,9 @@ pub(crate) fn append_chat_tail(
         )];
         let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
         lines.extend(wrapped);
+    }
+    if notices.is_empty() && state.prev_text {
+        lines.push(Line::from(""));
     }
 }
 
@@ -691,7 +712,7 @@ mod tests {
 
     fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let mut prev_reasoning = false;
+        let mut state = RenderState::default();
         for turn in &app.view.session.turns {
             append_parts(
                 &mut lines,
@@ -700,7 +721,7 @@ mod tests {
                 turn.messages.iter().flat_map(|m| &m.parts),
                 width.max(20),
                 app.thinking_concise,
-                &mut prev_reasoning,
+                &mut state,
             );
         }
         append_chat_tail(
@@ -710,7 +731,7 @@ mod tests {
             &app.notices,
             width.max(20),
             app.thinking_concise,
-            prev_reasoning,
+            state,
         );
         lines
     }
@@ -827,10 +848,19 @@ mod tests {
         let lines = build_chat_lines(&app, 80);
         let thought_lines: Vec<_> = lines
             .iter()
-            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought:"))
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
             .collect();
         assert_eq!(thought_lines.len(), 1);
-        assert_eq!(thought_lines[0].to_string(), "+ Thought:");
+        assert_eq!(thought_lines[0].to_string(), "+ Thought");
+        assert!(
+            !thought_lines[0]
+                .spans
+                .first()
+                .unwrap()
+                .style
+                .add_modifier
+                .contains(Modifier::ITALIC)
+        );
         let first_body = lines
             .iter()
             .find(|l| l.to_string().contains("Collecting"))
@@ -887,14 +917,14 @@ mod tests {
         let header_idx: Vec<usize> = lines
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "+ Thought:"))
+            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
             .map(|(i, _)| i)
             .collect();
         assert_eq!(header_idx.len(), 2);
         // 搜索块出现在两组思考之间，来源行左侧为注脚补齐的网页标题、域名右对齐至可用宽度
         let search_idx = lines
             .iter()
-            .position(|l| l.spans.iter().any(|s| s.content == "[web_search]"))
+            .position(|l| l.spans.iter().any(|s| s.content == "web_search"))
             .expect("web search block rendered");
         assert!(search_idx > header_idx[0] && search_idx < header_idx[1]);
         let source_row = &lines[search_idx + 1];
@@ -924,7 +954,7 @@ mod tests {
         let lines = build_chat_lines(&app, 80);
         let headers = lines
             .iter()
-            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought:"))
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
             .count();
         assert_eq!(headers, 2);
         let all_text: String = lines
@@ -976,12 +1006,12 @@ mod tests {
                 .collect()
         };
         let initial = text(&app.chat.lines);
-        assert_eq!(initial.matches("[web_search]").count(), 2);
-        assert!(initial.contains("[web_search] query A; query A2 (2 sources)"));
-        assert!(initial.contains("[web_search] query B (2 sources)"));
+        assert_eq!(initial.matches("web_search").count(), 2);
+        assert!(initial.contains("web_search query A; query A2 (2 sources)"));
+        assert!(initial.contains("web_search query B (2 sources)"));
         assert!(!initial.contains("candidate"));
-        assert!(initial.find("Before search").unwrap() < initial.find("[web_search]").unwrap());
-        assert!(initial.find("[web_search]").unwrap() < initial.find("Between searches").unwrap());
+        assert!(initial.find("Before search").unwrap() < initial.find("web_search").unwrap());
+        assert!(initial.find("web_search").unwrap() < initial.find("Between searches").unwrap());
         assert!(initial.find("Between searches").unwrap() < initial.find("query B").unwrap());
 
         let citation = Annotation::UrlCitation {
@@ -1026,7 +1056,7 @@ mod tests {
         });
         app.refresh_chat_lines(100);
         let rendered = text(&app.chat.lines);
-        assert_eq!(rendered.matches("[web_search]").count(), 2);
+        assert_eq!(rendered.matches("web_search").count(), 2);
         assert!(rendered.contains("query A; query A2 (2 sources)"));
         assert!(rendered.contains("query B (2 sources)"));
         assert_eq!(rendered.matches("Provided title").count(), 2);
@@ -1068,7 +1098,7 @@ mod tests {
             )));
         app.refresh_chat_lines(100);
         let separate = text(&app.chat.lines);
-        assert_eq!(separate.matches("[web_search]").count(), 3);
+        assert_eq!(separate.matches("web_search").count(), 3);
         assert!(separate.contains("query A; query A2 (2 sources)"));
         assert!(separate.contains("query C (1 sources)"));
         assert_eq!(separate.matches("Provided title").count(), 2);
@@ -1118,8 +1148,8 @@ mod tests {
         ];
         let lines = build_chat_lines(&app, 100);
         let text: String = lines.iter().map(|line| line.to_string()).collect();
-        assert!(text.contains(&format!("[web_open] {url}")));
-        assert!(text.contains(&format!("[web_find] {url} / matching words")));
+        assert!(text.contains(&format!("web_open {url}")));
+        assert!(text.contains(&format!("web_find {url} / matching words")));
         assert!(!text.contains("sources)"));
         assert!(!text.contains("unused query"));
         assert_eq!(text.matches("Annotation title").count(), 1);
@@ -1127,7 +1157,7 @@ mod tests {
         assert!(!open_group.contains("Annotation title"));
         assert!(!open_group.contains("Unmatched title"));
         let find_group = text
-            .split("[web_find]")
+            .split("web_find")
             .nth(1)
             .unwrap()
             .split("Answer")

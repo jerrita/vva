@@ -5,7 +5,7 @@ use std::sync::{Arc, Weak};
 use super::selection::SelectionTracker;
 use crate::model::Session;
 use crate::ui::markdown::LinkRegion;
-use crate::ui::views::chat::{append_chat_tail, append_parts, extract_selected_text};
+use crate::ui::views::chat::{RenderState, append_chat_tail, append_parts, extract_selected_text};
 
 /// 可选中文本面板：渲染行、命中区域与选区是同一件事的三个侧面。
 /// 聊天流与侧边栏共用该结构，交互代码按面板列表派发而不逐个枚举目标。
@@ -58,7 +58,7 @@ pub struct ChatCache {
     thinking_concise: bool,
     notices: usize,
     history_lines: usize,
-    prev_reasoning: bool,
+    render_state: RenderState,
 }
 
 impl super::App {
@@ -74,7 +74,7 @@ impl super::App {
         {
             self.chat.lines.clear();
             self.chat.links.clear();
-            cache.prev_reasoning = false;
+            cache.render_state = RenderState::default();
             for turn in &self.view.session.turns {
                 append_parts(
                     &mut self.chat.lines,
@@ -83,7 +83,7 @@ impl super::App {
                     turn.messages.iter().flat_map(|m| &m.parts),
                     width,
                     self.thinking_concise,
-                    &mut cache.prev_reasoning,
+                    &mut cache.render_state,
                 );
             }
             cache.history_lines = self.chat.lines.len();
@@ -104,7 +104,7 @@ impl super::App {
             &self.notices,
             width,
             self.thinking_concise,
-            cache.prev_reasoning,
+            cache.render_state,
         );
         cache.revision = self.view.revision;
         cache.notices = self.notices.len();
