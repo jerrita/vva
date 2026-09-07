@@ -537,6 +537,31 @@ pub(crate) fn append_parts<'a>(
     for part in parts {
         match (role, part) {
             (Role::User, ContentPart::Text { text, .. }) => {
+                if let Some(reminder) = crate::system::parse_agents_reminder(text) {
+                    match reminder.kind {
+                        crate::system::AgentsReminderKind::Global
+                        | crate::system::AgentsReminderKind::Project => {
+                            // 全局与项目不展示
+                        }
+                        crate::system::AgentsReminderKind::Directory => {
+                            // 按需自动加载的展示 Load xxx/AGENTS.md
+                            let needs_separator = state.prev_reasoning || state.prev_text;
+                            state.prev_reasoning = false;
+                            state.prev_text = true;
+                            if needs_separator {
+                                render.lines.push(Line::from(""));
+                            }
+                            let spans = vec![Span::styled(
+                                format!("Load {}", reminder.path),
+                                Style::default().fg(Color::Rgb(150, 150, 150)),
+                            )];
+                            render
+                                .lines
+                                .extend(wrap_spans_to_lines(&spans, max_width, "", "   "));
+                        }
+                    }
+                    continue;
+                }
                 state.prev_reasoning = false;
                 state.prev_text = false;
                 render.lines.push(Line::from(""));
@@ -726,7 +751,26 @@ pub(crate) fn append_chat_tail(
     notices: &[String],
     mut state: RenderState,
 ) {
-    if view.session.turns.iter().all(|t| t.role == Role::System) && view.draft.is_empty() {
+    let is_empty_session = view.session.turns.iter().all(|t| {
+        t.role == Role::System
+            || (t.role == Role::User
+                && t.messages.iter().all(|m| {
+                    m.parts.iter().all(|p| match p {
+                        ContentPart::Text { text, .. } => {
+                            crate::system::parse_agents_reminder(text).is_some_and(|r| {
+                                matches!(
+                                    r.kind,
+                                    crate::system::AgentsReminderKind::Global
+                                        | crate::system::AgentsReminderKind::Project
+                                )
+                            })
+                        }
+                        _ => false,
+                    })
+                }))
+    }) && view.draft.is_empty();
+
+    if is_empty_session {
         render.lines.push(Line::from(""));
         render.lines.push(Line::from(vec![
             Span::styled(
@@ -2064,5 +2108,82 @@ def stream_test():
 
         assert_eq!(lines[0].spans[2].content, " Suffix");
         assert_eq!(lines[0].spans[2].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn test_agents_reminders_rendering_visibility() {
+        use std::path::Path;
+
+        let mut lines = Vec::new();
+        let mut links = Vec::new();
+        let results = HashMap::new();
+        let expand = HashMap::new();
+        let mut hits = Vec::new();
+        let mut render = ChatRender {
+            lines: &mut lines,
+            links: &mut links,
+            max_width: 80,
+            thinking_concise: false,
+            results: &results,
+            expand: &expand,
+            hits: &mut hits,
+        };
+        let mut state = RenderState::default();
+
+        // 1. 全局与项目 AGENTS.md：不展示
+        let global_text = crate::system::format_global_agents_reminder(
+            Path::new("/home/user/.vva/AGENTS.md"),
+            "global instructions",
+        );
+        let part_global = ContentPart::text(global_text);
+        append_parts(
+            &mut render,
+            Role::User,
+            std::slice::from_ref(&part_global).iter(),
+            &mut state,
+        );
+
+        let project_text = crate::system::format_project_agents_reminder(
+            Path::new("/workspace/AGENTS.md"),
+            "project instructions",
+        );
+        let part_project = ContentPart::text(project_text);
+        append_parts(
+            &mut render,
+            Role::User,
+            std::slice::from_ref(&part_project).iter(),
+            &mut state,
+        );
+
+        assert!(render.lines.is_empty());
+
+        // 2. 按需自动加载的子目录 AGENTS.md：展示 "Load xxx/AGENTS.md"
+        let dir_text = crate::system::format_directory_agents_reminder(
+            Path::new("/workspace"),
+            Path::new("/workspace/src/ui/AGENTS.md"),
+            "ui instructions",
+        );
+        let part_dir = ContentPart::text(dir_text);
+        append_parts(
+            &mut render,
+            Role::User,
+            std::slice::from_ref(&part_dir).iter(),
+            &mut state,
+        );
+
+        let full_output = render
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(full_output.contains("Load src/ui/AGENTS.md"));
+        assert!(!full_output.contains("ui instructions"));
     }
 }

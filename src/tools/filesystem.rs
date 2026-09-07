@@ -14,7 +14,7 @@ const GLOB_OPTIONS: MatchOptions = MatchOptions {
     require_literal_leading_dot: false,
 };
 
-fn resolve_path(working_dir: &Path, path: &str) -> PathBuf {
+pub fn resolve_path(working_dir: &Path, path: &str) -> PathBuf {
     if path.is_empty() || path == "." {
         return working_dir.to_path_buf();
     }

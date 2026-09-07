@@ -598,12 +598,35 @@ impl SessionTask {
                 .ensure_scratch(&workspace)
                 .await
                 .map_err(|e| e.to_string())?;
-            let system = tokio::task::spawn_blocking(move || {
-                crate::system::build_system_prompt(&workspace, &scratch)
+            let (system, global_agents, project_agents) = tokio::task::spawn_blocking(move || {
+                let system = crate::system::build_system_prompt(&workspace, &scratch);
+                let global = crate::system::load_global_agents_md();
+                let project = crate::system::load_project_agents_md(&workspace);
+                (system, global, project)
             })
             .await
             .map_err(|e| e.to_string())?;
+
             session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
+
+            let mut loaded_canonical = Vec::new();
+            if let Some((path, content)) = global_agents {
+                if let Ok(c) = path.canonicalize() {
+                    loaded_canonical.push(c);
+                }
+                let reminder = crate::system::format_global_agents_reminder(&path, &content);
+                session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
+            }
+            if let Some((path, content)) = project_agents {
+                let is_dup = path
+                    .canonicalize()
+                    .ok()
+                    .is_some_and(|c| loaded_canonical.contains(&c));
+                if !is_dup {
+                    let reminder = crate::system::format_project_agents_reminder(&path, &content);
+                    session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
+                }
+            }
             if generate {
                 session.title = Some(crate::model::provisional_title(prompt));
             }
@@ -743,14 +766,73 @@ impl SessionTask {
             else {
                 return Ok(false);
             };
+            let mut on_demand_agents = Vec::new();
             for (call, result) in calls.into_iter().zip(results) {
                 self.event(AgentEvent::ToolFinished {
-                    name: call.name,
+                    name: call.name.clone(),
                     result: result.content.clone(),
                     is_error: result.is_error,
                 })
                 .await;
-                self.append(Turn::new(Role::Tool, vec![Message::tool_result(result)]))
+                self.append(Turn::new(
+                    Role::Tool,
+                    vec![Message::tool_result(result.clone())],
+                ))
+                .await?;
+
+                if call.name == "Read"
+                    && !result.is_error
+                    && let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                    && let Some(path_str) = args.get("path").and_then(|p| p.as_str())
+                {
+                    let file_path = crate::tools::filesystem::resolve_path(
+                        &self.view.session.workspace_root,
+                        path_str,
+                    );
+                    if let Some(agents_path) = crate::system::find_directory_agents_md(
+                        &self.view.session.workspace_root,
+                        &file_path,
+                    ) {
+                        let ws_canonical = self
+                            .view
+                            .session
+                            .workspace_root
+                            .canonicalize()
+                            .unwrap_or_else(|_| self.view.session.workspace_root.clone());
+                        let agents_canonical = agents_path
+                            .canonicalize()
+                            .unwrap_or_else(|_| agents_path.clone());
+                        let rel_path = agents_canonical
+                            .strip_prefix(&ws_canonical)
+                            .unwrap_or(&agents_path)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+
+                        let already_in_session = crate::system::session_contains_agents_md(
+                            &self.view.session,
+                            &rel_path,
+                        );
+                        let already_pending =
+                            on_demand_agents.iter().any(|(p, _)| p == &agents_path);
+
+                        if !already_in_session
+                            && !already_pending
+                            && let Ok(content) = std::fs::read_to_string(&agents_path)
+                            && !content.trim().is_empty()
+                        {
+                            on_demand_agents.push((agents_path, content));
+                        }
+                    }
+                }
+            }
+
+            for (agents_path, content) in on_demand_agents {
+                let reminder = crate::system::format_directory_agents_reminder(
+                    &self.view.session.workspace_root,
+                    &agents_path,
+                    &content,
+                );
+                self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
                     .await?;
             }
         }
@@ -1133,6 +1215,49 @@ mod tests {
         let loaded = mgr.store().load_session(&forked.id).await.unwrap().unwrap();
         assert_eq!(loaded.turns.len(), 3);
         assert_eq!(loaded.title.as_deref(), Some("Branched"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn new_session_loads_project_agents_md() {
+        let dir = std::env::temp_dir().join(format!("vva-agents-load-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "project instructions").unwrap();
+
+        let (mut task, _rx) = event_task();
+        let mut config = AppConfig::default();
+        config.settings.default = "openai/test_model".into();
+        config.providers.insert(
+            "openai".into(),
+            crate::config::ProviderConfig {
+                api_key: "test".into(),
+                ..Default::default()
+            },
+        );
+        task.config = Arc::new(config);
+        task.view.session = Arc::new(Session::with_model(
+            &dir,
+            None,
+            "openai/test_model",
+            None,
+            false,
+        ));
+        task.store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+
+        task.start("hello").await.unwrap();
+        let snap = task.view.session;
+
+        // Turn 0: System
+        assert_eq!(snap.turns[0].role, Role::System);
+        // Turn 1: Project AGENTS.md
+        assert_eq!(snap.turns[1].role, Role::User);
+        let rem = crate::system::parse_agents_reminder(&snap.turns[1].text_content()).unwrap();
+        assert_eq!(rem.kind, crate::system::AgentsReminderKind::Project);
+        assert!(rem.content.contains("project instructions"));
+        // Turn 2: User prompt
+        assert_eq!(snap.turns[2].role, Role::User);
+        assert_eq!(snap.turns[2].text_content(), "hello");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

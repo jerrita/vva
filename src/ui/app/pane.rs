@@ -161,7 +161,7 @@ impl super::App {
                     turn.messages.iter().flat_map(|m| &m.parts),
                     &mut cache.render_state,
                 );
-                if turn.role == crate::model::Role::User {
+                if turn.role == crate::model::Role::User && !turn_is_system_reminder(turn) {
                     cache.user_hits.push(UserMessageHit {
                         turn_index,
                         line_start,
@@ -201,4 +201,15 @@ impl super::App {
         cache.revision = self.view.revision;
         cache.notices = self.notices.len();
     }
+}
+
+fn turn_is_system_reminder(turn: &crate::model::Turn) -> bool {
+    turn.messages.iter().any(|m| {
+        m.parts.iter().any(|p| match p {
+            crate::model::ContentPart::Text { text, .. } => {
+                crate::system::parse_agents_reminder(text).is_some()
+            }
+            _ => false,
+        })
+    })
 }

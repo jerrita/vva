@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 系统静态环境信息
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,9 +181,183 @@ fn get_os_info() -> String {
     }
 }
 
+/// AGENTS.md 系统提示来源类别
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentsReminderKind {
+    Global,
+    Project,
+    Directory,
+}
+
+/// 解析出的 AGENTS.md 系统提示提醒
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentsReminder {
+    pub kind: AgentsReminderKind,
+    pub path: String,
+    pub content: String,
+}
+
+/// 格式化全局 ~/.vva/AGENTS.md 为带有 <system-reminder> 标签的 User Message 文本
+pub fn format_global_agents_reminder(path: &Path, content: &str) -> String {
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    format!(
+        "<system-reminder type=\"global\" path=\"~/.vva/AGENTS.md\">\n\
+         User instructions from ~/.vva/AGENTS.md ({}):\n\n\
+         {}\n\
+         </system-reminder>",
+        path_str,
+        content.trim()
+    )
+}
+
+/// 格式化项目根目录 AGENTS.md 为带有 <system-reminder> 标签的 User Message 文本
+pub fn format_project_agents_reminder(path: &Path, content: &str) -> String {
+    let path_str = path.to_string_lossy().replace('\\', "/");
+    format!(
+        "<system-reminder type=\"project\" path=\"AGENTS.md\">\n\
+         Project instructions from {}:\n\n\
+         {}\n\
+         </system-reminder>",
+        path_str,
+        content.trim()
+    )
+}
+
+/// 格式化子目录 AGENTS.md 为带有 <system-reminder> 标签的 User Message 文本
+pub fn format_directory_agents_reminder(
+    workspace: &Path,
+    agents_path: &Path,
+    content: &str,
+) -> String {
+    let ws_canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let agents_canonical = agents_path
+        .canonicalize()
+        .unwrap_or_else(|_| agents_path.to_path_buf());
+    let rel_path = agents_canonical
+        .strip_prefix(&ws_canonical)
+        .unwrap_or(agents_path);
+    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
+
+    format!(
+        "<system-reminder type=\"directory\" path=\"{}\">\n\
+         Directory instructions from {}:\n\n\
+         {}\n\
+         </system-reminder>",
+        rel_str,
+        rel_str,
+        content.trim()
+    )
+}
+
+/// 解析文本是否包含 AGENTS.md 的 <system-reminder> 标签
+pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("<system-reminder") || !trimmed.ends_with("</system-reminder>") {
+        return None;
+    }
+    let close_tag_idx = trimmed.find('>')?;
+    let open_tag = &trimmed[..close_tag_idx];
+    let body = trimmed[close_tag_idx + 1..trimmed.len() - "</system-reminder>".len()].trim();
+
+    let kind = if open_tag.contains("type=\"global\"") {
+        AgentsReminderKind::Global
+    } else if open_tag.contains("type=\"project\"") {
+        AgentsReminderKind::Project
+    } else if open_tag.contains("type=\"directory\"") {
+        AgentsReminderKind::Directory
+    } else {
+        return None;
+    };
+
+    let path = if let Some(p_idx) = open_tag.find("path=\"") {
+        let rest = &open_tag[p_idx + 6..];
+        let end_p = rest.find('"')?;
+        rest[..end_p].to_string()
+    } else {
+        String::new()
+    };
+
+    Some(AgentsReminder {
+        kind,
+        path,
+        content: body.to_string(),
+    })
+}
+
+/// 读取并校验 AGENTS.md 文件内容（若文件存在且非空）
+fn load_agents_file(path: &Path) -> Option<String> {
+    if path.is_file() {
+        let content = std::fs::read_to_string(path).ok()?;
+        if !content.trim().is_empty() {
+            return Some(content);
+        }
+    }
+    None
+}
+
+/// 加载用户全局 ~/.vva/AGENTS.md（若存在且非空）
+pub fn load_global_agents_md() -> Option<(PathBuf, String)> {
+    let home = crate::config::home_dir()?;
+    let path = home.join(".vva").join("AGENTS.md");
+    load_agents_file(&path).map(|c| (path, c))
+}
+
+/// 加载项目根目录下的 AGENTS.md（若存在且非空）
+pub fn load_project_agents_md(workspace: &Path) -> Option<(PathBuf, String)> {
+    let path = workspace.join("AGENTS.md");
+    load_agents_file(&path).map(|c| (path, c))
+}
+
+/// 向上查找最近的 AGENTS.md（从文件所在目录向上遍历至 workspace 根目录，排除根目录已在初始加载的 AGENTS.md）
+pub fn find_directory_agents_md(workspace: &Path, file_path: &Path) -> Option<PathBuf> {
+    if file_path.file_name().and_then(|n| n.to_str()) == Some("AGENTS.md") {
+        return None;
+    }
+
+    let full_path = if file_path.is_relative() {
+        workspace.join(file_path)
+    } else {
+        file_path.to_path_buf()
+    };
+
+    let ws_canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let file_canonical = full_path.canonicalize().unwrap_or(full_path);
+
+    let mut current = file_canonical.parent()?;
+    while current.starts_with(&ws_canonical) && current != ws_canonical {
+        let candidate = current.join("AGENTS.md");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        current = current.parent()?;
+    }
+
+    None
+}
+
+/// 检查会话轮次中是否已经加载过特定相对路径的 AGENTS.md
+pub fn session_contains_agents_md(session: &crate::model::Session, rel_path: &str) -> bool {
+    let normalized = rel_path.replace('\\', "/");
+    session.turns.iter().any(|t| {
+        t.role == crate::model::Role::User
+            && t.messages.iter().any(|m| {
+                m.parts.iter().any(|p| match p {
+                    crate::model::ContentPart::Text { text, .. } => parse_agents_reminder(text)
+                        .is_some_and(|r| r.path.replace('\\', "/") == normalized),
+                    _ => false,
+                })
+            })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
 
     #[test]
@@ -196,5 +370,67 @@ mod tests {
         let prompt = info.to_system_prompt(Path::new("/ws"), Path::new("/data/scratch"));
         assert!(prompt.contains("Workspace Root: /ws"));
         assert!(prompt.contains("Scratch Pad: /data/scratch"));
+    }
+
+    #[test]
+    fn test_format_and_parse_agents_reminders() {
+        let global_rem =
+            format_global_agents_reminder(Path::new("/home/user/.vva/AGENTS.md"), "global rules");
+        let parsed_global = parse_agents_reminder(&global_rem).unwrap();
+        assert_eq!(parsed_global.kind, AgentsReminderKind::Global);
+        assert_eq!(parsed_global.path, "~/.vva/AGENTS.md");
+        assert!(parsed_global.content.contains("global rules"));
+
+        let project_rem =
+            format_project_agents_reminder(Path::new("/repo/AGENTS.md"), "project rules");
+        let parsed_proj = parse_agents_reminder(&project_rem).unwrap();
+        assert_eq!(parsed_proj.kind, AgentsReminderKind::Project);
+        assert_eq!(parsed_proj.path, "AGENTS.md");
+        assert!(parsed_proj.content.contains("project rules"));
+
+        let dir_rem = format_directory_agents_reminder(
+            Path::new("/repo"),
+            Path::new("/repo/src/ui/AGENTS.md"),
+            "ui rules",
+        );
+        let parsed_dir = parse_agents_reminder(&dir_rem).unwrap();
+        assert_eq!(parsed_dir.kind, AgentsReminderKind::Directory);
+        assert_eq!(parsed_dir.path, "src/ui/AGENTS.md");
+        assert!(parsed_dir.content.contains("ui rules"));
+    }
+
+    #[test]
+    fn test_find_directory_agents_md_hierarchical() {
+        let temp = std::env::temp_dir().join(format!("vva_agents_test_{}", uuid::Uuid::new_v4()));
+        let ws = temp.join("workspace");
+        let src_ui_views = ws.join("src/ui/views");
+        fs::create_dir_all(&src_ui_views).unwrap();
+
+        // 根目录 AGENTS.md
+        fs::write(ws.join("AGENTS.md"), "root agents").unwrap();
+        // 子模块 AGENTS.md
+        fs::write(ws.join("src/ui/AGENTS.md"), "ui agents").unwrap();
+        // 目标文件
+        let target_file = src_ui_views.join("chat.rs");
+        fs::write(&target_file, "fn chat() {}").unwrap();
+
+        // 查找 chat.rs：应向上找到最近的 src/ui/AGENTS.md
+        let found = find_directory_agents_md(&ws, &target_file);
+        assert_eq!(
+            found.unwrap().canonicalize().unwrap(),
+            ws.join("src/ui/AGENTS.md").canonicalize().unwrap()
+        );
+
+        // 如果直接读取 AGENTS.md 自身，不触发加载
+        let self_found = find_directory_agents_md(&ws, &ws.join("src/ui/AGENTS.md"));
+        assert!(self_found.is_none());
+
+        // 如果在根目录下读取文件，不重复加载根目录 AGENTS.md
+        let root_file = ws.join("main.rs");
+        fs::write(&root_file, "fn main() {}").unwrap();
+        let root_found = find_directory_agents_md(&ws, &root_file);
+        assert!(root_found.is_none());
+
+        let _ = fs::remove_dir_all(temp);
     }
 }
