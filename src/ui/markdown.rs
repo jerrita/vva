@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_markdown_chinese_list_no_orphan_bullet() {
-        let md = "- 中小企业政策：工信部等十部门印发促进中小企业发展“十五五”规划，提出到2030年推动规上中小企业人均营收累计增长约15%，并计划设立国家中小企业发展基金二期，支持“投早、投小、投长期、投硬科技”。([finance.eastmoney.com](https://finance.eastmoney.com/a/123.html))\n- 外交与出访：重要外事活动新闻报道。";
+        let md = "- 示例条目：这是一段用于验证中文长文本折行行为的泛化内容，其中包含多个短语和标点符号。([example.com](https://example.com/article))\n- 后续条目：用于验证列表的第二项内容。";
         let (lines, _) = render_markdown(md, 60);
 
         // 验证 bullet 与中文在同一行开头连接，不产生孤立 bullet 独占一行
@@ -918,13 +918,13 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(full_text.contains("finance.eastmoney.com"));
-        assert!(!full_text.contains("(https://finance.eastmoney.com"));
+        assert!(full_text.contains("example.com"));
+        assert!(!full_text.contains("(https://example.com"));
     }
 
     #[test]
     fn test_markdown_cjk_bold_with_punctuation_rendered_properly() {
-        let md = "* **防汛防台风：**中央气象台继续发布暴雨黄色预警。\n* **政策与经济：**十部门联合印发促进规划。\n* **提示！**请务必注意防范。";
+        let md = "* **分类一：**这里是第一段示例内容。\n* **分类二：**这里是第二段示例内容。\n* **提示！**这里是提示内容。";
         let (lines, _) = render_markdown(md, 80);
 
         // 验证没有未闭合的字面量 **
@@ -937,15 +937,15 @@ mod tests {
             "Markdown should not contain literal asterisks for bold titles: {}",
             all_text
         );
-        assert!(all_text.contains("防汛防台风："));
-        assert!(all_text.contains("中央气象台继续发布"));
-        assert!(all_text.contains("政策与经济："));
+        assert!(all_text.contains("分类一："));
+        assert!(all_text.contains("第一段示例内容"));
+        assert!(all_text.contains("分类二："));
         assert!(all_text.contains("提示！"));
 
         // 验证加粗 Span 具有金色与 BOLD 属性
         let bold_span_found = lines.iter().any(|l| {
             l.spans.iter().any(|s| {
-                s.content.contains("防汛防台风：")
+                s.content.contains("分类一：")
                     && s.style.add_modifier.contains(Modifier::BOLD)
                     && s.style.fg == Some(Color::Rgb(255, 215, 80))
             })
@@ -983,10 +983,10 @@ fn test() {
 
     #[test]
     fn table_wraps_long_cells_within_available_width() {
-        let md = "| 你问的 | 官方口径 | 实际情况 |\n\
+        let md = "| 项目 | 状态 | 详细说明 |\n\
                   | --- | --- | --- |\n\
-                  | 每月多少 credits? | 无此数字 | Plus 套餐内用量不显示为 credits，只在触顶后才能加购 credits |\n\
-                  | 5 小时多少 credits? | 无此数字 | 5h 窗口与周额度是两道限制，重置的是窗口 |";
+                  | 示例甲 | 已启用 | 这是一段需要在有限列宽内自动折行的较长中文说明文本 |\n\
+                  | 示例乙 | 待处理 | 第二段说明同时包含 English words 和中文字符 |";
         let max_width = 72;
         let (lines, _) = render_markdown(md, max_width);
 
@@ -1000,8 +1000,8 @@ fn test() {
             .iter()
             .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
             .collect();
-        assert!(text.contains("触顶后"));
-        assert!(text.contains("两道限制"));
+        assert!(text.contains("自动折行"));
+        assert!(text.contains("English words"));
     }
 
     #[test]

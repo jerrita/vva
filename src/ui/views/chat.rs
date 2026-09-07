@@ -662,7 +662,11 @@ mod tests {
     #[test]
     fn test_user_block_copy_excludes_decoration() {
         let mut lines = Vec::new();
-        push_user_block(&mut lines, "看 https://example.com\ngpt 5.6 sol 额度", 80);
+        push_user_block(
+            &mut lines,
+            "第一行示例 https://example.com\n第二行混合文本",
+            80,
+        );
         let start = TextCoord { line: 0, col: 0 };
         let end = TextCoord {
             line: lines.len() - 1,
@@ -674,7 +678,7 @@ mod tests {
         ] {
             assert_eq!(
                 extract_selected_text(&lines, &selection).as_deref(),
-                Some("看 https://example.com\ngpt 5.6 sol 额度")
+                Some("第一行示例 https://example.com\n第二行混合文本")
             );
         }
         let selection =
@@ -814,8 +818,7 @@ mod tests {
         app.add_part(
             Role::Assistant,
             ContentPart::reasoning(
-                "**Requesting Shenzhen weather forecast**\n\n**Drafting cautious forecast**"
-                    .to_string(),
+                "**Collecting example sources**\n\n**Drafting example response**".to_string(),
                 None,
             ),
         );
@@ -830,23 +833,20 @@ mod tests {
         assert_eq!(thought_lines[0].to_string(), "+ Thought:");
         let first_body = lines
             .iter()
-            .find(|l| l.to_string().contains("Requesting"))
+            .find(|l| l.to_string().contains("Collecting"))
             .unwrap();
-        assert_eq!(
-            first_body.to_string(),
-            "   Requesting Shenzhen weather forecast"
-        );
+        assert_eq!(first_body.to_string(), "   Collecting example sources");
 
         // markdown 标记被渲染掉，加粗修饰保留，两段分行
         let all_text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(all_text.contains("Requesting Shenzhen weather forecast"));
-        assert!(all_text.contains("Drafting cautious forecast"));
+        assert!(all_text.contains("Collecting example sources"));
+        assert!(all_text.contains("Drafting example response"));
         assert!(!all_text.contains("**"));
         let bold_in_first = first_body.spans.iter().any(|s| {
-            s.content.contains("Requesting") && s.style.add_modifier.contains(Modifier::BOLD)
+            s.content.contains("Collecting") && s.style.add_modifier.contains(Modifier::BOLD)
         });
         assert!(bold_in_first);
 
@@ -860,9 +860,9 @@ mod tests {
                 crate::model::Message::new(vec![ContentPart::WebSearchCall(
                     WebSearchCall::completed(
                         "ws_1",
-                        "深圳天气",
+                        "示例查询",
                         vec![WebSearchSource::new(
-                            "https://weather.cma.cn/web/weather/59493.html",
+                            "https://source.example/article",
                             "Uncited candidate",
                             None,
                         )],
@@ -873,10 +873,10 @@ mod tests {
                     None,
                 )]),
                 crate::model::Message::new(vec![ContentPart::Text {
-                    text: "今天深圳多云转晴。".to_string(),
+                    text: "这里是带引用的示例答复。".to_string(),
                     annotations: vec![Annotation::UrlCitation {
-                        title: "深圳市气象局".into(),
-                        url: "https://weather.cma.cn/web/weather/59493.html".into(),
+                        title: "示例来源".into(),
+                        url: "https://source.example/article".into(),
                         start_index: 0,
                         end_index: 1,
                     }],
@@ -902,10 +902,10 @@ mod tests {
             source_row
                 .spans
                 .iter()
-                .any(|s| s.content.contains("深圳市气象局"))
+                .any(|s| s.content.contains("示例来源"))
         );
         let last = source_row.spans.last().unwrap();
-        assert_eq!(last.content, "weather.cma.cn");
+        assert_eq!(last.content, "source.example");
         let row_width: usize = source_row.spans.iter().map(|s| s.content.width()).sum();
         assert_eq!(row_width, 80);
 
@@ -914,8 +914,8 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(all_text.contains("今天深圳多云转晴"));
-        assert!(all_text.contains("深圳天气 (1 sources)"));
+        assert!(all_text.contains("这里是带引用的示例答复"));
+        assert!(all_text.contains("示例查询 (1 sources)"));
         assert!(!all_text.contains("candidate"));
         assert!(!all_text.contains("Sources / Citations"));
 
@@ -931,7 +931,7 @@ mod tests {
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
-        assert!(!all_text.contains("Requesting Shenzhen weather forecast"));
+        assert!(!all_text.contains("Collecting example sources"));
         assert!(!all_text.contains("**"));
     }
 

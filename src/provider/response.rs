@@ -1035,7 +1035,7 @@ mod tests {
         let mut session = Session::new(PathBuf::from("/tmp"), None);
 
         // 1. 用户第一轮提问
-        let user_msg1 = Message::text("我需要做一般轻度 coding 开发");
+        let user_msg1 = Message::text("第一轮示例问题");
         session.append_turn(Turn::user_turn(user_msg1));
 
         // 2. 模拟服务端返回 store: false 的响应报文
@@ -1057,7 +1057,7 @@ mod tests {
                     "status": "completed",
                     "action": {
                         "type": "search",
-                        "query": "coding model value",
+                        "query": "example query",
                         "sources": []
                     }
                 },
@@ -1070,7 +1070,7 @@ mod tests {
                     "content": [
                         {
                             "type": "output_text",
-                            "text": "建议选择轻量档位。",
+                            "text": "第一轮示例答复。",
                             "annotations": []
                         }
                     ]
@@ -1109,7 +1109,7 @@ mod tests {
         assert!(session.latest_openai_response_id().is_none());
 
         // 3. 用户发起第二轮提问
-        let user_msg2 = Message::text("要考虑性价比");
+        let user_msg2 = Message::text("第二轮示例问题");
         session.append_turn(Turn::user_turn(user_msg2));
 
         let options = CompletionOptions {
@@ -1138,21 +1138,18 @@ mod tests {
         // 原样回传第一轮 user、完整原生 output items 以及第二轮 user
         assert_eq!(input_items.len(), 5);
         assert_eq!(input_items[0]["role"], "user");
-        assert_eq!(
-            input_items[0]["content"][0]["text"],
-            "我需要做一般轻度 coding 开发"
-        );
+        assert_eq!(input_items[0]["content"][0]["text"], "第一轮示例问题");
         assert_eq!(input_items[1]["type"], "reasoning");
         assert_eq!(input_items[1]["encrypted_content"], "encrypted-reasoning");
         // 回传 input 的 reasoning item 必须携带 summary 字段（即使为空数组）
         assert_eq!(input_items[1]["summary"], serde_json::json!([]));
         assert_eq!(input_items[2]["type"], "web_search_call");
-        assert_eq!(input_items[2]["action"]["query"], "coding model value");
+        assert_eq!(input_items[2]["action"]["query"], "example query");
         assert_eq!(input_items[3]["role"], "assistant");
         assert_eq!(input_items[3]["phase"], "final_answer");
-        assert_eq!(input_items[3]["content"][0]["text"], "建议选择轻量档位。");
+        assert_eq!(input_items[3]["content"][0]["text"], "第一轮示例答复。");
         assert_eq!(input_items[4]["role"], "user");
-        assert_eq!(input_items[4]["content"][0]["text"], "要考虑性价比");
+        assert_eq!(input_items[4]["content"][0]["text"], "第二轮示例问题");
     }
 
     #[test]
@@ -1330,7 +1327,7 @@ mod tests {
                     "type": "web_search_call",
                     "id": "ws_1",
                     "status": "completed",
-                    "action": {"type": "search", "query": "GPT-6 release date"}
+                    "action": {"type": "search", "query": "example topic"}
                 }
             }))
             .await
@@ -1338,7 +1335,7 @@ mod tests {
         match rx.try_recv() {
             Ok(AgentEvent::WebSearchCall(call)) => {
                 assert_eq!(call.id, "ws_1");
-                assert_eq!(call.query, "GPT-6 release date");
+                assert_eq!(call.query, "example topic");
                 assert_eq!(call.action, WebSearchAction::Search);
             }
             other => panic!("unexpected event: {other:?}"),
@@ -1352,7 +1349,7 @@ mod tests {
                     "type": "web_search_call",
                     "id": "ws_2",
                     "status": "completed",
-                    "action": {"type": "open_page", "url": "https://openai.com/index/gpt-6/"}
+                    "action": {"type": "open_page", "url": "https://example.com/article"}
                 }
             }))
             .await
@@ -1370,7 +1367,7 @@ mod tests {
                 assert_eq!(
                     call.action,
                     WebSearchAction::OpenPage {
-                        url: "https://openai.com/index/gpt-6/".into(),
+                        url: "https://example.com/article".into(),
                     }
                 );
                 assert!(call.query.is_empty());
