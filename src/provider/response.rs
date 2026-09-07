@@ -260,7 +260,7 @@ impl ResponseProvider {
             // OpenAI 仅在显式请求 summary 时才生成思考摘要，否则 reasoning item 的 summary 恒为空
             body["reasoning"] = serde_json::json!({
                 "effort": effort,
-                "summary": "auto"
+                "summary": "concise"
             });
         }
 
@@ -712,7 +712,7 @@ mod tests {
         // Responses API 标准：reasoning.effort，禁止 top-level reasoning_effort
         assert_eq!(body1["reasoning"]["effort"], "medium");
         // 思考摘要需显式请求，否则 reasoning item 的 summary 恒为空
-        assert_eq!(body1["reasoning"]["summary"], "auto");
+        assert_eq!(body1["reasoning"]["summary"], "concise");
         assert!(body1.get("reasoning_effort").is_none());
 
         // 模拟第一轮 Assistant 成功返回 response_id = "resp_turn_1"
@@ -735,7 +735,7 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         assert_eq!(inputs[0]["content"][0]["text"], "What about tomorrow?");
         assert_eq!(body2["reasoning"]["effort"], "medium");
-        assert_eq!(body2["reasoning"]["summary"], "auto");
+        assert_eq!(body2["reasoning"]["summary"], "concise");
     }
 
     #[test]
@@ -933,7 +933,7 @@ mod tests {
         // 验证推理模式下 temperature 被安全抑制
         assert!(body.get("temperature").is_none());
         assert_eq!(body["reasoning"]["effort"], "high");
-        assert_eq!(body["reasoning"]["summary"], "auto");
+        assert_eq!(body["reasoning"]["summary"], "concise");
 
         // 验证冷启动时系统消息与 Assistant 消息均被序列化进 input
         let input = body["input"].as_array().unwrap();
