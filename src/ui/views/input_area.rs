@@ -121,6 +121,7 @@ pub fn render_input_area(
     } else {
         "web off"
     };
+    let think = "think (show)";
     let footer = chunks[1];
     let mut x = footer.x.saturating_add(1);
     app.model_selector_area = selector_area(footer, x, model.width());
@@ -130,6 +131,8 @@ pub fn render_input_area(
     x = x.saturating_add(variant_label.width() as u16 + 3);
     x = x.saturating_add(workspace.width() as u16 + 3);
     app.web_toggle_area = selector_area(footer, x, web.width());
+    x = x.saturating_add(web.width() as u16 + 3);
+    app.thinking_toggle_area = selector_area(footer, x, think.width());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
@@ -144,6 +147,15 @@ pub fn render_input_area(
                     Color::Green
                 } else {
                     Color::DarkGray
+                }),
+            ),
+            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                think,
+                Style::default().fg(if app.thinking_concise {
+                    Color::DarkGray
+                } else {
+                    Color::Green
                 }),
             ),
         ])),

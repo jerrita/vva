@@ -12,7 +12,9 @@ use crate::harness::SessionView;
 use crate::model::{
     Annotation, ContentPart, Role, ToolCall, ToolResult, WebSearchAction, WebSearchCall,
 };
-use crate::ui::app::{App, TextCoord, TextSelection, ToolExpand, ToolHit, char_in_column_range};
+use crate::ui::app::{
+    App, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit, char_in_column_range,
+};
 use crate::ui::markdown::{LinkRegion, render_markdown, wrap_spans_to_lines};
 use crate::ui::text::truncate;
 use crate::ui::views::header::session_title_line;
@@ -35,6 +37,8 @@ const SELECTION_STYLE: Style = Style::new().fg(Color::White).bg(Color::Rgb(60, 9
 pub(crate) struct RenderState {
     prev_reasoning: bool,
     prev_text: bool,
+    thought_groups: usize,
+    thought_expanded: bool,
 }
 
 /// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
@@ -203,6 +207,8 @@ pub(crate) struct ChatRender<'a> {
     pub results: &'a HashMap<String, &'a ToolResult>,
     pub expand: &'a HashMap<String, ToolExpand>,
     pub hits: &'a mut Vec<ToolHit>,
+    pub thought_expand: &'a HashMap<String, bool>,
+    pub thought_hits: &'a mut Vec<ThoughtHit>,
 }
 
 pub(crate) fn collect_tool_results(view: &SessionView) -> HashMap<String, &ToolResult> {
@@ -583,11 +589,30 @@ pub(crate) fn append_parts<'a>(
                     .add_modifier(Modifier::BOLD);
 
                 if group_start {
+                    state.thought_groups += 1;
+                    state.thought_expanded = render
+                        .thought_expand
+                        .get(&format!("thought-{}", state.thought_groups))
+                        .copied()
+                        .unwrap_or(!thinking_concise);
+                    let marker = if state.thought_expanded {
+                        "- Thought"
+                    } else {
+                        "+ Thought"
+                    };
+                    let header_start = render.lines.len();
                     render
                         .lines
-                        .push(Line::from(vec![Span::styled("+ Thought", prefix_style)]));
+                        .push(Line::from(vec![Span::styled(marker, prefix_style)]));
+                    render.thought_hits.push(ThoughtHit {
+                        id: format!("thought-{}", state.thought_groups),
+                        header_start,
+                        header_end: header_start + 1,
+                        body_start: header_start + 1,
+                        body_end: header_start + 1,
+                    });
                 }
-                if !thinking_concise {
+                if state.thought_expanded {
                     let (mut body, mut body_links) = render_markdown(content, max_width);
                     for link in &mut body_links {
                         link.line += render.lines.len();
@@ -606,6 +631,10 @@ pub(crate) fn append_parts<'a>(
                         }
                     }
                     render.lines.extend(body);
+                    // 当前分组的命中必为最新压入的一条；正文行持续累积，遇其他内容不再延伸
+                    if let Some(hit) = render.thought_hits.last_mut() {
+                        hit.body_end = render.lines.len();
+                    }
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
@@ -1159,6 +1188,7 @@ mod tests {
     ) -> (Vec<Line<'static>>, Vec<ToolHit>) {
         let mut lines = Vec::new();
         let mut hits = Vec::new();
+        let mut thought_hits = Vec::new();
         let mut state = RenderState::default();
         append_parts(
             &mut ChatRender {
@@ -1169,6 +1199,8 @@ mod tests {
                 results,
                 expand,
                 hits: &mut hits,
+                thought_expand: &HashMap::new(),
+                thought_hits: &mut thought_hits,
             },
             Role::Assistant,
             parts.iter(),
@@ -1303,6 +1335,7 @@ mod tests {
         let mut state = RenderState::default();
         let results = collect_tool_results(&app.view);
         let mut hits = Vec::new();
+        let mut thought_hits = Vec::new();
         for turn in &app.view.session.turns {
             append_parts(
                 &mut ChatRender {
@@ -1313,6 +1346,8 @@ mod tests {
                     results: &results,
                     expand: &app.tool_expand,
                     hits: &mut hits,
+                    thought_expand: &app.thought_expand,
+                    thought_hits: &mut thought_hits,
                 },
                 turn.role,
                 turn.messages.iter().flat_map(|m| &m.parts),
@@ -1328,6 +1363,8 @@ mod tests {
                 results: &results,
                 expand: &app.tool_expand,
                 hits: &mut hits,
+                thought_expand: &app.thought_expand,
+                thought_hits: &mut thought_hits,
             },
             &app.view,
             &app.notices,
@@ -1448,10 +1485,10 @@ mod tests {
         let lines = build_chat_lines(&app, 80);
         let thought_lines: Vec<_> = lines
             .iter()
-            .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
+            .filter(|l| l.spans.first().is_some_and(|s| s.content == "- Thought"))
             .collect();
         assert_eq!(thought_lines.len(), 1);
-        assert_eq!(thought_lines[0].to_string(), "+ Thought");
+        assert_eq!(thought_lines[0].to_string(), "- Thought");
         assert!(
             !thought_lines[0]
                 .spans
@@ -1517,7 +1554,7 @@ mod tests {
         let header_idx: Vec<usize> = lines
             .iter()
             .enumerate()
-            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
+            .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "- Thought"))
             .map(|(i, _)| i)
             .collect();
         assert_eq!(header_idx.len(), 2);
@@ -1563,6 +1600,74 @@ mod tests {
             .collect();
         assert!(!all_text.contains("Collecting example sources"));
         assert!(!all_text.contains("**"));
+    }
+
+    #[tokio::test]
+    async fn test_thought_group_click_toggles_individual_group() {
+        let mut app = create_test_app().await;
+        app.add_part(
+            Role::Assistant,
+            ContentPart::reasoning("First group body", None),
+        );
+        app.add_part(Role::Assistant, ContentPart::text("Middle answer"));
+        app.add_part(
+            Role::Assistant,
+            ContentPart::reasoning("Second group body", None),
+        );
+
+        app.refresh_chat_lines(80);
+        let headers: Vec<(String, usize)> = app
+            .chat_cache
+            .thought_hits
+            .iter()
+            .map(|hit| (hit.id.clone(), hit.header_start))
+            .collect();
+        assert_eq!(
+            headers
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["thought-1", "thought-2"]
+        );
+        let text = |app: &App| -> String {
+            app.chat
+                .lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                .collect()
+        };
+        assert!(!text(&app).contains("First group body"));
+        assert!(!text(&app).contains("Second group body"));
+
+        // 展开第一组：仅该组正文可见，标题切换为展开标记
+        assert!(app.handle_thought_click(headers[0].1));
+        app.refresh_chat_lines(80);
+        let rendered = text(&app);
+        assert!(rendered.contains("First group body"));
+        assert!(!rendered.contains("Second group body"));
+        assert!(
+            app.chat
+                .lines
+                .iter()
+                .any(|l| { l.spans.first().is_some_and(|s| s.content == "- Thought") })
+        );
+
+        // 点击正文区域折叠：覆盖值回到全局默认时移除条目
+        let first = app.chat_cache.thought_hits[0].clone();
+        assert!(first.body_end > first.body_start);
+        assert!(app.handle_thought_click(first.body_start));
+        app.refresh_chat_lines(80);
+        assert!(!text(&app).contains("First group body"));
+        assert!(app.thought_expand.is_empty());
+
+        // 全局切换到 Full 清空既有覆盖，两组正文均可见
+        assert!(app.handle_thought_click(headers[1].1));
+        app.toggle_thinking_display();
+        assert!(app.thought_expand.is_empty());
+        app.refresh_chat_lines(80);
+        let rendered = text(&app);
+        assert!(rendered.contains("First group body"));
+        assert!(rendered.contains("Second group body"));
     }
 
     #[tokio::test]
@@ -2118,7 +2223,9 @@ def stream_test():
         let mut links = Vec::new();
         let results = HashMap::new();
         let expand = HashMap::new();
+        let thought_expand = HashMap::new();
         let mut hits = Vec::new();
+        let mut thought_hits = Vec::new();
         let mut render = ChatRender {
             lines: &mut lines,
             links: &mut links,
@@ -2127,6 +2234,8 @@ def stream_test():
             results: &results,
             expand: &expand,
             hits: &mut hits,
+            thought_expand: &thought_expand,
+            thought_hits: &mut thought_hits,
         };
         let mut state = RenderState::default();
 

@@ -96,3 +96,9 @@ src/ui/
   - **加粗文本样式**：加粗 Span 使用金黄色 (`Color::Rgb(255, 215, 80)`) 与粗体修饰；
   - **视口滚动控制**：`App` 维护行位坐标并限制越界，防止滚轮溢出；阅读历史时保持屏幕位置，返回底部后恢复自动跟随；
   - **滚动条组件**：基于 Ratatui `Scrollbar` 与 `ScrollbarState`，在内容超出可视区时在右侧渲染滚动滑块。
+
+### 3.7 鼠标事件路由与输入区状态条
+- **代码位置**：[`src/ui/mod.rs`](../src/ui/mod.rs) 的 `handle_crossterm_event` 与 [`src/ui/views/input_area.rs`](../src/ui/views/input_area.rs)
+- 输入区状态条回写 `model_selector_area` / `variant_selector_area` / `web_toggle_area` 命中矩形，鼠标按下时按矩形命中派发弹窗或开关；
+- **右键级联语义**：复制活跃选区 → 命中档位标签时循环切换推理档位（`App::cycle_variant`，按模型声明顺序推进、越过末位回到 default）→ 其余区域粘贴剪贴板；
+- 档位选项清单由 `App::variant_options` 统一构造（default 置首），与 `/variant` 弹窗同源，避免两处列表漂移。

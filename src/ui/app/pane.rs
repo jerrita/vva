@@ -99,6 +99,26 @@ impl ToolHit {
     }
 }
 
+/// 思考分组标题行与正文在聊天行缓冲中的区间，单击切换该组展开/折叠
+#[derive(Debug, Clone)]
+pub struct ThoughtHit {
+    pub id: String,
+    pub header_start: usize,
+    pub header_end: usize,
+    pub body_start: usize,
+    pub body_end: usize,
+}
+
+impl ThoughtHit {
+    pub fn contains_header(&self, line: usize) -> bool {
+        line >= self.header_start && line < self.header_end
+    }
+
+    pub fn contains_body(&self, line: usize) -> bool {
+        line >= self.body_start && line < self.body_end
+    }
+}
+
 /// 仅记录历史前缀边界及其排版状态，不另存文本或持有旧会话快照。
 #[derive(Default)]
 pub struct ChatCache {
@@ -110,8 +130,10 @@ pub struct ChatCache {
     history_lines: usize,
     render_state: RenderState,
     tool_expand: HashMap<String, ToolExpand>,
+    thought_expand: HashMap<String, bool>,
     pub(crate) user_hits: Vec<UserMessageHit>,
     pub(crate) tool_hits: Vec<ToolHit>,
+    pub(crate) thought_hits: Vec<ThoughtHit>,
 }
 
 impl ChatCache {
@@ -124,6 +146,12 @@ impl ChatCache {
 
     pub fn tool_hit_at(&self, line: usize) -> Option<&ToolHit> {
         self.tool_hits.iter().find(|hit| hit.contains(line))
+    }
+
+    pub fn thought_hit_at(&self, line: usize) -> Option<&ThoughtHit> {
+        self.thought_hits
+            .iter()
+            .find(|hit| hit.contains_header(line) || hit.contains_body(line))
     }
 }
 
@@ -138,6 +166,7 @@ impl super::App {
             || cache.width != width
             || cache.thinking_concise != self.thinking_concise
             || cache.tool_expand != self.tool_expand
+            || cache.thought_expand != self.thought_expand
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
@@ -145,6 +174,7 @@ impl super::App {
             cache.render_state = RenderState::default();
             cache.user_hits.clear();
             cache.tool_hits.clear();
+            cache.thought_hits.clear();
             for (turn_index, turn) in self.view.session.turns.iter().enumerate() {
                 let line_start = self.chat.lines.len();
                 append_parts(
@@ -156,6 +186,8 @@ impl super::App {
                         results: &results,
                         expand: &self.tool_expand,
                         hits: &mut cache.tool_hits,
+                        thought_expand: &self.thought_expand,
+                        thought_hits: &mut cache.thought_hits,
                     },
                     turn.role,
                     turn.messages.iter().flat_map(|m| &m.parts),
@@ -174,6 +206,7 @@ impl super::App {
             cache.width = width;
             cache.thinking_concise = self.thinking_concise;
             cache.tool_expand.clone_from(&self.tool_expand);
+            cache.thought_expand.clone_from(&self.thought_expand);
         } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
             return;
         }
@@ -184,6 +217,9 @@ impl super::App {
         cache
             .tool_hits
             .retain(|hit| hit.header_start < cache.history_lines);
+        cache
+            .thought_hits
+            .retain(|hit| hit.header_start < cache.history_lines);
         append_chat_tail(
             &mut ChatRender {
                 lines: &mut self.chat.lines,
@@ -193,6 +229,8 @@ impl super::App {
                 results: &results,
                 expand: &self.tool_expand,
                 hits: &mut cache.tool_hits,
+                thought_expand: &self.thought_expand,
+                thought_hits: &mut cache.thought_hits,
             },
             &self.view,
             &self.notices,

@@ -121,36 +121,58 @@ impl App {
     }
 
     pub async fn open_variants_modal(&mut self) {
-        let session = &self.view.session;
-        let mut items = Vec::new();
-        if let Ok(model) = self
+        let items = self.variant_options();
+        let (model, variant) = (
+            self.view.session.current_model.clone(),
+            self.view.session.current_variant.clone(),
+        );
+        self.modal = ActiveModal::Variants(VariantsModalState::new(model, variant, items));
+    }
+
+    /// 当前模型可用的推理档位选项（default 置首，与 /variant 弹窗同源）
+    fn variant_options(&self) -> Vec<VariantItem> {
+        let Ok(model) = self
             .session_mgr
             .app_config()
-            .resolve_model(&session.current_model, None)
-            && let Some(variants) = model.model_config.variants
-            && !variants.is_empty()
-        {
-            items.push(VariantItem {
-                id: None,
-                display_name: "default".into(),
-                is_default: true,
-            });
-            items.extend(
-                variants
-                    .into_iter()
-                    .filter(|id| id != "default")
-                    .map(|id| VariantItem {
-                        display_name: id.clone(),
-                        id: Some(id),
-                        is_default: false,
-                    }),
-            );
+            .resolve_model(&self.view.session.current_model, None)
+        else {
+            return Vec::new();
+        };
+        let Some(variants) = model.model_config.variants else {
+            return Vec::new();
+        };
+        if variants.is_empty() {
+            return Vec::new();
         }
-        self.modal = ActiveModal::Variants(VariantsModalState::new(
-            session.current_model.clone(),
-            session.current_variant.clone(),
-            items,
-        ));
+        let mut items = vec![VariantItem {
+            id: None,
+            display_name: "default".into(),
+            is_default: true,
+        }];
+        items.extend(
+            variants
+                .into_iter()
+                .filter(|id| id != "default")
+                .map(|id| VariantItem {
+                    display_name: id.clone(),
+                    id: Some(id),
+                    is_default: false,
+                }),
+        );
+        items
+    }
+
+    /// 右键档位标签：按声明顺序循环切换到下一个推理档位（越过末位回到 default）
+    pub async fn cycle_variant(&mut self) {
+        let options = self.variant_options();
+        if options.len() < 2 {
+            return;
+        }
+        let current = active_variant_index(&options, self.view.session.current_variant.as_deref())
+            .unwrap_or(0);
+        let next = &options[(current + 1) % options.len()];
+        let next_id = next.id.clone();
+        self.switch_variant(next_id.as_deref()).await;
     }
 
     pub async fn switch_variant(&mut self, variant: Option<&str>) {
@@ -203,6 +225,25 @@ impl App {
                 self.tool_expand.insert(id, super::ToolExpand::Preview);
             }
             _ => {}
+        }
+        true
+    }
+
+    /// 单击思考分组标题行切换该组展开/折叠；覆盖值与全局默认一致时移除条目。
+    pub fn handle_thought_click(&mut self, line: usize) -> bool {
+        let Some(hit) = self.chat_cache.thought_hit_at(line) else {
+            return false;
+        };
+        let id = hit.id.clone();
+        let expanded = self
+            .thought_expand
+            .get(&id)
+            .copied()
+            .unwrap_or(!self.thinking_concise);
+        if expanded == self.thinking_concise {
+            self.thought_expand.remove(&id);
+        } else {
+            self.thought_expand.insert(id, !expanded);
         }
         true
     }

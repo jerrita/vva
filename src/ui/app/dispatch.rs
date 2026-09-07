@@ -64,9 +64,10 @@ impl App {
         }
     }
 
-    /// 切换思考过程展示模式（/thinking 命令与 Config 弹窗共用）
+    /// 切换思考过程展示模式（/thinking 命令与 Config 弹窗共用），分组覆盖状态随全局默认重置
     pub fn toggle_thinking_display(&mut self) {
         self.thinking_concise = !self.thinking_concise;
+        self.thought_expand.clear();
         if let ActiveModal::Config(cm) = &mut self.modal {
             cm.update_item_value(
                 ConfigItemKind::ThinkingDisplay,

@@ -10,7 +10,7 @@ pub use config::{ConfigItemKind, ConfigModalState, ConfigSettingItem};
 pub use message::{ForkTitleState, MESSAGE_ACTIONS, MessageActionState};
 pub use models::{ModelItem, ModelsModalState};
 pub use sessions::{ProjectScope, SessionsModalState};
-pub use variants::{VariantItem, VariantsModalState};
+pub use variants::{VariantItem, VariantsModalState, active_variant_index};
 
 pub(crate) fn fuzzy_matches(query: &str, candidate: &str) -> bool {
     let candidate = candidate.to_lowercase();

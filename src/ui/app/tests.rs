@@ -171,6 +171,65 @@ async fn test_slash_command_variant_execution() {
 }
 
 #[tokio::test]
+async fn test_cycle_variant_wraps_through_declared_order() {
+    let config_str = r#"{
+        "providers": {
+            "prov": {
+                "type": "response",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "test_key",
+                "models": {
+                    "model-with-vars": {
+                        "name": "Model With Variants",
+                        "reasoning": true,
+                        "variants": ["none", "low", "high"]
+                    },
+                    "model-without-vars": {
+                        "name": "Model Without Variants"
+                    }
+                }
+            }
+        }
+    }"#;
+    let app_config = crate::config::parser::parse_config_str(config_str).unwrap();
+    let mut ta = create_test_app("prov/model-with-vars", None, Some(app_config), false).await;
+    let app = &mut ta.app;
+
+    // default → none → low → high → 回到 default
+    for expected in [Some("none"), Some("low"), Some("high"), None] {
+        app.cycle_variant().await;
+        assert_eq!(
+            app.active_session
+                .snapshot()
+                .session
+                .current_variant
+                .as_deref(),
+            expected,
+            "cycle 应按声明顺序推进到 {expected:?}"
+        );
+    }
+
+    // 未配置 variants 的模型：无可循环档位，保持原状
+    let session_no_vars = app
+        .session_mgr
+        .create_session("prov/model-without-vars".into(), None, None, false)
+        .await
+        .unwrap();
+    let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
+    app_no_vars.cycle_variant().await;
+    assert_eq!(
+        app_no_vars
+            .active_session
+            .snapshot()
+            .session
+            .current_variant,
+        None
+    );
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
 async fn test_app_scroll_control_and_clamping() {
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;

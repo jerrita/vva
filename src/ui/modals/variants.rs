@@ -17,6 +17,13 @@ fn is_active_variant(item: &VariantItem, active: Option<&str>) -> bool {
     }
 }
 
+/// 当前激活档位在选项列表中的下标（未命中返回 None）
+pub fn active_variant_index(items: &[VariantItem], active: Option<&str>) -> Option<usize> {
+    items
+        .iter()
+        .position(|item| is_active_variant(item, active))
+}
+
 /// /variant 模态弹窗状态机
 #[derive(Debug, Clone)]
 pub struct VariantsModalState {
@@ -44,11 +51,9 @@ impl VariantsModalState {
         };
         state.apply_filter();
         // 初始光标定位到当前激活档位
-        state.selected_index = state
-            .filtered_variants
-            .iter()
-            .position(|v| is_active_variant(v, state.active_variant.as_deref()))
-            .unwrap_or(0);
+        state.selected_index =
+            active_variant_index(&state.filtered_variants, state.active_variant.as_deref())
+                .unwrap_or(0);
         state
     }
 

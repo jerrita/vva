@@ -11,7 +11,7 @@ use crate::ui::command::SlashCommand;
 pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
-pub use pane::{ChatCache, TextPane, ToolExpand, ToolHit, UserMessageHit};
+pub use pane::{ChatCache, TextPane, ThoughtHit, ToolExpand, ToolHit, UserMessageHit};
 pub use selection::{
     SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
     get_clipboard_text, set_clipboard_text,
@@ -58,11 +58,13 @@ pub struct App {
     pub stats: SidebarStats,
     pub thinking_concise: bool,
     pub tool_expand: HashMap<String, ToolExpand>,
+    pub thought_expand: HashMap<String, bool>,
     pub last_key_input_time: Option<std::time::Instant>,
     pub input_inner_area: Rect,
     pub model_selector_area: Rect,
     pub variant_selector_area: Rect,
     pub web_toggle_area: Rect,
+    pub thinking_toggle_area: Rect,
     pub prompt_history: Vec<String>,
     pub history_index: Option<usize>,
     pub saved_draft: String,
@@ -103,11 +105,13 @@ impl App {
             stats,
             thinking_concise: true,
             tool_expand: HashMap::new(),
+            thought_expand: HashMap::new(),
             last_key_input_time: None,
             input_inner_area: Rect::default(),
             model_selector_area: Rect::default(),
             variant_selector_area: Rect::default(),
             web_toggle_area: Rect::default(),
+            thinking_toggle_area: Rect::default(),
             prompt_history: Vec::new(),
             history_index: None,
             saved_draft: String::new(),

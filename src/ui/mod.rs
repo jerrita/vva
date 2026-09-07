@@ -316,6 +316,7 @@ async fn handle_crossterm_event(
                 app.finish_selections();
                 if let Some(line) = user_click
                     && !app.handle_tool_click(line)
+                    && !app.handle_thought_click(line)
                 {
                     app.open_message_action_at_line(line);
                 }
@@ -325,6 +326,11 @@ async fn handle_crossterm_event(
                     return;
                 }
                 if app.modal.is_none() {
+                    // 右键档位标签：循环切换推理档位；其余区域保持粘贴语义
+                    if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
+                        app.cycle_variant().await;
+                        return;
+                    }
                     app.paste_from_clipboard();
                 }
             }
@@ -773,6 +779,10 @@ async fn handle_mouse_left_down(app: &mut App, mouse: crossterm::event::MouseEve
     }
     if rect_hit(app.web_toggle_area, column, row) {
         app.set_web_search(None).await;
+        return;
+    }
+    if rect_hit(app.thinking_toggle_area, column, row) {
+        app.toggle_thinking_display();
         return;
     }
 
