@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -8,8 +8,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Padding, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::model::{Annotation, ContentPart, Role, WebSearchAction, WebSearchCall};
-use crate::ui::app::{App, TextCoord, TextSelection, char_in_column_range};
+use crate::harness::SessionView;
+use crate::model::{
+    Annotation, ContentPart, Role, ToolCall, ToolResult, WebSearchAction, WebSearchCall,
+};
+use crate::ui::app::{App, TextCoord, TextSelection, ToolExpand, ToolHit, char_in_column_range};
 use crate::ui::markdown::{LinkRegion, render_markdown, wrap_spans_to_lines};
 use crate::ui::text::truncate;
 use crate::ui::views::header::session_title_line;
@@ -110,7 +113,20 @@ fn line_count(text: &str) -> usize {
     }
 }
 
-fn tool_call_detail(name: &str, arguments: &str) -> String {
+fn glob_match_count(result: &ToolResult) -> Option<usize> {
+    if result.is_error {
+        return None;
+    }
+    Some(
+        result
+            .content
+            .lines()
+            .filter(|line| !line.is_empty() && *line != "[results truncated]")
+            .count(),
+    )
+}
+
+fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) -> String {
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return arguments.to_string();
     };
@@ -130,9 +146,18 @@ fn tool_call_detail(name: &str, arguments: &str) -> String {
             ),
             _ => arguments.to_string(),
         },
-        "Glob" => json_str(&args, "pattern")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
+        "Glob" => {
+            let pattern = json_str(&args, "pattern")
+                .map(|pattern| format!("\"{pattern}\""))
+                .unwrap_or_else(|| arguments.to_string());
+            match result.and_then(glob_match_count) {
+                Some(count) => {
+                    let noun = if count == 1 { "match" } else { "matches" };
+                    format!("{pattern} ({count} {noun})")
+                }
+                None => pattern,
+            }
+        }
         "Grep" => {
             let Some(pattern) = json_str(&args, "pattern") else {
                 return arguments.to_string();
@@ -149,13 +174,232 @@ fn tool_call_detail(name: &str, arguments: &str) -> String {
     }
 }
 
+fn tool_block_command(name: &str, arguments: &str) -> String {
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return arguments.to_string();
+    };
+    match name {
+        "Shell" => json_str(&args, "command")
+            .map(|command| format!("$ {command}"))
+            .unwrap_or_else(|| arguments.to_string()),
+        "Read" | "Edit" => json_str(&args, "path")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
+        "Glob" => json_str(&args, "pattern")
+            .map(|pattern| format!("\"{pattern}\""))
+            .unwrap_or_else(|| arguments.to_string()),
+        "Grep" => json_str(&args, "pattern")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
+        _ => arguments.to_string(),
+    }
+}
+
+pub(crate) struct ChatRender<'a> {
+    pub lines: &'a mut Vec<Line<'static>>,
+    pub links: &'a mut Vec<LinkRegion>,
+    pub max_width: usize,
+    pub thinking_concise: bool,
+    pub results: &'a HashMap<String, &'a ToolResult>,
+    pub expand: &'a HashMap<String, ToolExpand>,
+    pub hits: &'a mut Vec<ToolHit>,
+}
+
+pub(crate) fn collect_tool_results(view: &SessionView) -> HashMap<String, &ToolResult> {
+    let mut map = HashMap::new();
+    let parts = view
+        .session
+        .turns
+        .iter()
+        .flat_map(|turn| turn.messages.iter().flat_map(|message| &message.parts))
+        .chain(view.draft.iter());
+    for part in parts {
+        if let ContentPart::ToolResult(result) = part {
+            map.insert(result.tool_call_id.clone(), result);
+        }
+    }
+    map
+}
+
 const EDIT_DELETE: Style = Style::new().fg(Color::Rgb(220, 100, 100));
 const EDIT_INSERT: Style = Style::new().fg(Color::Rgb(100, 180, 110));
 const EDIT_SEP: Style = Style::new().fg(Color::DarkGray);
 const EDIT_INDENT: usize = 3;
 const EDIT_SEP_WIDTH: usize = 3;
 const EDIT_MIN_COL: usize = 20;
-const EDIT_DETAIL_LIMIT: usize = 20;
+const TOOL_BLOCK_BG: Color = Color::Rgb(40, 42, 46);
+const TOOL_BLOCK_BORDER: Style = Style::new().fg(Color::Rgb(100, 100, 110)).bg(TOOL_BLOCK_BG);
+const TOOL_PREVIEW_LIMIT: usize = 10;
+const TOOL_BLOCK_CHROME: usize = 4;
+
+fn tool_block_frame(left: &str, right: &str, max_width: usize) -> Line<'static> {
+    let inner = max_width.saturating_sub(TOOL_BLOCK_CHROME);
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(left.to_string(), TOOL_BLOCK_BORDER),
+        Span::styled("─".repeat(inner), TOOL_BLOCK_BORDER),
+        Span::styled(right.to_string(), TOOL_BLOCK_BORDER),
+        Span::raw(" "),
+    ])
+}
+
+fn fill_to_width(mut spans: Vec<Span<'static>>, max_width: usize) -> Line<'static> {
+    let bg = Style::default().bg(TOOL_BLOCK_BG);
+    let inner = max_width.saturating_sub(TOOL_BLOCK_CHROME);
+    let mut width = 0;
+    for span in &mut spans {
+        width += span.content.width();
+        span.style = span.style.patch(bg);
+    }
+    if inner > width {
+        spans.push(Span::styled(" ".repeat(inner - width), bg));
+    }
+    let mut out = Vec::with_capacity(spans.len() + 4);
+    out.push(Span::raw(" "));
+    out.push(Span::styled("│", TOOL_BLOCK_BORDER));
+    out.extend(spans);
+    out.push(Span::styled("│", TOOL_BLOCK_BORDER));
+    out.push(Span::raw(" "));
+    Line::from(out)
+}
+
+fn push_filled_blank(lines: &mut Vec<Line<'static>>, max_width: usize) {
+    lines.push(fill_to_width(Vec::new(), max_width));
+}
+
+fn push_filled_text(lines: &mut Vec<Line<'static>>, text: &str, style: Style, max_width: usize) {
+    let inner = max_width.saturating_sub(TOOL_BLOCK_CHROME).max(1);
+    if text.is_empty() {
+        push_filled_blank(lines, max_width);
+        return;
+    }
+    let spans = vec![Span::styled(text.to_string(), style)];
+    for wrapped in wrap_spans_to_lines(&spans, inner, " ", "  ") {
+        lines.push(fill_to_width(wrapped.spans, max_width));
+    }
+}
+
+fn tool_result_rows(result: &ToolResult) -> Vec<(String, Style)> {
+    let style = if result.is_error {
+        Style::default().fg(Color::Rgb(220, 120, 120))
+    } else {
+        Style::default().fg(Color::Rgb(180, 180, 180))
+    };
+    result
+        .content
+        .lines()
+        .map(|line| (line.to_string(), style))
+        .collect()
+}
+
+fn push_tool_block(
+    lines: &mut Vec<Line<'static>>,
+    call: &ToolCall,
+    result: Option<&ToolResult>,
+    full: bool,
+    max_width: usize,
+) -> bool {
+    let cmd_style = Style::default().fg(Color::Rgb(210, 210, 210));
+    let hint_style = Style::default().fg(Color::Rgb(110, 110, 110));
+    lines.push(tool_block_frame("╭", "╮", max_width));
+    push_filled_blank(lines, max_width);
+    push_filled_text(
+        lines,
+        &tool_block_command(&call.name, &call.arguments),
+        cmd_style,
+        max_width,
+    );
+    push_filled_blank(lines, max_width);
+
+    let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };
+    if call.name == "Edit" && !result.is_some_and(|result| result.is_error) {
+        let mut body = Vec::new();
+        push_edit_detail(
+            &mut body,
+            &call.arguments,
+            max_width.saturating_sub(TOOL_BLOCK_CHROME),
+            usize::MAX,
+        );
+        let truncated = !full && body.len() > TOOL_PREVIEW_LIMIT;
+        for line in body.into_iter().take(cap) {
+            lines.push(fill_to_width(line.spans, max_width));
+        }
+        if truncated {
+            push_filled_text(lines, "...", hint_style, max_width);
+            push_filled_text(lines, "Click to expand", hint_style, max_width);
+        } else {
+            push_filled_blank(lines, max_width);
+        }
+        lines.push(tool_block_frame("╰", "╯", max_width));
+        return truncated;
+    }
+
+    let body = result.map(tool_result_rows).unwrap_or_default();
+    let truncated = !full && body.len() > TOOL_PREVIEW_LIMIT;
+    let shown = body.len().min(cap);
+    for (text, style) in body.iter().take(shown) {
+        push_filled_text(lines, text, *style, max_width);
+    }
+    if truncated {
+        push_filled_text(lines, "...", hint_style, max_width);
+        push_filled_text(lines, "Click to expand", hint_style, max_width);
+    } else {
+        push_filled_blank(lines, max_width);
+    }
+    lines.push(tool_block_frame("╰", "╯", max_width));
+    truncated
+}
+
+fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
+    let result = render.results.get(&call.id).copied();
+    let expand = render.expand.get(&call.id).copied();
+    let expanded = expand.is_some();
+    let detail = tool_call_detail(&call.name, &call.arguments, result);
+    let arrow = if expanded { "↓ " } else { "→ " };
+    let name_style = if result.is_some_and(|result| result.is_error) {
+        Style::default()
+            .fg(Color::Rgb(220, 100, 100))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Rgb(210, 210, 210))
+            .add_modifier(Modifier::BOLD)
+    };
+    let spans = vec![
+        Span::styled(arrow, Style::default().fg(Color::Rgb(160, 160, 160))),
+        Span::styled(call.name.clone(), name_style),
+        Span::raw(" "),
+        Span::styled(detail, Style::default().fg(Color::Rgb(150, 150, 150))),
+    ];
+    let header_start = render.lines.len();
+    let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
+    render.lines.extend(wrapped);
+    let header_end = render.lines.len();
+    let mut truncated = false;
+    let mut block_start = render.lines.len();
+    let mut block_end = block_start;
+    if expanded {
+        render.lines.push(Line::from(""));
+        block_start = render.lines.len();
+        truncated = push_tool_block(
+            render.lines,
+            call,
+            result,
+            expand == Some(ToolExpand::Full),
+            render.max_width,
+        );
+        block_end = render.lines.len();
+        render.lines.push(Line::from(""));
+    }
+    render.hits.push(ToolHit {
+        id: call.id.clone(),
+        header_start,
+        header_end,
+        block_start,
+        block_end,
+        truncated,
+    });
+}
 
 fn wrap_by_width(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
@@ -228,7 +472,7 @@ fn push_edit_columns(
     }
 }
 
-fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: usize) {
+fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: usize, cap: usize) {
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return;
     };
@@ -250,9 +494,9 @@ fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: 
     }
 
     let produced = lines.len() - start;
-    if produced > EDIT_DETAIL_LIMIT {
-        let hidden = produced - EDIT_DETAIL_LIMIT;
-        lines.truncate(start + EDIT_DETAIL_LIMIT);
+    if produced > cap {
+        let hidden = produced - cap;
+        lines.truncate(start + cap);
         lines.push(Line::from(vec![
             Span::raw("     "),
             Span::styled(
@@ -275,14 +519,13 @@ fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
 
 /// 轮次内统一汇总引用；思考分组状态延续到下一轮或草稿。
 pub(crate) fn append_parts<'a>(
-    lines: &mut Vec<Line<'static>>,
-    links: &mut Vec<LinkRegion>,
+    render: &mut ChatRender<'_>,
     role: Role,
     parts: impl Iterator<Item = &'a ContentPart> + Clone,
-    max_width: usize,
-    thinking_concise: bool,
     state: &mut RenderState,
 ) {
+    let max_width = render.max_width;
+    let thinking_concise = render.thinking_concise;
     let calls = parts
         .clone()
         .filter_map(|part| match part {
@@ -296,8 +539,8 @@ pub(crate) fn append_parts<'a>(
             (Role::User, ContentPart::Text { text, .. }) => {
                 state.prev_reasoning = false;
                 state.prev_text = false;
-                lines.push(Line::from(""));
-                push_user_block(lines, text, max_width);
+                render.lines.push(Line::from(""));
+                push_user_block(render.lines, text, max_width);
             }
             (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
                 // 连续思考段归为一段，组间保留空行。
@@ -305,7 +548,7 @@ pub(crate) fn append_parts<'a>(
                 state.prev_reasoning = true;
                 state.prev_text = false;
                 if group_start {
-                    lines.push(Line::from(""));
+                    render.lines.push(Line::from(""));
                 }
                 let body_style = Style::default()
                     .fg(Color::Rgb(120, 120, 120))
@@ -315,16 +558,18 @@ pub(crate) fn append_parts<'a>(
                     .add_modifier(Modifier::BOLD);
 
                 if group_start {
-                    lines.push(Line::from(vec![Span::styled("+ Thought", prefix_style)]));
+                    render
+                        .lines
+                        .push(Line::from(vec![Span::styled("+ Thought", prefix_style)]));
                 }
                 if !thinking_concise {
                     let (mut body, mut body_links) = render_markdown(content, max_width);
                     for link in &mut body_links {
-                        link.line += lines.len();
+                        link.line += render.lines.len();
                         link.columns.start = link.columns.start.saturating_sub(1);
                         link.columns.end = link.columns.end.saturating_sub(1);
                     }
-                    links.extend(body_links);
+                    render.links.extend(body_links);
                     for line in &mut body {
                         if let Some(span) = line.spans.first_mut()
                             && span.content.starts_with(' ')
@@ -335,71 +580,21 @@ pub(crate) fn append_parts<'a>(
                             span.style = span.style.patch(body_style);
                         }
                     }
-                    lines.extend(body);
+                    render.lines.extend(body);
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
                 let needs_separator = state.prev_reasoning || state.prev_text;
                 state.prev_reasoning = false;
                 state.prev_text = false;
-                let name = &call.name;
-                let detail = tool_call_detail(name, &call.arguments);
                 if needs_separator {
-                    lines.push(Line::from(""));
+                    render.lines.push(Line::from(""));
                 }
-                let spans = vec![
-                    Span::styled(
-                        name.clone(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
-                ];
-                let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-                lines.extend(wrapped);
-                if name == "Edit" {
-                    push_edit_detail(lines, &call.arguments, max_width);
-                }
+                push_tool_call(render, call);
             }
-            (Role::Tool, ContentPart::ToolResult(result)) => {
+            (Role::Tool, ContentPart::ToolResult(_)) => {
                 state.prev_reasoning = false;
                 state.prev_text = false;
-                let is_error = &result.is_error;
-                let result = &result.content;
-                let status_color = if *is_error { Color::Red } else { Color::Green };
-                let status_label = if *is_error { "Error:" } else { "Output:" };
-
-                lines.push(Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(
-                        status_label,
-                        Style::default()
-                            .fg(status_color)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-
-                let tool_lines: Vec<&str> = result.lines().collect();
-                let limit = 20;
-                for l in tool_lines.iter().take(limit) {
-                    let spans = vec![Span::styled(
-                        l.to_string(),
-                        Style::default().fg(Color::Rgb(170, 170, 170)),
-                    )];
-                    let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "     ");
-                    lines.extend(wrapped);
-                }
-                if tool_lines.len() > limit {
-                    lines.push(Line::from(vec![
-                        Span::raw("     "),
-                        Span::styled(
-                            format!("... ({} more lines hidden)", tool_lines.len() - limit),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ]));
-                }
             }
             (Role::Assistant, ContentPart::WebSearchCall(call)) => {
                 let needs_separator = state.prev_reasoning || state.prev_text;
@@ -416,7 +611,7 @@ pub(crate) fn append_parts<'a>(
                     }
                 };
                 if needs_separator {
-                    lines.push(Line::from(""));
+                    render.lines.push(Line::from(""));
                 }
                 let spans = vec![
                     Span::styled(
@@ -429,7 +624,7 @@ pub(crate) fn append_parts<'a>(
                     Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
                 ];
                 let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-                lines.extend(wrapped);
+                render.lines.extend(wrapped);
 
                 if matches!(call.action, WebSearchAction::OpenPage { .. }) {
                     continue;
@@ -452,7 +647,7 @@ pub(crate) fn append_parts<'a>(
                     let title_max = max_width.saturating_sub(3 + right_w + 1);
                     let title = truncate(title, title_max);
                     let pad = title_max - title.width() + 1;
-                    lines.push(Line::from(vec![
+                    render.lines.push(Line::from(vec![
                         Span::raw("   "),
                         Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
                         Span::raw(" ".repeat(pad)),
@@ -475,10 +670,10 @@ pub(crate) fn append_parts<'a>(
                         }
                     })
                     .collect();
-                lines.push(Line::from(""));
+                render.lines.push(Line::from(""));
                 let (mut md_lines, mut md_links) = render_markdown(text, max_width);
                 for link in &mut md_links {
-                    link.line += lines.len();
+                    link.line += render.lines.len();
                     link.columns.start = link.columns.start.saturating_sub(1);
                     link.columns.end = link.columns.end.saturating_sub(1);
                 }
@@ -489,13 +684,13 @@ pub(crate) fn append_parts<'a>(
                         span.content.to_mut().remove(0);
                     }
                 }
-                links.extend(md_links);
-                lines.extend(md_lines);
+                render.links.extend(md_links);
+                render.lines.extend(md_lines);
 
                 // Citations not covered by a call remain below the text.
                 if !citations.is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![
+                    render.lines.push(Line::from(""));
+                    render.lines.push(Line::from(vec![
                         Span::raw("   "),
                         Span::styled(
                             "Sources / Citations:",
@@ -515,7 +710,7 @@ pub(crate) fn append_parts<'a>(
                             ),
                         ];
                         let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "       ");
-                        lines.extend(wrapped);
+                        render.lines.extend(wrapped);
                     }
                 }
             }
@@ -526,17 +721,14 @@ pub(crate) fn append_parts<'a>(
 }
 
 pub(crate) fn append_chat_tail(
-    lines: &mut Vec<Line<'static>>,
-    links: &mut Vec<LinkRegion>,
-    view: &crate::harness::SessionView,
+    render: &mut ChatRender<'_>,
+    view: &SessionView,
     notices: &[String],
-    max_width: usize,
-    thinking_concise: bool,
     mut state: RenderState,
 ) {
     if view.session.turns.iter().all(|t| t.role == Role::System) && view.draft.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
+        render.lines.push(Line::from(""));
+        render.lines.push(Line::from(vec![
             Span::styled(
                 "  Start typing a prompt or use ",
                 Style::default().fg(Color::DarkGray),
@@ -553,28 +745,20 @@ pub(crate) fn append_chat_tail(
             ),
         ]));
     }
-    append_parts(
-        lines,
-        links,
-        Role::Assistant,
-        view.draft.iter(),
-        max_width,
-        thinking_concise,
-        &mut state,
-    );
+    append_parts(render, Role::Assistant, view.draft.iter(), &mut state);
     for text in notices {
-        lines.push(Line::from(""));
+        render.lines.push(Line::from(""));
         let spans = vec![Span::styled(
             text.clone(),
             Style::default()
                 .fg(Color::Rgb(200, 200, 200))
                 .add_modifier(Modifier::ITALIC),
         )];
-        let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-        lines.extend(wrapped);
+        let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
+        render.lines.extend(wrapped);
     }
     if notices.is_empty() && state.prev_text {
-        lines.push(Line::from(""));
+        render.lines.push(Line::from(""));
     }
 }
 
@@ -875,8 +1059,9 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::WebSearchSource;
-    use crate::ui::app::TextCoord;
+    use crate::model::{ToolCall, ToolResult, WebSearchSource};
+    use crate::ui::app::{TextCoord, ToolExpand};
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     fn joined(lines: &[Line]) -> String {
@@ -894,6 +1079,7 @@ mod tests {
             &mut lines,
             r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
             40,
+            20,
         );
         let text = joined(&lines);
         assert!(text.contains("- old"));
@@ -908,12 +1094,130 @@ mod tests {
             &mut lines,
             r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
             80,
+            20,
         );
         let text = joined(&lines);
         assert!(text.contains("│"));
         assert!(text.contains("old"));
         assert!(text.contains("new"));
         assert!(!text.contains("- old"));
+    }
+
+    fn render_tools(
+        parts: &[ContentPart],
+        results: &HashMap<String, &ToolResult>,
+        expand: &HashMap<String, ToolExpand>,
+        width: usize,
+    ) -> (Vec<Line<'static>>, Vec<ToolHit>) {
+        let mut lines = Vec::new();
+        let mut hits = Vec::new();
+        let mut state = RenderState::default();
+        append_parts(
+            &mut ChatRender {
+                lines: &mut lines,
+                links: &mut Vec::new(),
+                max_width: width,
+                thinking_concise: true,
+                results,
+                expand,
+                hits: &mut hits,
+            },
+            Role::Assistant,
+            parts.iter(),
+            &mut state,
+        );
+        (lines, hits)
+    }
+
+    #[test]
+    fn tool_call_collapsed_is_one_line() {
+        let call = ToolCall::new("c1", "Read", r#"{"path":"README.md"}"#);
+        let result = ToolResult::success("c1", "1: hello\n2: world");
+        let mut results = HashMap::new();
+        results.insert(result.tool_call_id.clone(), &result);
+        let (lines, _) = render_tools(
+            &[ContentPart::ToolCall(call)],
+            &results,
+            &HashMap::new(),
+            80,
+        );
+        let text = joined(&lines);
+        assert!(text.contains("→ Read README.md"));
+        assert!(!text.contains("hello"));
+        assert!(!text.contains("Output:"));
+    }
+
+    #[test]
+    fn tool_glob_shows_match_count() {
+        let call = ToolCall::new("c1", "Glob", r#"{"pattern":"**/*.rs"}"#);
+        let result = ToolResult::success("c1", "a.rs\nb.rs\nc.rs");
+        let mut results = HashMap::new();
+        results.insert(result.tool_call_id.clone(), &result);
+        let (lines, _) = render_tools(
+            &[ContentPart::ToolCall(call)],
+            &results,
+            &HashMap::new(),
+            80,
+        );
+        assert!(joined(&lines).contains("→ Glob \"**/*.rs\" (3 matches)"));
+    }
+
+    #[test]
+    fn tool_shell_collapsed_shows_intent() {
+        let call = ToolCall::new(
+            "c1",
+            "Shell",
+            r#"{"intent":"count lines","command":"wc -l src/*.ts"}"#,
+        );
+        let result = ToolResult::success("c1", "26 src/result.ts\n30 src/types.ts");
+        let mut results = HashMap::new();
+        results.insert(result.tool_call_id.clone(), &result);
+        let (lines, _) = render_tools(
+            &[ContentPart::ToolCall(call)],
+            &results,
+            &HashMap::new(),
+            80,
+        );
+        let text = joined(&lines);
+        assert!(text.contains("→ Shell count lines"));
+        assert!(!text.contains("wc -l"));
+        assert!(!text.contains("src/result.ts"));
+    }
+
+    #[test]
+    fn tool_preview_block_truncates_and_full_shows_all() {
+        let output: String = (1..=15)
+            .map(|n| format!("line{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let call = ToolCall::new("c1", "Shell", r#"{"intent":"list","command":"seq 15"}"#);
+        let result = ToolResult::success("c1", output);
+        let mut results = HashMap::new();
+        results.insert(result.tool_call_id.clone(), &result);
+        let mut expand = HashMap::new();
+        expand.insert("c1".into(), ToolExpand::Preview);
+        let (lines, hits) = render_tools(
+            &[ContentPart::ToolCall(call.clone())],
+            &results,
+            &expand,
+            80,
+        );
+        let text = joined(&lines);
+        assert!(text.contains("↓ Shell list"));
+        assert!(text.contains("$ seq 15"));
+        assert!(text.contains("line1"));
+        assert!(text.contains("line10"));
+        assert!(!text.contains("line11"));
+        assert!(text.contains("Click to expand"));
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].truncated);
+
+        expand.insert("c1".into(), ToolExpand::Full);
+        let (lines, hits) = render_tools(&[ContentPart::ToolCall(call)], &results, &expand, 80);
+        let text = joined(&lines);
+        assert!(text.contains("line15"));
+        assert!(!text.contains("Click to expand"));
+        assert!(!hits[0].truncated);
     }
 
     #[test]
@@ -949,24 +1253,36 @@ mod tests {
     fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let mut state = RenderState::default();
+        let results = collect_tool_results(&app.view);
+        let mut hits = Vec::new();
         for turn in &app.view.session.turns {
             append_parts(
-                &mut lines,
-                &mut Vec::new(),
+                &mut ChatRender {
+                    lines: &mut lines,
+                    links: &mut Vec::new(),
+                    max_width: width.max(20),
+                    thinking_concise: app.thinking_concise,
+                    results: &results,
+                    expand: &app.tool_expand,
+                    hits: &mut hits,
+                },
                 turn.role,
                 turn.messages.iter().flat_map(|m| &m.parts),
-                width.max(20),
-                app.thinking_concise,
                 &mut state,
             );
         }
         append_chat_tail(
-            &mut lines,
-            &mut Vec::new(),
+            &mut ChatRender {
+                lines: &mut lines,
+                links: &mut Vec::new(),
+                max_width: width.max(20),
+                thinking_concise: app.thinking_concise,
+                results: &results,
+                expand: &app.tool_expand,
+                hits: &mut hits,
+            },
             &app.view,
             &app.notices,
-            width.max(20),
-            app.thinking_concise,
             state,
         );
         lines

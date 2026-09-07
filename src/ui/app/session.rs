@@ -23,6 +23,7 @@ impl App {
         self.view_rx = self.active_session.subscribe();
         self.clear_selections();
         self.chat.lines.clear();
+        self.tool_expand.clear();
         self.notices.clear();
         self.consumed_notices = 0;
         self.scroll_offset = 0;
@@ -174,6 +175,36 @@ impl App {
             session.web_search,
             self.thinking_concise,
         ));
+    }
+
+    /// 单击工具标题行展开/折叠；单击 block 在预览与全文间切换。
+    pub fn handle_tool_click(&mut self, line: usize) -> bool {
+        let Some(hit) = self.chat_cache.tool_hit_at(line) else {
+            return false;
+        };
+        let id = hit.id.clone();
+        let truncated = hit.truncated;
+        if hit.contains_header(line) {
+            match self.tool_expand.get(&id).copied() {
+                None => {
+                    self.tool_expand.insert(id, super::ToolExpand::Preview);
+                }
+                Some(_) => {
+                    self.tool_expand.remove(&id);
+                }
+            }
+            return true;
+        }
+        match self.tool_expand.get(&id).copied() {
+            Some(super::ToolExpand::Preview) if truncated => {
+                self.tool_expand.insert(id, super::ToolExpand::Full);
+            }
+            Some(super::ToolExpand::Full) => {
+                self.tool_expand.insert(id, super::ToolExpand::Preview);
+            }
+            _ => {}
+        }
+        true
     }
 
     /// 单击历史用户消息：打开 Revert / Fork 选择

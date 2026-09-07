@@ -314,7 +314,9 @@ async fn handle_crossterm_event(
                 .flatten();
                 app.is_dragging_scrollbar = false;
                 app.finish_selections();
-                if let Some(line) = user_click {
+                if let Some(line) = user_click
+                    && !app.handle_tool_click(line)
+                {
                     app.open_message_action_at_line(line);
                 }
             }

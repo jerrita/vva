@@ -1,4 +1,5 @@
 use ratatui::layout::Rect;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -10,7 +11,7 @@ use crate::ui::command::SlashCommand;
 pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
-pub use pane::{ChatCache, TextPane, UserMessageHit};
+pub use pane::{ChatCache, TextPane, ToolExpand, ToolHit, UserMessageHit};
 pub use selection::{
     SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
     get_clipboard_text, set_clipboard_text,
@@ -56,6 +57,7 @@ pub struct App {
     pub selected_command_index: usize,
     pub stats: SidebarStats,
     pub thinking_concise: bool,
+    pub tool_expand: HashMap<String, ToolExpand>,
     pub last_key_input_time: Option<std::time::Instant>,
     pub input_inner_area: Rect,
     pub model_selector_area: Rect,
@@ -100,6 +102,7 @@ impl App {
             selected_command_index: 0,
             stats,
             thinking_concise: true,
+            tool_expand: HashMap::new(),
             last_key_input_time: None,
             input_inner_area: Rect::default(),
             model_selector_area: Rect::default(),

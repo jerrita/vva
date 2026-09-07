@@ -1,11 +1,15 @@
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use super::selection::SelectionTracker;
 use crate::model::Session;
 use crate::ui::markdown::LinkRegion;
-use crate::ui::views::chat::{RenderState, append_chat_tail, append_parts, extract_selected_text};
+use crate::ui::views::chat::{
+    ChatRender, RenderState, append_chat_tail, append_parts, collect_tool_results,
+    extract_selected_text,
+};
 
 /// 可选中文本面板：渲染行、命中区域与选区是同一件事的三个侧面。
 /// 聊天流与侧边栏共用该结构，交互代码按面板列表派发而不逐个枚举目标。
@@ -63,6 +67,38 @@ impl UserMessageHit {
     }
 }
 
+/// 工具行展开层级：缺省为折叠一行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExpand {
+    Preview,
+    Full,
+}
+
+/// 工具标题行与展开块在聊天行缓冲中的区间
+#[derive(Debug, Clone)]
+pub struct ToolHit {
+    pub id: String,
+    pub header_start: usize,
+    pub header_end: usize,
+    pub block_start: usize,
+    pub block_end: usize,
+    pub truncated: bool,
+}
+
+impl ToolHit {
+    pub fn contains_header(&self, line: usize) -> bool {
+        line >= self.header_start && line < self.header_end
+    }
+
+    pub fn contains_block(&self, line: usize) -> bool {
+        line >= self.block_start && line < self.block_end
+    }
+
+    pub fn contains(&self, line: usize) -> bool {
+        self.contains_header(line) || self.contains_block(line)
+    }
+}
+
 /// 仅记录历史前缀边界及其排版状态，不另存文本或持有旧会话快照。
 #[derive(Default)]
 pub struct ChatCache {
@@ -73,7 +109,9 @@ pub struct ChatCache {
     notices: usize,
     history_lines: usize,
     render_state: RenderState,
+    tool_expand: HashMap<String, ToolExpand>,
     pub(crate) user_hits: Vec<UserMessageHit>,
+    pub(crate) tool_hits: Vec<ToolHit>,
 }
 
 impl ChatCache {
@@ -83,32 +121,44 @@ impl ChatCache {
             .copied()
             .find(|hit| hit.contains(line))
     }
+
+    pub fn tool_hit_at(&self, line: usize) -> Option<&ToolHit> {
+        self.tool_hits.iter().find(|hit| hit.contains(line))
+    }
 }
 
 impl super::App {
     /// 历史随会话快照和布局失效，草稿与通知随视图版本更新。
     pub fn refresh_chat_lines(&mut self, width: usize) {
         let width = width.max(20);
+        let results = collect_tool_results(&self.view);
         let cache = &mut self.chat_cache;
         let session = Arc::downgrade(&self.view.session);
         if !cache.session.ptr_eq(&session)
             || cache.width != width
             || cache.thinking_concise != self.thinking_concise
+            || cache.tool_expand != self.tool_expand
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
             self.chat.links.clear();
             cache.render_state = RenderState::default();
             cache.user_hits.clear();
+            cache.tool_hits.clear();
             for (turn_index, turn) in self.view.session.turns.iter().enumerate() {
                 let line_start = self.chat.lines.len();
                 append_parts(
-                    &mut self.chat.lines,
-                    &mut self.chat.links,
+                    &mut ChatRender {
+                        lines: &mut self.chat.lines,
+                        links: &mut self.chat.links,
+                        max_width: width,
+                        thinking_concise: self.thinking_concise,
+                        results: &results,
+                        expand: &self.tool_expand,
+                        hits: &mut cache.tool_hits,
+                    },
                     turn.role,
                     turn.messages.iter().flat_map(|m| &m.parts),
-                    width,
-                    self.thinking_concise,
                     &mut cache.render_state,
                 );
                 if turn.role == crate::model::Role::User {
@@ -123,6 +173,7 @@ impl super::App {
             cache.session = session;
             cache.width = width;
             cache.thinking_concise = self.thinking_concise;
+            cache.tool_expand.clone_from(&self.tool_expand);
         } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
             return;
         }
@@ -130,13 +181,21 @@ impl super::App {
         self.chat
             .links
             .retain(|link| link.line < cache.history_lines);
+        cache
+            .tool_hits
+            .retain(|hit| hit.header_start < cache.history_lines);
         append_chat_tail(
-            &mut self.chat.lines,
-            &mut self.chat.links,
+            &mut ChatRender {
+                lines: &mut self.chat.lines,
+                links: &mut self.chat.links,
+                max_width: width,
+                thinking_concise: self.thinking_concise,
+                results: &results,
+                expand: &self.tool_expand,
+                hits: &mut cache.tool_hits,
+            },
             &self.view,
             &self.notices,
-            width,
-            self.thinking_concise,
             cache.render_state,
         );
         cache.revision = self.view.revision;
