@@ -3,6 +3,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
+use crate::ui::text::truncate;
+
 #[derive(Debug, Clone)]
 pub struct LinkRegion {
     pub line: usize,
@@ -550,11 +552,12 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
                     } else {
                         code_block_lang.clone()
                     };
+                    let lang_tag = truncate(&lang_tag, max_width.saturating_sub(12));
 
-                    let inner_w = max_width.saturating_sub(6).max(20);
+                    let code_width = max_width.saturating_sub(7).max(13);
                     let header_line = format!(
-                        "   ┌── [{lang_tag}] ─{}",
-                        "─".repeat(inner_w.saturating_sub(lang_tag.len() + 6))
+                        "   ┌── [{lang_tag}] {}┐",
+                        "─".repeat(max_width.saturating_sub(11 + lang_tag.width()))
                     );
                     output_lines.push(Line::from(vec![Span::styled(
                         header_line,
@@ -562,16 +565,19 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
                     )]));
 
                     for code_l in &code_block_lines {
+                        let code_l = truncate(code_l, code_width);
+                        let padding = " ".repeat(code_width.saturating_sub(code_l.width()));
                         output_lines.push(Line::from(vec![
                             Span::styled("   │ ", Style::default().fg(Color::Rgb(100, 100, 110))),
+                            Span::styled(code_l, Style::default().fg(Color::Rgb(220, 225, 230))),
                             Span::styled(
-                                code_l.clone(),
-                                Style::default().fg(Color::Rgb(220, 225, 230)),
+                                format!("{padding} │"),
+                                Style::default().fg(Color::Rgb(100, 100, 110)),
                             ),
                         ]));
                     }
 
-                    let footer_line = format!("   └──{}", "─".repeat(inner_w.saturating_sub(1)));
+                    let footer_line = format!("   └{}┘", "─".repeat(max_width.saturating_sub(5)));
                     output_lines.push(Line::from(vec![Span::styled(
                         footer_line,
                         Style::default().fg(Color::Rgb(100, 100, 110)),
@@ -979,6 +985,20 @@ fn test() {
         assert!(text.contains("Alice"));
         assert!(text.contains("Admin"));
         assert!(text.contains("Bob"));
+
+        let code_start = lines
+            .iter()
+            .position(|line| line.to_string().contains("┌── [rust]"))
+            .unwrap();
+        let code_end = lines
+            .iter()
+            .position(|line| line.to_string().starts_with("   └"))
+            .unwrap();
+        assert!(lines[code_start].to_string().ends_with('┐'));
+        assert!(lines[code_end].to_string().ends_with('┘'));
+        for line in &lines[code_start..=code_end] {
+            assert_eq!(line.width(), 80);
+        }
     }
 
     #[test]

@@ -308,9 +308,18 @@ pub(crate) fn append_parts<'a>(
                     })
                     .collect();
                 lines.push(Line::from(""));
-                let (md_lines, mut md_links) = render_markdown(text, max_width);
+                let (mut md_lines, mut md_links) = render_markdown(text, max_width);
                 for link in &mut md_links {
                     link.line += lines.len();
+                    link.columns.start = link.columns.start.saturating_sub(1);
+                    link.columns.end = link.columns.end.saturating_sub(1);
+                }
+                for line in &mut md_lines {
+                    if let Some(span) = line.spans.first_mut()
+                        && span.content.starts_with(' ')
+                    {
+                        span.content.to_mut().remove(0);
+                    }
                 }
                 links.extend(md_links);
                 lines.extend(md_lines);
@@ -1263,7 +1272,7 @@ fn main() {
         assert!(all_text.contains("Rust Lang"));
         assert!(all_text.contains("https://rust-lang.org"));
 
-        // 检查非空内容行均被添加了前缀缩进
+        // 检查非空内容行均与 thinking 正文保持相同前缀缩进
         let assistant_lines: Vec<_> = lines
             .iter()
             .filter(|l| {
@@ -1273,7 +1282,7 @@ fn main() {
             })
             .collect();
         for line in assistant_lines {
-            assert_eq!(line.spans.first().map(|s| s.content.as_ref()), Some("   "));
+            assert_eq!(line.spans.first().map(|s| s.content.as_ref()), Some("  "));
         }
     }
 
