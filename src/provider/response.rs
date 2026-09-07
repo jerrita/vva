@@ -465,7 +465,7 @@ impl Provider for ResponseProvider {
         body["stream"] = serde_json::json!(true);
 
         let mut handler = ResponseStreamHandler::new(self, event_sender);
-        post_sse(
+        let termination = post_sse(
             &self.normalized_endpoint(),
             self.build_auth_headers()?,
             &body,
@@ -474,7 +474,15 @@ impl Provider for ResponseProvider {
         .await?;
 
         handler.completed.ok_or_else(|| {
-            ProviderError::Protocol("Stream ended without response.completed".into())
+            let response_id = handler.response_id.as_deref().unwrap_or("unknown");
+            let last_event = handler.last_event_type.as_deref().unwrap_or("none");
+            let sequence = handler
+                .last_sequence_number
+                .map_or_else(|| "unknown".into(), |value| value.to_string());
+            ProviderError::Protocol(format!(
+                "Stream ended without response.completed (termination={termination}, response_id={response_id}, last_event={last_event}, sequence_number={sequence}, event_count={})",
+                handler.event_count
+            ))
         })
     }
 }
@@ -484,6 +492,10 @@ struct ResponseStreamHandler<'a> {
     provider: &'a ResponseProvider,
     forwarder: EventForwarder,
     completed: Option<ProviderResponse>,
+    response_id: Option<String>,
+    last_event_type: Option<String>,
+    last_sequence_number: Option<u64>,
+    event_count: u64,
     /// `output_item.done` 投影：领域 WebSearchCall 的条目快照（含当时 sources）
     streamed_searches: HashMap<String, WebSearchCall>,
 }
@@ -494,6 +506,10 @@ impl<'a> ResponseStreamHandler<'a> {
             provider,
             forwarder: EventForwarder::new(event_sender),
             completed: None,
+            response_id: None,
+            last_event_type: None,
+            last_sequence_number: None,
+            event_count: 0,
             streamed_searches: HashMap::new(),
         }
     }
@@ -519,6 +535,16 @@ impl<'a> ResponseStreamHandler<'a> {
 impl SseEventHandler for ResponseStreamHandler<'_> {
     async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError> {
         let ev_type = require_str(&json, "type")?;
+        self.event_count += 1;
+        self.last_event_type = Some(ev_type.to_string());
+        self.last_sequence_number = json.get("sequence_number").and_then(|value| value.as_u64());
+        if let Some(response_id) = json
+            .get("response")
+            .and_then(|response| response.get("id"))
+            .and_then(|id| id.as_str())
+        {
+            self.response_id = Some(response_id.to_string());
+        }
         match ev_type {
             "error" => {
                 let msg = require_str(&json, "message")?;

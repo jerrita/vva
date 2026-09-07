@@ -435,7 +435,7 @@ impl Provider for AnthropicProvider {
             usage: AnthropicUsageSnapshot::default(),
             forwarder: EventForwarder::new(event_sender),
         };
-        post_sse(
+        let _ = post_sse(
             &self.normalized_endpoint(),
             self.auth_headers()?,
             &body,

@@ -16,6 +16,21 @@ pub trait SseEventHandler: Send {
     async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SseTermination {
+    DoneSentinel,
+    Eof,
+}
+
+impl std::fmt::Display for SseTermination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DoneSentinel => f.write_str("[DONE]"),
+            Self::Eof => f.write_str("EOF"),
+        }
+    }
+}
+
 /// 发送 JSON POST 并解析 JSON 响应（非 2xx 返回 ApiError）
 pub async fn post_json(
     url: &str,
@@ -42,7 +57,7 @@ pub async fn post_sse<H: SseEventHandler>(
     mut headers: HeaderMap,
     body: &serde_json::Value,
     handler: &mut H,
-) -> Result<(), ProviderError> {
+) -> Result<SseTermination, ProviderError> {
     headers.insert(
         reqwest::header::ACCEPT,
         reqwest::header::HeaderValue::from_static("text/event-stream"),
@@ -74,7 +89,7 @@ async fn ensure_success(res: reqwest::Response) -> Result<reqwest::Response, Pro
 async fn consume_sse<H: SseEventHandler>(
     res: reqwest::Response,
     handler: &mut H,
-) -> Result<(), ProviderError> {
+) -> Result<SseTermination, ProviderError> {
     let mut stream = res.bytes_stream();
     let mut decoder = SseDecoder::new();
 
@@ -82,7 +97,7 @@ async fn consume_sse<H: SseEventHandler>(
         let chunk = chunk_res?;
         for ev in decoder.decode(&chunk) {
             if ev.data == "[DONE]" {
-                return Ok(());
+                return Ok(SseTermination::DoneSentinel);
             }
             dispatch_event(&ev.data, handler).await?;
         }
@@ -94,7 +109,7 @@ async fn consume_sse<H: SseEventHandler>(
         dispatch_event(&ev.data, handler).await?;
     }
 
-    Ok(())
+    Ok(SseTermination::Eof)
 }
 
 async fn dispatch_event<H: SseEventHandler>(

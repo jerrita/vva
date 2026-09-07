@@ -292,7 +292,7 @@ impl Provider for GeminiProvider {
         let body = self.build_request_body(session, tools, options)?;
 
         let mut handler = GeminiAccumulator::new(event_sender);
-        post_sse(
+        let _ = post_sse(
             &self.endpoint_url(&options.model, true),
             self.auth_headers()?,
             &body,
