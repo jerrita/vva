@@ -13,7 +13,8 @@ use crate::model::{
     Annotation, ContentPart, Role, ToolCall, ToolResult, WebSearchAction, WebSearchCall,
 };
 use crate::ui::app::{
-    App, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit, char_in_column_range,
+    App, ResponseHit, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit,
+    char_in_column_range,
 };
 use crate::ui::markdown::{LinkRegion, render_markdown, wrap_spans_to_lines};
 use crate::ui::text::truncate;
@@ -117,6 +118,37 @@ fn line_count(text: &str) -> usize {
     }
 }
 
+fn worked_duration(elapsed_ms: u64) -> String {
+    if elapsed_ms.is_multiple_of(1_000) {
+        format!("{}s", elapsed_ms / 1_000)
+    } else {
+        format!("{:.1}s", elapsed_ms as f64 / 1_000.0)
+    }
+}
+
+pub(crate) fn append_collapsed_response(
+    render: &mut ChatRender<'_>,
+    turn_id: &str,
+    elapsed_ms: u64,
+    state: &mut RenderState,
+) {
+    render.lines.push(Line::from(""));
+    let line_start = render.lines.len();
+    render.lines.push(Line::from(vec![Span::styled(
+        format!("> Worked {}", worked_duration(elapsed_ms)),
+        Style::default().fg(Color::Rgb(150, 150, 150)),
+    )]));
+    render.response_hits.push(ResponseHit {
+        id: turn_id.to_string(),
+        line_start,
+        line_end: render.lines.len(),
+        collapsed: true,
+        collapsible: true,
+    });
+    state.prev_reasoning = false;
+    state.prev_text = false;
+}
+
 fn glob_match_count(result: &ToolResult) -> Option<usize> {
     if result.is_error {
         return None;
@@ -209,6 +241,7 @@ pub(crate) struct ChatRender<'a> {
     pub hits: &'a mut Vec<ToolHit>,
     pub thought_expand: &'a HashMap<String, bool>,
     pub thought_hits: &'a mut Vec<ThoughtHit>,
+    pub response_hits: &'a mut Vec<ResponseHit>,
 }
 
 pub(crate) fn collect_tool_results(view: &SessionView) -> HashMap<String, &ToolResult> {
@@ -1522,6 +1555,7 @@ mod tests {
         let mut lines = Vec::new();
         let mut hits = Vec::new();
         let mut thought_hits = Vec::new();
+        let mut response_hits = Vec::new();
         let mut state = RenderState::default();
         append_parts(
             &mut ChatRender {
@@ -1534,6 +1568,7 @@ mod tests {
                 hits: &mut hits,
                 thought_expand: &HashMap::new(),
                 thought_hits: &mut thought_hits,
+                response_hits: &mut response_hits,
             },
             Role::Assistant,
             parts.iter(),
@@ -1701,6 +1736,7 @@ mod tests {
         let results = collect_tool_results(&app.view);
         let mut hits = Vec::new();
         let mut thought_hits = Vec::new();
+        let mut response_hits = Vec::new();
         for turn in &app.view.session.turns {
             append_parts(
                 &mut ChatRender {
@@ -1713,6 +1749,7 @@ mod tests {
                     hits: &mut hits,
                     thought_expand: &app.thought_expand,
                     thought_hits: &mut thought_hits,
+                    response_hits: &mut response_hits,
                 },
                 turn.role,
                 turn.messages.iter().flat_map(|m| &m.parts),
@@ -1730,6 +1767,7 @@ mod tests {
                 hits: &mut hits,
                 thought_expand: &app.thought_expand,
                 thought_hits: &mut thought_hits,
+                response_hits: &mut response_hits,
             },
             &app.view,
             &app.notices,
@@ -2591,6 +2629,7 @@ def stream_test():
         let thought_expand = HashMap::new();
         let mut hits = Vec::new();
         let mut thought_hits = Vec::new();
+        let mut response_hits = Vec::new();
         let mut render = ChatRender {
             lines: &mut lines,
             links: &mut links,
@@ -2601,6 +2640,7 @@ def stream_test():
             hits: &mut hits,
             thought_expand: &thought_expand,
             thought_hits: &mut thought_hits,
+            response_hits: &mut response_hits,
         };
         let mut state = RenderState::default();
 

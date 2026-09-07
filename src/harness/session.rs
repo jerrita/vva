@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 use super::agent::{AgentEngine, capability_notices, generate_title};
@@ -701,10 +701,12 @@ impl SessionTask {
             }
         }
         let tools = engine.tools.definitions();
+        let worked_started = Instant::now();
         loop {
             self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
+            let response_started = Instant::now();
             let context = self.view.session.clone();
             let (tx, mut rx) = mpsc::channel(64);
             let request =
@@ -729,6 +731,10 @@ impl SessionTask {
                 .collect();
             let mut turn = Turn::assistant_turn(response.messages);
             turn.usage = response.usage;
+            turn.elapsed_ms = Some(response_started.elapsed().as_millis() as u64);
+            turn.worked_ms = calls
+                .is_empty()
+                .then(|| worked_started.elapsed().as_millis() as u64);
             turn.meta = response.meta;
             self.view.draft.clear();
             self.append(turn).await?;

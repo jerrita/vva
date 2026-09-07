@@ -230,6 +230,247 @@ async fn test_cycle_variant_wraps_through_declared_order() {
 }
 
 #[tokio::test]
+async fn test_tool_right_click_before_request_completion() {
+    use crate::model::{ContentPart, Role, ToolCall, ToolResult};
+    use crate::ui::app::ToolExpand;
+
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    for (id, name, args, output, modes) in [
+        (
+            "shell",
+            "Shell",
+            r#"{"intent":"show status","command":"printf ready"}"#,
+            "ready",
+            vec![ToolExpand::Preview, ToolExpand::Hidden],
+        ),
+        (
+            "edit",
+            "Edit",
+            r#"{"path":"sample.txt","old_string":"before","new_string":"after"}"#,
+            "--- sample.txt\n+++ sample.txt\n@@ -1 +1 @@\n-before\n+after",
+            vec![ToolExpand::Hidden],
+        ),
+    ] {
+        app.add_part(
+            Role::Assistant,
+            ContentPart::ToolCall(ToolCall::new(id, name, args)),
+        );
+        app.add_part(
+            Role::Tool,
+            ContentPart::ToolResult(ToolResult::success(id, output)),
+        );
+        app.tool_expand.insert(id.into(), ToolExpand::Full);
+        for mode in modes {
+            app.refresh_chat_lines(80);
+            let hit = app
+                .chat_cache
+                .tool_hits
+                .iter()
+                .find(|hit| hit.id == id)
+                .unwrap();
+            assert!(hit.block_start < hit.block_end);
+            let line = hit.block_start;
+            assert!(!app.chat_cache.response_hit_at(line).unwrap().collapsible);
+            assert!(app.handle_response_right_click(line));
+            assert_eq!(app.tool_expand.get(id), Some(&mode));
+            assert!(app.response_expand.is_empty());
+        }
+    }
+    app.refresh_chat_lines(80);
+    assert!(
+        !app.chat
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("Worked"))
+    );
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
+async fn test_completed_nonfinal_responses_collapse_and_expand() {
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    let view = std::sync::Arc::make_mut(&mut app.view);
+    let session = std::sync::Arc::make_mut(&mut view.session);
+
+    let mut first =
+        crate::model::Turn::assistant_turn(vec![crate::model::Message::text("Earlier response")]);
+    first.elapsed_ms = Some(1_500);
+    session.append_turn(first);
+    let mut last =
+        crate::model::Turn::assistant_turn(vec![crate::model::Message::text("Latest response")]);
+    last.elapsed_ms = Some(500);
+    last.worked_ms = Some(2_000);
+    let response_id = last.id.clone();
+    session.append_turn(last);
+    view.revision += 1;
+
+    app.refresh_chat_lines(80);
+    let rendered = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("> Worked 2s"));
+    assert!(!rendered.contains("Earlier response"));
+    assert!(rendered.contains("Latest response"));
+
+    let line = app
+        .chat_cache
+        .response_hits
+        .iter()
+        .find(|hit| hit.id == response_id)
+        .unwrap()
+        .line_start;
+    assert!(app.handle_response_click(line));
+    app.refresh_chat_lines(80);
+    assert!(
+        app.chat
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("Earlier response"))
+    );
+
+    let line = app
+        .chat_cache
+        .response_hits
+        .iter()
+        .find(|hit| hit.id == response_id)
+        .unwrap()
+        .line_start;
+    assert!(app.handle_response_right_click(line));
+    app.refresh_chat_lines(80);
+    assert!(
+        app.chat
+            .lines
+            .iter()
+            .any(|line| line.to_string().contains("> Worked 2s"))
+    );
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
+async fn test_response_groups_keep_independent_state_across_prompts() {
+    use crate::model::{ContentPart, Message, Turn};
+
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    app.thinking_concise = false;
+    let mut response_ids = Vec::new();
+    for index in 0..2 {
+        let view = std::sync::Arc::make_mut(&mut app.view);
+        let session = std::sync::Arc::make_mut(&mut view.session);
+        session.append_turn(Turn::user_turn(Message::text(format!("Prompt {index}"))));
+        let mut response = Turn::assistant_turn(vec![Message::new(vec![
+            ContentPart::reasoning(format!("Work {index}"), None),
+            ContentPart::text(format!("Reply {index}")),
+        ])]);
+        response.worked_ms = Some(1_000);
+        response_ids.push(response.id.clone());
+        session.append_turn(response);
+        view.revision += 1;
+        app.refresh_chat_lines(80);
+    }
+    assert_eq!(app.chat_cache.response_hits.len(), 2);
+    assert!(app.chat_cache.response_hits.iter().all(|hit| hit.collapsed));
+
+    let line = app.chat_cache.response_hits[0].line_start;
+    assert!(app.handle_response_click(line));
+    app.refresh_chat_lines(80);
+
+    let view = std::sync::Arc::make_mut(&mut app.view);
+    std::sync::Arc::make_mut(&mut view.session)
+        .append_turn(Turn::user_turn(Message::text("Next prompt")));
+    view.revision += 1;
+    app.refresh_chat_lines(80);
+    let rendered = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Work 0"));
+    assert!(!rendered.contains("Work 1"));
+    assert!(rendered.contains("Reply 0"));
+    assert!(rendered.contains("Reply 1"));
+    let first = app
+        .chat_cache
+        .response_hits
+        .iter()
+        .find(|hit| hit.id == response_ids[0])
+        .unwrap();
+    assert!(first.collapsible);
+    assert!(!first.collapsed);
+    let line = first.line_start;
+    assert!(app.handle_response_right_click(line));
+    app.refresh_chat_lines(80);
+    assert!(app.chat_cache.response_hits.iter().all(|hit| hit.collapsed));
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
+async fn test_completed_single_turn_work_collapses_before_final_reply() {
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    app.thinking_concise = false;
+    let view = std::sync::Arc::make_mut(&mut app.view);
+    let session = std::sync::Arc::make_mut(&mut view.session);
+
+    let mut response = crate::model::Turn::assistant_turn(vec![crate::model::Message::new(vec![
+        crate::model::ContentPart::reasoning("Searching", None),
+        crate::model::ContentPart::WebSearchCall(crate::model::WebSearchCall::completed(
+            "search_1",
+            "release date",
+            Vec::new(),
+        )),
+        crate::model::ContentPart::reasoning("Reviewing results", None),
+        crate::model::ContentPart::text("Final reply"),
+    ])]);
+    response.elapsed_ms = Some(2_000);
+    response.worked_ms = Some(2_000);
+    session.append_turn(response);
+    view.revision += 1;
+
+    app.refresh_chat_lines(80);
+    let rendered = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("> Worked 2s"));
+    assert!(!rendered.contains("Searching"));
+    assert!(!rendered.contains("release date"));
+    assert!(!rendered.contains("Reviewing results"));
+    assert!(rendered.contains("Final reply"));
+
+    let line = app.chat_cache.response_hits[0].line_start;
+    assert!(app.handle_response_click(line));
+    app.refresh_chat_lines(80);
+    let rendered = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Searching"));
+    assert!(rendered.contains("release date"));
+    assert!(rendered.contains("Reviewing results"));
+    assert!(rendered.contains("Final reply"));
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
 async fn test_app_scroll_control_and_clamping() {
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;

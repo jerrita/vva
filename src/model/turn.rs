@@ -22,6 +22,12 @@ pub struct Turn {
     pub messages: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
+    /// 本次模型响应耗时，单位毫秒。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    /// 当前用户请求从开始到最终响应完成的总耗时，单位毫秒。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worked_ms: Option<u64>,
     #[serde(default)]
     pub meta: TurnMeta,
 }
@@ -33,6 +39,8 @@ impl Turn {
             role,
             messages,
             usage: None,
+            elapsed_ms: None,
+            worked_ms: None,
             meta: TurnMeta::default(),
         }
     }

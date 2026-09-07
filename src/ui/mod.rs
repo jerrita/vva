@@ -317,6 +317,7 @@ async fn handle_crossterm_event(
                 if let Some(line) = user_click
                     && !app.handle_tool_click(line)
                     && !app.handle_thought_click(line)
+                    && !app.handle_response_click(line)
                 {
                     app.open_message_action_at_line(line);
                 }
@@ -328,16 +329,18 @@ async fn handle_crossterm_event(
                 if app.modal.is_none() {
                     if app.chat.hit(mouse.column, mouse.row) {
                         let (row_offset, _) = app.chat.offsets(mouse.column, mouse.row);
-                        if app.handle_tool_right_click(app.chat_scroll() + row_offset) {
+                        if app.handle_response_right_click(app.chat_scroll() + row_offset) {
                             return;
                         }
                     }
-                    // 右键档位标签：循环切换推理档位；其余区域保持粘贴语义
+                    // 右键档位标签：循环切换推理档位。
                     if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
                         app.cycle_variant().await;
                         return;
                     }
-                    app.paste_from_clipboard();
+                    if rect_hit(app.input_inner_area, mouse.column, mouse.row) {
+                        app.paste_from_clipboard();
+                    }
                 }
             }
             _ => {}

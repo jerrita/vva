@@ -111,6 +111,22 @@ pub struct ThoughtHit {
     pub body_end: usize,
 }
 
+/// 助手响应在聊天行缓冲中的区间。
+#[derive(Debug, Clone)]
+pub struct ResponseHit {
+    pub id: String,
+    pub line_start: usize,
+    pub line_end: usize,
+    pub collapsed: bool,
+    pub collapsible: bool,
+}
+
+impl ResponseHit {
+    pub fn contains(&self, line: usize) -> bool {
+        line >= self.line_start && line < self.line_end
+    }
+}
+
 impl ThoughtHit {
     pub fn contains_header(&self, line: usize) -> bool {
         line >= self.header_start && line < self.header_end
@@ -128,14 +144,17 @@ pub struct ChatCache {
     revision: u64,
     width: usize,
     thinking_concise: bool,
+    responses_collapsed: bool,
     notices: usize,
     history_lines: usize,
     render_state: RenderState,
     tool_expand: HashMap<String, ToolExpand>,
     thought_expand: HashMap<String, bool>,
+    response_expand: HashMap<String, bool>,
     pub(crate) user_hits: Vec<UserMessageHit>,
     pub(crate) tool_hits: Vec<ToolHit>,
     pub(crate) thought_hits: Vec<ThoughtHit>,
+    pub(crate) response_hits: Vec<ResponseHit>,
 }
 
 impl ChatCache {
@@ -155,6 +174,10 @@ impl ChatCache {
             .iter()
             .find(|hit| hit.contains_header(line) || hit.contains_body(line))
     }
+
+    pub fn response_hit_at(&self, line: usize) -> Option<&ResponseHit> {
+        self.response_hits.iter().find(|hit| hit.contains(line))
+    }
 }
 
 impl super::App {
@@ -162,13 +185,16 @@ impl super::App {
     pub fn refresh_chat_lines(&mut self, width: usize) {
         let width = width.max(20);
         let results = collect_tool_results(&self.view);
+        let responses_collapsed = !self.active_session.is_running();
         let cache = &mut self.chat_cache;
         let session = Arc::downgrade(&self.view.session);
         if !cache.session.ptr_eq(&session)
             || cache.width != width
             || cache.thinking_concise != self.thinking_concise
+            || cache.responses_collapsed != responses_collapsed
             || cache.tool_expand != self.tool_expand
             || cache.thought_expand != self.thought_expand
+            || cache.response_expand != self.response_expand
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
@@ -177,10 +203,43 @@ impl super::App {
             cache.user_hits.clear();
             cache.tool_hits.clear();
             cache.thought_hits.clear();
-            for (turn_index, turn) in self.view.session.turns.iter().enumerate() {
-                let line_start = self.chat.lines.len();
-                append_parts(
-                    &mut ChatRender {
+            cache.response_hits.clear();
+            let turns = &self.view.session.turns;
+            let boundaries = std::iter::once(0)
+                .chain(turns.iter().enumerate().filter_map(|(index, turn)| {
+                    (index > 0
+                        && turn.role == crate::model::Role::User
+                        && !turn_is_system_reminder(turn))
+                    .then_some(index)
+                }))
+                .chain(std::iter::once(turns.len()))
+                .collect::<Vec<_>>();
+            for range in boundaries.windows(2) {
+                let response_turns = (range[0]..range[1])
+                    .filter(|&index| turns[index].role == crate::model::Role::Assistant)
+                    .collect::<Vec<_>>();
+                let last_assistant = response_turns.last().copied();
+                let first_collapsed_assistant = response_turns.first().copied();
+                let final_reply_start =
+                    last_assistant.and_then(|index| final_reply_start(&turns[index]));
+                let response_elapsed_ms = last_assistant.and_then(|index| turns[index].worked_ms);
+                let response_group_id = last_assistant.map(|index| turns[index].id.as_str());
+                let has_work =
+                    final_reply_start.is_some_and(|start| response_turns.len() > 1 || start > 0);
+                let collapse_response = (range[1] < turns.len() || responses_collapsed)
+                    && has_work
+                    && response_elapsed_ms.is_some()
+                    && response_group_id
+                        .is_some_and(|id| !self.response_expand.get(id).copied().unwrap_or(false));
+                for (turn_index, turn) in turns.iter().enumerate().take(range[1]).skip(range[0]) {
+                    let line_start = self.chat.lines.len();
+                    let is_response_turn = turn.role == crate::model::Role::Assistant
+                        && response_turns.contains(&turn_index);
+                    let is_summary = collapse_response
+                        && is_response_turn
+                        && Some(turn_index) == first_collapsed_assistant;
+                    let collapsible = is_response_turn && has_work && response_elapsed_ms.is_some();
+                    let mut render = ChatRender {
                         lines: &mut self.chat.lines,
                         links: &mut self.chat.links,
                         max_width: width,
@@ -190,25 +249,67 @@ impl super::App {
                         hits: &mut cache.tool_hits,
                         thought_expand: &self.thought_expand,
                         thought_hits: &mut cache.thought_hits,
-                    },
-                    turn.role,
-                    turn.messages.iter().flat_map(|m| &m.parts),
-                    &mut cache.render_state,
-                );
-                if turn.role == crate::model::Role::User && !turn_is_system_reminder(turn) {
-                    cache.user_hits.push(UserMessageHit {
-                        turn_index,
-                        line_start,
-                        line_end: self.chat.lines.len(),
-                    });
+                        response_hits: &mut cache.response_hits,
+                    };
+                    if is_summary {
+                        crate::ui::views::chat::append_collapsed_response(
+                            &mut render,
+                            response_group_id.expect("collapsed response has a final turn"),
+                            response_elapsed_ms.expect("collapsed response has elapsed time"),
+                            &mut cache.render_state,
+                        );
+                    }
+                    if !collapse_response || !is_response_turn {
+                        append_parts(
+                            &mut render,
+                            turn.role,
+                            turn.messages.iter().flat_map(|m| &m.parts),
+                            &mut cache.render_state,
+                        );
+                        if turn.role == crate::model::Role::Assistant {
+                            cache.response_hits.push(ResponseHit {
+                                id: response_group_id
+                                    .filter(|_| collapsible)
+                                    .unwrap_or(&turn.id)
+                                    .to_string(),
+                                line_start,
+                                line_end: self.chat.lines.len(),
+                                collapsed: false,
+                                collapsible,
+                            });
+                        }
+                    } else if Some(turn_index) == last_assistant {
+                        let parts = turn
+                            .messages
+                            .iter()
+                            .flat_map(|message| &message.parts)
+                            .collect::<Vec<_>>();
+                        append_parts(
+                            &mut render,
+                            turn.role,
+                            parts[final_reply_start.expect("completed response has final text")..]
+                                .iter()
+                                .copied(),
+                            &mut cache.render_state,
+                        );
+                    }
+                    if turn.role == crate::model::Role::User && !turn_is_system_reminder(turn) {
+                        cache.user_hits.push(UserMessageHit {
+                            turn_index,
+                            line_start,
+                            line_end: self.chat.lines.len(),
+                        });
+                    }
                 }
             }
             cache.history_lines = self.chat.lines.len();
             cache.session = session;
             cache.width = width;
             cache.thinking_concise = self.thinking_concise;
+            cache.responses_collapsed = responses_collapsed;
             cache.tool_expand.clone_from(&self.tool_expand);
             cache.thought_expand.clone_from(&self.thought_expand);
+            cache.response_expand.clone_from(&self.response_expand);
         } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
             return;
         }
@@ -233,6 +334,7 @@ impl super::App {
                 hits: &mut cache.tool_hits,
                 thought_expand: &self.thought_expand,
                 thought_hits: &mut cache.thought_hits,
+                response_hits: &mut cache.response_hits,
             },
             &self.view,
             &self.notices,
@@ -252,4 +354,17 @@ fn turn_is_system_reminder(turn: &crate::model::Turn) -> bool {
             _ => false,
         })
     })
+}
+
+fn final_reply_start(turn: &crate::model::Turn) -> Option<usize> {
+    let parts = turn.messages.iter().flat_map(|message| &message.parts);
+    let mut count = 0;
+    let mut start = 0;
+    for part in parts {
+        count += 1;
+        if !matches!(part, crate::model::ContentPart::Text { .. }) {
+            start = count;
+        }
+    }
+    (start < count).then_some(start)
 }

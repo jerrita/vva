@@ -24,6 +24,7 @@ impl App {
         self.clear_selections();
         self.chat.lines.clear();
         self.tool_expand.clear();
+        self.response_expand.clear();
         self.notices.clear();
         self.consumed_notices = 0;
         self.scroll_offset = 0;
@@ -285,6 +286,42 @@ impl App {
         } else {
             self.thought_expand.insert(id, !expanded);
         }
+        true
+    }
+
+    /// 单击收折的历史响应摘要，展开该响应。
+    pub fn handle_response_click(&mut self, line: usize) -> bool {
+        let Some(hit) = self.chat_cache.response_hit_at(line) else {
+            return false;
+        };
+        if !hit.collapsed {
+            return false;
+        }
+        self.response_expand.insert(hit.id.clone(), true);
+        true
+    }
+
+    /// 右击历史响应内的组件时优先收折组件；组件已无法继续收折时收折整个响应。
+    pub fn handle_response_right_click(&mut self, line: usize) -> bool {
+        if self.handle_tool_right_click(line) {
+            return true;
+        }
+        let Some(hit) = self.chat_cache.response_hit_at(line) else {
+            return false;
+        };
+        let (id, collapsed, collapsible) = (hit.id.clone(), hit.collapsed, hit.collapsible);
+        if !collapsible {
+            return false;
+        }
+        if collapsed {
+            return true;
+        }
+        if let Some(thought) = self.chat_cache.thought_hit_at(line)
+            && thought.contains_body(line)
+        {
+            return self.handle_thought_click(line);
+        }
+        self.response_expand.insert(id, false);
         true
     }
 
