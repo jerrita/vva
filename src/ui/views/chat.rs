@@ -329,6 +329,7 @@ fn push_tool_block(
         push_edit_detail(
             &mut body,
             &call.arguments,
+            result.map(|result| result.content.as_str()),
             max_width.saturating_sub(TOOL_BLOCK_CHROME),
             usize::MAX,
         );
@@ -436,12 +437,27 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
 }
 
 enum EditRow<'a> {
-    Context(&'a str),
-    Delete(&'a str),
-    Insert(&'a str),
+    Context {
+        old_line: usize,
+        new_line: usize,
+        text: &'a str,
+    },
+    Delete {
+        old_line: usize,
+        text: &'a str,
+    },
+    Insert {
+        new_line: usize,
+        text: &'a str,
+    },
 }
 
-fn edit_rows<'a>(old: &'a str, new: &'a str) -> Vec<EditRow<'a>> {
+fn edit_rows<'a>(
+    old: &'a str,
+    new: &'a str,
+    old_start: usize,
+    new_start: usize,
+) -> Vec<EditRow<'a>> {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
     let mut lcs = vec![vec![0; new_lines.len() + 1]; old_lines.len() + 1];
@@ -457,38 +473,82 @@ fn edit_rows<'a>(old: &'a str, new: &'a str) -> Vec<EditRow<'a>> {
 
     let mut rows = Vec::new();
     let (mut i, mut j) = (0, 0);
+    let (mut old_line, mut new_line) = (old_start, new_start);
     while i < old_lines.len() || j < new_lines.len() {
         if i < old_lines.len() && j < new_lines.len() && old_lines[i] == new_lines[j] {
-            rows.push(EditRow::Context(old_lines[i]));
+            rows.push(EditRow::Context {
+                old_line,
+                new_line,
+                text: old_lines[i],
+            });
             i += 1;
             j += 1;
+            old_line += 1;
+            new_line += 1;
         } else if i < old_lines.len() && (j == new_lines.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
-            rows.push(EditRow::Delete(old_lines[i]));
+            rows.push(EditRow::Delete {
+                old_line,
+                text: old_lines[i],
+            });
             i += 1;
+            old_line += 1;
         } else {
-            rows.push(EditRow::Insert(new_lines[j]));
+            rows.push(EditRow::Insert {
+                new_line,
+                text: new_lines[j],
+            });
             j += 1;
+            new_line += 1;
         }
     }
     rows
 }
 
-fn edit_side_lines(
+/// 单个 diff 行单元格：行号 + 标记 + 文本 + 样式
+struct EditCell<'a> {
+    line_number: Option<usize>,
     marker: &'static str,
-    text: &str,
-    marker_style: Style,
+    text: &'a str,
+    style: Style,
     background: Option<Color>,
+}
+
+impl<'a> EditCell<'a> {
+    fn new(line_number: usize, marker: &'static str, text: &'a str, style: Style) -> Self {
+        Self {
+            line_number: Some(line_number),
+            marker,
+            text,
+            style,
+            background: None,
+        }
+    }
+
+    fn with_background(mut self, background: Color) -> Self {
+        self.background = Some(background);
+        self
+    }
+}
+
+fn edit_side_lines(
+    cell: EditCell<'_>,
     width: usize,
     initial_indent: &str,
     cont_indent: &str,
 ) -> Vec<Line<'static>> {
-    let spans = vec![
-        Span::styled(marker, marker_style),
-        Span::raw(text.to_string()),
-    ];
+    let background = cell.background;
+    let mut spans = Vec::new();
+    if let Some(line_number) = cell.line_number {
+        spans.push(Span::styled(
+            format!("{line_number:>4} "),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    spans.push(Span::styled(cell.marker, cell.style));
+    spans.push(Span::raw(cell.text.to_string()));
     let mut lines = wrap_spans_to_lines(&spans, width, initial_indent, cont_indent);
     for line in &mut lines {
-        if let Some(background) = background {
+        if let Some(background) = cell.background {
             for span in &mut line.spans {
                 span.style = span.style.bg(background);
             }
@@ -508,69 +568,67 @@ fn edit_side_lines(
     lines
 }
 
-fn push_edit_row(
+fn push_edit_unified(
     lines: &mut Vec<Line<'static>>,
-    marker: &'static str,
-    text: &str,
-    marker_style: Style,
-    background: Option<Color>,
+    old: &str,
+    new: &str,
+    old_start: usize,
+    new_start: usize,
     max_width: usize,
 ) {
-    lines.extend(edit_side_lines(
-        marker,
-        text,
-        marker_style,
-        background,
-        max_width,
-        "   ",
-        "     ",
-    ));
-}
-
-fn push_edit_unified(lines: &mut Vec<Line<'static>>, old: &str, new: &str, max_width: usize) {
-    for row in edit_rows(old, new) {
+    for row in edit_rows(old, new, old_start, new_start) {
         match row {
-            EditRow::Context(text) => {
-                push_edit_row(lines, "  ", text, Style::default(), None, max_width)
-            }
-            EditRow::Delete(text) => push_edit_row(
+            EditRow::Context { old_line, text, .. } => push_edit_numbered_row(
                 lines,
-                "- ",
-                text,
-                EDIT_DELETE,
-                Some(EDIT_DELETE_BG),
+                EditCell::new(old_line, "  ", text, Style::default()),
                 max_width,
             ),
-            EditRow::Insert(text) => push_edit_row(
+            EditRow::Delete { old_line, text } => push_edit_numbered_row(
                 lines,
-                "+ ",
-                text,
-                EDIT_INSERT,
-                Some(EDIT_INSERT_BG),
+                EditCell::new(old_line, "- ", text, EDIT_DELETE).with_background(EDIT_DELETE_BG),
+                max_width,
+            ),
+            EditRow::Insert { new_line, text } => push_edit_numbered_row(
+                lines,
+                EditCell::new(new_line, "+ ", text, EDIT_INSERT).with_background(EDIT_INSERT_BG),
                 max_width,
             ),
         }
     }
 }
 
-fn push_edit_column_pair(
+fn push_edit_numbered_row(lines: &mut Vec<Line<'static>>, cell: EditCell<'_>, max_width: usize) {
+    lines.extend(edit_side_lines(cell, max_width, "   ", "     "));
+}
+
+fn push_edit_column_pair<'a>(
     lines: &mut Vec<Line<'static>>,
-    left: Option<(&str, &'static str, Style, Color)>,
-    right: Option<(&str, &'static str, Style, Color)>,
+    left: Option<EditCell<'a>>,
+    right: Option<EditCell<'a>>,
     left_w: usize,
     right_w: usize,
 ) {
+    let blank = |width: usize| {
+        edit_side_lines(
+            EditCell {
+                line_number: None,
+                marker: "  ",
+                text: "",
+                style: Style::default(),
+                background: None,
+            },
+            width,
+            "",
+            "",
+        )
+    };
     let left_lines = match left {
-        Some((text, marker, style, background)) => {
-            edit_side_lines(marker, text, style, Some(background), left_w, "", "")
-        }
-        None => edit_side_lines("  ", "", Style::default(), None, left_w, "", ""),
+        Some(cell) => edit_side_lines(cell, left_w, "", ""),
+        None => blank(left_w),
     };
     let right_lines = match right {
-        Some((text, marker, style, background)) => {
-            edit_side_lines(marker, text, style, Some(background), right_w, "", "")
-        }
-        None => edit_side_lines("  ", "", Style::default(), None, right_w, "", ""),
+        Some(cell) => edit_side_lines(cell, right_w, "", ""),
+        None => blank(right_w),
     };
     let row_count = left_lines.len().max(right_lines.len());
     for i in 0..row_count {
@@ -592,10 +650,10 @@ fn push_edit_column_pair(
     }
 }
 
-fn push_edit_change_block(
+fn push_edit_change_block<'a>(
     lines: &mut Vec<Line<'static>>,
-    deleted: &mut Vec<&str>,
-    inserted: &mut Vec<&str>,
+    deleted: &mut Vec<(usize, &'a str)>,
+    inserted: &mut Vec<(usize, &'a str)>,
     left_w: usize,
     right_w: usize,
 ) {
@@ -603,12 +661,12 @@ fn push_edit_change_block(
     for i in 0..rows {
         push_edit_column_pair(
             lines,
-            deleted
-                .get(i)
-                .map(|text| (*text, "- ", EDIT_DELETE, EDIT_DELETE_BG)),
-            inserted
-                .get(i)
-                .map(|text| (*text, "+ ", EDIT_INSERT, EDIT_INSERT_BG)),
+            deleted.get(i).map(|(line, text)| {
+                EditCell::new(*line, "- ", text, EDIT_DELETE).with_background(EDIT_DELETE_BG)
+            }),
+            inserted.get(i).map(|(line, text)| {
+                EditCell::new(*line, "+ ", text, EDIT_INSERT).with_background(EDIT_INSERT_BG)
+            }),
             left_w,
             right_w,
         );
@@ -617,45 +675,68 @@ fn push_edit_change_block(
     inserted.clear();
 }
 
-fn push_edit_columns(lines: &mut Vec<Line<'static>>, old: &str, new: &str, max_width: usize) {
+fn push_edit_columns<'a>(
+    lines: &mut Vec<Line<'static>>,
+    old: &'a str,
+    new: &'a str,
+    old_start: usize,
+    new_start: usize,
+    max_width: usize,
+) {
     let available = max_width.saturating_sub(EDIT_INDENT + EDIT_SEP_WIDTH);
     let left_w = available / 2;
     let right_w = available - left_w;
-    let mut deleted = Vec::new();
-    let mut inserted = Vec::new();
+    let mut deleted: Vec<(usize, &'a str)> = Vec::new();
+    let mut inserted: Vec<(usize, &'a str)> = Vec::new();
 
-    for row in edit_rows(old, new) {
+    for row in edit_rows(old, new, old_start, new_start) {
         match row {
-            EditRow::Context(text) => {
+            EditRow::Context {
+                old_line,
+                new_line,
+                text,
+            } => {
                 push_edit_change_block(lines, &mut deleted, &mut inserted, left_w, right_w);
-                let left = edit_side_lines("  ", text, Style::default(), None, left_w, "", "");
-                let right = edit_side_lines("  ", text, Style::default(), None, right_w, "", "");
-                let row_count = left.len().max(right.len());
-                for i in 0..row_count {
-                    let mut spans = vec![Span::raw(" ".repeat(EDIT_INDENT))];
-                    spans.extend(
-                        left.get(i)
-                            .map(|line| line.spans.clone())
-                            .unwrap_or_else(|| vec![Span::raw(" ".repeat(left_w))]),
-                    );
-                    spans.push(Span::styled(" │ ", EDIT_SEP));
-                    spans.extend(
-                        right
-                            .get(i)
-                            .map(|line| line.spans.clone())
-                            .unwrap_or_else(|| vec![Span::raw(" ".repeat(right_w))]),
-                    );
-                    lines.push(Line::from(spans));
-                }
+                push_edit_column_pair(
+                    lines,
+                    Some(EditCell::new(old_line, "  ", text, Style::default())),
+                    Some(EditCell::new(new_line, "  ", text, Style::default())),
+                    left_w,
+                    right_w,
+                );
             }
-            EditRow::Delete(text) => deleted.push(text),
-            EditRow::Insert(text) => inserted.push(text),
+            EditRow::Delete { old_line, text } => deleted.push((old_line, text)),
+            EditRow::Insert { new_line, text } => inserted.push((new_line, text)),
         }
     }
     push_edit_change_block(lines, &mut deleted, &mut inserted, left_w, right_w);
 }
 
-fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: usize, cap: usize) {
+fn edit_hunk_starts(diff: Option<&str>) -> Option<(usize, usize)> {
+    let header = diff?.lines().find(|line| line.starts_with("@@ -"))?;
+    let mut ranges = header.split_whitespace();
+    ranges.next()?;
+    let old = ranges.next()?.strip_prefix('-')?;
+    let new = ranges.next()?.strip_prefix('+')?;
+    Some((
+        old.split_once(',')
+            .map_or(old, |(start, _)| start)
+            .parse()
+            .ok()?,
+        new.split_once(',')
+            .map_or(new, |(start, _)| start)
+            .parse()
+            .ok()?,
+    ))
+}
+
+fn push_edit_detail(
+    lines: &mut Vec<Line<'static>>,
+    arguments: &str,
+    result: Option<&str>,
+    max_width: usize,
+    cap: usize,
+) {
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return;
     };
@@ -666,11 +747,12 @@ fn push_edit_detail(lines: &mut Vec<Line<'static>>, arguments: &str, max_width: 
         return;
     };
 
+    let (old_start, new_start) = edit_hunk_starts(result).unwrap_or((1, 1));
     let start = lines.len();
     if max_width >= EDIT_INDENT + EDIT_SEP_WIDTH + EDIT_MIN_COL * 2 {
-        push_edit_columns(lines, old, new, max_width);
+        push_edit_columns(lines, old, new, old_start, new_start, max_width);
     } else {
-        push_edit_unified(lines, old, new, max_width);
+        push_edit_unified(lines, old, new, old_start, new_start, max_width);
     }
 
     let produced = lines.len() - start;
@@ -1329,12 +1411,13 @@ mod tests {
         push_edit_detail(
             &mut lines,
             r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
+            None,
             40,
             20,
         );
         let text = joined(&lines);
-        assert!(text.contains("- old"));
-        assert!(text.contains("+ new"));
+        assert!(text.contains("   1 - old"));
+        assert!(text.contains("   1 + new"));
         assert!(!text.contains("│"));
     }
 
@@ -1344,12 +1427,13 @@ mod tests {
         push_edit_detail(
             &mut lines,
             r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
+            None,
             80,
             20,
         );
         let text = joined(&lines);
-        assert!(text.contains("- old"));
-        assert!(text.contains("+ new"));
+        assert!(text.contains("   1 - old"));
+        assert!(text.contains("   1 + new"));
         assert!(text.contains("│"));
     }
 
@@ -1359,6 +1443,7 @@ mod tests {
         push_edit_detail(
             &mut lines,
             r#"{"path":"a.rs","old_string":"same\nold","new_string":"same\nnew"}"#,
+            None,
             40,
             20,
         );
@@ -1369,11 +1454,11 @@ mod tests {
             .unwrap();
         let deleted = lines
             .iter()
-            .find(|line| line.to_string().contains("- old"))
+            .find(|line| line.to_string().contains("   2 - old"))
             .unwrap();
         let inserted = lines
             .iter()
-            .find(|line| line.to_string().contains("+ new"))
+            .find(|line| line.to_string().contains("   2 + new"))
             .unwrap();
 
         assert!(context.spans.iter().all(|span| span.style.bg.is_none()));
@@ -1389,6 +1474,23 @@ mod tests {
                 .iter()
                 .all(|span| span.style.bg == Some(EDIT_INSERT_BG))
         );
+    }
+
+    #[test]
+    fn edit_detail_uses_hunk_line_numbers() {
+        let mut lines = Vec::new();
+        push_edit_detail(
+            &mut lines,
+            r#"{"path":"a.rs","old_string":"same\nold","new_string":"same\nnew"}"#,
+            Some("--- a.rs\n+++ a.rs\n@@ -308,2 +308,2 @@\n same\n-old\n+new"),
+            80,
+            20,
+        );
+
+        let text = joined(&lines);
+        assert!(text.contains(" 308   same"));
+        assert!(text.contains(" 309 - old"));
+        assert!(text.contains(" 309 + new"));
     }
 
     fn render_tools(

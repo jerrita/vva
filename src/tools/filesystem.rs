@@ -69,6 +69,57 @@ fn matches_glob(pattern: &Pattern, path: &Path) -> bool {
     pattern.matches_path_with(path, GLOB_OPTIONS)
 }
 
+fn unified_diff(path: &Path, original: &str, updated: &str) -> String {
+    let original_lines: Vec<_> = original.lines().collect();
+    let updated_lines: Vec<_> = updated.lines().collect();
+
+    let prefix = original_lines
+        .iter()
+        .zip(&updated_lines)
+        .take_while(|(original, updated)| original == updated)
+        .count();
+    let suffix = original_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(updated_lines[prefix..].iter().rev())
+        .take_while(|(original, updated)| original == updated)
+        .count();
+    let original_changed_end = original_lines.len() - suffix;
+    let updated_changed_end = updated_lines.len() - suffix;
+    let context_start = prefix.saturating_sub(3);
+    let original_end = (original_changed_end + 3).min(original_lines.len());
+    let updated_end = (updated_changed_end + 3).min(updated_lines.len());
+    let original_count = original_end - context_start;
+    let updated_count = updated_end - context_start;
+
+    let format_range = |start: usize, count: usize| match count {
+        0 => format!("{start},0"),
+        1 => (start + 1).to_string(),
+        _ => format!("{},{}", start + 1, count),
+    };
+
+    let mut diff = format!(
+        "--- {}\n+++ {}\n@@ -{} +{} @@",
+        path.display(),
+        path.display(),
+        format_range(context_start, original_count),
+        format_range(context_start, updated_count),
+    );
+    for line in &original_lines[context_start..prefix] {
+        diff.push_str(&format!("\n {line}"));
+    }
+    for line in &original_lines[prefix..original_changed_end] {
+        diff.push_str(&format!("\n-{line}"));
+    }
+    for line in &updated_lines[prefix..updated_changed_end] {
+        diff.push_str(&format!("\n+{line}"));
+    }
+    for line in &original_lines[original_changed_end..original_end] {
+        diff.push_str(&format!("\n {line}"));
+    }
+    diff
+}
+
 pub struct ReadTool {
     working_dir: PathBuf,
 }
@@ -102,7 +153,7 @@ impl Tool for ReadTool {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Path to the file" },
+                "path": { "type": "string", "format": "path", "description": "Path to the file" },
                 "offset": { "type": "integer", "description": "Optional 1-indexed first line" },
                 "limit": { "type": "integer", "description": "Optional maximum number of lines" }
             },
@@ -154,6 +205,7 @@ struct EditArgs {
     path: String,
     old_string: String,
     new_string: String,
+    replace_all: Option<bool>,
 }
 
 #[async_trait]
@@ -163,16 +215,17 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace one unique exact string in an existing file."
+        "Replace exact text in an existing file, optionally replacing every occurrence."
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Path to the file" },
-                "old_string": { "type": "string", "description": "Exact text to replace; it must occur once" },
-                "new_string": { "type": "string", "description": "Replacement text" }
+                "path": { "type": "string", "format": "path", "description": "Path to the file" },
+                "old_string": { "type": "string", "description": "Exact text to replace" },
+                "new_string": { "type": "string", "description": "Replacement text" },
+                "replace_all": { "type": "boolean", "description": "Replace every exact occurrence instead of requiring one match" }
             },
             "required": ["path", "old_string", "new_string"]
         })
@@ -184,23 +237,31 @@ impl Tool for EditTool {
         if args.old_string.is_empty() {
             return Err("old_string must not be empty".to_string());
         }
+        if args.old_string == args.new_string {
+            return Err("old_string and new_string must differ".to_string());
+        }
 
         let path = resolve_path(&self.working_dir, &args.path);
         let content = fs::read_to_string(&path)
             .map_err(|error| format!("Failed to read file {}: {error}", path.display()))?;
         let matches = content.match_indices(&args.old_string).count();
-        if matches != 1 {
+        if matches == 0 {
+            return Err("old_string was not found".to_string());
+        }
+        if !args.replace_all.unwrap_or(false) && matches != 1 {
             return Err(format!(
-                "old_string must occur exactly once, found {matches}"
+                "old_string must occur exactly once, found {matches}; use replace_all to replace every occurrence"
             ));
         }
 
-        fs::write(
-            &path,
-            content.replacen(&args.old_string, &args.new_string, 1),
-        )
-        .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
-        Ok(format!("Updated {}", path.display()))
+        let updated = if args.replace_all.unwrap_or(false) {
+            content.replace(&args.old_string, &args.new_string)
+        } else {
+            content.replacen(&args.old_string, &args.new_string, 1)
+        };
+        fs::write(&path, &updated)
+            .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
+        Ok(unified_diff(&path, &content, &updated))
     }
 }
 
@@ -237,7 +298,7 @@ impl Tool for GlobTool {
             "type": "object",
             "properties": {
                 "pattern": { "type": "string", "description": "Glob pattern, including ** for recursive matches" },
-                "path": { "type": "string", "description": "Optional directory to search" }
+                "path": { "type": "string", "format": "path", "description": "Optional directory to search" }
             },
             "required": ["pattern"]
         })
@@ -306,7 +367,7 @@ impl Tool for GrepTool {
             "type": "object",
             "properties": {
                 "pattern": { "type": "string", "description": "Regular expression to search for" },
-                "path": { "type": "string", "description": "Optional directory to search" },
+                "path": { "type": "string", "format": "path", "description": "Optional directory to search" },
                 "include": { "type": "string", "description": "Optional glob restricting searched files" }
             },
             "required": ["pattern"]
@@ -374,16 +435,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_requires_one_exact_match() {
+    async fn edit_returns_unified_diff() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file.txt"), "one\nbefore\nthree\n").unwrap();
+
+        let tool = EditTool::new(&root);
+        let result = tool
+            .execute(r#"{"path":"file.txt","old_string":"before","new_string":"after"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(root.join("file.txt")).unwrap(),
+            "one\nafter\nthree\n"
+        );
+        assert_eq!(
+            result,
+            format!(
+                "--- {0}\n+++ {0}\n@@ -1,3 +1,3 @@\n one\n-before\n+after\n three",
+                root.join("file.txt").display()
+            )
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn edit_replaces_all_when_requested() {
+        let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("file.txt"), "before before").unwrap();
+
+        let tool = EditTool::new(&root);
+        tool.execute(
+            r#"{"path":"file.txt","old_string":"before","new_string":"after","replace_all":true}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("file.txt")).unwrap(),
+            "after after"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn edit_rejects_unchanged_content() {
         let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("file.txt"), "before").unwrap();
 
         let tool = EditTool::new(&root);
-        tool.execute(r#"{"path":"file.txt","old_string":"before","new_string":"after"}"#)
+        let error = tool
+            .execute(r#"{"path":"file.txt","old_string":"before","new_string":"before"}"#)
             .await
-            .unwrap();
-        assert_eq!(fs::read_to_string(root.join("file.txt")).unwrap(), "after");
+            .unwrap_err();
+        assert_eq!(error, "old_string and new_string must differ");
 
         fs::remove_dir_all(root).unwrap();
     }

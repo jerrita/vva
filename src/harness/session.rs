@@ -736,11 +736,13 @@ impl SessionTask {
                 return Ok(true);
             }
             for call in &calls {
-                self.event(AgentEvent::ToolExecuting {
-                    name: call.name.clone(),
-                    args: call.arguments.clone(),
-                })
-                .await;
+                if engine.tools.validate_call(call).is_ok() {
+                    self.event(AgentEvent::ToolExecuting {
+                        name: call.name.clone(),
+                        args: call.arguments.clone(),
+                    })
+                    .await;
+                }
             }
             let tools = engine.tools.clone();
             let mut set = tokio::task::JoinSet::new();
