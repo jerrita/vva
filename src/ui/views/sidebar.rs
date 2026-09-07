@@ -51,7 +51,7 @@ fn format_context_limit(value: u64) -> String {
 /// 上下文窗口占用：(context_limit, 占用比例 0.0-1.0, 百分比)
 fn context_usage(stats: &crate::ui::history::SidebarStats) -> (u64, f64, u16) {
     let context_limit = stats.context_limit.unwrap_or(200_000);
-    let ratio = (stats.total_tokens as f64 / context_limit as f64).clamp(0.0, 1.0);
+    let ratio = (stats.context_tokens as f64 / context_limit as f64).clamp(0.0, 1.0);
     (context_limit, ratio, (ratio * 100.0) as u16)
 }
 
@@ -121,10 +121,10 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         Style::default().fg(Color::Magenta),
     );
     lines[10] = label_value(
-        "Tokens",
+        "Context",
         format!(
             "{}/{} ({}%)",
-            format_number(app.stats.total_tokens),
+            format_number(app.stats.context_tokens),
             format_context_limit(context_limit),
             percent
         ),

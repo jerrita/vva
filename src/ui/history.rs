@@ -8,6 +8,7 @@ pub struct SidebarStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub total_tokens: u64,
+    pub context_tokens: u64,
     pub context_limit: Option<u64>,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
@@ -20,6 +21,7 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
     let mut prompt_tok = 0u64;
     let mut comp_tok = 0u64;
     let mut tot_tok = 0u64;
+    let mut context_tok = 0u64;
     let mut cache_read = 0u64;
     let mut cache_write = 0u64;
 
@@ -28,14 +30,13 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
             prompt_tok += usage.prompt_tokens as u64;
             comp_tok += usage.completion_tokens as u64;
             tot_tok += usage.total_tokens as u64;
+            cache_read += usage.cached_tokens.unwrap_or_default() as u64;
+            context_tok = usage.total_tokens as u64;
         }
-        if let Some(anthropic) = &turn.meta.anthropic {
-            if let Some(r) = anthropic.cache_read_input_tokens {
-                cache_read += r as u64;
-            }
-            if let Some(w) = anthropic.cache_creation_input_tokens {
-                cache_write += w as u64;
-            }
+        if let Some(anthropic) = &turn.meta.anthropic
+            && let Some(w) = anthropic.cache_creation_input_tokens
+        {
+            cache_write += w as u64;
         }
     }
 
@@ -66,6 +67,7 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
         prompt_tokens: prompt_tok,
         completion_tokens: comp_tok,
         total_tokens: tot_tok,
+        context_tokens: context_tok,
         context_limit,
         cache_read_tokens: cache_read,
         cache_write_tokens: cache_write,
@@ -92,7 +94,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             total_tokens: 150,
-            cached_tokens: None,
+            cached_tokens: Some(80),
             reasoning_tokens: None,
         });
         session.turns.push(turn);
@@ -101,7 +103,35 @@ mod tests {
         assert_eq!(stats.prompt_tokens, 100);
         assert_eq!(stats.completion_tokens, 50);
         assert_eq!(stats.total_tokens, 150);
+        assert_eq!(stats.context_tokens, 150);
+        assert_eq!(stats.cache_read_tokens, 80);
         assert_eq!(stats.total_turns, 1);
         assert_eq!(stats.estimated_cost_usd, 0.0);
+    }
+
+    #[test]
+    fn context_uses_the_latest_response() {
+        let mut session = Session::with_model(
+            std::path::PathBuf::from("/ws"),
+            None,
+            "model_a",
+            None,
+            false,
+        );
+        for total_tokens in [150, 300] {
+            let mut turn = Turn::assistant_turn(vec![]);
+            turn.usage = Some(TokenUsage {
+                prompt_tokens: total_tokens - 50,
+                completion_tokens: 50,
+                total_tokens,
+                cached_tokens: None,
+                reasoning_tokens: None,
+            });
+            session.turns.push(turn);
+        }
+
+        let stats = compute_stats(&session, &AppConfig::default());
+        assert_eq!(stats.total_tokens, 450);
+        assert_eq!(stats.context_tokens, 300);
     }
 }
