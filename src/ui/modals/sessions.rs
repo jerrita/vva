@@ -20,6 +20,8 @@ pub struct SessionsModalState {
     pub query: String,
     /// 当前工程在全部会话中的数量（渲染 Tab 计数用，避免每帧重复统计）
     pub current_project_count: usize,
+    /// 等待二次确认删除的会话 ID；确认期间锁定列表交互。
+    pending_delete: Option<String>,
     current_workspace: PathBuf,
     /// 构造时缓存一次的规范化工作空间路径
     canonical_current: Option<PathBuf>,
@@ -34,6 +36,7 @@ impl SessionsModalState {
             scope: ProjectScope::CurrentProject,
             query: String::new(),
             current_project_count: 0,
+            pending_delete: None,
             current_workspace: current_workspace.to_path_buf(),
             canonical_current: current_workspace.canonicalize().ok(),
         };
@@ -104,6 +107,25 @@ impl SessionsModalState {
 
     pub fn selected_session(&self) -> Option<&SessionSummary> {
         self.filtered_sessions.get(self.selected_index)
+    }
+
+    pub fn request_delete(&mut self) {
+        self.pending_delete = self.selected_session().map(|session| session.id.clone());
+    }
+
+    pub fn cancel_delete(&mut self) {
+        self.pending_delete = None;
+    }
+
+    pub fn pending_delete(&self) -> Option<&str> {
+        self.pending_delete.as_deref()
+    }
+
+    /// 从完整列表移除已删除的会话，并重新应用当前作用域与筛选条件。
+    pub fn remove_session(&mut self, session_id: &str) {
+        self.all_sessions.retain(|session| session.id != session_id);
+        self.pending_delete = None;
+        self.apply_filter();
     }
 }
 
@@ -197,5 +219,34 @@ mod tests {
         modal.toggle_scope();
         assert_eq!(modal.scope, ProjectScope::CurrentProject);
         assert_eq!(modal.filtered_sessions.len(), 2);
+    }
+
+    #[test]
+    fn remove_session_updates_all_and_filtered_lists() {
+        let workspace = PathBuf::from("/home/user/project");
+        let sessions = ["sess_1", "sess_2"]
+            .into_iter()
+            .map(|id| SessionSummary {
+                id: id.into(),
+                title: None,
+                workspace_root: workspace.clone(),
+                created_at: Utc::now(),
+                turn_count: 0,
+                current_model: "model".into(),
+                current_variant: None,
+                web_search: false,
+            })
+            .collect();
+        let mut modal = SessionsModalState::new(sessions, &workspace);
+
+        modal.next();
+        modal.request_delete();
+        assert_eq!(modal.pending_delete(), Some("sess_2"));
+        modal.remove_session("sess_2");
+
+        assert_eq!(modal.all_sessions.len(), 1);
+        assert_eq!(modal.filtered_sessions.len(), 1);
+        assert_eq!(modal.selected_session().unwrap().id, "sess_1");
+        assert_eq!(modal.pending_delete(), None);
     }
 }

@@ -56,6 +56,34 @@ async fn test_clear_deletes_current_session_and_creates_new_one() {
 }
 
 #[tokio::test]
+async fn test_new_creates_session_and_keeps_current_one() {
+    let mut ta = create_test_app("init_model", Some("high"), None, true).await;
+    let app = &mut ta.app;
+    let previous_id = app.active_session.id.clone();
+
+    app.set_input("/new");
+    app.submit_input().await;
+
+    assert_ne!(app.active_session.id, previous_id);
+    assert!(app.view.session.turns.is_empty());
+    assert!(app.active_session.snapshot().session.web_search);
+    assert_eq!(
+        app.active_session
+            .snapshot()
+            .session
+            .current_variant
+            .as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        app.session_mgr.get_or_load(&previous_id).await.unwrap().id,
+        previous_id
+    );
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}
+
+#[tokio::test]
 async fn test_slash_command_variant_execution() {
     let config_str = r#"{
         "providers": {

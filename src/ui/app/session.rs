@@ -37,6 +37,22 @@ impl App {
         Ok(())
     }
 
+    /// 用当前会话的配置创建并接管一个空会话。
+    pub async fn new_session(&mut self) -> Result<(), String> {
+        let session = self.view.session.clone();
+        let handle = self
+            .session_mgr
+            .create_session(
+                session.current_model.clone(),
+                session.current_variant.clone(),
+                None,
+                session.web_search,
+            )
+            .await?;
+        self.attach_session(handle);
+        Ok(())
+    }
+
     pub async fn open_sessions_modal(&mut self) {
         match self.session_mgr.store().list_sessions().await {
             Ok(sessions) => {

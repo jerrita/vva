@@ -97,6 +97,11 @@ impl App {
             "/sessions" | "/session" => {
                 self.open_sessions_modal().await;
             }
+            "/new" => {
+                if let Err(error) = self.new_session().await {
+                    self.notices.push(error);
+                }
+            }
             "/model" | "/m" => {
                 if arg.is_empty() {
                     self.open_models_modal().await;
@@ -128,23 +133,12 @@ impl App {
                 self.toggle_thinking_display();
             }
             "/clear" | "/c" => {
-                let session = self.view.session.clone();
                 if let Err(error) = self.session_mgr.delete_session(&self.active_session).await {
                     self.notices.push(error);
                     return;
                 }
-                match self
-                    .session_mgr
-                    .create_session(
-                        session.current_model.clone(),
-                        session.current_variant.clone(),
-                        None,
-                        session.web_search,
-                    )
-                    .await
-                {
-                    Ok(session) => self.attach_session(session),
-                    Err(error) => self.notices.push(error),
+                if let Err(error) = self.new_session().await {
+                    self.notices.push(error);
                 }
             }
             "/help" | "/h" | "/?" => {

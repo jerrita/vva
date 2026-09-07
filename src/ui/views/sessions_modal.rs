@@ -47,17 +47,27 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
         ),
     ]);
 
-    let list_area = render_modal_shell(
-        frame,
-        area,
-        ModalShellSpec {
-            title,
-            accent: Color::Cyan,
-            width: 86,
-            height: 20,
-            header_height: 3,
-        },
-        vec![tabs_line, filter_line(&state.query, Color::Cyan)],
+    let confirming_delete = state.pending_delete();
+    let mut header_lines = vec![tabs_line];
+    let footer = if let Some(session_id) = confirming_delete {
+        header_lines.push(Line::from(vec![
+            Span::styled("  Delete ", Style::default().fg(Color::Red)),
+            Span::styled(
+                truncate(session_id, 24),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("? This cannot be undone.", Style::default().fg(Color::Red)),
+        ]));
+        footer_hints(&[
+            (
+                " [Enter/d] ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                "Confirm Delete  ",
+            ),
+            (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
+        ])
+    } else {
+        header_lines.push(filter_line(&state.query, Color::Cyan));
         footer_hints(&[
             (
                 " [↑/↓/j/k] ",
@@ -76,9 +86,28 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
                     .add_modifier(Modifier::BOLD),
                 "Resume Session  ",
             ),
+            (
+                " [d] ",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                "Delete  ",
+            ),
             (" [type] ", Style::default().fg(Color::Cyan), "Filter  "),
             (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
-        ]),
+        ])
+    };
+
+    let list_area = render_modal_shell(
+        frame,
+        area,
+        ModalShellSpec {
+            title,
+            accent: Color::Cyan,
+            width: 86,
+            height: 20,
+            header_height: 3,
+        },
+        header_lines,
+        footer,
     );
 
     // 表头

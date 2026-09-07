@@ -118,6 +118,7 @@ pub enum ActiveModal {
 pub(crate) enum ModalAction {
     None,
     SwitchSession(String),
+    DeleteSession(String),
     SwitchModel(String),
     SwitchVariant(Option<String>),
     OpenModels,
@@ -165,6 +166,18 @@ impl ActiveModal {
                 None => ModalAction::None,
             },
             Self::None | Self::Help => ModalAction::None,
+        }
+    }
+
+    pub(crate) fn delete_selected(&self) -> ModalAction {
+        match self {
+            Self::Sessions(state) => state
+                .pending_delete()
+                .map(|session_id| ModalAction::DeleteSession(session_id.to_string()))
+                .unwrap_or(ModalAction::None),
+            Self::None | Self::Models(_) | Self::Variants(_) | Self::Config(_) | Self::Help => {
+                ModalAction::None
+            }
         }
     }
 

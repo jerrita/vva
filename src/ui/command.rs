@@ -17,6 +17,12 @@ pub static COMMANDS: &[SlashCommand] = &[
         example: "/sessions",
     },
     SlashCommand {
+        name: "/new",
+        aliases: &[],
+        description: "Start a new session with the current configuration",
+        example: "/new",
+    },
+    SlashCommand {
         name: "/model",
         aliases: &["/m"],
         description: "Select model interactively or switch (/model <id>)",
@@ -118,6 +124,10 @@ mod tests {
         let sess_matches = match_commands("/session");
         assert_eq!(sess_matches.len(), 1);
         assert_eq!(sess_matches[0].name, "/sessions");
+
+        let new_matches = match_commands("/new");
+        assert_eq!(new_matches.len(), 1);
+        assert_eq!(new_matches[0].name, "/new");
 
         let q_matches = match_commands("/q");
         assert_eq!(q_matches.len(), 1);

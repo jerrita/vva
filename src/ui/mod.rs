@@ -523,6 +523,9 @@ async fn handle_crossterm_event(
 
 /// 弹窗列表左键点击：命中条目则选中，再次点击已选中条目即确认
 async fn handle_modal_click(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    if matches!(&app.modal, ActiveModal::Sessions(state) if state.pending_delete().is_some()) {
+        return;
+    }
     let (items_len, selected) = match app.modal.as_filterable_mut() {
         Some(modal) => (modal.filtered_len(), *modal.selected_index_mut()),
         None => return,
@@ -553,9 +556,27 @@ async fn handle_modal_key(app: &mut App, code: KeyCode) {
             }
             return;
         }
+        ActiveModal::Sessions(state) if state.pending_delete().is_some() => match code {
+            KeyCode::Esc => {
+                state.cancel_delete();
+                return;
+            }
+            KeyCode::Enter | KeyCode::Char('d') => {
+                let action = app.modal.delete_selected();
+                apply_modal_action(app, action).await;
+                return;
+            }
+            _ => return,
+        },
         // 会话弹窗：Tab / p 切换工程范围
         ActiveModal::Sessions(state) if matches!(code, KeyCode::Tab | KeyCode::Char('p')) => {
             state.toggle_scope();
+            return;
+        }
+        ActiveModal::Sessions(_) if matches!(code, KeyCode::Char('d')) => {
+            if let ActiveModal::Sessions(state) = &mut app.modal {
+                state.request_delete();
+            }
             return;
         }
         // 设置弹窗：空格与 Enter 同为激活键
@@ -580,6 +601,28 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
             app.modal = ActiveModal::None;
             if let Err(error) = app.switch_to_session(&id).await {
                 app.notices.push(error);
+            }
+        }
+        ModalAction::DeleteSession(id) => {
+            if id == app.active_session.id {
+                app.modal = ActiveModal::None;
+                if let Err(error) = app.session_mgr.delete_session(&app.active_session).await {
+                    app.notices.push(error);
+                } else if let Err(error) = app.new_session().await {
+                    app.notices.push(error);
+                }
+            } else {
+                match app.session_mgr.get_or_load(&id).await {
+                    Ok(session) => match app.session_mgr.delete_session(&session).await {
+                        Ok(()) => {
+                            if let ActiveModal::Sessions(state) = &mut app.modal {
+                                state.remove_session(&id);
+                            }
+                        }
+                        Err(error) => app.notices.push(error),
+                    },
+                    Err(error) => app.notices.push(error),
+                }
             }
         }
         ModalAction::SwitchModel(spec) => {
