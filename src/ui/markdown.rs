@@ -641,6 +641,10 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
             }
 
             Event::Code(code) => {
+                if in_table {
+                    current_cell.push_str(&code);
+                    continue;
+                }
                 let code_style = Style::default()
                     .fg(Color::Rgb(240, 195, 110))
                     .bg(Color::Rgb(40, 44, 52));
@@ -1022,6 +1026,20 @@ fn test() {
             .collect();
         assert!(text.contains("自动折行"));
         assert!(text.contains("English words"));
+    }
+
+    #[test]
+    fn table_keeps_inline_code_in_cells() {
+        let md = "| Tool | Path | Return |\n\
+                  | --- | --- | --- |\n\
+                  | `edit` | `path: string` | `{ files, replacements }` |";
+        let (lines, _) = render_markdown(md, 80);
+        let rows: Vec<String> = lines.iter().map(Line::to_string).collect();
+
+        assert!(rows.iter().any(|row| {
+            row.contains("edit") && row.contains("path: string") && row.contains("files")
+        }));
+        assert!(!rows.iter().any(|row| row.contains('`')));
     }
 
     #[test]
