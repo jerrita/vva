@@ -156,9 +156,16 @@ pub(crate) fn append_parts<'a>(
                     let (mut body, mut body_links) = render_markdown(content, max_width);
                     for link in &mut body_links {
                         link.line += lines.len();
+                        link.columns.start = link.columns.start.saturating_sub(1);
+                        link.columns.end = link.columns.end.saturating_sub(1);
                     }
                     links.extend(body_links);
                     for line in &mut body {
+                        if let Some(span) = line.spans.first_mut()
+                            && span.content.starts_with(' ')
+                        {
+                            span.content.to_mut().remove(0);
+                        }
                         for span in &mut line.spans {
                             span.style = span.style.patch(body_style);
                         }
@@ -865,7 +872,7 @@ mod tests {
             .iter()
             .find(|l| l.to_string().contains("Collecting"))
             .unwrap();
-        assert_eq!(first_body.to_string(), "   Collecting example sources");
+        assert_eq!(first_body.to_string(), "  Collecting example sources");
 
         // markdown 标记被渲染掉，加粗修饰保留，两段分行
         let all_text: String = lines
