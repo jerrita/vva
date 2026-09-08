@@ -660,7 +660,9 @@ fn project_web_search_call(
                 .collect(),
         ),
         ResponseWebSearchAction::OpenPage { url } => (
-            WebSearchAction::OpenPage { url: url.clone() },
+            WebSearchAction::OpenPage {
+                url: url.clone().unwrap_or_default(),
+            },
             String::new(),
             Vec::new(),
         ),
@@ -1475,6 +1477,54 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(final_response.messages[0].parts, streamed);
+    }
+
+    #[tokio::test]
+    async fn test_open_page_url_optional_per_spec() {
+        let provider = ResponseProvider::new("test-key");
+        for action in [
+            serde_json::json!({"type": "open_page"}),
+            serde_json::json!({"type": "open_page", "url": null}),
+        ] {
+            let item = serde_json::json!({
+                "type": "web_search_call",
+                "id": "ws_open",
+                "status": "completed",
+                "action": action,
+            });
+            let encoded = serde_json::to_value(
+                &serde_json::from_value::<ResponseOutputItem>(item.clone()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(encoded["action"], serde_json::json!({"type": "open_page"}));
+
+            let parsed = provider
+                .parse_response(serde_json::json!({
+                    "id": "resp_1", "status": "completed", "output": [item.clone()],
+                }))
+                .unwrap();
+            let ContentPart::WebSearchCall(call) = &parsed.messages[0].parts[0] else {
+                panic!("expected open_page");
+            };
+            assert_eq!(
+                call.action,
+                WebSearchAction::OpenPage { url: String::new() }
+            );
+
+            let (tx, mut rx) = mpsc::channel(4);
+            let mut handler = ResponseStreamHandler::new(&provider, Some(tx));
+            handler
+                .on_event(serde_json::json!({
+                    "type": "response.output_item.done",
+                    "item": item
+                }))
+                .await
+                .unwrap();
+            let AgentEvent::WebSearchCall(streamed) = rx.try_recv().unwrap() else {
+                panic!("expected search event");
+            };
+            assert_eq!(streamed.action, call.action);
+        }
     }
 
     #[tokio::test]

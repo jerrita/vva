@@ -125,7 +125,8 @@ pub enum ResponseWebSearchAction {
         sources: Vec<ResponseWebSearchSource>,
     },
     OpenPage {
-        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
     },
     FindInPage {
         url: String,
