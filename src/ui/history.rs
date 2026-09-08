@@ -55,12 +55,30 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
     }
 
     let mut estimated_cost = 0.0;
-    if let Some(cost) = cost_cfg {
-        let in_cost = (prompt_tok as f64) * (cost.input / 1_000_000.0);
-        let out_cost = (comp_tok as f64) * (cost.output / 1_000_000.0);
-        let read_cost = (cache_read as f64) * (cost.cache_read.unwrap_or(0.0) / 1_000_000.0);
-        let write_cost = (cache_write as f64) * (cost.cache_write.unwrap_or(0.0) / 1_000_000.0);
-        estimated_cost = in_cost + out_cost + read_cost + write_cost;
+    if let Some(cost) = &cost_cfg {
+        for turn in &session.turns {
+            let Some(usage) = &turn.usage else { continue };
+            let cache_read_turn = usage.cached_tokens.unwrap_or_default() as u64;
+            let cache_write_turn = turn
+                .meta
+                .anthropic
+                .as_ref()
+                .and_then(|a| a.cache_creation_input_tokens)
+                .unwrap_or(0) as u64;
+            let prompt = usage.prompt_tokens as u64;
+            let (billed_input, context_tokens) = if turn.meta.anthropic.is_some() {
+                (prompt, prompt + cache_read_turn + cache_write_turn)
+            } else {
+                (prompt.saturating_sub(cache_read_turn), prompt)
+            };
+            estimated_cost += cost.estimate_usd(
+                billed_input,
+                usage.completion_tokens as u64,
+                cache_read_turn,
+                cache_write_turn,
+                context_tokens,
+            );
+        }
     }
 
     SidebarStats {
@@ -79,7 +97,75 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TokenUsage, Turn};
+    use crate::config::model::{ContextOver200kCost, ModelConfig, ProviderConfig};
+    use crate::model::{AnthropicTurnMeta, TokenUsage, Turn, TurnMeta};
+    use std::collections::HashMap;
+
+    fn cost_app_config() -> AppConfig {
+        let mut config = AppConfig::default();
+        let mut models = HashMap::new();
+        models.insert(
+            "m".into(),
+            ModelConfig {
+                name: "M".into(),
+                cost: Some(ModelCostConfig {
+                    input: 2.0,
+                    output: 6.0,
+                    cache_read: Some(0.5),
+                    cache_write: Some(3.75),
+                    context_over_200k: Some(ContextOver200kCost {
+                        input: 4.0,
+                        output: 12.0,
+                        cache_read: Some(1.0),
+                        cache_write: Some(7.5),
+                    }),
+                }),
+                ..Default::default()
+            },
+        );
+        config.providers.insert(
+            "p".into(),
+            ProviderConfig {
+                models,
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    fn session_with_usage(
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        cached_tokens: Option<u32>,
+        anthropic: Option<AnthropicTurnMeta>,
+    ) -> Session {
+        let mut session =
+            Session::with_model(std::path::PathBuf::from("/ws"), None, "p/m", None, false);
+        let mut turn = Turn::assistant_turn(vec![]);
+        turn.usage = Some(TokenUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            cached_tokens,
+            reasoning_tokens: None,
+        });
+        if let Some(anthropic) = anthropic {
+            turn.meta = TurnMeta {
+                anthropic: Some(anthropic),
+                ..Default::default()
+            };
+        }
+        session.turns.push(turn);
+        session
+    }
+
+    fn assert_cost_eq(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "cost {actual} != {expected}"
+        );
+    }
+
     #[test]
     fn test_compute_stats_calculation() {
         let mut session = Session::with_model(
@@ -133,5 +219,35 @@ mod tests {
         let stats = compute_stats(&session, &AppConfig::default());
         assert_eq!(stats.total_tokens, 450);
         assert_eq!(stats.context_tokens, 300);
+    }
+
+    #[test]
+    fn responses_cost_excludes_cached_from_input() {
+        let session = session_with_usage(100, 50, Some(80), None);
+        let stats = compute_stats(&session, &cost_app_config());
+        assert_cost_eq(stats.estimated_cost_usd, 0.00038);
+    }
+
+    #[test]
+    fn anthropic_cost_keeps_input_separate_from_cache() {
+        let session = session_with_usage(
+            100,
+            50,
+            Some(80),
+            Some(AnthropicTurnMeta {
+                cache_creation_input_tokens: Some(20),
+                cache_read_input_tokens: Some(80),
+                stop_reason: None,
+            }),
+        );
+        let stats = compute_stats(&session, &cost_app_config());
+        assert_cost_eq(stats.estimated_cost_usd, 0.000615);
+    }
+
+    #[test]
+    fn over_200k_uses_tiered_rates_per_turn() {
+        let session = session_with_usage(250_000, 1_000, Some(200_000), None);
+        let stats = compute_stats(&session, &cost_app_config());
+        assert_cost_eq(stats.estimated_cost_usd, 0.412);
     }
 }

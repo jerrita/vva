@@ -216,6 +216,40 @@ pub struct ModelCostConfig {
     pub context_over_200k: Option<ContextOver200kCost>,
 }
 
+impl ModelCostConfig {
+    pub fn estimate_usd(
+        &self,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read: u64,
+        cache_write: u64,
+        context_tokens: u64,
+    ) -> f64 {
+        let (input, output, cache_read_rate, cache_write_rate) = if context_tokens > 200_000
+            && let Some(over) = &self.context_over_200k
+        {
+            (
+                over.input,
+                over.output,
+                over.cache_read.or(self.cache_read).unwrap_or(0.0),
+                over.cache_write.or(self.cache_write).unwrap_or(0.0),
+            )
+        } else {
+            (
+                self.input,
+                self.output,
+                self.cache_read.unwrap_or(0.0),
+                self.cache_write.unwrap_or(0.0),
+            )
+        };
+        const PER_MILLION: f64 = 1_000_000.0;
+        (input_tokens as f64) * (input / PER_MILLION)
+            + (output_tokens as f64) * (output / PER_MILLION)
+            + (cache_read as f64) * (cache_read_rate / PER_MILLION)
+            + (cache_write as f64) * (cache_write_rate / PER_MILLION)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextOver200kCost {
     pub input: f64,
