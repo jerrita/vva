@@ -40,6 +40,7 @@ pub(crate) struct RenderState {
     prev_text: bool,
     thought_groups: usize,
     thought_expanded: bool,
+    thought_inline: bool,
 }
 
 /// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
@@ -847,6 +848,62 @@ fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
     }
 }
 
+const THOUGHT_INLINE_PREFIX: &str = "Thought: ";
+
+fn thought_is_single_line(content: &str) -> bool {
+    content.lines().count() <= 1
+}
+
+fn strip_all_leading_spaces(line: &mut Line<'static>) {
+    while let Some(content) = line.spans.first().map(|span| span.content.as_ref()) {
+        let trimmed = content.trim_start_matches(' ');
+        if trimmed.is_empty() {
+            line.spans.remove(0);
+            continue;
+        }
+        if trimmed.len() != content.len() {
+            line.spans[0].content = trimmed.to_string().into();
+        }
+        break;
+    }
+}
+
+fn push_inline_thought(
+    render: &mut ChatRender<'_>,
+    content: &str,
+    prefix_style: Style,
+    body_style: Style,
+) {
+    let prefix_w = THOUGHT_INLINE_PREFIX.width();
+    let md_width = render.max_width.saturating_sub(prefix_w);
+    let (mut body, mut body_links) = render_markdown(content, md_width);
+    for line in &mut body {
+        strip_all_leading_spaces(line);
+        for span in &mut line.spans {
+            span.style = span.style.patch(body_style);
+        }
+    }
+    if body.is_empty() {
+        body.push(Line::from(vec![Span::styled("Thought:", prefix_style)]));
+    } else {
+        let first = &mut body[0];
+        let mut spans = vec![Span::styled("Thought:", prefix_style), Span::raw(" ")];
+        spans.append(&mut first.spans);
+        first.spans = spans;
+        for line in &mut body[1..] {
+            line.spans.insert(0, Span::raw(" ".repeat(prefix_w)));
+        }
+    }
+    let line_offset = render.lines.len();
+    for link in &mut body_links {
+        link.line += line_offset;
+        link.columns.start = link.columns.start.saturating_sub(3) + prefix_w;
+        link.columns.end = link.columns.end.saturating_sub(3) + prefix_w;
+    }
+    render.links.extend(body_links);
+    render.lines.extend(body);
+}
+
 /// 轮次内统一汇总引用；思考分组状态延续到下一轮或草稿。
 pub(crate) fn append_parts<'a>(
     render: &mut ChatRender<'_>,
@@ -919,6 +976,11 @@ pub(crate) fn append_parts<'a>(
                         .get(&format!("thought-{}", state.thought_groups))
                         .copied()
                         .unwrap_or(!thinking_concise);
+                    state.thought_inline = thought_is_single_line(content);
+                    if state.thought_inline {
+                        push_inline_thought(render, content, prefix_style, body_style);
+                        continue;
+                    }
                     let marker = if state.thought_expanded {
                         "- Thought"
                     } else {
@@ -935,6 +997,9 @@ pub(crate) fn append_parts<'a>(
                         body_start: header_start + 1,
                         body_end: header_start + 1,
                     });
+                }
+                if state.thought_inline {
+                    continue;
                 }
                 if state.thought_expanded {
                     let (mut body, mut body_links) = render_markdown(content, max_width);
@@ -1994,13 +2059,21 @@ mod tests {
             .filter(|(_, l)| l.spans.first().is_some_and(|s| s.content == "- Thought"))
             .map(|(i, _)| i)
             .collect();
-        assert_eq!(header_idx.len(), 2);
+        assert_eq!(header_idx.len(), 1);
+        let inline_idx = lines
+            .iter()
+            .position(|l| l.spans.first().is_some_and(|s| s.content == "Thought:"))
+            .expect("single-line thought rendered inline");
+        assert_eq!(
+            lines[inline_idx].to_string(),
+            "Thought: Cross-checking sources"
+        );
         // 搜索块出现在两组思考之间，来源行左侧为注脚补齐的网页标题、域名右对齐至可用宽度
         let search_idx = lines
             .iter()
             .position(|l| l.spans.iter().any(|s| s.content == "web_search"))
             .expect("web search block rendered");
-        assert!(search_idx > header_idx[0] && search_idx < header_idx[1]);
+        assert!(search_idx > header_idx[0] && search_idx < inline_idx);
         let source_row = &lines[search_idx + 1];
         assert!(
             source_row
@@ -2023,20 +2096,49 @@ mod tests {
         assert!(!all_text.contains("candidate"));
         assert!(!all_text.contains("Sources / Citations"));
 
-        // concise 模式：搜索块两侧的思考各自合并为单行标记，段落内容隐藏
+        // concise 模式：多段思考折叠为单行标记；单行思考保持 Thought: 正文
         app.thinking_concise = true;
         let lines = build_chat_lines(&app, 80);
         let headers = lines
             .iter()
             .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
             .count();
-        assert_eq!(headers, 2);
+        assert_eq!(headers, 1);
         let all_text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
             .collect();
         assert!(!all_text.contains("Collecting example sources"));
+        assert!(all_text.contains("Thought:"));
+        assert!(all_text.contains("Cross-checking sources"));
         assert!(!all_text.contains("**"));
+    }
+
+    #[tokio::test]
+    async fn test_single_line_thought_renders_inline() {
+        let mut app = create_test_app().await;
+        app.add_part(
+            Role::Assistant,
+            ContentPart::reasoning("Researching ARM Granular Data Isolation", None),
+        );
+        for concise in [false, true] {
+            app.thinking_concise = concise;
+            let lines = build_chat_lines(&app, 80);
+            let thought = lines
+                .iter()
+                .find(|l| l.spans.first().is_some_and(|s| s.content == "Thought:"))
+                .expect("inline thought line");
+            assert_eq!(
+                thought.to_string(),
+                "Thought: Researching ARM Granular Data Isolation"
+            );
+            let markers = lines.iter().any(|l| {
+                l.spans
+                    .first()
+                    .is_some_and(|s| s.content == "- Thought" || s.content == "+ Thought")
+            });
+            assert!(!markers);
+        }
     }
 
     #[tokio::test]
@@ -2044,12 +2146,12 @@ mod tests {
         let mut app = create_test_app().await;
         app.add_part(
             Role::Assistant,
-            ContentPart::reasoning("First group body", None),
+            ContentPart::reasoning("First group body\n\nMore detail", None),
         );
         app.add_part(Role::Assistant, ContentPart::text("Middle answer"));
         app.add_part(
             Role::Assistant,
-            ContentPart::reasoning("Second group body", None),
+            ContentPart::reasoning("Second group body\n\nMore detail", None),
         );
 
         app.refresh_chat_lines(80);
