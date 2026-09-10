@@ -127,11 +127,20 @@ fn inline_or_spill(
     std::fs::write(&path, &content)
         .map_err(|error| format!("Failed to save tool output {}: {error}", path.display()))?;
     let kind = if is_error { "Error output" } else { "Output" };
-    Ok(format!(
+    let notice = format!(
         "{kind} too large ({} bytes; limit {MAX_INLINE_OUTPUT_BYTES}). Full output saved to {}. Use Read or Grep on that path.",
         content.len(),
         path.display()
-    ))
+    );
+    if tool == "Shell" {
+        let mut end = MAX_INLINE_OUTPUT_BYTES;
+        while !content.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(format!("{}\n\n{notice}", &content[..end]))
+    } else {
+        Ok(notice)
+    }
 }
 
 fn validate_arguments(arguments: &str, schema: &Value) -> Result<(), String> {

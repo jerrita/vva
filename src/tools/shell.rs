@@ -87,14 +87,14 @@ impl Tool for ShellTool {
 #[cfg(windows)]
 fn shell_description() -> &'static str {
     r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with non-interactive PowerShell (-NoProfile -NonInteractive), starting at the workspace root each time; shell state does not persist between calls.
-Provide a nonempty intent describing the purpose. Use PowerShell syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
+Provide a nonempty intent describing the purpose. Use PowerShell syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.
 Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
 }
 
 #[cfg(not(windows))]
 fn shell_description() -> &'static str {
     r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with bash -c, starting at the workspace root each time; shell state does not persist between calls.
-Provide a nonempty intent describing the purpose. Use bash syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
+Provide a nonempty intent describing the purpose. Use bash syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.
 Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
 }
 
