@@ -558,6 +558,7 @@ impl SessionTask {
                 .config
                 .resolve_model(target, selected.as_deref())
                 .map_err(|e| e.to_string())?;
+            resolved.input_capabilities().validate_session(&session)?;
             session.set_model(resolved.full_spec, selected);
             AppState::persist_selection(
                 &self.state_path,
@@ -812,7 +813,22 @@ impl SessionTask {
                 return Ok(false);
             };
             let mut on_demand_agents = Vec::new();
-            for (call, result) in calls.into_iter().zip(results) {
+            for (call, mut result) in calls.into_iter().zip(results) {
+                // Configure can run while tools are reading; validate before committing their media.
+                if !result.attachments.is_empty() {
+                    let inputs = self
+                        .config
+                        .resolve_model(&self.view.session.current_model, None)
+                        .map_err(|error| error.to_string())?
+                        .input_capabilities();
+                    if let Some(error) = result
+                        .attachments
+                        .iter()
+                        .find_map(|media| inputs.require(media.kind, &media.mime_type).err())
+                    {
+                        result = crate::model::ToolResult::error(&call.id, error);
+                    }
+                }
                 self.event(AgentEvent::ToolFinished {
                     name: call.name.clone(),
                     result: result.content.clone(),
@@ -994,6 +1010,161 @@ mod tests {
             text_parts: HashMap::new(),
         };
         (task, view_rx)
+    }
+
+    #[tokio::test]
+    async fn model_switch_checks_persisted_media_before_mutating_state() {
+        let (mut task, _) = event_task();
+        let root = task.view.session.workspace_root.clone();
+        task.config = Arc::new(serde_json::from_value(serde_json::json!({
+            "providers": {"test": {"models": {
+                "vision": {"name": "Vision", "modalities": {"input": ["text", "image"]}},
+                "text": {"name": "Text", "modalities": {"input": ["text"]}},
+                "other": {"name": "Other", "type": "anthropic", "modalities": {"input": ["text", "image"]}}
+            }}}
+        })).unwrap());
+        let session = Arc::make_mut(&mut task.view.session);
+        session.set_model("test/vision", None);
+        session.turns = crate::provider::common::media_tool_session().turns;
+        task.store.save_header(&task.view.session).await.unwrap();
+        task.view.session = Arc::new(
+            task.store
+                .load_session(&task.view.session.id)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        task.view.persisted = true;
+        let before = task.view.session.clone();
+        let revision = task.view.revision;
+        let error = task
+            .configure(Some("test/text".into()), None, None)
+            .await
+            .unwrap_err();
+        assert!(error.contains("does not support image input"));
+        assert_eq!(task.view.revision, revision);
+        assert_eq!(task.view.session.current_model, "test/vision");
+        assert!(!task.state_path.exists());
+        assert_eq!(
+            task.store
+                .load_session(&before.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_model,
+            "test/vision"
+        );
+        task.configure(Some("test/other".into()), None, None)
+            .await
+            .unwrap();
+        assert_eq!(task.view.session.current_model, "test/other");
+        assert_eq!(task.view.session.turns, before.turns);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    struct BarrierTool(tokio::sync::Barrier);
+
+    #[async_trait::async_trait]
+    impl crate::tools::Tool for BarrierTool {
+        fn name(&self) -> &str {
+            "Barrier"
+        }
+        fn description(&self) -> &str {
+            "Concurrency test"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {"label": {"type": "string"}}})
+        }
+        async fn execute(&self, arguments: &str) -> Result<String, String> {
+            self.0.wait().await;
+            Ok(arguments.into())
+        }
+    }
+
+    struct ParallelProvider(std::sync::atomic::AtomicBool);
+
+    #[async_trait::async_trait]
+    impl crate::provider::Provider for ParallelProvider {
+        fn name(&self) -> &str {
+            "parallel-test"
+        }
+        fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+            Default::default()
+        }
+        async fn complete(
+            &self,
+            _: &Session,
+            _: &[crate::model::ToolDefinition],
+            _: &crate::provider::CompletionOptions,
+        ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
+            let messages = if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                vec![Message::text("done")]
+            } else {
+                vec![Message::new(
+                    ["first", "second"]
+                        .iter()
+                        .map(|label| {
+                            ContentPart::ToolCall(crate::model::ToolCall::new(
+                                *label,
+                                "Barrier",
+                                serde_json::json!({"label": label}).to_string(),
+                            ))
+                        })
+                        .collect(),
+                )]
+            };
+            Ok(crate::provider::ProviderResponse {
+                messages,
+                usage: None,
+                meta: Default::default(),
+            })
+        }
+        async fn complete_stream(
+            &self,
+            session: &Session,
+            tools: &[crate::model::ToolDefinition],
+            options: &crate::provider::CompletionOptions,
+            _: Option<mpsc::Sender<AgentEvent>>,
+        ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
+            self.complete(session, tools, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_tool_calls_run_concurrently_and_preserve_order() {
+        let (mut task, _) = event_task();
+        let root = task.view.session.workspace_root.clone();
+        task.store.save_header(&task.view.session).await.unwrap();
+        let mut tools = crate::tools::ToolRegistry::new();
+        tools.register(Arc::new(BarrierTool(tokio::sync::Barrier::new(2))));
+        let engine = AgentEngine {
+            provider: Arc::new(ParallelProvider(std::sync::atomic::AtomicBool::new(false))),
+            tools,
+            options: crate::provider::CompletionOptions {
+                enable_web_search: false,
+                ..Default::default()
+            },
+        };
+        let (_tx, mut rx) = mpsc::channel(1);
+        let finished = tokio::time::timeout(Duration::from_secs(2), task.execute(engine, &mut rx))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(finished);
+        let ids: Vec<_> = task
+            .view
+            .session
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.messages)
+            .flat_map(|msg| &msg.parts)
+            .filter_map(|part| match part {
+                ContentPart::ToolResult(result) => Some(result.tool_call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["first", "second"]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]

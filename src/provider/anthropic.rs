@@ -160,7 +160,7 @@ impl AnthropicProvider {
                             let mut block = serde_json::json!({
                                 "type": "tool_result",
                                 "tool_use_id": res.tool_call_id,
-                                "content": res.content,
+                                "content": tool_output(res)?,
                                 "is_error": res.is_error,
                             });
                             if should_cache {
@@ -595,11 +595,52 @@ impl SseEventHandler for AnthropicStreamHandler {
     }
 }
 
+fn tool_output(result: &crate::model::ToolResult) -> Result<serde_json::Value, ProviderError> {
+    if result.attachments.is_empty() {
+        return Ok(serde_json::json!(result.content));
+    }
+    let mut content = vec![serde_json::json!({"type": "text", "text": result.content})];
+    for media in &result.attachments {
+        crate::config::ProviderType::Anthropic
+            .require_media(media.kind, &media.mime_type)
+            .map_err(ProviderError::Protocol)?;
+        let kind = match media.kind {
+            crate::model::MediaKind::Image => "image",
+            crate::model::MediaKind::Pdf => "document",
+            _ => unreachable!("validated media kind"),
+        };
+        content.push(serde_json::json!({
+            "type": kind,
+            "source": {"type": "base64", "media_type": media.mime_type, "data": media.data},
+        }));
+    }
+    Ok(serde_json::json!(content))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn media_tool_results_use_native_content_blocks() {
+        let session = super::super::common::media_tool_session();
+        let body = AnthropicProvider::new("test")
+            .build_request_body(&session, &[], &CompletionOptions::default())
+            .unwrap();
+        let output = &body["messages"][1]["content"][0];
+        assert_eq!(output["tool_use_id"], "read_media");
+        assert_eq!(output["content"][0]["type"], "text");
+        assert_eq!(output["content"][1]["type"], "image");
+        assert_eq!(output["content"][1]["source"]["media_type"], "image/png");
+        assert!(
+            output["content"][1]["source"]["data"]
+                .as_str()
+                .unwrap()
+                .starts_with("iVBOR")
+        );
+    }
 
     #[test]
     fn test_anthropic_thinking_signature_and_caching_roundtrip() {
@@ -698,6 +739,7 @@ mod tests {
         session.append_turn(Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult {
+                attachments: Vec::new(),
                 tool_call_id: "call_1".into(),
                 content: "file contents".into(),
                 is_error: false,
@@ -706,6 +748,7 @@ mod tests {
         session.append_turn(Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult {
+                attachments: Vec::new(),
                 tool_call_id: "call_2".into(),
                 content: "command output".into(),
                 is_error: false,

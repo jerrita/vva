@@ -138,13 +138,15 @@ impl ResponseProvider {
                                         "text": text,
                                     }));
                                 }
-                                ContentPart::Image {
-                                    source: crate::model::MediaSource::Url { url },
-                                    ..
-                                } => {
+                                ContentPart::Image { source, .. } => {
+                                    let url = match source {
+                                        crate::model::MediaSource::Url { url } => url.clone(),
+                                        crate::model::MediaSource::Base64 { data, mime_type } => {
+                                            format!("data:{mime_type};base64,{data}")
+                                        }
+                                    };
                                     content_arr.push(serde_json::json!({
-                                        "type": "input_image",
-                                        "image_url": url,
+                                        "type": "input_image", "image_url": url,
                                     }));
                                 }
                                 _ => {}
@@ -209,7 +211,7 @@ impl ResponseProvider {
                                 input_items.push(serde_json::json!({
                                     "type": "function_call_output",
                                     "call_id": res.tool_call_id,
-                                    "output": res.content,
+                                    "output": tool_output(res)?,
                                 }));
                             }
                         }
@@ -684,11 +686,48 @@ fn project_web_search_call(
     })
 }
 
+fn tool_output(result: &crate::model::ToolResult) -> Result<serde_json::Value, ProviderError> {
+    if result.attachments.is_empty() {
+        return Ok(serde_json::json!(result.content));
+    }
+    let mut content = vec![serde_json::json!({"type": "input_text", "text": result.content})];
+    for media in &result.attachments {
+        crate::config::ProviderType::Response
+            .require_media(media.kind, &media.mime_type)
+            .map_err(ProviderError::Protocol)?;
+        let data_url = format!("data:{};base64,{}", media.mime_type, media.data);
+        content.push(match media.kind {
+            crate::model::MediaKind::Image => serde_json::json!({"type": "input_image", "image_url": data_url}),
+            crate::model::MediaKind::Pdf => serde_json::json!({"type": "input_file", "filename": media.filename, "file_data": data_url}),
+            _ => unreachable!("validated media kind"),
+        });
+    }
+    Ok(serde_json::json!(content))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn media_tool_results_use_native_content_blocks() {
+        let session = super::super::common::media_tool_session();
+        let body = ResponseProvider::new("test")
+            .build_request_body(&session, &[], &CompletionOptions::default())
+            .unwrap();
+        let output = &body["input"][1]["output"];
+        assert_eq!(body["input"][1]["call_id"], "read_media");
+        assert_eq!(output[0]["type"], "input_text");
+        assert_eq!(output[1]["type"], "input_image");
+        assert!(
+            output[1]["image_url"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,iVBOR")
+        );
+    }
 
     #[test]
     fn test_response_provider_payload_construction_and_previous_id() {
@@ -762,6 +801,7 @@ mod tests {
         session.append_turn(Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult {
+                attachments: Vec::new(),
                 tool_call_id: "call_abc123".into(),
                 content: "dir output".into(),
                 is_error: false,
@@ -915,6 +955,7 @@ mod tests {
         session.append_turn(Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult {
+                attachments: Vec::new(),
                 tool_call_id: "c1".into(),
                 content: "/home/project".into(),
                 is_error: false,

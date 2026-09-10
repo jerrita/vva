@@ -1,4 +1,7 @@
+use crate::config::resolver::InputCapabilities;
+use crate::model::{MediaContent, MediaKind, ToolCall, ToolResult};
 use async_trait::async_trait;
+use base64::Engine;
 use glob::{MatchOptions, Pattern};
 use regex::Regex;
 use serde::Deserialize;
@@ -9,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::Tool;
 
-const MAX_RESULTS: usize = 1_000;
+const MAX_RESULTS: usize = 100;
 const MAX_BRACE_ALTS: usize = 256;
 const GLOB_OPTIONS: MatchOptions = MatchOptions {
     case_sensitive: true,
@@ -73,6 +76,23 @@ fn visit_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
             files.push(path);
         }
     }
+    Ok(())
+}
+
+fn sort_by_mtime(files: &mut [PathBuf]) -> Result<(), String> {
+    let mut modified = std::collections::HashMap::new();
+    for path in files.iter() {
+        let time = fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| {
+                format!(
+                    "Failed to read modification time {}: {error}",
+                    path.display()
+                )
+            })?;
+        modified.insert(path.clone(), time);
+    }
+    files.sort_by(|a, b| modified[b].cmp(&modified[a]).then_with(|| a.cmp(b)));
     Ok(())
 }
 
@@ -238,14 +258,147 @@ fn unified_diff(path: &Path, original: &str, updated: &str) -> String {
 
 pub struct ReadTool {
     working_dir: PathBuf,
+    inputs: InputCapabilities,
 }
 
 impl ReadTool {
     pub fn new(working_dir: impl Into<PathBuf>) -> Self {
         Self {
             working_dir: working_dir.into(),
+            inputs: InputCapabilities::default(),
         }
     }
+
+    pub fn with_inputs(mut self, inputs: InputCapabilities) -> Self {
+        self.inputs = inputs;
+        self
+    }
+
+    async fn read(&self, arguments: &str) -> Result<(String, Vec<MediaContent>), String> {
+        let args: ReadArgs = serde_json::from_str(arguments)
+            .map_err(|error| format!("Invalid arguments for Read: {error}"))?;
+        let path = resolve_path(&self.working_dir, &args.path);
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|error| format!("Failed to read file {}: {error}", path.display()))?;
+        if let Some((kind, mime_type)) = media_type(&path, &bytes) {
+            self.inputs.require(kind, mime_type)?;
+            if args.offset.is_some() || args.limit.is_some() {
+                return Err("offset and limit apply only to text files".into());
+            }
+            let media = MediaContent {
+                kind,
+                mime_type: mime_type.into(),
+                filename: path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            };
+            return Ok((
+                format!(
+                    "Read {} ({mime_type}, {} bytes)",
+                    path.display(),
+                    bytes.len()
+                ),
+                vec![media],
+            ));
+        }
+        let content = std::str::from_utf8(&bytes)
+            .map_err(|_| format!("Unsupported binary file: {}", path.display()))?;
+        if content.contains('\0') {
+            return Err(format!("Unsupported binary file: {}", path.display()));
+        }
+        Ok((read_text(content, &args), Vec::new()))
+    }
+}
+
+fn media_type(path: &Path, bytes: &[u8]) -> Option<(MediaKind, &'static str)> {
+    use MediaKind::*;
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some((Image, "image/png"));
+    }
+    if bytes.starts_with(b"\xff\xd8\xff") {
+        return Some((Image, "image/jpeg"));
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some((Image, "image/gif"));
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return Some((Pdf, "application/pdf"));
+    }
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "png" => (Image, "image/png"),
+        "jpg" | "jpeg" => (Image, "image/jpeg"),
+        "gif" => (Image, "image/gif"),
+        "webp" => (Image, "image/webp"),
+        "heic" => (Image, "image/heic"),
+        "heif" => (Image, "image/heif"),
+        "avif" => (Image, "image/avif"),
+        "pdf" => (Pdf, "application/pdf"),
+        "wav" => (Audio, "audio/wav"),
+        "mp3" => (Audio, "audio/mpeg"),
+        "aiff" | "aif" => (Audio, "audio/aiff"),
+        "aac" => (Audio, "audio/aac"),
+        "ogg" | "oga" => (Audio, "audio/ogg"),
+        "flac" => (Audio, "audio/flac"),
+        "m4a" => (Audio, "audio/mp4"),
+        "mp4" | "m4v" => (Video, "video/mp4"),
+        "mpeg" | "mpg" => (Video, "video/mpeg"),
+        "mov" => (Video, "video/quicktime"),
+        "avi" => (Video, "video/x-msvideo"),
+        "webm" => (Video, "video/webm"),
+        "wmv" => (Video, "video/x-ms-wmv"),
+        "3gp" => (Video, "video/3gpp"),
+        _ => return None,
+    })
+}
+
+fn read_text(content: &str, args: &ReadArgs) -> String {
+    let lines: Vec<_> = content.lines().collect();
+    let start = args.offset.unwrap_or(1).saturating_sub(1);
+    let end = args
+        .limit
+        .map(|limit| start.saturating_add(limit))
+        .unwrap_or(lines.len())
+        .min(lines.len());
+    if start >= lines.len() {
+        return format!("[End of file: {} lines]", lines.len());
+    }
+    let mut output = String::new();
+    let mut next = start;
+    for (index, line) in lines.iter().enumerate().take(end).skip(start) {
+        let numbered = format!(
+            "{}{}: {line}",
+            if output.is_empty() { "" } else { "\n" },
+            index + 1
+        );
+        let remaining = super::MAX_INLINE_OUTPUT_BYTES - output.len();
+        if numbered.len() > remaining {
+            // Keep the whole prefix within the byte budget, including a partial line.
+            let mut cut = remaining;
+            while !numbered.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            output.push_str(&numbered[..cut]);
+            output.push_str(&format!("\n[32 KiB limit: {} total lines; continue with Read offset={} to reread the truncated line.{}]", lines.len(), index + 1, if line.len() > super::MAX_INLINE_OUTPUT_BYTES { " This line exceeds the byte limit; use another tool for its remainder." } else { "" }));
+            return output;
+        }
+        output.push_str(&numbered);
+        next = index + 1;
+    }
+    if next < lines.len() {
+        output.push_str(&format!(
+            "\n[{} total lines; continue with Read offset={}.]",
+            lines.len(),
+            next + 1
+        ));
+    } else {
+        output.push_str(&format!("\n[End of file: {} lines]", lines.len()));
+    }
+    output
 }
 
 #[derive(Deserialize)]
@@ -262,7 +415,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        r#"Read an existing UTF-8 text file; use Glob to locate files and Grep to search their contents. Returns lines prefixed with 1-indexed line numbers. Use offset and limit for a specific range; by default the entire file is returned. An offset beyond EOF returns empty text. Directories and non-UTF-8 files produce errors. Numbered output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
+        r#"Read an existing file; use Glob to locate files and Grep to search their contents. UTF-8 text is returned with 1-indexed line numbers. Use offset and limit for a range. Text is capped at 32 KiB; only the excess is truncated, with a pagination hint appended at the end. A line cut by the byte limit is marked; use another tool to inspect its remainder. Binary images, PDFs, audio and video are returned as multimodal content when the current model's configured input modalities and native protocol support them; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel when reading multiple files.
 Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/main.rs","offset":1,"limit":200}."#
     }
 
@@ -270,38 +423,32 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "format": "path", "description": "Existing text file path, absolute or workspace-relative." },
+                "path": { "type": "string", "format": "path", "description": "Existing file path, absolute or workspace-relative." },
                 "offset": { "type": "integer", "description": "First line to read, 1-indexed. Omit to start at line 1; use a positive integer." },
-                "limit": { "type": "integer", "description": "Maximum number of lines to return. Omit to read through EOF; 0 returns no lines." }
+                "limit": { "type": "integer", "description": "Maximum number of lines to return. Omit to read through EOF or the byte limit; 0 returns only the pagination hint." }
             },
             "required": ["path"]
         })
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: ReadArgs = serde_json::from_str(arguments)
-            .map_err(|error| format!("Invalid arguments for Read: {error}"))?;
-        let path = resolve_path(&self.working_dir, &args.path);
-        let content = fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read file {}: {error}", path.display()))?;
-        let lines: Vec<_> = content.lines().collect();
-        let start = args.offset.unwrap_or(1).saturating_sub(1);
-        let end = args
-            .limit
-            .map(|limit| start.saturating_add(limit))
-            .unwrap_or(lines.len())
-            .min(lines.len());
-
-        if start >= lines.len() {
-            return Ok(String::new());
+        let (content, attachments) = self.read(arguments).await?;
+        if !attachments.is_empty() {
+            return Err("Use execute_result to receive multimodal content".into());
         }
+        Ok(content)
+    }
 
-        Ok(lines[start..end]
-            .iter()
-            .enumerate()
-            .map(|(index, line)| format!("{}: {line}", start + index + 1))
-            .collect::<Vec<_>>()
-            .join("\n"))
+    async fn execute_result(&self, call: &ToolCall) -> ToolResult {
+        match self.read(&call.arguments).await {
+            Ok((content, attachments)) => ToolResult {
+                tool_call_id: call.id.clone(),
+                content,
+                attachments,
+                is_error: false,
+            },
+            Err(error) => ToolResult::error(&call.id, error),
+        }
     }
 }
 
@@ -387,7 +534,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        r#"Replace exact text in an existing UTF-8 file. Read the file first and copy the target text without the displayed line-number prefixes. Matching is literal, including whitespace and newlines; regular expressions are not supported. By default old_string must occur exactly once; include enough context to make it unique, or set replace_all to true to replace every occurrence. Fails if old_string is empty, absent, or identical to new_string. Returns a unified diff after writing the change.
+        r#"Replace exact text in an existing UTF-8 file. Read the file first and copy the target text without the displayed line-number prefixes. Matching is literal, including whitespace and newlines; regular expressions are not supported. By default old_string must occur exactly once; include enough context to make it unique, or set replace_all to true to replace every occurrence. An empty old_string overwrites the entire file with new_string. CRLF is normalized to LF in file contents and both strings. Fails if nonempty old_string is absent or identical to new_string. Returns a unified diff after writing the change.
 Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","old_string":"let count = 1;","new_string":"let count = 2;"}."#
     }
 
@@ -396,7 +543,7 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
             "type": "object",
             "properties": {
                 "path": { "type": "string", "format": "path", "description": "Existing text file path, absolute or workspace-relative." },
-                "old_string": { "type": "string", "description": "Nonempty literal text to replace, preserving exact whitespace. Must match once unless replace_all is true. Exclude Read's line-number prefixes." },
+                "old_string": { "type": "string", "description": "Literal text to replace; empty overwrites the entire file. CRLF is normalized to LF. Must match once unless replace_all is true. Exclude Read's line-number prefixes." },
                 "new_string": { "type": "string", "description": "Literal replacement text, different from old_string. Use an empty string to delete the matched text." },
                 "replace_all": { "type": "boolean", "description": "Defaults to false, requiring exactly one match. Set true only when every occurrence should be replaced." }
             },
@@ -407,17 +554,22 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         let args: EditArgs = serde_json::from_str(arguments)
             .map_err(|error| format!("Invalid arguments for Edit: {error}"))?;
-        if args.old_string.is_empty() {
-            return Err("old_string must not be empty".to_string());
-        }
-        if args.old_string == args.new_string {
+        let old_string = args.old_string.replace("\r\n", "\n");
+        let new_string = args.new_string.replace("\r\n", "\n");
+        if !old_string.is_empty() && old_string == new_string {
             return Err("old_string and new_string must differ".to_string());
         }
 
         let path = resolve_path(&self.working_dir, &args.path);
         let content = fs::read_to_string(&path)
             .map_err(|error| format!("Failed to read file {}: {error}", path.display()))?;
-        let matches = content.match_indices(&args.old_string).count();
+        let content = content.replace("\r\n", "\n");
+        if old_string.is_empty() {
+            fs::write(&path, &new_string)
+                .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
+            return Ok(unified_diff(&path, &content, &new_string));
+        }
+        let matches = content.match_indices(&old_string).count();
         if matches == 0 {
             return Err("old_string was not found".to_string());
         }
@@ -428,9 +580,9 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
         }
 
         let updated = if args.replace_all.unwrap_or(false) {
-            content.replace(&args.old_string, &args.new_string)
+            content.replace(&old_string, &new_string)
         } else {
-            content.replacen(&args.old_string, &args.new_string, 1)
+            content.replacen(&old_string, &new_string, 1)
         };
         fs::write(&path, &updated)
             .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
@@ -464,7 +616,7 @@ impl Tool for GlobTool {
 
     fn description(&self) -> &str {
         r#"Find files by path pattern; use Grep to search file contents. Matches are case-sensitive and relative to the search root. Supports *, ?, character classes such as [ab], ** as a full path component for recursive matching, and brace expansion such as **/*.{rs,md,toml}. A single * does not cross directory separators. Extglobs are unsupported.
-Returns sorted file paths, at most 1000, with a truncation marker when more match. Empty output means no matches. Hidden and gitignored files are included; directory symlinks are not traversed during recursion. Example arguments: {"pattern":"**/*.{rs,md}","path":"src"}. Shell variables and ~ are not expanded."#
+Returns file paths sorted by modification time (newest first), at most 100, with a truncation marker when more match. Empty output means no matches. Hidden and gitignored files are included; directory symlinks are not traversed during recursion. Example arguments: {"pattern":"**/*.{rs,md}","path":"src"}. Shell variables and ~ are not expanded."#
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -491,7 +643,7 @@ Returns sorted file paths, at most 1000, with a truncation marker when more matc
             .into_iter()
             .filter(|path| matches_any(&patterns, relative_to(&root, path, root_is_file)))
             .collect();
-        matches.sort();
+        sort_by_mtime(&mut matches)?;
         matches.dedup();
 
         let truncated = matches.len() > MAX_RESULTS;
@@ -536,7 +688,7 @@ impl Tool for GrepTool {
     fn description(&self) -> &str {
         r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
 Optionally restrict files with include, a glob relative to the search root. Glob syntax supports *, ?, character classes, recursive **, and brace expansion such as **/*.{rs,md,toml}. Extglobs are unsupported. Hidden and gitignored files are included; directory symlinks are not traversed during recursion.
-Returns path:line: text with 1-indexed line numbers, capped at 1000 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
+Returns path:line: text with 1-indexed line numbers, sorted by file modification time (newest first), capped at 100 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -566,7 +718,7 @@ Returns path:line: text with 1-indexed line numbers, capped at 1000 matching lin
         let root_is_file = root.is_file();
         let mut files = Vec::new();
         collect_files(&root, &mut files)?;
-        files.sort();
+        sort_by_mtime(&mut files)?;
 
         let mut results = Vec::new();
         for path in files {
@@ -582,10 +734,10 @@ Returns path:line: text with 1-indexed line numbers, capped at 1000 matching lin
             };
             for (index, line) in content.lines().enumerate() {
                 if regex.is_match(line) {
-                    results.push(format!("{}:{}: {line}", path.display(), index + 1));
                     if results.len() == MAX_RESULTS {
                         return Ok(format!("{}\n[results truncated]", results.join("\n")));
                     }
+                    results.push(format!("{}:{}: {line}", path.display(), index + 1));
                 }
             }
         }
@@ -596,6 +748,122 @@ Returns path:line: text with 1-indexed line numbers, capped at 1000 matching lin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_preserves_prefix_and_reports_pagination() {
+        let args = ReadArgs {
+            path: "sample".into(),
+            offset: None,
+            limit: Some(1),
+        };
+        assert_eq!(
+            read_text("alpha\nbeta", &args),
+            "1: alpha\n[2 total lines; continue with Read offset=2.]"
+        );
+        let args = ReadArgs {
+            limit: None,
+            ..args
+        };
+        let output = read_text(&"界".repeat(super::super::MAX_INLINE_OUTPUT_BYTES), &args);
+        let prefix = output.split("\n[").next().unwrap();
+        assert_eq!(prefix.len(), super::super::MAX_INLINE_OUTPUT_BYTES - 2);
+        assert!(prefix.starts_with("1: 界"));
+        assert!(output.contains("line exceeds the byte limit"));
+    }
+
+    #[tokio::test]
+    async fn read_binary_is_gated_and_persists_bytes() {
+        let root = std::env::temp_dir().join(format!("vva-media-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=";
+        fs::write(
+            root.join("sample.png"),
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap(),
+        )
+        .unwrap();
+        let call = ToolCall::new("image_read", "Read", r#"{"path":"sample.png"}"#);
+        assert!(ReadTool::new(&root).execute_result(&call).await.is_error);
+        let mut registry =
+            crate::tools::ToolRegistry::with_workspace_defaults(&root, Some(root.join("outputs")));
+        registry.register(std::sync::Arc::new(ReadTool::new(&root).with_inputs(
+            InputCapabilities {
+                model: "test/vision".into(),
+                modalities: vec!["image".into()],
+                protocol: crate::config::ProviderType::Response,
+            },
+        )));
+        let result = registry.execute_call(&call).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.attachments[0].data, data);
+        assert_eq!(result.attachments[0].kind, MediaKind::Image);
+        let restored: ToolResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(restored, result);
+    }
+
+    #[tokio::test]
+    async fn edit_overwrites_and_normalizes_crlf() {
+        let root = std::env::temp_dir().join(format!("vva-edit-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("sample"), "alpha\r\nbeta\r\n").unwrap();
+        let tool = EditTool::new(&root);
+        tool.execute(
+            r#"{"path":"sample","old_string":"alpha\nbeta","new_string":"gamma\r\ndelta"}"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("sample")).unwrap(),
+            "gamma\ndelta\n"
+        );
+        tool.execute(r#"{"path":"sample","old_string":"","new_string":"reset\r\n"}"#)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(root.join("sample")).unwrap(), "reset\n");
+        tool.execute(r#"{"path":"sample","old_string":"","new_string":""}"#)
+            .await
+            .unwrap();
+        assert_eq!(fs::read_to_string(root.join("sample")).unwrap(), "");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn searches_sort_before_capping_and_only_mark_excess() {
+        let root = std::env::temp_dir().join(format!("vva-search-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..=100 {
+            let path = root.join(format!("{index:03}.txt"));
+            fs::write(&path, if index == 0 { "absent" } else { "match" }).unwrap();
+            fs::File::open(path)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(index))
+                .unwrap();
+        }
+        let glob = GlobTool::new(&root)
+            .execute(r#"{"pattern":"*.txt"}"#)
+            .await
+            .unwrap();
+        assert!(glob.lines().next().unwrap().ends_with("100.txt"));
+        assert!(glob.lines().nth(99).unwrap().ends_with("001.txt"));
+        assert_eq!(glob.lines().last(), Some("[results truncated]"));
+        let tool = GrepTool::new(&root);
+        let grep = tool.execute(r#"{"pattern":"match"}"#).await.unwrap();
+        assert_eq!(grep.lines().count(), 100);
+        assert!(grep.lines().next().unwrap().ends_with("100.txt:1: match"));
+        let path = root.join("000.txt");
+        fs::write(&path, "match").unwrap();
+        fs::File::open(path)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH)
+            .unwrap();
+        let grep = tool.execute(r#"{"pattern":"match"}"#).await.unwrap();
+        assert_eq!(grep.lines().count(), 101);
+        assert_eq!(grep.lines().last(), Some("[results truncated]"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn glob_matches_files_recursively() {
@@ -630,7 +898,7 @@ mod tests {
 
         let tool = ReadTool::new(&root);
         let result = tool.execute(r#"{"path":"\"src/lib.rs\""}"#).await.unwrap();
-        assert_eq!(result, "1: hello");
+        assert_eq!(result, "1: hello\n[End of file: 1 lines]");
 
         fs::remove_dir_all(root).unwrap();
     }

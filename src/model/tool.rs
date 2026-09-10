@@ -25,6 +25,8 @@ impl ToolCall {
 pub struct ToolResult {
     pub tool_call_id: String,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MediaContent>,
     #[serde(default)]
     pub is_error: bool,
 }
@@ -35,6 +37,7 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             content: content.into(),
             is_error: false,
+            attachments: Vec::new(),
         }
     }
 
@@ -43,6 +46,7 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             content: error_message.into(),
             is_error: true,
+            attachments: Vec::new(),
         }
     }
 }
@@ -52,4 +56,32 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaKind {
+    Image,
+    Pdf,
+    Audio,
+    Video,
+}
+
+impl MediaKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Pdf => "pdf",
+            Self::Audio => "audio",
+            Self::Video => "video",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MediaContent {
+    pub kind: MediaKind,
+    pub mime_type: String,
+    pub filename: String,
+    pub data: String,
 }

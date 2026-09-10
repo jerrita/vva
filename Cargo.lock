@@ -2994,6 +2994,7 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "async-trait",
+ "base64",
  "chrono",
  "clap",
  "crossterm",

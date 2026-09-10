@@ -21,7 +21,7 @@ impl SystemInfo {
     /// 转换为固定 System Prompt 文本
     pub fn to_system_prompt(&self, workspace: &Path, scratch: &Path) -> String {
         format!(
-            "You are vva, an expert AI coding harness assistant.\n\n\
+            "You are vva, expert at agentic coding and knowledge work.\n\n\
              ## Environment Context\n\
              - Date: {}\n\
              - Operating System: {} ({})\n\

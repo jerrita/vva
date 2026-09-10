@@ -164,12 +164,16 @@ impl GeminiProvider {
                                 parts_arr.push(serde_json::json!({
                                     "functionResponse": {
                                         "name": function_name,
-                                        "response": {
-                                            "content": res.content,
-                                            "is_error": res.is_error
-                                        }
+                                        "response": {"content": res.content, "is_error": res.is_error},
                                     }
                                 }));
+                                // Inline media in the same user content also supports models
+                                // that accept media inputs but not FunctionResponse.parts.
+                                for media in &res.attachments {
+                                    parts_arr.push(serde_json::json!({
+                                        "inlineData": {"mimeType": media.mime_type, "data": media.data}
+                                    }));
+                                }
                             }
                         }
                         merger.push("user", parts_arr);
@@ -577,6 +581,26 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn media_tool_results_use_native_content_blocks() {
+        let session = super::super::common::media_tool_session();
+        let body = GeminiProvider::new("test")
+            .build_request_body(&session, &[], &CompletionOptions::default())
+            .unwrap();
+        let output = &body["contents"][1]["parts"][0]["functionResponse"];
+        assert_eq!(output["name"], "Read");
+        assert_eq!(
+            body["contents"][1]["parts"][1]["inlineData"]["mimeType"],
+            "image/png"
+        );
+        assert!(
+            body["contents"][1]["parts"][1]["inlineData"]["data"]
+                .as_str()
+                .unwrap()
+                .starts_with("iVBOR")
+        );
+    }
+
+    #[test]
     fn test_gemini_grounding_metadata_projection() {
         let provider = GeminiProvider::new("test-api-key");
         let mock_gemini_response = serde_json::json!({
@@ -717,6 +741,7 @@ mod tests {
         session.append_turn(Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult {
+                attachments: Vec::new(),
                 tool_call_id: "call_abc123".into(),
                 content: "file1.txt\nfile2.txt".into(),
                 is_error: false,

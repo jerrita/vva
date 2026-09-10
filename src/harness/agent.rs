@@ -43,12 +43,16 @@ impl AgentEngine {
         let resolved = config
             .resolve_model(&session.current_model, session.current_variant.as_deref())
             .map_err(|e| e.to_string())?;
+        let inputs = resolved.input_capabilities();
+        inputs.validate_session(session)?;
+        let mut tools =
+            ToolRegistry::with_workspace_defaults(&session.workspace_root, Some(tool_outputs));
+        tools.register(Arc::new(
+            crate::tools::filesystem::ReadTool::new(&session.workspace_root).with_inputs(inputs),
+        ));
         Ok(Self {
             provider: resolved.create_provider(),
-            tools: ToolRegistry::with_workspace_defaults(
-                &session.workspace_root,
-                Some(tool_outputs),
-            ),
+            tools,
             options: CompletionOptions {
                 model: resolved.model_id,
                 reasoning_effort: resolved.selected_variant,
@@ -72,7 +76,7 @@ pub(super) async fn generate_title(
         .map_err(|e| e.to_string())?;
     let mut session = Session::new(".", None);
     session.append_turn(Turn::user_turn(Message::text(format!(
-        "Generate a brief title (3-6 words, plain text, no quotes) summarizing this prompt. Return only the title.\n\n{prompt}"
+        "Generate a brief title (3-6 words, plain text, no quotes) summarizing this prompt. Put spaces between Chinese and English text. Return only the title.\n\n{prompt}"
     ))));
     let options = CompletionOptions {
         model: resolved.model_id.clone(),

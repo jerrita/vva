@@ -19,7 +19,7 @@ pub use meta::{
 pub use session::{
     JsonlRecord, Session, SessionHeader, SessionSummary, generate_session_id, provisional_title,
 };
-pub use tool::{ToolCall, ToolDefinition, ToolResult};
+pub use tool::{MediaContent, MediaKind, ToolCall, ToolDefinition, ToolResult};
 pub use turn::{TokenUsage, Turn};
 
 #[cfg(test)]

@@ -35,9 +35,7 @@ impl Tool for ShellTool {
     }
 
     fn description(&self) -> &str {
-        r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with bash -c on non-Windows systems and non-interactive PowerShell on Windows, starting at the workspace root each time; shell state does not persist between calls.
-Provide a nonempty intent describing the purpose. Use syntax appropriate to the operating system and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
-Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
+        shell_description()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -45,7 +43,7 @@ Example arguments: {"intent":"Check working tree changes","command":"git status 
             "type": "object",
             "properties": {
                 "intent": { "type": "string", "description": "Required nonempty, brief explanation of what the command will accomplish, shown in the UI." },
-                "command": { "type": "string", "description": "Shell command executed from the workspace root. Use bash syntax on non-Windows or PowerShell syntax on Windows. Shell-quote paths with spaces and JSON-escape those quotes in this string." }
+                "command": { "type": "string", "description": shell_command_hint() }
             },
             "required": ["intent", "command"]
         })
@@ -83,6 +81,31 @@ Example arguments: {"intent":"Check working tree changes","command":"git status 
         command.current_dir(&self.working_dir);
         run_shell_command(command).await
     }
+}
+
+/// 平台相关的工具描述与参数提示：条件编译区分 bash 与 PowerShell。
+#[cfg(windows)]
+fn shell_description() -> &'static str {
+    r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with non-interactive PowerShell (-NoProfile -NonInteractive), starting at the workspace root each time; shell state does not persist between calls.
+Provide a nonempty intent describing the purpose. Use PowerShell syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
+Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
+}
+
+#[cfg(not(windows))]
+fn shell_description() -> &'static str {
+    r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with bash -c, starting at the workspace root each time; shell state does not persist between calls.
+Provide a nonempty intent describing the purpose. Use bash syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result then contains that path so you can Read or Grep it.
+Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
+}
+
+#[cfg(windows)]
+fn shell_command_hint() -> &'static str {
+    "Shell command executed from the workspace root. Use PowerShell syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string."
+}
+
+#[cfg(not(windows))]
+fn shell_command_hint() -> &'static str {
+    "Shell command executed from the workspace root. Use bash syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string."
 }
 
 /// 执行已组装好的 shell 命令：stdout/stderr 拼接（STDERR 分节），非零退出码报错。

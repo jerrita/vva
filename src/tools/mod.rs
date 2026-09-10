@@ -17,6 +17,13 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, arguments: &str) -> Result<String, String>;
 
+    async fn execute_result(&self, call: &ToolCall) -> ToolResult {
+        match self.execute(&call.arguments).await {
+            Ok(content) => ToolResult::success(&call.id, content),
+            Err(error) => ToolResult::error(&call.id, error),
+        }
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
@@ -82,20 +89,19 @@ impl ToolRegistry {
             return ToolResult::error(&call.id, err);
         }
 
-        let (content, is_error) = match tool.execute(&call.arguments).await {
-            Ok(content) => (content, false),
-            Err(content) => (content, true),
-        };
-        let content =
-            match inline_or_spill(self.tool_outputs.as_deref(), tool.name(), content, is_error) {
+        let mut result = tool.execute_result(call).await;
+        if tool.name() != "Read" || result.is_error {
+            result.content = match inline_or_spill(
+                self.tool_outputs.as_deref(),
+                tool.name(),
+                result.content,
+                result.is_error,
+            ) {
                 Ok(content) => content,
-                Err(err) => return ToolResult::error(&call.id, err),
+                Err(error) => return ToolResult::error(&call.id, error),
             };
-        if is_error {
-            ToolResult::error(&call.id, content)
-        } else {
-            ToolResult::success(&call.id, content)
         }
+        result
     }
 }
 

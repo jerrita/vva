@@ -17,6 +17,31 @@ pub enum ProviderType {
 }
 
 impl ProviderType {
+    pub fn require_media(
+        self,
+        kind: crate::model::MediaKind,
+        mime_type: &str,
+    ) -> Result<(), String> {
+        use crate::model::MediaKind;
+        let supported = match (self, kind) {
+            (Self::Gemini, _) => true,
+            (_, MediaKind::Pdf) => mime_type == "application/pdf",
+            (_, MediaKind::Image) => matches!(
+                mime_type,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            ),
+            _ => false,
+        };
+        if supported {
+            Ok(())
+        } else {
+            Err(format!(
+                "Protocol '{}' does not support {mime_type} input",
+                self.as_str()
+            ))
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Response => "response",

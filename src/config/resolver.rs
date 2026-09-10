@@ -124,7 +124,79 @@ impl AppConfig {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct InputCapabilities {
+    pub model: String,
+    pub modalities: Vec<String>,
+    pub protocol: ProviderType,
+}
+
+impl InputCapabilities {
+    pub fn require(&self, kind: crate::model::MediaKind, mime_type: &str) -> Result<(), String> {
+        if !self.modalities.iter().any(|input| input == kind.as_str()) {
+            return Err(format!(
+                "Model '{}' does not support {} input",
+                self.model,
+                kind.as_str()
+            ));
+        }
+        self.protocol.require_media(kind, mime_type)
+    }
+
+    pub fn validate_session(&self, session: &crate::model::Session) -> Result<(), String> {
+        for part in session
+            .turns
+            .iter()
+            .flat_map(|turn| &turn.messages)
+            .flat_map(|msg| &msg.parts)
+        {
+            match part {
+                crate::model::ContentPart::Image { source, mime_type } => {
+                    if !self.modalities.iter().any(|input| input == "image") {
+                        return Err(format!(
+                            "Model '{}' does not support image input",
+                            self.model
+                        ));
+                    }
+                    let mime = match source {
+                        crate::model::MediaSource::Base64 { mime_type, .. } => {
+                            Some(mime_type.as_str())
+                        }
+                        crate::model::MediaSource::Url { .. } => mime_type.as_deref(),
+                    };
+                    if let Some(mime) = mime {
+                        self.protocol
+                            .require_media(crate::model::MediaKind::Image, mime)?;
+                    }
+                }
+                crate::model::ContentPart::ToolResult(result) => {
+                    for media in &result.attachments {
+                        self.require(media.kind, &media.mime_type)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 impl ResolvedModel<'_> {
+    pub fn input_capabilities(&self) -> InputCapabilities {
+        InputCapabilities {
+            model: self.full_spec.clone(),
+            modalities: self
+                .model_config
+                .modalities
+                .as_ref()
+                .map(|m| m.input.clone())
+                .unwrap_or_default(),
+            protocol: self
+                .model_config
+                .effective_type(self.provider_config.provider_type.unwrap_or_default()),
+        }
+    }
+
     pub fn create_provider(&self) -> Arc<dyn Provider> {
         // 计算实际生效的 ProviderType（支持模型级 override；未声明 type 时按 Response）
         let effective_type = self
