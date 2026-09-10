@@ -26,6 +26,8 @@ impl App {
 
         // 普通用户 Prompt
         self.auto_scroll = true;
+        self.notices.clear();
+        self.consumed_notices = 0;
 
         if let Err(e) = self
             .session_mgr

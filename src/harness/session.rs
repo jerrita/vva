@@ -619,6 +619,7 @@ impl SessionTask {
     }
 
     async fn start(&mut self, prompt: &str) -> Result<AgentEngine, String> {
+        self.view.notices.clear();
         let tool_outputs = self
             .store
             .ensure_tool_outputs(&self.view.session.workspace_root)

@@ -237,7 +237,7 @@ impl App {
         true
     }
 
-    /// 右击展开的工具块执行收折：Edit 直接隐藏；Shell 全文收为预览，预览再隐藏。
+    /// 右击展开的工具块执行收折：Edit / Write 直接隐藏；Shell 全文收为预览，预览再隐藏。
     pub fn handle_tool_right_click(&mut self, line: usize) -> bool {
         let Some(hit) = self.chat_cache.tool_hit_at(line) else {
             return false;

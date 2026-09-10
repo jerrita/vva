@@ -38,6 +38,7 @@ const SELECTION_STYLE: Style = Style::new().fg(Color::White).bg(Color::Rgb(60, 9
 pub(crate) struct RenderState {
     prev_reasoning: bool,
     prev_text: bool,
+    prev_web: bool,
     thought_groups: usize,
     thought_expanded: bool,
     thought_inline: bool,
@@ -148,6 +149,7 @@ pub(crate) fn append_collapsed_response(
     });
     state.prev_reasoning = false;
     state.prev_text = false;
+    state.prev_web = false;
 }
 
 fn glob_match_count(result: &ToolResult) -> Option<usize> {
@@ -362,7 +364,7 @@ fn push_tool_block(
     let hint_style = Style::default().fg(Color::Rgb(110, 110, 110));
     lines.push(tool_block_frame("╭", "╮", max_width));
     push_filled_blank(lines, max_width);
-    if call.name != "Edit" {
+    if !matches!(call.name.as_str(), "Edit" | "Write") {
         push_filled_text(
             lines,
             &tool_block_command(&call.name, &call.arguments),
@@ -373,15 +375,32 @@ fn push_tool_block(
     }
 
     let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };
-    if call.name == "Edit" && !result.is_some_and(|result| result.is_error) {
+    if matches!(call.name.as_str(), "Edit" | "Write")
+        && !result.is_some_and(|result| result.is_error)
+    {
         let mut body = Vec::new();
-        push_edit_detail(
-            &mut body,
-            &call.arguments,
-            result.map(|result| result.content.as_str()),
-            max_width.saturating_sub(TOOL_BLOCK_CHROME),
-            usize::MAX,
-        );
+        let inner_width = max_width.saturating_sub(TOOL_BLOCK_CHROME);
+        if call.name == "Write" {
+            if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
+                && let Some(content) = json_str(&args, "content")
+            {
+                for (index, text) in content.lines().enumerate() {
+                    push_edit_numbered_row(
+                        &mut body,
+                        EditCell::new(index + 1, "  ", text, Style::default()),
+                        inner_width,
+                    );
+                }
+            }
+        } else {
+            push_edit_detail(
+                &mut body,
+                &call.arguments,
+                result.map(|result| result.content.as_str()),
+                inner_width,
+                usize::MAX,
+            );
+        }
         let truncated = !full && body.len() > TOOL_PREVIEW_LIMIT;
         for line in body.into_iter().take(cap) {
             lines.push(fill_to_width(line.spans, max_width));
@@ -414,7 +433,7 @@ fn push_tool_block(
 
 fn default_tool_expand(name: &str) -> Option<ToolExpand> {
     match name {
-        "Edit" => Some(ToolExpand::Full),
+        "Edit" | "Write" => Some(ToolExpand::Full),
         "Shell" => Some(ToolExpand::Preview),
         _ => None,
     }
@@ -500,7 +519,7 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
             block_start,
             block_end,
             truncated,
-            full_only: call.name == "Edit",
+            full_only: matches!(call.name.as_str(), "Edit" | "Write"),
         });
     }
 }
@@ -850,8 +869,42 @@ fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
 
 const THOUGHT_INLINE_PREFIX: &str = "Thought: ";
 
-fn thought_is_single_line(content: &str) -> bool {
-    content.lines().count() <= 1
+fn line_display_width(line: &Line<'_>) -> usize {
+    line.spans.iter().map(|span| span.content.width()).sum()
+}
+
+fn thought_is_prose(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return false;
+    }
+    let stem = text
+        .strip_suffix("...")
+        .or_else(|| text.strip_suffix('…'))
+        .unwrap_or(text);
+    matches!(
+        stem.chars().last(),
+        Some('.' | '!' | '?' | '。' | '！' | '？')
+    ) || text.contains(". ")
+        || text.contains("! ")
+        || text.contains("? ")
+        || text.contains('。')
+}
+
+fn thought_is_title(content: &str, max_width: usize) -> bool {
+    if content.lines().count() > 1 || thought_is_prose(content) {
+        return false;
+    }
+    let prefix_w = THOUGHT_INLINE_PREFIX.width();
+    let (mut body, _) = render_markdown(content, max_width.saturating_sub(prefix_w));
+    for line in &mut body {
+        strip_all_leading_spaces(line);
+    }
+    match body.as_slice() {
+        [] => true,
+        [line] => prefix_w.saturating_add(line_display_width(line)) <= max_width.max(prefix_w),
+        _ => false,
+    }
 }
 
 fn strip_all_leading_spaces(line: &mut Line<'static>) {
@@ -922,6 +975,11 @@ pub(crate) fn append_parts<'a>(
         .collect::<Vec<_>>();
     let citations = search_citations(parts.clone());
     for part in parts {
+        let prev_web = state.prev_web;
+        state.prev_web = matches!(
+            (role, part),
+            (Role::Assistant, ContentPart::WebSearchCall(_))
+        );
         match (role, part) {
             (Role::User, ContentPart::Text { text, .. }) => {
                 if let Some(reminder) = crate::system::parse_agents_reminder(text) {
@@ -976,7 +1034,7 @@ pub(crate) fn append_parts<'a>(
                         .get(&format!("thought-{}", state.thought_groups))
                         .copied()
                         .unwrap_or(!thinking_concise);
-                    state.thought_inline = thought_is_single_line(content);
+                    state.thought_inline = thought_is_title(content, max_width);
                     if state.thought_inline {
                         push_inline_thought(render, content, prefix_style, body_style);
                         continue;
@@ -1027,7 +1085,7 @@ pub(crate) fn append_parts<'a>(
                 }
             }
             (Role::Assistant, ContentPart::ToolCall(call)) => {
-                let needs_separator = state.prev_reasoning || state.prev_text;
+                let needs_separator = state.prev_reasoning || state.prev_text || prev_web;
                 state.prev_reasoning = false;
                 state.prev_text = false;
                 if needs_separator {
@@ -1726,6 +1784,34 @@ mod tests {
     }
 
     #[test]
+    fn write_defaults_to_full_content_and_can_hide() {
+        let content = (1..=12).map(|i| format!("row {i}\n")).collect::<String>();
+        let call = ToolCall::new(
+            "w1",
+            "Write",
+            serde_json::json!({"path": "example.txt", "content": content}).to_string(),
+        );
+        let parts = [ContentPart::ToolCall(call)];
+        let (lines, hits) = render_tools(&parts, &HashMap::new(), &HashMap::new(), 80);
+        let text = joined(&lines);
+        assert!(text.contains("row 12"));
+        assert_eq!(text.matches("example.txt").count(), 1);
+        assert!(!text.contains("Click to expand"));
+        assert!(hits[0].full_only);
+        assert!(!hits[0].truncated);
+
+        let expand = HashMap::from([("w1".to_string(), ToolExpand::Hidden)]);
+        let (lines, _) = render_tools(&parts, &HashMap::new(), &expand, 80);
+        assert!(!joined(&lines).contains("row 1"));
+
+        let result = ToolResult::error("w1", "write failed");
+        let results = HashMap::from([("w1".to_string(), &result)]);
+        let (lines, _) = render_tools(&parts, &results, &HashMap::new(), 80);
+        assert!(joined(&lines).contains("write failed"));
+        assert!(!joined(&lines).contains("row 1"));
+    }
+
+    #[test]
     fn tool_glob_shows_match_count() {
         let call = ToolCall::new("c1", "Glob", r#"{"pattern":"**/*.rs"}"#);
         let result = ToolResult::success("c1", "a.rs\nb.rs\nc.rs");
@@ -2139,6 +2225,37 @@ mod tests {
             });
             assert!(!markers);
         }
+    }
+
+    #[tokio::test]
+    async fn test_prose_thought_stays_collapsible() {
+        let mut app = create_test_app().await;
+        app.add_part(
+            Role::Assistant,
+            ContentPart::reasoning(
+                "There's a zip file called \"地下酒吧 1.0.2.zip\" which is a Minecraft modpack. Let me extract it and examine its contents.",
+                None,
+            ),
+        );
+        app.thinking_concise = true;
+        let lines = build_chat_lines(&app, 80);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(all_text.contains("+ Thought"));
+        assert!(!all_text.contains("Thought:"));
+        assert!(!all_text.contains("地下酒吧"));
+
+        app.thinking_concise = false;
+        let lines = build_chat_lines(&app, 80);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(all_text.contains("- Thought"));
+        assert!(!all_text.contains("Thought:"));
+        assert!(all_text.contains("地下酒吧"));
     }
 
     #[tokio::test]
