@@ -1534,7 +1534,7 @@ mod tests {
                 "action": action,
             });
             let encoded = serde_json::to_value(
-                &serde_json::from_value::<ResponseOutputItem>(item.clone()).unwrap(),
+                serde_json::from_value::<ResponseOutputItem>(item.clone()).unwrap(),
             )
             .unwrap();
             assert_eq!(encoded["action"], serde_json::json!({"type": "open_page"}));
