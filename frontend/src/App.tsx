@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
 import { Composer } from './components/Composer'
-import { Sidebar, groupByProject } from './components/Sidebar'
+import { Sidebar, groupByProject, projectName } from './components/Sidebar'
+import type { ProjectOption } from './components/Sidebar'
 import type { ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
 function toError(error: unknown): string {
@@ -41,6 +42,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [stats, setStats] = useState<SidebarStats | null>(null)
+  const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)
@@ -56,6 +58,7 @@ export default function App() {
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
+    api.workspace().then(workspace => setDefaultRoot(workspace.root)).catch(() => {})
     api.sessions().then(setSessions).catch(e => setError(toError(e)))
   }, [])
 
@@ -179,20 +182,24 @@ export default function App() {
     }
   }, [activeId])
 
-  const newChat = useCallback(async () => {
-    setError(null)
-    try {
-      const created = await api.createSession({
-        model: draftModel ?? undefined,
-        variant: draftVariant,
-        search: draftSearch,
-      })
-      setActiveId(created.session.id)
-      setSidebarOpen(false)
-    } catch (e) {
-      setError(toError(e))
-    }
-  }, [draftModel, draftVariant, draftSearch])
+  const newChat = useCallback(
+    async (workspace?: string) => {
+      setError(null)
+      try {
+        const created = await api.createSession({
+          model: draftModel ?? undefined,
+          variant: draftVariant,
+          search: draftSearch,
+          workspace: workspace?.trim() ? workspace : undefined,
+        })
+        setActiveId(created.session.id)
+        setSidebarOpen(false)
+      } catch (e) {
+        setError(toError(e))
+      }
+    },
+    [draftModel, draftVariant, draftSearch],
+  )
 
   const removeSession = useCallback(
     async (id: string) => {
@@ -255,6 +262,20 @@ export default function App() {
       ? models.models
       : [{ spec: currentModel, name: currentModel, provider: '', variants: [] }]
 
+  // 新建会话的项目候选：服务器默认目录优先，其余来自既有会话
+  const projects = useMemo<ProjectOption[]>(() => {
+    const map = new Map<string, string>()
+    if (defaultRoot) {
+      map.set(defaultRoot, projectName(defaultRoot))
+    }
+    for (const session of sessions) {
+      if (!map.has(session.workspace_root)) {
+        map.set(session.workspace_root, projectName(session.workspace_root))
+      }
+    }
+    return [...map.entries()].map(([root, name]) => ({ root, name }))
+  }, [sessions, defaultRoot])
+
   const composerControls = (
     <>
       <select
@@ -300,12 +321,13 @@ export default function App() {
     <div className={`app${sidebarOpen ? ' sidebar-open' : ''}`}>
       <Sidebar
         groups={groupByProject(sessions)}
+        projects={projects}
         activeId={activeId}
         onSelect={id => {
           setActiveId(id)
           setSidebarOpen(false)
         }}
-        onNew={newChat}
+        onCreate={newChat}
         onDelete={removeSession}
       />
       {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)} />}

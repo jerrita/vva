@@ -1,13 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { SessionSummary } from '../types'
 
-interface SessionGroup {
+export interface SessionGroup {
   project: string
   sessions: SessionSummary[]
 }
 
+export interface ProjectOption {
+  root: string
+  name: string
+}
+
 /** workspace 路径末段作为项目展示名 */
-function projectName(root: string): string {
+export function projectName(root: string): string {
   const trimmed = root.replace(/\/+$/, '')
   const name = trimmed.slice(trimmed.lastIndexOf('/') + 1)
   return name || trimmed
@@ -36,6 +41,16 @@ export function groupByProject(sessions: SessionSummary[]): SessionGroup[] {
     )
 }
 
+/** 由项目名生成稳定的高辨识度颜色 */
+function projectColor(name: string): string {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0
+  }
+  const hue = Math.abs(hash) % 360
+  return `hsl(${hue} 62% 52%)`
+}
+
 function Chevron({ collapsed }: { collapsed: boolean }) {
   return (
     <svg
@@ -55,20 +70,104 @@ function Chevron({ collapsed }: { collapsed: boolean }) {
   )
 }
 
+function NewChatPanel({
+  projects,
+  onCreate,
+  onClose,
+}: {
+  projects: ProjectOption[]
+  onCreate: (workspace: string) => void
+  onClose: () => void
+}) {
+  const [workspace, setWorkspace] = useState(projects[0]?.root ?? '')
+  const panelRef = useRef<HTMLDivElement>(null)
+  const anchorRef = useRef<HTMLButtonElement>(null)
+
+  // 弹层为瞬态表单，点击外部关闭
+  useEffect(() => {
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return
+      onClose()
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [onClose])
+
+  return (
+    <>
+      <button
+        ref={anchorRef}
+        className="new-chat"
+        onClick={onClose}
+        title="新对话"
+        aria-label="新对话"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="15"
+          height="15"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          aria-hidden
+        >
+          <path d="M12 5v14M5 12h14" />
+        </svg>
+      </button>
+      <div className="new-panel" ref={panelRef}>
+        <div className="new-panel-title">新对话</div>
+        <label className="new-panel-field">
+          <span>项目</span>
+          <select value={workspace} onChange={event => setWorkspace(event.target.value)}>
+            {projects.map(project => (
+              <option key={project.root} value={project.root} title={project.root}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="new-panel-path" title={workspace}>
+          {workspace}
+        </div>
+        <div className="new-panel-actions">
+          <button className="new-cancel" onClick={onClose}>
+            取消
+          </button>
+          <button className="new-create" disabled={!workspace} onClick={() => onCreate(workspace)}>
+            创建会话
+          </button>
+        </div>
+      </div>
+    </>
+  )
+}
+
 export function Sidebar({
   groups,
+  projects,
   activeId,
   onSelect,
-  onNew,
+  onCreate,
   onDelete,
 }: {
   groups: SessionGroup[]
+  projects: ProjectOption[]
   activeId: string | null
   onSelect: (id: string) => void
-  onNew: () => void
+  onCreate: (workspace: string) => void
   onDelete: (id: string) => void
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [newOpen, setNewOpen] = useState(false)
 
   const toggle = (project: string) => {
     setCollapsed(prev => {
@@ -86,20 +185,37 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-top">
         <span className="brand">vva</span>
-        <button className="new-chat" onClick={onNew} title="新对话" aria-label="新对话">
-          <svg
-            viewBox="0 0 24 24"
-            width="15"
-            height="15"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            aria-hidden
+        {newOpen && projects.length > 0 ? (
+          <NewChatPanel
+            projects={projects}
+            onCreate={workspace => {
+              setNewOpen(false)
+              onCreate(workspace)
+            }}
+            onClose={() => setNewOpen(false)}
+          />
+        ) : (
+          <button
+            className="new-chat"
+            onClick={() => setNewOpen(true)}
+            disabled={projects.length === 0}
+            title="新对话"
+            aria-label="新对话"
           >
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
       </div>
       <nav className="session-list">
         {groups.length === 0 && <div className="session-empty">暂无会话</div>}
@@ -111,6 +227,11 @@ export function Sidebar({
               title={group.project}
             >
               <Chevron collapsed={collapsed.has(group.project)} />
+              <span
+                className="group-dot"
+                style={{ background: projectColor(group.project) }}
+                aria-hidden
+              />
               <span className="group-name">{group.project}</span>
               <span className="group-count">{group.sessions.length}</span>
             </button>

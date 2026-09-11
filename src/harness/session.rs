@@ -242,12 +242,26 @@ impl SessionManager {
         title: Option<String>,
         search: bool,
     ) -> Result<Arc<ManagedSession>, String> {
+        self.create_session_in(self.workspace.clone(), model, variant, title, search)
+            .await
+    }
+
+    /// 在指定工作空间目录创建会话（Web 界面按项目创建时使用）
+    pub async fn create_session_in(
+        &self,
+        workspace: impl Into<PathBuf>,
+        model: String,
+        variant: Option<String>,
+        title: Option<String>,
+        search: bool,
+    ) -> Result<Arc<ManagedSession>, String> {
+        let workspace = workspace.into();
         let resolved = self
             .config
             .resolve_model(&model, variant.as_deref())
             .map_err(|e| e.to_string())?;
         let mut session =
-            Session::with_model(&self.workspace, title, resolved.full_spec, variant, search);
+            Session::with_model(&workspace, title, resolved.full_spec, variant, search);
         for _ in 0..8 {
             if self
                 .store

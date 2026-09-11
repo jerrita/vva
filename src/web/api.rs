@@ -95,11 +95,21 @@ pub async fn list_sessions(State(state): State<AppState>) -> Response {
     }
 }
 
+/// 服务器默认工作空间，供新建会话的项目选择器使用
+pub async fn default_workspace(State(state): State<AppState>) -> Response {
+    Json(serde_json::json!({
+        "root": state.manager.workspace().to_string_lossy()
+    }))
+    .into_response()
+}
+
 #[derive(Deserialize)]
 pub struct CreateSessionRequest {
     pub model: Option<String>,
     pub variant: Option<String>,
     pub search: Option<bool>,
+    /// 工作空间目录；缺省为服务器启动目录
+    pub workspace: Option<String>,
 }
 
 pub async fn create_session(
@@ -110,11 +120,27 @@ pub async fn create_session(
         .model
         .clone()
         .unwrap_or_else(|| state.manager.app_config().settings.default.clone());
-    match state
-        .manager
-        .create_session(model, request.variant, None, request.search.unwrap_or(true))
-        .await
-    {
+    let result = match request.workspace.as_deref().map(str::trim) {
+        Some(workspace) if !workspace.is_empty() => {
+            state
+                .manager
+                .create_session_in(
+                    workspace,
+                    model,
+                    request.variant,
+                    None,
+                    request.search.unwrap_or(true),
+                )
+                .await
+        }
+        _ => {
+            state
+                .manager
+                .create_session(model, request.variant, None, request.search.unwrap_or(true))
+                .await
+        }
+    };
+    match result {
         Ok(handle) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
         Err(e) => error(StatusCode::BAD_REQUEST, e),
     }

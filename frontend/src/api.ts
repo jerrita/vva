@@ -29,9 +29,14 @@ export interface ConfigureBody {
 
 export const api = {
   models: () => request<ModelsResponse>('/api/models'),
+  workspace: () => request<{ root: string }>('/api/workspace'),
   sessions: () => request<SessionSummary[]>('/api/sessions'),
-  createSession: (body: { model?: string; variant?: string | null; search?: boolean } = {}) =>
-    request<SessionSnapshot>('/api/sessions', json('POST', body)),
+  createSession: (body: {
+    model?: string
+    variant?: string | null
+    search?: boolean
+    workspace?: string
+  } = {}) => request<SessionSnapshot>('/api/sessions', json('POST', body)),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
   submit: (id: string, prompt: string) =>
     request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt })),
