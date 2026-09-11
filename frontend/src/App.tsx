@@ -179,10 +179,10 @@ function App() {
   };
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-gray-200 antialiased selection:bg-blue-500/30">
+    <div className="flex h-screen bg-[#09090b] text-gray-200 antialiased selection:bg-blue-500/30">
       {/* Sidebar */}
-      <div className="w-72 border-r border-gray-800 flex flex-col bg-[#0f0f11] shadow-xl z-10 shrink-0">
-        <div className="p-5 border-b border-gray-800 flex justify-between items-center bg-[#141417]">
+      <div className="w-72 border-r border-gray-800 flex flex-col bg-[#09090b] shadow-xl z-10 shrink-0">
+        <div className="p-5 border-b border-gray-800 flex justify-between items-center bg-[#18181b]">
           <h1 className="font-bold tracking-tight text-white flex items-center gap-2">
              <Terminal size={20} className="text-blue-500" />
              VVA Web
@@ -225,11 +225,11 @@ function App() {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#0a0a0a] relative">
+      <div className="flex-1 flex flex-col min-w-0 bg-[#09090b] relative">
         {currentSessionId ? (
           <>
              {/* Header */}
-             <div className="h-14 border-b border-gray-800/60 flex items-center px-6 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-10 shrink-0">
+             <div className="h-14 border-b border-gray-800/60 flex items-center px-6 bg-[#09090b]/80 backdrop-blur-md sticky top-0 z-10 shrink-0">
                 <h2 className="font-medium text-gray-300">
                    {sessionData?.title || 'Untitled Session'}
                 </h2>
@@ -239,8 +239,8 @@ function App() {
               {sessionData?.turns.map((turn, i) => (
                 <div key={i} className={`flex flex-col max-w-4xl mx-auto w-full ${turn.role === 'user' ? 'items-end' : 'items-start'}`}>
                   <div className={`flex items-center gap-2 mb-2 px-1 ${turn.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                     <div className={`w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold ${
-                        turn.role === 'user' ? 'bg-blue-600 text-white' : 'bg-purple-600 text-white'
+                     <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                        turn.role === 'user' ? 'bg-[#0d6efd] text-white' : 'bg-[#a855f7] text-white'
                      }`}>
                         {turn.role === 'user' ? 'U' : 'A'}
                      </div>
@@ -249,8 +249,8 @@ function App() {
 
                   <div className={`p-5 rounded-2xl max-w-[90%] md:max-w-[85%] shadow-sm ${
                      turn.role === 'user'
-                        ? 'bg-blue-600/90 text-white rounded-tr-sm'
-                        : 'bg-[#141417] border border-gray-800 text-gray-200 rounded-tl-sm'
+                        ? 'bg-[#0d6efd] text-white rounded-2xl rounded-tr-sm shadow-[0_4px_14px_0_rgb(0,118,255,0.39)]'
+                        : 'bg-[#18181b] border border-gray-800 text-gray-200 rounded-2xl rounded-tl-sm'
                   }`}>
                     {turn.messages.map((msg, j) => (
                       <div key={j}>
@@ -265,7 +265,7 @@ function App() {
               {(agentState || draft.length > 0) && (
                 <div className="flex flex-col max-w-4xl mx-auto w-full items-start">
                    <div className="flex items-center gap-2 mb-2 px-1 flex-row">
-                     <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold bg-purple-600 text-white shadow-[0_0_10px_rgba(147,51,234,0.5)]">
+                     <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold bg-purple-600 text-white shadow-[0_0_10px_rgba(147,51,234,0.5)]">
                         A
                      </div>
                      <span className="text-xs font-medium text-gray-500 capitalize flex items-center gap-2">
@@ -278,7 +278,7 @@ function App() {
                         )}
                      </span>
                   </div>
-                   <div className="p-5 rounded-2xl max-w-[90%] md:max-w-[85%] shadow-sm bg-[#141417] border border-blue-900/30 text-gray-200 rounded-tl-sm w-full">
+                   <div className="p-5 rounded-2xl max-w-[90%] md:max-w-[85%] shadow-sm bg-[#18181b] border border-blue-900/30 text-gray-200 rounded-tl-sm w-full">
                     {draft.map((part: any, k: number) => renderMessagePart(part, k))}
                     {agentState === "Thinking..." && draft.length === 0 && (
                        <div className="text-gray-500 animate-pulse italic text-sm">Formulating thought process...</div>
@@ -320,8 +320,8 @@ function App() {
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-500 flex-col gap-5 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#141417] to-[#0a0a0a]">
-            <div className="p-6 rounded-full bg-[#141417] border border-gray-800 shadow-2xl">
+          <div className="flex-1 flex items-center justify-center text-gray-500 flex-col gap-5 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-[#0a0a0a] to-[#0a0a0a]">
+            <div className="p-6 rounded-full bg-[#18181b] border border-gray-800 shadow-2xl">
                <Terminal size={48} className="text-blue-500/50" />
             </div>
             <div className="text-center">
