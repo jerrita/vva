@@ -256,6 +256,10 @@ impl SessionManager {
         search: bool,
     ) -> Result<Arc<ManagedSession>, String> {
         let workspace = workspace.into();
+        // 新建项目语义：目录不存在时自动创建
+        if !workspace.exists() {
+            std::fs::create_dir_all(&workspace).map_err(|e| format!("创建项目目录失败: {e}"))?;
+        }
         let resolved = self
             .config
             .resolve_model(&model, variant.as_deref())

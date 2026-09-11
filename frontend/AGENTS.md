@@ -45,7 +45,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
 - **按钮体系**：`new-create`/`send-button`（主色实心）、`ghost-button`/`new-cancel`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
 - **浮层**：
-  - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；
+  - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
   - 统计浮块（`.stats-panel`）：**非阻塞**——无遮罩，主界面可操作，仅按钮与 Esc 关闭；
   - 居中确认弹窗（`.modal-overlay` + `.confirm-modal`）：**仅用于破坏性操作**，带遮罩与模糊。
 - **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`blink` 品牌光标、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。

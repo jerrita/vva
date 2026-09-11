@@ -79,7 +79,10 @@ function NewChatPanel({
   onCreate: (workspace: string) => void
   onClose: () => void
 }) {
+  const [mode, setMode] = useState<'existing' | 'new'>('existing')
   const [workspace, setWorkspace] = useState(projects[0]?.root ?? '')
+  const [newPath, setNewPath] = useState('')
+  const [error, setError] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const anchorRef = useRef<HTMLButtonElement>(null)
 
@@ -100,6 +103,19 @@ function NewChatPanel({
       document.removeEventListener('keydown', onKeyDown)
     }
   }, [onClose])
+
+  const trimmedPath = newPath.trim().replace(/\/+$/, '')
+  const newPathValid = /^\/\S/.test(trimmedPath)
+  const canCreate = mode === 'existing' ? workspace !== '' : newPathValid
+
+  const create = () => {
+    if (!canCreate) return
+    if (mode === 'new' && !newPathValid) {
+      setError('请输入以 / 开头的绝对路径')
+      return
+    }
+    onCreate(mode === 'new' ? trimmedPath : workspace)
+  }
 
   return (
     <>
@@ -125,24 +141,67 @@ function NewChatPanel({
       </button>
       <div className="new-panel" ref={panelRef}>
         <div className="new-panel-title">新对话</div>
-        <label className="new-panel-field">
-          <span>项目</span>
-          <select value={workspace} onChange={event => setWorkspace(event.target.value)}>
-            {projects.map(project => (
-              <option key={project.root} value={project.root} title={project.root}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="new-panel-path" title={workspace}>
-          {workspace}
+        <div className="segmented">
+          <button
+            className={mode === 'existing' ? 'active' : ''}
+            onClick={() => {
+              setMode('existing')
+              setError(null)
+            }}
+          >
+            已有项目
+          </button>
+          <button
+            className={mode === 'new' ? 'active' : ''}
+            onClick={() => {
+              setMode('new')
+              setError(null)
+            }}
+          >
+            新建项目
+          </button>
         </div>
+        {mode === 'existing' ? (
+          <label className="new-panel-field">
+            <span>项目</span>
+            <select value={workspace} onChange={event => setWorkspace(event.target.value)}>
+              {projects.map(project => (
+                <option key={project.root} value={project.root} title={project.root}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label className="new-panel-field">
+            <span>项目路径</span>
+            <input
+              className="new-input"
+              value={newPath}
+              placeholder="/home/user/projects/my-app"
+              spellCheck={false}
+              autoFocus
+              onChange={event => {
+                setNewPath(event.target.value)
+                setError(null)
+              }}
+              onKeyDown={event => {
+                if (event.key === 'Enter') create()
+              }}
+            />
+          </label>
+        )}
+        <div className="new-panel-path" title={mode === 'existing' ? workspace : trimmedPath}>
+          {mode === 'existing'
+            ? workspace
+            : trimmedPath || '目录不存在时将自动创建'}
+        </div>
+        {error && <div className="new-panel-error">{error}</div>}
         <div className="new-panel-actions">
           <button className="new-cancel" onClick={onClose}>
             取消
           </button>
-          <button className="new-create" disabled={!workspace} onClick={() => onCreate(workspace)}>
+          <button className="new-create" disabled={!canCreate} onClick={create}>
             创建会话
           </button>
         </div>
