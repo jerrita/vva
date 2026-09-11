@@ -138,7 +138,7 @@ src/
     ├── api.rs              # REST + SSE API (会话 CRUD/提交/中止/配置/事件流订阅/模型清单)
     └── server.rs           # 路由组装与静态资源服务 (rust_embed 内嵌前端 dist，SPA 回退)
 
-frontend/                    # Web 前端源码 (React + Vite + TypeScript)；build.rs 构件期编译，产物 dist 由 rust_embed 打包进二进制
+frontend/                    # Web 前端源码 (React + Vite + TypeScript)；build.rs 构件期编译，产物 dist 由 rust_embed 打包进二进制；设计规范与开发契约见 frontend/AGENTS.md
 ```
 
 ---
