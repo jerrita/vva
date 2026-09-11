@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import type { SessionSummary } from '../types'
-
 export interface SessionGroup {
   project: string
   sessions: SessionSummary[]
@@ -168,6 +167,17 @@ export function Sidebar({
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [newOpen, setNewOpen] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
+
+  // Esc 关闭删除确认弹窗
+  useEffect(() => {
+    if (!pendingDelete) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPendingDelete(null)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [pendingDelete])
 
   const toggle = (project: string) => {
     setCollapsed(prev => {
@@ -257,7 +267,7 @@ export function Sidebar({
                     aria-label="删除会话"
                     onClick={event => {
                       event.stopPropagation()
-                      if (window.confirm('删除该会话？')) onDelete(session.id)
+                      setPendingDelete(session)
                     }}
                   >
                     <svg
@@ -279,6 +289,30 @@ export function Sidebar({
         ))}
       </nav>
       <div className="sidebar-foot">Vendor-Versatile Agent Harness</div>
+      {pendingDelete && (
+        <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
+          <div className="confirm-modal" onClick={event => event.stopPropagation()}>
+            <div className="confirm-title">删除会话</div>
+            <div className="confirm-message">
+              确定删除「{pendingDelete.title || '新对话'}」？删除后无法恢复。
+            </div>
+            <div className="confirm-actions">
+              <button className="ghost-button" onClick={() => setPendingDelete(null)}>
+                取消
+              </button>
+              <button
+                className="danger-button"
+                onClick={() => {
+                  onDelete(pendingDelete.id)
+                  setPendingDelete(null)
+                }}
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   )
 }
