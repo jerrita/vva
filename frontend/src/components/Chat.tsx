@@ -88,7 +88,7 @@ export function Chat({
       )}
       {showDraft && (
         <div className="msg assistant">
-          <Parts parts={snap.draft} />
+          <Parts parts={snap.draft} live={running} />
           {running && (
             <div className="status-chip">
               <span className="dot" />

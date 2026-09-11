@@ -33,35 +33,39 @@ function ToolResultView({ content, isError }: { content: string; isError: boolea
   )
 }
 
-function WebSearchView({ call }: { call: WebSearchCall }) {
-  const label =
-    call.action.type === 'open_page'
-      ? '打开网页'
-      : call.action.type === 'find_in_page'
-        ? '页内查找'
-        : '网络搜索'
-  const target =
-    call.action.type === 'search' ? call.query : call.action.url
+function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: boolean }) {
+  const head = (
+    <>
+      <span className="block-icon">⌕</span>
+      <span className="search-label">
+        {call.action.type === 'open_page'
+          ? '打开网页'
+          : call.action.type === 'find_in_page'
+            ? '页内查找'
+            : '网络搜索'}
+      </span>
+      <code className="search-target">
+        {call.action.type === 'search' ? call.query : call.action.url}
+      </code>
+      <span className={`search-status ${call.status}`}>{call.status}</span>
+    </>
+  )
+  if (!call.sources || call.sources.length === 0) {
+    return <div className="block search"><div className="search-head">{head}</div></div>
+  }
   return (
-    <div className="block search">
-      <div className="search-head">
-        <span className="block-icon">⌕</span>
-        <span className="search-label">{label}</span>
-        <code className="search-target">{target}</code>
-        <span className={`search-status ${call.status}`}>{call.status}</span>
-      </div>
-      {call.sources && call.sources.length > 0 && (
-        <ul className="search-sources">
-          {call.sources.map((source, index) => (
-            <li key={index}>
-              <a href={source.url} target="_blank" rel="noreferrer">
-                {source.title}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <details className="block search" open={expanded}>
+      <summary>{head}</summary>
+      <ul className="search-sources">
+        {call.sources.map((source, index) => (
+          <li key={index}>
+            <a href={source.url} target="_blank" rel="noreferrer">
+              {source.title}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }
 
@@ -81,7 +85,7 @@ function Citations({ annotations }: { annotations: Annotation[] }) {
   )
 }
 
-export function Part({ part }: { part: ContentPart }) {
+export function Part({ part, expanded }: { part: ContentPart; expanded: boolean }) {
   switch (part.type) {
     case 'text':
       return (
@@ -94,7 +98,7 @@ export function Part({ part }: { part: ContentPart }) {
       )
     case 'reasoning':
       return (
-        <details className="block reasoning" open>
+        <details className="block reasoning" open={expanded}>
           <summary>
             <span className="block-icon">✦</span>
             <span>思考过程</span>
@@ -107,7 +111,7 @@ export function Part({ part }: { part: ContentPart }) {
     case 'tool_result':
       return <ToolResultView content={part.content} isError={part.is_error} />
     case 'web_search_call':
-      return <WebSearchView call={part} />
+      return <WebSearchView call={part} expanded={expanded} />
     case 'image':
       return (
         <img
@@ -123,11 +127,15 @@ export function Part({ part }: { part: ContentPart }) {
   }
 }
 
-export function Parts({ parts }: { parts: ContentPart[] }) {
+/**
+ * live 表示流式生成中：末尾块保持展开，出现后续块时自动收起；
+ * 历史内容默认收起，用户可手动展开。
+ */
+export function Parts({ parts, live = false }: { parts: ContentPart[]; live?: boolean }) {
   return (
     <>
       {parts.map((part, index) => (
-        <Part key={index} part={part} />
+        <Part key={index} part={part} expanded={live && index === parts.length - 1} />
       ))}
     </>
   )

@@ -42,6 +42,7 @@ pub async fn run_server(
         .route("/api/sessions/{id}/abort", post(api::abort_session))
         .route("/api/sessions/{id}/config", post(api::configure_session))
         .route("/api/sessions/{id}/events", get(api::stream_events))
+        .route("/api/sessions/{id}/stats", get(api::session_stats))
         .fallback(static_handler)
         .with_state(AppState { manager });
 

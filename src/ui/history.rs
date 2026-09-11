@@ -1,9 +1,10 @@
 use crate::config::AppConfig;
 use crate::config::model::ModelCostConfig;
 use crate::model::Session;
+use serde::Serialize;
 
 /// 侧边栏展示的会话全局统计数据
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SidebarStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,

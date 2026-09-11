@@ -3,15 +3,32 @@ import { api } from './api'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
 import { Composer } from './components/Composer'
-import { Sidebar } from './components/Sidebar'
-import type { ModelsResponse, SessionSnapshot, SessionSummary } from './types'
-
-function sorted(list: SessionSummary[]): SessionSummary[] {
-  return [...list].sort((a, b) => b.created_at.localeCompare(a.created_at))
-}
+import { Sidebar, groupByProject } from './components/Sidebar'
+import type { ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function fmtNum(value: number): string {
+  return value.toLocaleString()
+}
+
+function fmtCost(value: number): string {
+  if (value <= 0) return '—'
+  return `$${value >= 0.01 ? value.toFixed(2) : value.toFixed(4)}`
+}
+
+function StatRow({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="stat-row">
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">
+        {value}
+        {sub && <span className="stat-sub">{sub}</span>}
+      </span>
+    </div>
+  )
 }
 
 export default function App() {
@@ -22,16 +39,24 @@ export default function App() {
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [statsOpen, setStatsOpen] = useState(false)
+  const [stats, setStats] = useState<SidebarStats | null>(null)
+
+  // 未创建会话前的模型偏好，创建会话时生效
+  const [draftModel, setDraftModel] = useState<string | null>(null)
+  const [draftVariant, setDraftVariant] = useState<string | null>(null)
+  const [draftSearch, setDraftSearch] = useState(true)
 
   const running = snap !== null && snap.state !== ''
   const active = snap?.session ?? null
+  const turnCount = active?.turns.length ?? 0
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
-    api.sessions().then(list => setSessions(sorted(list))).catch(e => setError(toError(e)))
+    api.sessions().then(setSessions).catch(e => setError(toError(e)))
   }, [])
 
   // 切换会话时建立 SSE 订阅，连接建立即收到当前快照
@@ -43,6 +68,7 @@ export default function App() {
     }
     setSnap(null)
     setPending(null)
+    setStatsOpen(false)
     const source = new EventSource(`/api/sessions/${activeId}/events`)
     source.onmessage = event => {
       try {
@@ -72,7 +98,7 @@ export default function App() {
       current_variant: s.current_variant ?? null,
       web_search: s.web_search,
     }
-    setSessions(prev => sorted([summary, ...prev.filter(item => item.id !== s.id)]))
+    setSessions(prev => [summary, ...prev.filter(item => item.id !== s.id)])
   }, [snap])
 
   // 乐观展示的用户消息在会话中出现后移除
@@ -90,6 +116,21 @@ export default function App() {
     if (el && nearBottom.current) el.scrollTop = el.scrollHeight
   }, [snap])
 
+  // 统计面板数据：打开时与轮次变化时刷新
+  useEffect(() => {
+    if (!statsOpen || !activeId) return
+    let cancelled = false
+    api
+      .stats(activeId)
+      .then(value => {
+        if (!cancelled) setStats(value)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [statsOpen, activeId, turnCount])
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
@@ -101,7 +142,11 @@ export default function App() {
       setError(null)
       try {
         if (!activeId) {
-          const created = await api.createSession({})
+          const created = await api.createSession({
+            model: draftModel ?? undefined,
+            variant: draftVariant,
+            search: draftSearch,
+          })
           setActiveId(created.session.id)
           await api.submit(created.session.id, text)
         } else {
@@ -112,7 +157,7 @@ export default function App() {
         setError(toError(e))
       }
     },
-    [activeId],
+    [activeId, draftModel, draftVariant, draftSearch],
   )
 
   const abort = useCallback(async () => {
@@ -127,13 +172,17 @@ export default function App() {
   const newChat = useCallback(async () => {
     setError(null)
     try {
-      const created = await api.createSession({})
+      const created = await api.createSession({
+        model: draftModel ?? undefined,
+        variant: draftVariant,
+        search: draftSearch,
+      })
       setActiveId(created.session.id)
       setSidebarOpen(false)
     } catch (e) {
       setError(toError(e))
     }
-  }, [])
+  }, [draftModel, draftVariant, draftSearch])
 
   const removeSession = useCallback(
     async (id: string) => {
@@ -160,13 +209,86 @@ export default function App() {
     [activeId],
   )
 
-  const currentModel = active?.current_model || models?.default || ''
+  const currentModel = active?.current_model ?? draftModel ?? models?.default ?? ''
+  const currentVariant = active?.current_variant ?? draftVariant
+  const currentSearch = active?.web_search ?? draftSearch
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
+
+  const changeModel = (spec: string) => {
+    if (activeId) {
+      configure({ model: spec })
+      return
+    }
+    setDraftModel(spec || null)
+    const variants = models?.models.find(entry => entry.spec === spec)?.variants ?? []
+    if (draftVariant && !variants.includes(draftVariant)) setDraftVariant(null)
+  }
+
+  const changeVariant = (variant: string | null) => {
+    if (activeId) {
+      configure({ variant })
+      return
+    }
+    setDraftVariant(variant)
+  }
+
+  const changeSearch = (search: boolean) => {
+    if (activeId) {
+      configure({ search })
+      return
+    }
+    setDraftSearch(search)
+  }
+
+  const modelOptions =
+    models?.models.length && models.models.length > 0
+      ? models.models
+      : [{ spec: currentModel, name: currentModel, provider: '', variants: [] }]
+
+  const composerControls = (
+    <>
+      <select
+        className="chip"
+        value={currentModel}
+        onChange={event => changeModel(event.target.value)}
+        title="模型"
+      >
+        {modelOptions.map(entry => (
+          <option key={entry.spec} value={entry.spec}>
+            {entry.name || entry.spec}
+          </option>
+        ))}
+      </select>
+      {modelEntry && modelEntry.variants.length > 0 && (
+        <select
+          className="chip"
+          value={currentVariant ?? ''}
+          onChange={event => changeVariant(event.target.value || null)}
+          title="推理档位"
+        >
+          <option value="">档位</option>
+          {modelEntry.variants.map(variant => (
+            <option key={variant} value={variant}>
+              {variant}
+            </option>
+          ))}
+        </select>
+      )}
+      <label className="chip-toggle" title="原生网络搜索">
+        <input
+          type="checkbox"
+          checked={currentSearch}
+          onChange={event => changeSearch(event.target.checked)}
+        />
+        搜索
+      </label>
+    </>
+  )
 
   return (
     <div className={`app${sidebarOpen ? ' sidebar-open' : ''}`}>
       <Sidebar
-        sessions={sessions}
+        groups={groupByProject(sessions)}
         activeId={activeId}
         onSelect={id => {
           setActiveId(id)
@@ -197,47 +319,26 @@ export default function App() {
             </svg>
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
-          <div className="topbar-controls">
-            <select
-              value={currentModel}
-              disabled={!activeId}
-              onChange={event => configure({ model: event.target.value })}
-              title="模型"
+          <button
+            className="icon-ghost"
+            onClick={() => setStatsOpen(value => !value)}
+            disabled={!activeId}
+            title="会话统计"
+            aria-label="会话统计"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="17"
+              height="17"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              aria-hidden
             >
-              {(models?.models.length
-                ? models.models
-                : [{ spec: currentModel, name: currentModel, provider: '', variants: [] }]
-              ).map(entry => (
-                <option key={entry.spec} value={entry.spec}>
-                  {entry.name || entry.spec}
-                </option>
-              ))}
-            </select>
-            {modelEntry && modelEntry.variants.length > 0 && (
-              <select
-                value={active?.current_variant ?? ''}
-                disabled={!activeId}
-                onChange={event => configure({ variant: event.target.value || null })}
-                title="推理档位"
-              >
-                <option value="">档位</option>
-                {modelEntry.variants.map(variant => (
-                  <option key={variant} value={variant}>
-                    {variant}
-                  </option>
-                ))}
-              </select>
-            )}
-            <label className="search-toggle" title="原生网络搜索">
-              <input
-                type="checkbox"
-                checked={active?.web_search ?? false}
-                disabled={!activeId}
-                onChange={event => configure({ search: event.target.checked })}
-              />
-              搜索
-            </label>
-          </div>
+              <path d="M5 20v-6M12 20V8M19 20V4" />
+            </svg>
+          </button>
         </header>
         {error && (
           <div className="banner error" onClick={() => setError(null)}>
@@ -251,11 +352,55 @@ export default function App() {
             ))}
           </div>
         )}
+        {statsOpen && active && (
+          <>
+            <div className="stats-backdrop" onClick={() => setStatsOpen(false)} />
+            <div className="stats-panel">
+              <div className="stats-head">
+                <span>会话统计</span>
+                <span className="stats-model" title={active.current_model}>
+                  {active.current_model}
+                </span>
+              </div>
+              {stats ? (
+                <div className="stats-rows">
+                  <StatRow label="轮次" value={fmtNum(stats.total_turns)} />
+                  <StatRow
+                    label="Token"
+                    value={fmtNum(stats.total_tokens)}
+                    sub={` ↑${fmtNum(stats.prompt_tokens)} ↓${fmtNum(stats.completion_tokens)}`}
+                  />
+                  <StatRow
+                    label="上下文"
+                    value={
+                      stats.context_limit
+                        ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}%`
+                        : fmtNum(stats.context_tokens)
+                    }
+                    sub={
+                      stats.context_limit
+                        ? ` ${fmtNum(stats.context_tokens)} / ${fmtNum(stats.context_limit)}`
+                        : undefined
+                    }
+                  />
+                  <StatRow
+                    label="缓存"
+                    value={`读 ${fmtNum(stats.cache_read_tokens)}`}
+                    sub={` · 写 ${fmtNum(stats.cache_write_tokens)}`}
+                  />
+                  <StatRow label="预估费用" value={fmtCost(stats.estimated_cost_usd)} />
+                </div>
+              ) : (
+                <div className="stats-empty">加载中…</div>
+              )}
+            </div>
+          </>
+        )}
         <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
           <Chat snap={snap} pending={pending} />
         </div>
         <div className="composer-area">
-          <Composer running={running} onSend={submit} onStop={abort} />
+          <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
         </div>
       </main>
     </div>

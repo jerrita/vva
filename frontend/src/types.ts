@@ -138,3 +138,15 @@ export interface ModelsResponse {
   default: string
   models: ModelEntry[]
 }
+
+export interface SidebarStats {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  context_tokens: number
+  context_limit?: number | null
+  cache_read_tokens: number
+  cache_write_tokens: number
+  estimated_cost_usd: number
+  total_turns: number
+}

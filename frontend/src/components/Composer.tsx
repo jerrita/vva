@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 
 export function Composer({
   running,
   onSend,
   onStop,
+  controls,
 }: {
   running: boolean
   onSend: (text: string) => void
   onStop: () => void
+  controls?: ReactNode
 }) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -52,36 +54,39 @@ export function Composer({
         }}
         onKeyDown={onKeyDown}
       />
-      {running ? (
-        <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden>
-            <rect x="6" y="6" width="12" height="12" rx="2" />
-          </svg>
-        </button>
-      ) : (
-        <button
-          className="send-button"
-          onClick={send}
-          disabled={!text.trim()}
-          title="发送"
-          aria-label="发送"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="18"
-            height="18"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
+      <div className="composer-foot">
+        <div className="composer-tools">{controls}</div>
+        {running ? (
+          <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden>
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+        ) : (
+          <button
+            className="send-button"
+            onClick={send}
+            disabled={!text.trim()}
+            title="发送"
+            aria-label="发送"
           >
-            <path d="M12 19V5" />
-            <path d="M5 12l7-7 7 7" />
-          </svg>
-        </button>
-      )}
+            <svg
+              viewBox="0 0 24 24"
+              width="17"
+              height="17"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M12 19V5" />
+              <path d="M5 12l7-7 7 7" />
+            </svg>
+          </button>
+        )}
+      </div>
     </div>
   )
 }

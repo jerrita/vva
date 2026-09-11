@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::harness::SessionView;
+use crate::ui::history::compute_stats;
 
 use super::server::AppState;
 
@@ -205,6 +206,16 @@ pub async fn configure_session(
         Ok(()) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
         Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
+}
+
+/// 会话统计 (Token 消耗、缓存命中与预估花费)，复用 TUI 侧栏的 compute_stats 投影
+pub async fn session_stats(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let handle = match state.manager.get_or_load(&id).await {
+        Ok(handle) => handle,
+        Err(_) => return not_found(&id),
+    };
+    let view = handle.snapshot();
+    Json(compute_stats(&view.session, state.manager.app_config())).into_response()
 }
 
 /// SSE 订阅会话视图；连接建立即推送当前快照，此后按发布节流推送增量

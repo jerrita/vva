@@ -1,24 +1,48 @@
 import type { SessionSummary } from '../types'
 
-function relativeTime(iso: string): string {
-  const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000)
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes} 分钟前`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days} 天前`
-  return new Date(iso).toLocaleDateString()
+interface SessionGroup {
+  project: string
+  sessions: SessionSummary[]
+}
+
+/** workspace 路径末段作为项目展示名 */
+function projectName(root: string): string {
+  const trimmed = root.replace(/\/+$/, '')
+  const name = trimmed.slice(trimmed.lastIndexOf('/') + 1)
+  return name || trimmed
+}
+
+/** 按 project 分组；组内与组间均按最新会话排序 */
+export function groupByProject(sessions: SessionSummary[]): SessionGroup[] {
+  const groups = new Map<string, SessionSummary[]>()
+  for (const session of sessions) {
+    const project = projectName(session.workspace_root)
+    const list = groups.get(project)
+    if (list) {
+      list.push(session)
+    } else {
+      groups.set(project, [session])
+    }
+  }
+  return [...groups.values()]
+    .map(list => ({
+      project: projectName(list[0].workspace_root),
+      sessions: list.sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    }))
+    .sort(
+      (a, b) =>
+        b.sessions[0].created_at.localeCompare(a.sessions[0].created_at),
+    )
 }
 
 export function Sidebar({
-  sessions,
+  groups,
   activeId,
   onSelect,
   onNew,
   onDelete,
 }: {
-  sessions: SessionSummary[]
+  groups: SessionGroup[]
   activeId: string | null
   onSelect: (id: string) => void
   onNew: () => void
@@ -45,40 +69,44 @@ export function Sidebar({
         </button>
       </div>
       <nav className="session-list">
-        {sessions.length === 0 && <div className="session-empty">暂无会话</div>}
-        {sessions.map(session => (
-          <div
-            key={session.id}
-            className={`session-item${session.id === activeId ? ' active' : ''}`}
-            onClick={() => onSelect(session.id)}
-          >
-            <div className="session-title">{session.title || '新对话'}</div>
-            <div className="session-meta">
-              <span className="session-model">{session.current_model}</span>
-              <span>{relativeTime(session.created_at)}</span>
+        {groups.length === 0 && <div className="session-empty">暂无会话</div>}
+        {groups.map(group => (
+          <div key={group.project} className="session-group">
+            <div className="group-label" title={group.project}>
+              {group.project}
             </div>
-            <button
-              className="session-delete"
-              title="删除会话"
-              aria-label="删除会话"
-              onClick={event => {
-                event.stopPropagation()
-                if (window.confirm('删除该会话？')) onDelete(session.id)
-              }}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="13"
-                height="13"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                aria-hidden
+            {group.sessions.map(session => (
+              <div
+                key={session.id}
+                className={`session-item${session.id === activeId ? ' active' : ''}`}
+                title={session.title || '新对话'}
+                onClick={() => onSelect(session.id)}
               >
-                <path d="M18 6L6 18M6 6l12 12" />
-              </svg>
-            </button>
+                <div className="session-title">{session.title || '新对话'}</div>
+                <button
+                  className="session-delete"
+                  title="删除会话"
+                  aria-label="删除会话"
+                  onClick={event => {
+                    event.stopPropagation()
+                    if (window.confirm('删除该会话？')) onDelete(session.id)
+                  }}
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="13"
+                    height="13"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    aria-hidden
+                  >
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            ))}
           </div>
         ))}
       </nav>

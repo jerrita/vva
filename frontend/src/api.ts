@@ -1,4 +1,4 @@
-import type { ModelsResponse, SessionSnapshot, SessionSummary } from './types'
+import type { ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -38,4 +38,5 @@ export const api = {
   abort: (id: string) => request<void>(`/api/sessions/${id}/abort`, { method: 'POST' }),
   configure: (id: string, body: ConfigureBody) =>
     request<SessionSnapshot>(`/api/sessions/${id}/config`, json('POST', body)),
+  stats: (id: string) => request<SidebarStats>(`/api/sessions/${id}/stats`),
 }
