@@ -184,7 +184,10 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
-        <span className="brand">vva</span>
+        <span className="brand">
+          vva
+          <span className="brand-cursor" aria-hidden />
+        </span>
         {newOpen && projects.length > 0 ? (
           <NewChatPanel
             projects={projects}
@@ -219,8 +222,12 @@ export function Sidebar({
       </div>
       <nav className="session-list">
         {groups.length === 0 && <div className="session-empty">暂无会话</div>}
-        {groups.map(group => (
-          <div key={group.project} className="session-group">
+        {groups.map((group, index) => (
+          <div
+            key={group.project}
+            className="session-group"
+            style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
+          >
             <button
               className={`group-label${collapsed.has(group.project) ? ' closed' : ''}`}
               onClick={() => toggle(group.project)}

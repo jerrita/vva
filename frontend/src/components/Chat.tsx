@@ -140,7 +140,10 @@ export function Chat({
   if (!snap) {
     return (
       <div className="chat-empty">
-        <div className="chat-empty-brand">vva</div>
+        <div className="chat-empty-brand">
+          vva
+          <span className="brand-cursor" aria-hidden />
+        </div>
         <div className="chat-empty-hint">点击左侧「新对话」开始</div>
       </div>
     )
