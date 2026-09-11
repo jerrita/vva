@@ -842,6 +842,34 @@ body.resizing .chat-scroll {
   font-size: 12px;
 }
 
+/* 工具组：状态 + intent */
+.block.tool > summary .status.ok {
+  color: var(--accent);
+}
+
+.block.tool > summary .status.error {
+  color: var(--danger);
+}
+
+.block.tool > summary .status.pending {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rose);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.tool-intent {
+  flex: 1 1 auto;
+  min-width: 48px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .block.reasoning > summary {
   color: var(--text);
 }

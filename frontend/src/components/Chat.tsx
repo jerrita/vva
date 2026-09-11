@@ -93,7 +93,7 @@ function WorkedBlock({ group }: { group: WorkGroup }) {
   const ms = group.workedMs ?? group.elapsedMs
   return (
     <details className="worked" open={group.errors > 0}>
-      <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '用时'}</summary>
+      <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
       <div className="worked-body">
         <Parts parts={group.parts} />
       </div>
