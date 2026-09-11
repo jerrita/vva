@@ -43,7 +43,8 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章。
 - **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`。
 - **空态**：无会话时为 `.empty-stage` 居中版式（品牌大字 + 提示 + 强调输入框），输入框工具行含项目指定；发首条消息即按所选项目创建会话。
-- **内容块**：统一走 `.block`（`<details>` + `<summary>` + `▸` 箭头旋转展开），宽度恒 100%；搜索/思考/工具/结果块共用此模式。
+- **内容块**：统一走 `.block`（`<details>` + `<summary>` + `▸` 箭头旋转展开），宽度恒 100%；搜索/思考/工具块共用此模式。
+- **工具卡片**：`tool_call` 与其 `tool_result` 按 `tool_call_id` 配对为单卡片，展示粒度对齐 TUI `src/ui/views/chat.rs`——摘要行=状态（✓/✕/运行中脉冲）+ 工具名 + 按工具类型 detail（Read 带 `[offset,limit]`、Edit 带 `(+n,-n)` 着色、Glob 带 matches、Grep 带 `include, pattern`、Shell 用 intent 字段）；主体=命令/路径行（Shell 为 `$ command`）+ 结果前 10 行（`PREVIEW_LIMIT`）+「展开全部」嵌套 details；Edit/Write 主体为 diff（红删绿加）与行号内容且默认展开，Shell 默认展开预览，其余默认收起。
 - **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
 - **按钮体系**：`new-create`/`send-button`（主色实心）、`ghost-button`/`new-cancel`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
 - **浮层**：

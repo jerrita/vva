@@ -1,37 +1,105 @@
 import type { Annotation, ContentPart, ToolCall, ToolResult, WebSearchCall } from '../types'
 import { Markdown } from './Markdown'
 
-function prettyJson(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2)
-  } catch {
-    return raw
-  }
-}
+/** 与 TUI 对齐的结果预览行数上限 */
+const PREVIEW_LIMIT = 10
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
 }
 
-/** 工具的意图摘要：Shell 用显式 intent 字段，其余工具回退到主要参数 */
-function toolIntent(args: string): string {
+function parseArgs(args: string): Record<string, unknown> | null {
   try {
-    const parsed = JSON.parse(args) as Record<string, unknown>
-    if (parsed && typeof parsed === 'object') {
-      if (typeof parsed.intent === 'string' && parsed.intent) {
-        return parsed.intent
-      }
-      for (const key of ['command', 'path', 'pattern', 'query', 'url']) {
-        const value = parsed[key]
-        if (typeof value === 'string' && value) {
-          return value
-        }
-      }
-    }
+    const value: unknown = JSON.parse(args)
+    return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
   } catch {
-    // 非 JSON 参数时原样截断展示
+    return null
   }
-  return args
+}
+
+function str(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+function lineCount(text: string): number {
+  return text === '' ? 0 : text.split('\n').length
+}
+
+/** 摘要行的按工具类型 detail，对齐 TUI tool_call_detail */
+interface ToolDetail {
+  text: string
+  /** Edit 专用：增删行数着色展示 */
+  editPath?: string
+  plus?: number
+  minus?: number
+}
+
+function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
+  const args = parseArgs(call.arguments)
+  if (!args) return { text: truncate(call.arguments, 88) }
+  switch (call.name) {
+    case 'Read': {
+      const path = str(args.path) ?? truncate(call.arguments, 88)
+      const offset = typeof args.offset === 'number' ? args.offset : 1
+      const limit = typeof args.limit === 'number' ? String(args.limit) : 'all'
+      return { text: `${path} [offset=${offset}, limit=${limit}]` }
+    }
+    case 'Write':
+      return { text: str(args.path) ?? truncate(call.arguments, 88) }
+    case 'Edit': {
+      const path = str(args.path)
+      const oldString = str(args.old_string)
+      const newString = str(args.new_string)
+      if (path && oldString !== null && newString !== null) {
+        return { text: path, editPath: path, plus: lineCount(newString), minus: lineCount(oldString) }
+      }
+      return { text: truncate(call.arguments, 88) }
+    }
+    case 'Glob': {
+      const pattern = str(args.pattern) ?? truncate(call.arguments, 88)
+      if (result && !result.is_error) {
+        const count = result.content
+          .split('\n')
+          .filter(line => line !== '' && line !== '[results truncated]').length
+        return { text: `"${pattern}" (${count} ${count === 1 ? 'match' : 'matches'})` }
+      }
+      return { text: `"${pattern}"` }
+    }
+    case 'Grep': {
+      const pattern = str(args.pattern)
+      if (!pattern) return { text: truncate(call.arguments, 88) }
+      const include = str(args.include)
+      return { text: include ? `${include}, ${pattern}` : pattern }
+    }
+    case 'Shell':
+      return { text: str(args.intent) ?? truncate(call.arguments, 88) }
+    default:
+      return { text: truncate(call.arguments, 88) }
+  }
+}
+
+/** 主体首行的命令/路径预览，对齐 TUI tool_block_command */
+function toolCommand(call: ToolCall): string | null {
+  const args = parseArgs(call.arguments)
+  if (!args) return null
+  switch (call.name) {
+    case 'Shell': {
+      const command = str(args.command)
+      return command ? `$ ${command}` : null
+    }
+    case 'Read':
+    case 'Write':
+    case 'Edit':
+      return str(args.path)
+    case 'Glob': {
+      const pattern = str(args.pattern)
+      return pattern ? `"${pattern}"` : null
+    }
+    case 'Grep':
+      return str(args.pattern)
+    default:
+      return null
+  }
 }
 
 /** 工具调用与其结果配对后的节点 */
@@ -40,36 +108,101 @@ interface ToolGroupNode {
   result: ToolResult | null
 }
 
+interface BodyRow {
+  marker?: string
+  cls?: string
+  num?: number
+  text: string
+}
+
+function writeBodyRows(args: Record<string, unknown>): BodyRow[] {
+  const content = str(args.content) ?? ''
+  return content.split('\n').map((line, index) => ({
+    num: index + 1,
+    text: line === '' ? ' ' : line,
+  }))
+}
+
+function editBodyRows(args: Record<string, unknown>): BodyRow[] {
+  const rows: BodyRow[] = []
+  const oldString = str(args.old_string) ?? ''
+  const newString = str(args.new_string) ?? ''
+  for (const line of oldString.split('\n')) {
+    rows.push({ marker: '-', cls: 'del', text: line === '' ? ' ' : line })
+  }
+  for (const line of newString.split('\n')) {
+    rows.push({ marker: '+', cls: 'ins', text: line === '' ? ' ' : line })
+  }
+  return rows
+}
+
+function RowsView({ rows }: { rows: BodyRow[] }) {
+  return (
+    <pre className="tool-rows">
+      {rows.map((row, index) => (
+        <div key={index} className={row.cls}>
+          {row.num != null && <span className="row-num">{row.num} </span>}
+          {row.marker != null && <span className="row-marker">{row.marker} </span>}
+          {row.text}
+        </div>
+      ))}
+    </pre>
+  )
+}
+
 function ToolGroupView({ node }: { node: ToolGroupNode }) {
   const { call, result } = node
-  const intent = truncate(toolIntent(call.arguments), 88)
+  const detail = toolDetail(call, result)
+  const args = parseArgs(call.arguments)
+  const command = toolCommand(call)
+  const isError = result?.is_error ?? false
+
+  // 与 TUI default_tool_expand 一致：Edit/Write 全量、Shell 预览、其余收起
+  const defaultOpen = isError || call.name === 'Edit' || call.name === 'Write' || call.name === 'Shell'
+
+  let rows: BodyRow[] | null = null
+  if (result && !isError && args) {
+    if (call.name === 'Write') rows = writeBodyRows(args)
+    else if (call.name === 'Edit') rows = editBodyRows(args)
+  }
+
+  const resultLines = result ? result.content.split('\n') : []
+  const preview = resultLines.slice(0, PREVIEW_LIMIT)
+  const rest = resultLines.length - preview.length
+
   return (
-    <details className="block tool" open={result?.is_error ?? false}>
+    <details className="block tool" open={defaultOpen}>
       <summary>
         {result ? (
-          <span className={`block-icon status ${result.is_error ? 'error' : 'ok'}`}>
-            {result.is_error ? '✕' : '✓'}
+          <span className={`block-icon status ${isError ? 'error' : 'ok'}`}>
+            {isError ? '✕' : '✓'}
           </span>
         ) : (
           <span className="block-icon status pending" />
         )}
         <code>{call.name}</code>
-        <span className="tool-intent">{intent}</span>
+        {detail.editPath ? (
+          <span className="tool-intent">
+            {detail.editPath} <span className="diff-count ins">(+{detail.plus})</span>
+            {', '}
+            <span className="diff-count del">(-{detail.minus})</span>
+          </span>
+        ) : (
+          <span className="tool-intent">{detail.text}</span>
+        )}
       </summary>
-      <pre>{prettyJson(call.arguments)}</pre>
-      {result && <pre>{result.content}</pre>}
-    </details>
-  )
-}
-
-function ToolResultView({ content, isError }: { content: string; isError: boolean }) {
-  return (
-    <details className={`block tool result${isError ? ' error' : ''}`} open={isError}>
-      <summary>
-        <span className="block-icon">{isError ? '✕' : '✓'}</span>
-        <span>{isError ? '执行失败' : '执行结果'}</span>
-      </summary>
-      <pre>{content}</pre>
+      {command && <pre className="tool-cmd">{command}</pre>}
+      {rows && <RowsView rows={rows} />}
+      {!rows && result && !isError && (
+        <pre>{preview.join('\n') || ' '}</pre>
+      )}
+      {result && isError && <pre>{result.content}</pre>}
+      {!rows && result && !isError && rest > 0 && (
+        <details className="tool-more">
+          <summary>展开全部（共 {resultLines.length} 行）</summary>
+          <pre>{resultLines.join('\n')}</pre>
+        </details>
+      )}
     </details>
   )
 }
@@ -144,7 +277,17 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
         </details>
       )
     case 'tool_result':
-      return <ToolResultView content={part.content} isError={part.is_error} />
+      return (
+        <details className="block tool" open={part.is_error}>
+          <summary>
+            <span className={`block-icon status ${part.is_error ? 'error' : 'ok'}`}>
+              {part.is_error ? '✕' : '✓'}
+            </span>
+            <span>执行结果</span>
+          </summary>
+          <pre>{part.content}</pre>
+        </details>
+      )
     case 'web_search_call':
       return <WebSearchView call={part} expanded={expanded} />
     case 'image':
