@@ -1,30 +1,31 @@
 /* ============================================================
-   vva web — "Terminal Editorial"
-   暖纸 / 暖黑双主题 · 国际橙信号色 · Space Grotesk + JetBrains Mono
+   vva web — "Terminal Editorial" · Vivian 紫
+   薰衣草/茄紫双主题 · 紫罗兰信号色 + 绯红点睛 · Space Grotesk + JetBrains Mono
    ============================================================ */
 
 :root {
-  --bg: #f4f1ec;
-  --panel: #fdfcfa;
-  --panel-2: #f6f3ee;
-  --border: #e2ddd3;
-  --border-soft: #ebe7de;
-  --text: #1d1a16;
-  --muted: #847d71;
-  --faint: #a8a196;
-  --accent: #dd4a0e;
-  --accent-hover: #c73f09;
-  --accent-soft: rgba(221, 74, 14, 0.08);
-  --on-accent: #fff8f3;
-  --bubble-user: #23201b;
-  --bubble-user-text: #f6f3ee;
-  --code-bg: #f1ede5;
-  --danger: #c2371f;
-  --danger-soft: #fbeae5;
-  --warning: #96690d;
-  --warning-soft: #faf3df;
-  --dot: rgba(29, 26, 22, 0.045);
-  --shadow: 0 1px 2px rgba(41, 35, 26, 0.05), 0 8px 28px rgba(41, 35, 26, 0.08);
+  --bg: #f1edf9;
+  --panel: #fbfaff;
+  --panel-2: #f3effa;
+  --border: #e2dcf0;
+  --border-soft: #ebe6f5;
+  --text: #241d38;
+  --muted: #7b7294;
+  --faint: #a79dbd;
+  --accent: #7252d9;
+  --accent-hover: #5f42c4;
+  --accent-soft: rgba(114, 82, 217, 0.09);
+  --on-accent: #ffffff;
+  --rose: #d63360;
+  --bubble-user: #2c2440;
+  --bubble-user-text: #f0ecfa;
+  --code-bg: #efeaf8;
+  --danger: #c62f48;
+  --danger-soft: #fae7ec;
+  --warning: #8d6a12;
+  --warning-soft: #f7f0da;
+  --dot: rgba(36, 29, 60, 0.05);
+  --shadow: 0 1px 2px rgba(46, 36, 82, 0.06), 0 8px 28px rgba(46, 36, 82, 0.1);
   --font-display: 'Space Grotesk', -apple-system, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
@@ -34,26 +35,27 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #100f0d;
-    --panel: #191714;
-    --panel-2: #211e1a;
-    --border: #2d2a24;
-    --border-soft: #262320;
-    --text: #ede8df;
-    --muted: #948c7f;
-    --faint: #6e675c;
-    --accent: #ff6b2e;
-    --accent-hover: #ff7f4a;
-    --accent-soft: rgba(255, 107, 46, 0.12);
-    --on-accent: #1a0e05;
-    --bubble-user: #ede8df;
-    --bubble-user-text: #1a1712;
-    --code-bg: #211e1a;
-    --danger: #f07a5a;
-    --danger-soft: #2e1a14;
-    --warning: #d9a83f;
-    --warning-soft: #2a2312;
-    --dot: rgba(237, 232, 223, 0.05);
+    --bg: #131020;
+    --panel: #1b1728;
+    --panel-2: #241f33;
+    --border: #322b45;
+    --border-soft: #2a2439;
+    --text: #ece7f8;
+    --muted: #9a90b8;
+    --faint: #6f6690;
+    --accent: #9d82f5;
+    --accent-hover: #b29cfa;
+    --accent-soft: rgba(157, 130, 245, 0.14);
+    --on-accent: #171126;
+    --rose: #f0627e;
+    --bubble-user: #e9e3f8;
+    --bubble-user-text: #241d3a;
+    --code-bg: #241f33;
+    --danger: #f0627e;
+    --danger-soft: #2e1a24;
+    --warning: #d4b25e;
+    --warning-soft: #2a2412;
+    --dot: rgba(236, 231, 248, 0.05);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 28px rgba(0, 0, 0, 0.4);
   }
 }
@@ -125,7 +127,7 @@ pre {
   width: 0.5em;
   height: 0.95em;
   margin-left: 0.12em;
-  background: var(--accent);
+  background: var(--rose);
   animation: blink 1.15s steps(1) infinite;
 }
 
@@ -646,7 +648,7 @@ pre {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--rose);
   animation: pulse 1.2s ease-in-out infinite;
 }
 
@@ -1004,7 +1006,7 @@ select.chip {
   appearance: none;
   font-family: var(--font-mono);
   font-size: 11.5px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9' viewBox='0 0 24 24' fill='none' stroke='%23a8a196' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9' viewBox='0 0 24 24' fill='none' stroke='%239a90b8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 7px center;
   border: none;

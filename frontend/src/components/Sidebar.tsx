@@ -41,14 +41,14 @@ export function groupByProject(sessions: SessionSummary[]): SessionGroup[] {
     )
 }
 
-/** 由项目名生成稳定的高辨识度颜色 */
+/** 由项目名生成稳定的高辨识度颜色（紫罗兰色系内变化，保持整体统一） */
 function projectColor(name: string): string {
   let hash = 0
   for (let i = 0; i < name.length; i++) {
     hash = (hash * 31 + name.charCodeAt(i)) | 0
   }
-  const hue = Math.abs(hash) % 360
-  return `hsl(${hue} 62% 52%)`
+  const hue = 238 + (Math.abs(hash) % 64)
+  return `hsl(${hue} 58% 60%)`
 }
 
 function Chevron({ collapsed }: { collapsed: boolean }) {
