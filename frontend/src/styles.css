@@ -308,21 +308,9 @@ body.resizing .chat-scroll {
   text-align: left;
 }
 
-.group-label .chevron {
+.group-label .group-icon {
   flex-shrink: 0;
-  color: var(--faint);
   transition: transform 0.15s;
-}
-
-.group-label.closed .chevron {
-  transform: rotate(-90deg);
-}
-
-.group-dot {
-  flex-shrink: 0;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
 }
 
 .group-name {
