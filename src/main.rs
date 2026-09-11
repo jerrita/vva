@@ -60,6 +60,21 @@ enum Commands {
         #[command(subcommand)]
         action: SessionAction,
     },
+
+    /// 启动 Web 界面 (浏览器访问)
+    Web {
+        /// 监听地址
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+
+        /// 监听端口
+        #[arg(short, long, default_value_t = 3000)]
+        port: u16,
+
+        /// 工作空间目录路径 (默认为当前目录)
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -233,6 +248,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+
+        Some(Commands::Web {
+            host,
+            port,
+            workspace,
+        }) => {
+            let workspace =
+                workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+            let manager =
+                SessionManager::new(store, app_config, workspace, vva_dir.join("state.json"));
+            vva::web::run_server(Arc::new(manager), host, port).await?;
         }
 
         Some(Commands::Session { action }) => match action {

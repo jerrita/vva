@@ -65,7 +65,7 @@ src/
 ├── lib.rs                  # 核心模块导出
 ├── event.rs                # AgentEvent 统一事件流词汇表 (Provider 流式增量 + Harness 工具/Notice/Aborted 事件)
 ├── system.rs               # 系统环境信息采集与系统提示组装 (日期 / OS / arch / workspace / scratch)
-├── main.rs                 # CLI 命令行入口 (vva run [prompt], vva session list/inspect)
+├── main.rs                 # CLI 命令行入口 (vva run [prompt], vva session list/inspect, vva web)
 ├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
 │   ├── mod.rs              # load_config 自动寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
 │   ├── model.rs            # AppConfig, ProviderConfig (provider_type 为 Option，合并时仅显式声明才覆写), ModelConfig；glm-coding-plan 预设补全
@@ -99,7 +99,7 @@ src/
 │   ├── mod.rs
 │   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions) 与 capability_notices 能力协商
 │   └── session.rs          # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
-└── ui/                     # 现代化 Ratatui 交互式终端用户界面
+├── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── app/                # App 响应式控制器、状态机与子系统调度
     │   ├── mod.rs          # App 结构体定义、生命周期与模块导出
     │   ├── session.rs      # 会话切换、SessionView 快照刷新与模态框状态调度
@@ -133,6 +133,12 @@ src/
         ├── sessions_modal.rs # 会话选择弹窗视图
         ├── sidebar.rs      # 右侧统计看板
         └── variants_modal.rs # 推理档位弹窗视图
+└── web/                    # Web 界面 (Axum 服务器)
+    ├── mod.rs              # 模块导出 (run_server)
+    ├── api.rs              # REST + SSE API (会话 CRUD/提交/中止/配置/事件流订阅/模型清单)
+    └── server.rs           # 路由组装与静态资源服务 (rust_embed 内嵌前端 dist，SPA 回退)
+
+frontend/                    # Web 前端源码 (React + Vite + TypeScript)；build.rs 构件期编译，产物 dist 由 rust_embed 打包进二进制
 ```
 
 ---
