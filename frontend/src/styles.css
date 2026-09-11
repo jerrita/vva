@@ -145,29 +145,31 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 14px 10px;
+  padding: 12px 12px 6px;
 }
 
 .brand {
   font-weight: 700;
-  font-size: 16px;
+  font-size: 15px;
   letter-spacing: 0.02em;
 }
 
 .new-chat {
+  width: 30px;
+  height: 30px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  font-size: 13px;
-  transition: opacity 0.15s;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--muted);
+  transition: all 0.15s;
 }
 
 .new-chat:hover {
-  opacity: 0.9;
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .session-list {
@@ -184,12 +186,35 @@ pre {
 }
 
 .group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 10px 4px;
   font-size: 11px;
   color: var(--muted);
-  padding: 12px 10px 4px;
+  text-align: left;
+}
+
+.group-label .chevron {
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.group-label.closed .chevron {
+  transform: rotate(-90deg);
+}
+
+.group-name {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.group-count {
+  margin-left: auto;
+  font-size: 10.5px;
+  opacity: 0.7;
 }
 
 .session-item {
@@ -277,12 +302,6 @@ pre {
 
 /* ---- 统计浮块 ---- */
 
-.stats-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 14;
-}
-
 .stats-panel {
   position: absolute;
   top: 52px;
@@ -295,6 +314,18 @@ pre {
   border-radius: 12px;
   box-shadow: var(--shadow);
   padding: 10px 14px 12px;
+  animation: stats-in 0.12s ease;
+}
+
+@keyframes stats-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .stats-head {
@@ -442,9 +473,12 @@ pre {
 /* ---- 内容块 (思考 / 工具 / 搜索) ---- */
 
 .block {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: 10px;
-  margin: 6px 0;
+  margin: 8px 0;
   font-size: 13px;
   background: var(--panel);
 }
@@ -452,8 +486,8 @@ pre {
 .block > summary {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 7px 11px;
+  gap: 8px;
+  padding: 8px 12px;
   cursor: pointer;
   color: var(--muted);
   user-select: none;
@@ -513,32 +547,23 @@ pre {
 
 /* ---- 搜索块 ---- */
 
-.search {
-  padding: 8px 11px;
-}
-
-.search-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  flex-wrap: wrap;
-}
-
 .search-label {
   color: var(--muted);
+  flex-shrink: 0;
 }
 
 .search-target {
+  flex: 1 1 auto;
+  min-width: 48px;
   font-size: 12px;
   color: var(--text);
-  max-width: 420px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .search-status {
-  margin-left: auto;
+  flex-shrink: 0;
   font-size: 11px;
   padding: 1px 8px;
   border-radius: 999px;
@@ -553,8 +578,9 @@ pre {
 }
 
 .search-sources {
-  margin: 8px 0 0;
-  padding: 0 0 0 4px;
+  margin: 0;
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--border-soft);
   list-style: none;
   display: flex;
   flex-direction: column;
@@ -563,6 +589,30 @@ pre {
 
 .search-sources a {
   font-size: 12.5px;
+}
+
+/* ---- Worked 折叠 ---- */
+
+.block.worked > summary {
+  color: var(--text);
+}
+
+.worked-bits {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.worked-body {
+  padding: 2px 10px 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.worked-body .block {
+  margin: 6px 0;
+}
+
+.worked-body .block:first-child {
+  margin-top: 8px;
 }
 
 /* ---- 引用与图片 ---- */
@@ -700,9 +750,10 @@ pre {
   flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 10px 10px 8px 14px;
+  border-radius: 16px;
+  padding: 12px 12px 8px 14px;
   box-shadow: var(--shadow);
+  transition: border-color 0.15s;
 }
 
 .composer:focus-within {
@@ -719,7 +770,7 @@ pre {
   font: inherit;
   line-height: 1.5;
   max-height: 200px;
-  padding: 0 0 8px;
+  padding: 0 0 10px;
 }
 
 .composer textarea::placeholder {
@@ -736,21 +787,21 @@ pre {
 .composer-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   flex-wrap: wrap;
   min-width: 0;
+  margin-left: -8px;
 }
 
 select.chip {
   appearance: none;
-  background-color: transparent;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 8px center;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 3px 24px 3px 10px;
-  font-size: 12px;
+  background-position: right 7px center;
+  border: none;
+  border-radius: 8px;
+  padding: 4px 22px 4px 8px;
+  font-size: 12.5px;
   color: var(--muted);
   max-width: 190px;
   text-overflow: ellipsis;
@@ -759,37 +810,49 @@ select.chip {
 }
 
 select.chip:hover {
+  background-color: var(--code-bg);
   color: var(--text);
-  border-color: var(--muted);
 }
 
 select.chip:focus {
+  background-color: var(--code-bg);
   color: var(--text);
-  border-color: var(--accent);
 }
 
 .chip-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 12px;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
   color: var(--muted);
   cursor: pointer;
   user-select: none;
 }
 
 .chip-toggle input {
-  accent-color: var(--accent);
-  margin: 0;
+  display: none;
+}
+
+.toggle-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: background 0.15s;
+}
+
+.chip-toggle:hover {
+  background: var(--code-bg);
 }
 
 .chip-toggle:has(input:checked) {
   color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-soft);
+}
+
+.chip-toggle:has(input:checked) .toggle-dot {
+  background: var(--accent);
 }
 
 .send-button {

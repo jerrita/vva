@@ -34,37 +34,33 @@ function ToolResultView({ content, isError }: { content: string; isError: boolea
 }
 
 function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: boolean }) {
-  const head = (
-    <>
-      <span className="block-icon">⌕</span>
-      <span className="search-label">
-        {call.action.type === 'open_page'
-          ? '打开网页'
-          : call.action.type === 'find_in_page'
-            ? '页内查找'
-            : '网络搜索'}
-      </span>
-      <code className="search-target">
-        {call.action.type === 'search' ? call.query : call.action.url}
-      </code>
-      <span className={`search-status ${call.status}`}>{call.status}</span>
-    </>
-  )
-  if (!call.sources || call.sources.length === 0) {
-    return <div className="block search"><div className="search-head">{head}</div></div>
-  }
   return (
     <details className="block search" open={expanded}>
-      <summary>{head}</summary>
-      <ul className="search-sources">
-        {call.sources.map((source, index) => (
-          <li key={index}>
-            <a href={source.url} target="_blank" rel="noreferrer">
-              {source.title}
-            </a>
-          </li>
-        ))}
-      </ul>
+      <summary>
+        <span className="block-icon">⌕</span>
+        <span className="search-label">
+          {call.action.type === 'open_page'
+            ? '打开网页'
+            : call.action.type === 'find_in_page'
+              ? '页内查找'
+              : '网络搜索'}
+        </span>
+        <code className="search-target">
+          {call.action.type === 'search' ? call.query : call.action.url}
+        </code>
+        <span className={`search-status ${call.status}`}>{call.status}</span>
+      </summary>
+      {call.sources && call.sources.length > 0 && (
+        <ul className="search-sources">
+          {call.sources.map((source, index) => (
+            <li key={index}>
+              <a href={source.url} target="_blank" rel="noreferrer">
+                {source.title}
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
     </details>
   )
 }

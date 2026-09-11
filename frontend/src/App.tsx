@@ -53,6 +53,8 @@ export default function App() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
+  const statsRef = useRef<HTMLDivElement>(null)
+  const statsBtnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
@@ -136,6 +138,25 @@ export default function App() {
     if (!el) return
     nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
   }
+
+  // 统计浮块不遮挡主界面：点击面板与开关之外或按 Esc 关闭
+  useEffect(() => {
+    if (!statsOpen) return
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (statsRef.current?.contains(target) || statsBtnRef.current?.contains(target)) return
+      setStatsOpen(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setStatsOpen(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [statsOpen])
 
   const submit = useCallback(
     async (text: string) => {
@@ -280,6 +301,7 @@ export default function App() {
           checked={currentSearch}
           onChange={event => changeSearch(event.target.checked)}
         />
+        <span className="toggle-dot" />
         搜索
       </label>
     </>
@@ -320,6 +342,7 @@ export default function App() {
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
           <button
+            ref={statsBtnRef}
             className="icon-ghost"
             onClick={() => setStatsOpen(value => !value)}
             disabled={!activeId}
@@ -353,48 +376,45 @@ export default function App() {
           </div>
         )}
         {statsOpen && active && (
-          <>
-            <div className="stats-backdrop" onClick={() => setStatsOpen(false)} />
-            <div className="stats-panel">
-              <div className="stats-head">
-                <span>会话统计</span>
-                <span className="stats-model" title={active.current_model}>
-                  {active.current_model}
-                </span>
-              </div>
-              {stats ? (
-                <div className="stats-rows">
-                  <StatRow label="轮次" value={fmtNum(stats.total_turns)} />
-                  <StatRow
-                    label="Token"
-                    value={fmtNum(stats.total_tokens)}
-                    sub={` ↑${fmtNum(stats.prompt_tokens)} ↓${fmtNum(stats.completion_tokens)}`}
-                  />
-                  <StatRow
-                    label="上下文"
-                    value={
-                      stats.context_limit
-                        ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}%`
-                        : fmtNum(stats.context_tokens)
-                    }
-                    sub={
-                      stats.context_limit
-                        ? ` ${fmtNum(stats.context_tokens)} / ${fmtNum(stats.context_limit)}`
-                        : undefined
-                    }
-                  />
-                  <StatRow
-                    label="缓存"
-                    value={`读 ${fmtNum(stats.cache_read_tokens)}`}
-                    sub={` · 写 ${fmtNum(stats.cache_write_tokens)}`}
-                  />
-                  <StatRow label="预估费用" value={fmtCost(stats.estimated_cost_usd)} />
-                </div>
-              ) : (
-                <div className="stats-empty">加载中…</div>
-              )}
+          <div className="stats-panel" ref={statsRef}>
+            <div className="stats-head">
+              <span>会话统计</span>
+              <span className="stats-model" title={active.current_model}>
+                {active.current_model}
+              </span>
             </div>
-          </>
+            {stats ? (
+              <div className="stats-rows">
+                <StatRow label="轮次" value={fmtNum(stats.total_turns)} />
+                <StatRow
+                  label="Token"
+                  value={fmtNum(stats.total_tokens)}
+                  sub={` ↑${fmtNum(stats.prompt_tokens)} ↓${fmtNum(stats.completion_tokens)}`}
+                />
+                <StatRow
+                  label="上下文"
+                  value={
+                    stats.context_limit
+                      ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}%`
+                      : fmtNum(stats.context_tokens)
+                  }
+                  sub={
+                    stats.context_limit
+                      ? ` ${fmtNum(stats.context_tokens)} / ${fmtNum(stats.context_limit)}`
+                      : undefined
+                  }
+                />
+                <StatRow
+                  label="缓存"
+                  value={`读 ${fmtNum(stats.cache_read_tokens)}`}
+                  sub={` · 写 ${fmtNum(stats.cache_write_tokens)}`}
+                />
+                <StatRow label="预估费用" value={fmtCost(stats.estimated_cost_usd)} />
+              </div>
+            ) : (
+              <div className="stats-empty">加载中…</div>
+            )}
+          </div>
         )}
         <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
           <Chat snap={snap} pending={pending} />

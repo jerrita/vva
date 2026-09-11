@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { SessionSummary } from '../types'
 
 interface SessionGroup {
@@ -35,6 +36,25 @@ export function groupByProject(sessions: SessionSummary[]): SessionGroup[] {
     )
 }
 
+function Chevron({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      className={`chevron${collapsed ? ' collapsed' : ''}`}
+      viewBox="0 0 24 24"
+      width="10"
+      height="10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M6 9l6 6 6-6" />
+    </svg>
+  )
+}
+
 export function Sidebar({
   groups,
   activeId,
@@ -48,15 +68,29 @@ export function Sidebar({
   onNew: () => void
   onDelete: (id: string) => void
 }) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+
+  const toggle = (project: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      if (next.has(project)) {
+        next.delete(project)
+      } else {
+        next.add(project)
+      }
+      return next
+    })
+  }
+
   return (
     <aside className="sidebar">
       <div className="sidebar-top">
         <span className="brand">vva</span>
-        <button className="new-chat" onClick={onNew}>
+        <button className="new-chat" onClick={onNew} title="新对话" aria-label="新对话">
           <svg
             viewBox="0 0 24 24"
-            width="14"
-            height="14"
+            width="15"
+            height="15"
             fill="none"
             stroke="currentColor"
             strokeWidth="2"
@@ -65,48 +99,54 @@ export function Sidebar({
           >
             <path d="M12 5v14M5 12h14" />
           </svg>
-          新对话
         </button>
       </div>
       <nav className="session-list">
         {groups.length === 0 && <div className="session-empty">暂无会话</div>}
         {groups.map(group => (
           <div key={group.project} className="session-group">
-            <div className="group-label" title={group.project}>
-              {group.project}
-            </div>
-            {group.sessions.map(session => (
-              <div
-                key={session.id}
-                className={`session-item${session.id === activeId ? ' active' : ''}`}
-                title={session.title || '新对话'}
-                onClick={() => onSelect(session.id)}
-              >
-                <div className="session-title">{session.title || '新对话'}</div>
-                <button
-                  className="session-delete"
-                  title="删除会话"
-                  aria-label="删除会话"
-                  onClick={event => {
-                    event.stopPropagation()
-                    if (window.confirm('删除该会话？')) onDelete(session.id)
-                  }}
+            <button
+              className={`group-label${collapsed.has(group.project) ? ' closed' : ''}`}
+              onClick={() => toggle(group.project)}
+              title={group.project}
+            >
+              <Chevron collapsed={collapsed.has(group.project)} />
+              <span className="group-name">{group.project}</span>
+              <span className="group-count">{group.sessions.length}</span>
+            </button>
+            {!collapsed.has(group.project) &&
+              group.sessions.map(session => (
+                <div
+                  key={session.id}
+                  className={`session-item${session.id === activeId ? ' active' : ''}`}
+                  title={session.title || '新对话'}
+                  onClick={() => onSelect(session.id)}
                 >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="13"
-                    height="13"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    aria-hidden
+                  <div className="session-title">{session.title || '新对话'}</div>
+                  <button
+                    className="session-delete"
+                    title="删除会话"
+                    aria-label="删除会话"
+                    onClick={event => {
+                      event.stopPropagation()
+                      if (window.confirm('删除该会话？')) onDelete(session.id)
+                    }}
                   >
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            ))}
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="13"
+                      height="13"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      aria-hidden
+                    >
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
           </div>
         ))}
       </nav>
