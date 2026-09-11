@@ -25,15 +25,13 @@ const isWorkPart = (part: ContentPart) =>
   part.type === 'tool_call' ||
   part.type === 'tool_result'
 
-/** 历史轮次中的连续工作段（思考/搜索/工具），折叠为一个 Worked 块 */
+/** 历史轮次中的连续工作段（思考/搜索/工具），折叠为一个用时行 */
 interface WorkGroup {
   parts: ContentPart[]
   /** 各响应耗时之和 */
   elapsedMs: number | null
   /** 整个请求周期的总耗时（最终响应携带） */
   workedMs: number | null
-  searches: number
-  tools: number
   errors: number
 }
 
@@ -63,14 +61,10 @@ function buildItems(turns: Turn[]): Item[] {
         parts: [],
         elapsedMs: null,
         workedMs: null,
-        searches: 0,
-        tools: 0,
         errors: 0,
       }
       for (const part of work) {
         group.parts.push(part)
-        if (part.type === 'web_search_call') group.searches++
-        if (part.type === 'tool_call') group.tools++
         if (part.type === 'tool_result' && part.is_error) group.errors++
       }
       if (turn.elapsed_ms != null) {
@@ -89,18 +83,17 @@ function buildItems(turns: Turn[]): Item[] {
   return items
 }
 
+function fmtDuration(ms: number): string {
+  const total = Math.round(ms / 1000)
+  if (total < 60) return `${total}s`
+  return `${Math.floor(total / 60)}m ${total % 60}s`
+}
+
 function WorkedBlock({ group }: { group: WorkGroup }) {
   const ms = group.workedMs ?? group.elapsedMs
-  const bits: string[] = []
-  if (group.searches > 0) bits.push(`${group.searches} 次搜索`)
-  if (group.tools > 0) bits.push(`${group.tools} 个工具`)
   return (
-    <details className="block worked" open={group.errors > 0}>
-      <summary>
-        <span className="block-icon">⚒</span>
-        <span>{ms != null ? `Worked ${(ms / 1000).toFixed(1)}s` : 'Worked'}</span>
-        {bits.length > 0 && <span className="worked-bits">{bits.join(' · ')}</span>}
-      </summary>
+    <details className="worked" open={group.errors > 0}>
+      <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '用时'}</summary>
       <div className="worked-body">
         <Parts parts={group.parts} />
       </div>
