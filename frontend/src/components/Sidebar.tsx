@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import type { SessionSummary } from '../types'
 export interface SessionGroup {
   project: string
@@ -154,6 +155,10 @@ export function Sidebar({
   groups,
   projects,
   activeId,
+  width,
+  onResizeStart,
+  onResizeMove,
+  onResizeEnd,
   onSelect,
   onCreate,
   onDelete,
@@ -161,6 +166,10 @@ export function Sidebar({
   groups: SessionGroup[]
   projects: ProjectOption[]
   activeId: string | null
+  width: number
+  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onResizeMove: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onResizeEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSelect: (id: string) => void
   onCreate: (workspace: string) => void
   onDelete: (id: string) => void
@@ -192,7 +201,15 @@ export function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" style={{ width }}>
+      <div
+        className="sidebar-resize"
+        onPointerDown={onResizeStart}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeEnd}
+        onPointerCancel={onResizeEnd}
+        aria-hidden
+      />
       <div className="sidebar-top">
         <span className="brand">
           vva

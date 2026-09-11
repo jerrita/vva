@@ -39,6 +39,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 ## 4. 版式与组件契约
 
 - **内容列**：聊天与输入框 `max-width: 760px` 居中；聊天区背景为 22px 网格点阵（`--dot`）。
+- **侧栏**：宽度可拖拽（200–420px，经右缘 `.sidebar-resize` 手柄，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。
 - **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`。
 - **内容块**：统一走 `.block`（`<details>` + `<summary>` + `▸` 箭头旋转展开），宽度恒 100%；搜索/思考/工具/结果块共用此模式。
 - **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。

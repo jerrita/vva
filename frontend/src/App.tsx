@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { PointerEvent as ReactPointerEvent } from 'react'
 import { api } from './api'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
@@ -10,6 +11,12 @@ import type { ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } fr
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
+
+const SIDEBAR_MIN = 200
+const SIDEBAR_MAX = 420
+
+const clampSidebar = (width: number) =>
+  Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width))
 
 function fmtNum(value: number): string {
   return value.toLocaleString()
@@ -43,6 +50,24 @@ export default function App() {
   const [statsOpen, setStatsOpen] = useState(false)
   const [stats, setStats] = useState<SidebarStats | null>(null)
   const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
+  const [sidebarHidden, setSidebarHidden] = useState(
+    () => localStorage.getItem('vva.sidebar-hidden') === '1',
+  )
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('vva.sidebar-width'))
+    return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
+  })
+  const resizing = useRef(false)
+  const resizeStartX = useRef(0)
+  const resizeStartW = useRef(0)
+
+  useEffect(() => {
+    localStorage.setItem('vva.sidebar-hidden', sidebarHidden ? '1' : '0')
+  }, [sidebarHidden])
+
+  useEffect(() => {
+    localStorage.setItem('vva.sidebar-width', String(sidebarWidth))
+  }, [sidebarWidth])
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)
@@ -149,6 +174,26 @@ export default function App() {
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [statsOpen])
+
+  // 侧栏拖拽调宽
+  const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    resizing.current = true
+    resizeStartX.current = event.clientX
+    resizeStartW.current = sidebarWidth
+    document.body.classList.add('resizing')
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizing.current) return
+    setSidebarWidth(clampSidebar(resizeStartW.current + event.clientX - resizeStartX.current))
+  }
+  const onResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!resizing.current) return
+    resizing.current = false
+    document.body.classList.remove('resizing')
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
 
   const submit = useCallback(
     async (text: string) => {
@@ -318,11 +363,19 @@ export default function App() {
   )
 
   return (
-    <div className={`app${sidebarOpen ? ' sidebar-open' : ''}`}>
+    <div
+      className={`app${sidebarOpen ? ' sidebar-open' : ''}${
+        sidebarHidden ? ' sidebar-hidden' : ''
+      }`}
+    >
       <Sidebar
         groups={groupByProject(sessions)}
         projects={projects}
         activeId={activeId}
+        width={sidebarWidth}
+        onResizeStart={onResizeStart}
+        onResizeMove={onResizeMove}
+        onResizeEnd={onResizeEnd}
         onSelect={id => {
           setActiveId(id)
           setSidebarOpen(false)
@@ -335,8 +388,15 @@ export default function App() {
         <header className="topbar">
           <button
             className="icon-ghost menu"
-            onClick={() => setSidebarOpen(value => !value)}
+            onClick={() => {
+              if (window.innerWidth <= 820) {
+                setSidebarOpen(true)
+              } else {
+                setSidebarHidden(value => !value)
+              }
+            }}
             aria-label="会话列表"
+            title="收起 / 展开会话列表"
           >
             <svg
               viewBox="0 0 24 24"
