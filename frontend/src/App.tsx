@@ -27,18 +27,6 @@ function fmtCost(value: number): string {
   return `$${value >= 0.01 ? value.toFixed(2) : value.toFixed(4)}`
 }
 
-function StatRow({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="stat-row">
-      <span className="stat-label">{label}</span>
-      <span className="stat-value">
-        {value}
-        {sub && <span className="stat-sub">{sub}</span>}
-      </span>
-    </div>
-  )
-}
-
 export default function App() {
   const [models, setModels] = useState<ModelsResponse | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -47,7 +35,6 @@ export default function App() {
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [statsOpen, setStatsOpen] = useState(false)
   const [stats, setStats] = useState<SidebarStats | null>(null)
   const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
   const [sidebarHidden, setSidebarHidden] = useState(
@@ -96,7 +83,7 @@ export default function App() {
     }
     setSnap(null)
     setPending(null)
-    setStatsOpen(false)
+    setStats(null)
     const source = new EventSource(`/api/sessions/${activeId}/events`)
     source.onmessage = event => {
       try {
@@ -144,9 +131,12 @@ export default function App() {
     if (el && nearBottom.current) el.scrollTop = el.scrollHeight
   }, [snap])
 
-  // 统计面板数据：打开时与轮次变化时刷新
+  // 顶栏用量数据：切换会话与轮次变化时刷新
   useEffect(() => {
-    if (!statsOpen || !activeId) return
+    if (!activeId) {
+      setStats(null)
+      return
+    }
     let cancelled = false
     api
       .stats(activeId)
@@ -157,23 +147,13 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [statsOpen, activeId, turnCount])
+  }, [activeId, turnCount])
 
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
     nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
   }
-
-  // Esc 关闭统计浮块；主界面点击不关闭
-  useEffect(() => {
-    if (!statsOpen) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setStatsOpen(false)
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [statsOpen])
 
   // 侧栏拖拽调宽
   const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -435,26 +415,20 @@ export default function App() {
             )}
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
-          <button
-            className="icon-ghost"
-            onClick={() => setStatsOpen(value => !value)}
-            disabled={!activeId}
-            title="会话统计"
-            aria-label="会话统计"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="17"
-              height="17"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              aria-hidden
+          {stats && (
+            <div
+              className="topbar-stats"
+              title={`输入 ${fmtNum(stats.prompt_tokens)} · 输出 ${fmtNum(stats.completion_tokens)} · 缓存读 ${fmtNum(stats.cache_read_tokens)} · 缓存写 ${fmtNum(stats.cache_write_tokens)} · 上下文 ${fmtNum(stats.context_tokens)}${stats.context_limit ? ` / ${fmtNum(stats.context_limit)}` : ''} · ${stats.total_turns} 轮`}
             >
-              <path d="M5 20v-6M12 20V8M19 20V4" />
-            </svg>
-          </button>
+              <span className="stat-item">{fmtNum(stats.total_tokens)} tok</span>
+              <span className="stat-item">
+                {stats.context_limit
+                  ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}% ctx`
+                  : `${fmtNum(stats.context_tokens)} ctx`}
+              </span>
+              <span className="stat-item">{fmtCost(stats.estimated_cost_usd)}</span>
+            </div>
+          )}
         </header>
         {error && (
           <div className="banner error" onClick={() => setError(null)}>
@@ -466,47 +440,6 @@ export default function App() {
             {snap.notices.map((notice, index) => (
               <div key={index}>{notice}</div>
             ))}
-          </div>
-        )}
-        {statsOpen && active && (
-          <div className="stats-panel">
-            <div className="stats-head">
-              <span>会话统计</span>
-              <span className="stats-model" title={active.current_model}>
-                {active.current_model}
-              </span>
-            </div>
-            {stats ? (
-              <div className="stats-rows">
-                <StatRow label="轮次" value={fmtNum(stats.total_turns)} />
-                <StatRow
-                  label="Token"
-                  value={fmtNum(stats.total_tokens)}
-                  sub={` ↑${fmtNum(stats.prompt_tokens)} ↓${fmtNum(stats.completion_tokens)}`}
-                />
-                <StatRow
-                  label="上下文"
-                  value={
-                    stats.context_limit
-                      ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}%`
-                      : fmtNum(stats.context_tokens)
-                  }
-                  sub={
-                    stats.context_limit
-                      ? ` ${fmtNum(stats.context_tokens)} / ${fmtNum(stats.context_limit)}`
-                      : undefined
-                  }
-                />
-                <StatRow
-                  label="缓存"
-                  value={`读 ${fmtNum(stats.cache_read_tokens)}`}
-                  sub={` · 写 ${fmtNum(stats.cache_write_tokens)}`}
-                />
-                <StatRow label="预估费用" value={fmtCost(stats.estimated_cost_usd)} />
-              </div>
-            ) : (
-              <div className="stats-empty">加载中…</div>
-            )}
           </div>
         )}
         <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>

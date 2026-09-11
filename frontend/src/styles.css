@@ -681,79 +681,22 @@ body.resizing .chat-scroll {
   text-overflow: ellipsis;
 }
 
-/* ---- 统计浮块 ---- */
+/* ---- 顶栏常驻用量 ---- */
 
-.stats-panel {
-  position: absolute;
-  top: 52px;
-  right: 14px;
-  z-index: 15;
-  width: 284px;
-  max-width: calc(100vw - 28px);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--shadow);
-  padding: 10px 14px 12px;
-  animation: rise 0.14s ease;
-}
-
-.stats-head {
+.topbar-stats {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
   color: var(--muted);
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border-soft);
-}
-
-.stats-model {
-  font-size: 10.5px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.stats-rows {
-  display: flex;
-  flex-direction: column;
-  padding-top: 4px;
-}
-
-.stat-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0;
-  font-size: 13px;
-}
-
-.stat-label {
-  color: var(--muted);
   flex-shrink: 0;
 }
 
-.stat-value {
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  text-align: right;
-}
-
-.stat-sub {
-  font-size: 10.5px;
-  color: var(--faint);
-}
-
-.stats-empty {
-  color: var(--muted);
-  font-size: 12.5px;
-  padding: 8px 0;
+.topbar-stats .stat-item + .stat-item {
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
 }
 
 /* ---- 提示条 ---- */
@@ -1326,6 +1269,10 @@ select.chip:focus {
 
   .menu {
     display: inline-flex;
+  }
+
+  .topbar-stats .stat-item:last-child {
+    display: none;
   }
 
   .chat,
