@@ -398,18 +398,41 @@ export default function App() {
             aria-label="会话列表"
             title="收起 / 展开会话列表"
           >
-            <svg
-              viewBox="0 0 24 24"
-              width="18"
-              height="18"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              aria-hidden
-            >
-              <path d="M4 7h16M4 12h16M4 17h16" />
-            </svg>
+            {sidebarHidden ? (
+              // 收起态：空面板 + 指向内容的箭头
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+                <path d="M9.5 4.5v15" />
+                <path d="M6 9.5l2.5 2.5L6 14.5" />
+              </svg>
+            ) : (
+              // 展开态：左侧面板填充
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+                <path d="M9.5 4.5v15" />
+                <rect x="4.8" y="6.3" width="3.4" height="11.4" rx="1" fill="currentColor" stroke="none" />
+              </svg>
+            )}
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
           <button
