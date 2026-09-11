@@ -60,6 +60,7 @@ export default function App() {
   const [draftModel, setDraftModel] = useState<string | null>(null)
   const [draftVariant, setDraftVariant] = useState<string | null>(null)
   const [draftSearch, setDraftSearch] = useState(true)
+  const [draftProject, setDraftProject] = useState('')
 
   const running = snap !== null && snap.state !== ''
   const active = snap?.session ?? null
@@ -184,6 +185,7 @@ export default function App() {
             model: draftModel ?? undefined,
             variant: draftVariant,
             search: draftSearch,
+            workspace: draftProject || undefined,
           })
           setActiveId(created.session.id)
           await api.submit(created.session.id, text)
@@ -195,7 +197,7 @@ export default function App() {
         setError(toError(e))
       }
     },
-    [activeId, draftModel, draftVariant, draftSearch],
+    [activeId, draftModel, draftVariant, draftSearch, draftProject],
   )
 
   const abort = useCallback(async () => {
@@ -303,6 +305,20 @@ export default function App() {
 
   const composerControls = (
     <>
+      {!activeId && (
+        <select
+          className="chip"
+          value={draftProject || defaultRoot || ''}
+          onChange={event => setDraftProject(event.target.value)}
+          title="项目"
+        >
+          {projects.map(project => (
+            <option key={project.root} value={project.root}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+      )}
       <select
         className="chip"
         value={currentModel}
@@ -442,12 +458,25 @@ export default function App() {
             ))}
           </div>
         )}
-        <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
-          <Chat snap={snap} pending={pending} />
-        </div>
-        <div className="composer-area">
-          <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
-        </div>
+        {!activeId ? (
+          <div className="empty-stage">
+            <div className="empty-brand">
+              vva
+              <span className="brand-cursor" aria-hidden />
+            </div>
+            <div className="empty-hint">选择项目，输入任务开始 · Enter 发送</div>
+            <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
+          </div>
+        ) : (
+          <>
+            <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+              <Chat snap={snap} pending={pending} />
+            </div>
+            <div className="composer-area">
+              <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
+            </div>
+          </>
+        )}
       </main>
     </div>
   )
