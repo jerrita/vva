@@ -29,6 +29,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// 启动 Web 界面交互
+    Web {
+        #[arg(short, long, default_value_t = 3000)]
+        port: u16,
+        #[arg(short = 'H', long, default_value = "127.0.0.1")]
+        host: String,
+    },
     /// 执行 Coding Agent 任务交互 (未传入 prompt 则启动终端界面)
     Run {
         /// 目标模型标识 (例如 a/gpt-5.6-terra, a/claude-sonnet-4-6, gemini-2.5-pro)
@@ -114,6 +121,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     match cli.command {
+        Some(Commands::Web { port, host }) => {
+            let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            let state_path = vva::config::runtime_state_path();
+            let manager = std::sync::Arc::new(vva::harness::SessionManager::new(
+                store.clone(),
+                app_config.clone(),
+                workspace,
+                state_path,
+            ));
+            vva::web::server::run_server(store, app_config, manager, port, host).await?;
+        }
+
         // 无子命令等价于不带 prompt 的 run
         None => {
             let workspace = std::env::current_dir().unwrap_or_else(|_| ".".into());
