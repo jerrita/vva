@@ -53,8 +53,6 @@ export default function App() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
-  const statsRef = useRef<HTMLDivElement>(null)
-  const statsBtnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
@@ -139,23 +137,14 @@ export default function App() {
     nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
   }
 
-  // 统计浮块不遮挡主界面：点击面板与开关之外或按 Esc 关闭
+  // Esc 关闭统计浮块；主界面点击不关闭
   useEffect(() => {
     if (!statsOpen) return
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node
-      if (statsRef.current?.contains(target) || statsBtnRef.current?.contains(target)) return
-      setStatsOpen(false)
-    }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setStatsOpen(false)
     }
-    document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
+    return () => document.removeEventListener('keydown', onKeyDown)
   }, [statsOpen])
 
   const submit = useCallback(
@@ -342,7 +331,6 @@ export default function App() {
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
           <button
-            ref={statsBtnRef}
             className="icon-ghost"
             onClick={() => setStatsOpen(value => !value)}
             disabled={!activeId}
@@ -376,7 +364,7 @@ export default function App() {
           </div>
         )}
         {statsOpen && active && (
-          <div className="stats-panel" ref={statsRef}>
+          <div className="stats-panel">
             <div className="stats-head">
               <span>会话统计</span>
               <span className="stats-model" title={active.current_model}>
