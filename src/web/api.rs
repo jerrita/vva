@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -99,6 +99,52 @@ pub async fn list_sessions(State(state): State<AppState>) -> Response {
 pub async fn default_workspace(State(state): State<AppState>) -> Response {
     Json(serde_json::json!({
         "root": state.manager.workspace().to_string_lossy()
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct DirQuery {
+    pub path: Option<String>,
+}
+
+/// 列出目录下的一级子目录，供新建项目多级点选
+pub async fn list_dirs(State(state): State<AppState>, Query(query): Query<DirQuery>) -> Response {
+    let path = match query.path.as_deref().map(str::trim) {
+        Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+        _ => state.manager.workspace().to_path_buf(),
+    };
+    match tokio::fs::metadata(&path).await {
+        Ok(meta) if meta.is_dir() => {}
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                format!("目录不存在: {}", path.display()),
+            );
+        }
+    }
+    let mut dirs = Vec::new();
+    let mut entries = match tokio::fs::read_dir(&path).await {
+        Ok(entries) => entries,
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let is_dir = tokio::fs::metadata(entry.path())
+            .await
+            .map(|meta| meta.is_dir())
+            .unwrap_or(false);
+        if is_dir {
+            dirs.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    dirs.sort();
+    let parent = path
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string());
+    Json(serde_json::json!({
+        "root": path.to_string_lossy(),
+        "parent": parent,
+        "dirs": dirs,
     }))
     .into_response()
 }

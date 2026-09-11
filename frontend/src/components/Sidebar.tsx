@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
+import { api } from '../api'
 import type { SessionSummary } from '../types'
 export interface SessionGroup {
   project: string
@@ -84,8 +85,11 @@ function NewChatPanel({
 }) {
   const [mode, setMode] = useState<'existing' | 'new'>('existing')
   const [workspace, setWorkspace] = useState(projects[0]?.root ?? '')
-  const [newPath, setNewPath] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [requestedPath, setRequestedPath] = useState('')
+  const [currentPath, setCurrentPath] = useState(projects[0]?.root ?? '')
+  const [parentPath, setParentPath] = useState<string | null>(null)
+  const [dirs, setDirs] = useState<string[]>([])
+  const [loadingDirs, setLoadingDirs] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
   const anchorRef = useRef<HTMLButtonElement>(null)
 
@@ -107,17 +111,30 @@ function NewChatPanel({
     }
   }, [onClose])
 
-  const trimmedPath = newPath.trim().replace(/\/+$/, '')
-  const newPathValid = /^\/\S/.test(trimmedPath)
-  const canCreate = mode === 'existing' ? workspace !== '' : newPathValid
-
-  const create = () => {
-    if (!canCreate) return
-    if (mode === 'new' && !newPathValid) {
-      setError('请输入以 / 开头的绝对路径')
-      return
+  // 新建模式：按当前路径逐级拉取子目录
+  useEffect(() => {
+    if (mode !== 'new') return
+    let cancelled = false
+    setLoadingDirs(true)
+    api
+      .dirs(requestedPath)
+      .then(info => {
+        if (cancelled) return
+        setCurrentPath(info.root)
+        setParentPath(info.parent)
+        setDirs(info.dirs)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingDirs(false)
+      })
+    return () => {
+      cancelled = true
     }
-    onCreate(mode === 'new' ? trimmedPath : workspace)
+  }, [mode, requestedPath])
+
+  const enterDir = (name: string) => {
+    setRequestedPath(currentPath.endsWith('/') ? `${currentPath}${name}` : `${currentPath}/${name}`)
   }
 
   return (
@@ -147,20 +164,11 @@ function NewChatPanel({
         <div className="segmented">
           <button
             className={mode === 'existing' ? 'active' : ''}
-            onClick={() => {
-              setMode('existing')
-              setError(null)
-            }}
+            onClick={() => setMode('existing')}
           >
             已有项目
           </button>
-          <button
-            className={mode === 'new' ? 'active' : ''}
-            onClick={() => {
-              setMode('new')
-              setError(null)
-            }}
-          >
+          <button className={mode === 'new' ? 'active' : ''} onClick={() => setMode('new')}>
             新建项目
           </button>
         </div>
@@ -176,35 +184,67 @@ function NewChatPanel({
             </select>
           </label>
         ) : (
-          <label className="new-panel-field">
-            <span>项目路径</span>
-            <input
-              className="new-input"
-              value={newPath}
-              placeholder="/home/user/projects/my-app"
-              spellCheck={false}
-              autoFocus
-              onChange={event => {
-                setNewPath(event.target.value)
-                setError(null)
-              }}
-              onKeyDown={event => {
-                if (event.key === 'Enter') create()
-              }}
-            />
-          </label>
+          <div className="new-panel-field">
+            <span>项目目录（点击逐级选择）</span>
+            <div className="dir-crumb">
+              <button
+                className="dir-up"
+                disabled={!parentPath || loadingDirs}
+                onClick={() => parentPath && setRequestedPath(parentPath)}
+                title="上一级"
+                aria-label="上一级"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="13"
+                  height="13"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M12 19V5M5 12l7-7 7 7" />
+                </svg>
+              </button>
+              <span className="dir-path" title={currentPath}>
+                {currentPath}
+              </span>
+            </div>
+            <div className="dir-list">
+              {loadingDirs && <div className="dir-empty">加载中…</div>}
+              {!loadingDirs && dirs.length === 0 && <div className="dir-empty">无子目录</div>}
+              {dirs.map(dir => (
+                <button key={dir} className="dir-item" onClick={() => enterDir(dir)}>
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="13"
+                    height="13"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+                  </svg>
+                  {dir}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
-        <div className="new-panel-path" title={mode === 'existing' ? workspace : trimmedPath}>
-          {mode === 'existing'
-            ? workspace
-            : trimmedPath || '目录不存在时将自动创建'}
-        </div>
-        {error && <div className="new-panel-error">{error}</div>}
         <div className="new-panel-actions">
           <button className="new-cancel" onClick={onClose}>
             取消
           </button>
-          <button className="new-create" disabled={!canCreate} onClick={create}>
+          <button
+            className="new-create"
+            disabled={mode === 'existing' ? !workspace : loadingDirs || !currentPath}
+            onClick={() => onCreate(mode === 'new' ? currentPath : workspace)}
+          >
             创建会话
           </button>
         </div>
@@ -218,6 +258,8 @@ export function Sidebar({
   projects,
   activeId,
   width,
+  hiddenProjects,
+  onHideProject,
   onResizeStart,
   onResizeMove,
   onResizeEnd,
@@ -229,6 +271,8 @@ export function Sidebar({
   projects: ProjectOption[]
   activeId: string | null
   width: number
+  hiddenProjects: Set<string>
+  onHideProject: (project: string) => void
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void
   onResizeMove: (event: ReactPointerEvent<HTMLDivElement>) => void
   onResizeEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
@@ -236,9 +280,16 @@ export function Sidebar({
   onCreate: (workspace: string) => void
   onDelete: (id: string) => void
 }) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // 每项目折叠状态持久化
+  const [collapsed, setCollapsed] = useState<Set<string>>(
+    () => new Set(JSON.parse(localStorage.getItem('vva.projects-collapsed') ?? '[]') as string[]),
+  )
   const [newOpen, setNewOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
+
+  useEffect(() => {
+    localStorage.setItem('vva.projects-collapsed', JSON.stringify([...collapsed]))
+  }, [collapsed])
 
   // Esc 关闭删除确认弹窗
   useEffect(() => {
@@ -310,14 +361,18 @@ export function Sidebar({
         )}
       </div>
       <nav className="session-list">
-        {groups.length === 0 && <div className="session-empty">暂无会话</div>}
-        {groups.map((group, index) => (
+        {groups.filter(group => !hiddenProjects.has(group.project)).length === 0 && (
+          <div className="session-empty">暂无会话</div>
+        )}
+        {groups
+          .filter(group => !hiddenProjects.has(group.project))
+          .map((group, index) => (
           <div
             key={group.project}
             className="session-group"
             style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
           >
-            <button
+            <div
               className={`group-label${collapsed.has(group.project) ? ' closed' : ''}`}
               onClick={() => toggle(group.project)}
               title={group.project}
@@ -328,7 +383,29 @@ export function Sidebar({
               />
               <span className="group-name">{group.project}</span>
               <span className="group-count">{group.sessions.length}</span>
-            </button>
+              <button
+                className="group-hide"
+                title="隐藏项目"
+                aria-label={`隐藏项目 ${group.project}`}
+                onClick={event => {
+                  event.stopPropagation()
+                  onHideProject(group.project)
+                }}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="12"
+                  height="12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden
+                >
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
             {!collapsed.has(group.project) &&
               group.sessions.map(session => (
                 <div

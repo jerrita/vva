@@ -40,6 +40,12 @@ export default function App() {
   const [sidebarHidden, setSidebarHidden] = useState(
     () => localStorage.getItem('vva.sidebar-hidden') === '1',
   )
+  const [hiddenProjects, setHiddenProjects] = useState<Set<string>>(
+    () =>
+      new Set(
+        JSON.parse(localStorage.getItem('vva.projects-hidden') ?? '[]') as string[],
+      ),
+  )
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem('vva.sidebar-width'))
     return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
@@ -51,6 +57,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('vva.sidebar-hidden', sidebarHidden ? '1' : '0')
   }, [sidebarHidden])
+
+  useEffect(() => {
+    localStorage.setItem('vva.projects-hidden', JSON.stringify([...hiddenProjects]))
+  }, [hiddenProjects])
 
   useEffect(() => {
     localStorage.setItem('vva.sidebar-width', String(sidebarWidth))
@@ -65,6 +75,18 @@ export default function App() {
   const running = snap !== null && snap.state !== ''
   const active = snap?.session ?? null
   const turnCount = active?.turns.length ?? 0
+
+  // 打开或新建位于隐藏项目的会话时，该项目重新显示
+  useEffect(() => {
+    if (!active) return
+    const name = projectName(active.workspace_root)
+    setHiddenProjects(prev => {
+      if (!prev.has(name)) return prev
+      const next = new Set(prev)
+      next.delete(name)
+      return next
+    })
+  }, [active?.id, active?.workspace_root])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
@@ -369,6 +391,10 @@ export default function App() {
         projects={projects}
         activeId={activeId}
         width={sidebarWidth}
+        hiddenProjects={hiddenProjects}
+        onHideProject={project =>
+          setHiddenProjects(prev => new Set([...prev, project]))
+        }
         onResizeStart={onResizeStart}
         onResizeMove={onResizeMove}
         onResizeEnd={onResizeEnd}

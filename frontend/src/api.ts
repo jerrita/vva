@@ -30,6 +30,10 @@ export interface ConfigureBody {
 export const api = {
   models: () => request<ModelsResponse>('/api/models'),
   workspace: () => request<{ root: string }>('/api/workspace'),
+  dirs: (path: string) =>
+    request<{ root: string; parent: string | null; dirs: string[] }>(
+      `/api/fs/dirs?path=${encodeURIComponent(path)}`,
+    ),
   sessions: () => request<SessionSummary[]>('/api/sessions'),
   createSession: (body: {
     model?: string
