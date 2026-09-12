@@ -239,6 +239,7 @@ mod tests {
                 cache_creation_input_tokens: Some(20),
                 cache_read_input_tokens: Some(80),
                 stop_reason: None,
+                content_blocks: Vec::new(),
             }),
         );
         let stats = compute_stats(&session, &cost_app_config());

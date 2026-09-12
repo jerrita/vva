@@ -437,6 +437,7 @@ impl Provider for ResponseProvider {
         ProviderCapabilities {
             supports_native_search: true,
             supports_reasoning_effort: true,
+            server_tool_names: vec!["web_search"],
         }
     }
 

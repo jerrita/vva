@@ -46,6 +46,9 @@ pub struct ProviderCapabilities {
     pub supports_native_search: bool,
     /// 是否消费 CompletionOptions::reasoning_effort（Responses API 的 reasoning.effort 参数）
     pub supports_reasoning_effort: bool,
+    /// 原生服务端工具名（如 web_search / web_fetch）：由 API 端点代执行，
+    /// 客户端注册表不可执行；用于模型误发起客户端调用时的显式诊断
+    pub server_tool_names: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +57,8 @@ pub struct CompletionOptions {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub enable_web_search: bool,
+    /// 是否向 API 声明 web_fetch 服务端工具（模型级 `annotation.web_fetch: false` 时关闭）
+    pub enable_web_fetch: bool,
     pub reasoning_effort: Option<String>,
 }
 
@@ -64,6 +69,7 @@ impl Default for CompletionOptions {
             temperature: None,
             max_tokens: Some(4096),
             enable_web_search: true,
+            enable_web_fetch: true,
             reasoning_effort: None,
         }
     }

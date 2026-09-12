@@ -3,7 +3,8 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { api } from './api'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
-import { Composer } from './components/Composer'
+import { ChipSelect } from './components/ChipSelect'
+import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
 import type { ProjectOption } from './components/Sidebar'
 import type { ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
@@ -53,6 +54,7 @@ export default function App() {
   const resizing = useRef(false)
   const resizeStartX = useRef(0)
   const resizeStartW = useRef(0)
+  const composerRef = useRef<ComposerHandle>(null)
 
   useEffect(() => {
     localStorage.setItem('vva.sidebar-hidden', sidebarHidden ? '1' : '0')
@@ -231,6 +233,35 @@ export default function App() {
     }
   }, [activeId])
 
+  // 回退：丢弃该用户轮次及之后的内容，提示词放回输入框重新编辑
+  const revertTurn = useCallback(
+    async (turnIndex: number, prompt: string) => {
+      if (!activeId) return
+      try {
+        await api.revert(activeId, turnIndex)
+        setPending(null)
+        composerRef.current?.set(prompt)
+      } catch (e) {
+        setError(toError(e))
+      }
+    },
+    [activeId],
+  )
+
+  // 分叉：保留该用户轮次之前的历史创建新会话，并切换过去
+  const forkTurn = useCallback(
+    async (turnIndex: number) => {
+      if (!activeId) return
+      try {
+        const created = await api.fork(activeId, turnIndex)
+        setActiveId(created.session.id)
+      } catch (e) {
+        setError(toError(e))
+      }
+    },
+    [activeId],
+  )
+
   const newChat = useCallback(
     async (workspace?: string) => {
       setError(null)
@@ -328,45 +359,29 @@ export default function App() {
   const composerControls = (
     <>
       {!activeId && (
-        <select
-          className="chip"
-          value={draftProject || defaultRoot || ''}
-          onChange={event => setDraftProject(event.target.value)}
+        <ChipSelect
           title="项目"
-        >
-          {projects.map(project => (
-            <option key={project.root} value={project.root}>
-              {project.name}
-            </option>
-          ))}
-        </select>
+          value={draftProject || defaultRoot || ''}
+          options={projects.map(project => ({ value: project.root, label: project.name }))}
+          onChange={setDraftProject}
+        />
       )}
-      <select
-        className="chip"
-        value={currentModel}
-        onChange={event => changeModel(event.target.value)}
+      <ChipSelect
         title="模型"
-      >
-        {modelOptions.map(entry => (
-          <option key={entry.spec} value={entry.spec}>
-            {entry.name || entry.spec}
-          </option>
-        ))}
-      </select>
+        value={currentModel}
+        options={modelOptions.map(entry => ({ value: entry.spec, label: entry.name || entry.spec }))}
+        onChange={changeModel}
+      />
       {modelEntry && modelEntry.variants.length > 0 && (
-        <select
-          className="chip"
-          value={currentVariant ?? ''}
-          onChange={event => changeVariant(event.target.value || null)}
+        <ChipSelect
           title="推理档位"
-        >
-          <option value="">档位</option>
-          {modelEntry.variants.map(variant => (
-            <option key={variant} value={variant}>
-              {variant}
-            </option>
-          ))}
-        </select>
+          value={currentVariant ?? ''}
+          options={[
+            { value: '', label: 'default' },
+            ...modelEntry.variants.map(variant => ({ value: variant, label: variant })),
+          ]}
+          onChange={variant => changeVariant(variant || null)}
+        />
       )}
       <label className="chip-toggle" title="原生网络搜索">
         <input
@@ -469,6 +484,7 @@ export default function App() {
                   : `${fmtNum(stats.context_tokens)} ctx`}
               </span>
               <span className="stat-item">{fmtCost(stats.estimated_cost_usd)}</span>
+              {active && <span className="stat-item sess-id">{active.id}</span>}
             </div>
           )}
         </header>
@@ -486,20 +502,23 @@ export default function App() {
         )}
         {!activeId ? (
           <div className="empty-stage">
-            <div className="empty-brand">
-              vva
-              <span className="brand-cursor" aria-hidden />
-            </div>
+            <div className="empty-brand">vva</div>
             <div className="empty-hint">选择项目，输入任务开始 · Enter 发送</div>
             <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
           </div>
         ) : (
           <>
             <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
-              <Chat snap={snap} pending={pending} />
+              <Chat snap={snap} pending={pending} onRevert={revertTurn} onFork={forkTurn} />
             </div>
             <div className="composer-area">
-              <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
+              <Composer
+                ref={composerRef}
+                running={running}
+                onSend={submit}
+                onStop={abort}
+                controls={composerControls}
+              />
             </div>
           </>
         )}

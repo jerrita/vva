@@ -7,7 +7,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 
 1. **方向承诺**：保持既有美学方向并贯彻，不为局部便利引入风格外的样式。
 2. **令牌优先**：永不硬编码颜色/字体；一律引用 `:root` 令牌。找不到合适令牌时先补令牌再用。
-3. **紫罗兰主导 + 绯红点睛**：紫色承载全部交互语义；`--rose` 仅限品牌光标与运行状态脉冲两处，不得扩散。
+3. **紫罗兰主导 + 绯红点睛**：紫色承载全部交互语义；`--rose` 仅限运行状态脉冲一处，不得扩散。
 4. **无框架**：不引入 UI 框架 / CSS 框架 / 原子类库；样式全部手写于 `src/styles.css`。
 
 ## 2. 色彩令牌（styles.css :root）
@@ -18,7 +18,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 | `--border` / `--border-soft` | 边框 / 弱分隔线 |
 | `--text` / `--muted` / `--faint` | 正文 / 次要 / 最弱层级文字 |
 | `--accent` / `--accent-hover` / `--accent-soft` / `--on-accent` | 紫罗兰信号色：链接、激活态、聚焦环、主按钮、搜索开关选中 |
-| `--rose` | 绯红点睛：品牌光标、状态脉冲点 |
+| `--rose` | 绯红点睛：状态脉冲点 |
 | `--danger` / `--danger-soft` | 破坏性操作与错误（删除按钮、错误横幅/错误块） |
 | `--warning` / `--warning-soft` | Notice 横幅 |
 | `--dot` | 聊天区点阵纹理 |
@@ -40,19 +40,20 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 
 - **内容列**：聊天与输入框 `max-width: 760px` 居中；聊天区背景为 22px 网格点阵（`--dot`）。
 - **侧栏**：宽度可拖拽（200–420px，经右缘 `.sidebar-resize` 手柄，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。
-- **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章 + 悬停显示隐藏按钮。折叠状态与隐藏列表均持久化于 localStorage（`vva.projects-collapsed` / `vva.projects-hidden`）；打开或新建位于隐藏项目的会话时该项目自动恢复显示。
+- **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章 + 悬停显示新建与隐藏按钮（新建直接在该项目 workspace 下创建会话）。折叠状态与隐藏列表均持久化于 localStorage（`vva.projects-collapsed` / `vva.projects-hidden`）；打开或新建位于隐藏项目的会话时该项目自动恢复显示。
 - **新建项目目录点选**：新建模式为多级目录点选（`GET /api/fs/dirs` 列一级子目录，含上一级按钮），路径文本保持原始大小写（父级 uppercase 需显式覆盖）。
-- **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`。
+- **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；悬停气泡显示操作行（回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
 - **空态**：无会话时为 `.empty-stage` 居中版式（品牌大字 + 提示 + 强调输入框），输入框工具行含项目指定；发首条消息即按所选项目创建会话。
-- **内容块**：统一走 `.block`（`<details>` + `<summary>` + `▸` 箭头旋转展开），宽度恒 100%；搜索/思考/工具块共用此模式。
-- **工具卡片**：`tool_call` 与其 `tool_result` 按 `tool_call_id` 配对为单卡片，展示粒度对齐 TUI `src/ui/views/chat.rs`——摘要行=状态（✓/✕/运行中脉冲）+ 工具名 + 按工具类型 detail（Read 带 `[offset,limit]`、Edit 带 `(+n,-n)` 着色、Glob 带 matches、Grep 带 `include, pattern`、Shell 用 intent 字段）；主体=命令/路径行（Shell 为 `$ command`）+ 结果前 10 行（`PREVIEW_LIMIT`）+「展开全部」嵌套 details；Edit/Write 主体为 diff（红删绿加）与行号内容且默认展开，Shell 默认展开预览，其余默认收起。
-- **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
+- **内容块**：统一走 `.block`（`<details>` + `<summary>` + `▸` 箭头旋转展开），宽度恒 100%；收起为无底色行（hover 淡底），展开整块着 `--panel-2` 圆角色块（错误块 `--danger-soft`）；展开/收起经 `::details-content` + `interpolate-size` 高度过渡（Chromium 131+，不支持则直接切换）。搜索/思考/工具块共用此模式。
+- **工具卡片**：`tool_call` 与其 `tool_result` 按 `tool_call_id` 配对为单块，展示粒度对齐 TUI `src/ui/views/chat.rs`——摘要行=状态（✓/✕/运行中脉冲）+ 工具名 + 按工具类型 detail（Read 带 `[offset,limit]`、Edit 带 `(+n,-n)` 着色、Glob 带 matches、Grep 带 `include, pattern`、Shell 用 intent 字段）；主体=命令/路径行（Shell 为 `$ command`）+ 结果前 10 行（`PREVIEW_LIMIT`）+「展开全部」嵌套 details；Edit/Write 主体为 diff（红删绿加）与行号内容且默认展开，Shell 默认展开预览，其余默认收起。
+- **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；折叠粒度为整个运行段（两次用户消息之间的助手轮序列）——中间轮的思考/工具与文本消息均并入折叠，仅运行段最后一条助手消息正常展示，用时取末轮 `worked_ms`（整请求周期）；展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
+- **引用注脚**：消息文本的 url_citation 渲染为 `.citations` 折叠行（`引用来源（N）`），按 URL 去重（对齐 TUI `search_citations`），默认收起，展开为编号列表。
 - **按钮体系**：`new-create`/`send-button`（主色实心）、`ghost-button`/`new-cancel`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
 - **浮层**：
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
   - 统计浮块（`.stats-panel`）：**非阻塞**——无遮罩，主界面可操作，仅按钮与 Esc 关闭；
   - 居中确认弹窗（`.modal-overlay` + `.confirm-modal`）：**仅用于破坏性操作**，带遮罩与模糊。
-- **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`blink` 品牌光标、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。
+- **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。
 - **图标**：内联 SVG（stroke 2、round），不引入图标库；颜色继承 `currentColor`。
 
 ## 5. 工程契约

@@ -230,6 +230,58 @@ pub async fn submit_message(
     }
 }
 
+#[derive(Deserialize)]
+pub struct RevertRequest {
+    pub turn_index: usize,
+}
+
+/// 回退到指定用户轮次：丢弃该轮次及其后的全部内容
+pub async fn revert_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<RevertRequest>,
+) -> Response {
+    let handle = match state.manager.get_or_load(&id).await {
+        Ok(handle) => handle,
+        Err(_) => return not_found(&id),
+    };
+    match handle.revert(request.turn_index).await {
+        Ok(()) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ForkRequest {
+    pub turn_index: usize,
+    /// 新会话标题；缺省时由分叉点用户消息派生
+    pub title: Option<String>,
+}
+
+/// 从指定用户轮次分叉新会话：保留该轮次之前的历史，原会话不变
+pub async fn fork_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<ForkRequest>,
+) -> Response {
+    let handle = match state.manager.get_or_load(&id).await {
+        Ok(handle) => handle,
+        Err(_) => return not_found(&id),
+    };
+    match state
+        .manager
+        .fork_session(
+            &handle,
+            request.turn_index,
+            request.title.unwrap_or_default(),
+        )
+        .await
+    {
+        Ok(created) => Json(SessionSnapshot::from(&*created.snapshot())).into_response(),
+        Err(e) => error(StatusCode::BAD_REQUEST, e),
+    }
+}
+
 pub async fn abort_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let handle = match state.manager.get_or_load(&id).await {
         Ok(handle) => handle,

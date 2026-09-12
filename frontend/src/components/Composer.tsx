@@ -1,16 +1,23 @@
-import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactNode } from 'react'
+import { useEffect, useImperativeHandle, useRef, useState } from 'react'
+import type { KeyboardEvent, ReactNode, Ref } from 'react'
+
+/** 外部写入输入框内容（回退后还原提示词） */
+export interface ComposerHandle {
+  set: (text: string) => void
+}
 
 export function Composer({
   running,
   onSend,
   onStop,
   controls,
+  ref,
 }: {
   running: boolean
   onSend: (text: string) => void
   onStop: () => void
   controls?: ReactNode
+  ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -21,6 +28,14 @@ export function Composer({
     el.style.height = 'auto'
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`
   }
+
+  useImperativeHandle(ref, () => ({
+    set: (value: string) => {
+      setText(value)
+      requestAnimationFrame(resize)
+      textareaRef.current?.focus()
+    },
+  }))
 
   const send = () => {
     const trimmed = text.trim()

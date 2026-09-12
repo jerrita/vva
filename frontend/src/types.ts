@@ -27,7 +27,14 @@ export interface FileCitation {
   end_index: number
 }
 
-export type Annotation = UrlCitation | FileCitation
+export interface WebSearchResultLocation {
+  type: 'web_search_result_location'
+  url: string
+  title: string
+  cited_text: string
+}
+
+export type Annotation = UrlCitation | FileCitation | WebSearchResultLocation
 
 export type MediaSource =
   | { kind: 'url'; url: string }

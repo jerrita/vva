@@ -74,6 +74,12 @@ pub enum Annotation {
         start_index: usize,
         end_index: usize,
     },
+    /// Anthropic web search 引用：无字符偏移，以被引文本摘录定位
+    WebSearchResultLocation {
+        url: String,
+        title: String,
+        cited_text: String,
+    },
     /// Responses API 规范定义的文件引用注脚（当前流式路径未产出，保留为协议词汇）
     FileCitation {
         file_id: String,

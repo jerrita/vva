@@ -139,6 +139,7 @@ fn glm_coding_plan_builtin_models() -> HashMap<String, ModelConfig> {
                 cache_write: None,
                 context_over_200k: None,
             }),
+            annotation: None,
         },
     );
     models.insert(
@@ -163,6 +164,7 @@ fn glm_coding_plan_builtin_models() -> HashMap<String, ModelConfig> {
                 cache_write: None,
                 context_over_200k: None,
             }),
+            annotation: None,
         },
     );
     models
@@ -206,6 +208,8 @@ pub struct ModelConfig {
     pub variants: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost: Option<ModelCostConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<ModelAnnotation>,
 }
 
 impl ModelConfig {
@@ -213,6 +217,23 @@ impl ModelConfig {
     pub fn effective_type(&self, provider_type: ProviderType) -> ProviderType {
         self.model_type_override.unwrap_or(provider_type)
     }
+
+    /// 是否向 API 声明 web_fetch 服务端工具（`annotation.web_fetch: false` 时关闭）
+    pub fn declare_web_fetch(&self) -> bool {
+        self.annotation
+            .as_ref()
+            .and_then(|a| a.web_fetch)
+            .unwrap_or(true)
+    }
+}
+
+/// 模型级注记：细粒度关闭个别原生服务端工具的声明。
+/// 用于未接线特定 server tool 的中转端点——带未识别条目时端点会整组丢弃工具声明，
+/// 例如 `annotation: { "web_fetch": false }` 仅声明 web_search 以保住原生搜索
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelAnnotation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_fetch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

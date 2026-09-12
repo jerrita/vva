@@ -158,6 +158,128 @@ pub struct AnthropicTurnMeta {
     pub cache_read_input_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+    /// 核心原生优势：Anthropic 原生 assistant content blocks。server tool 结果与引用
+    /// 携带服务端加密字段（encrypted_content / encrypted_index），多轮对话必须逐块
+    /// 原样回传，缺失或改动即 400；同 Responses output_items 的原生条目链策略
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_blocks: Vec<AnthropicContentBlock>,
+}
+
+/// Anthropic Messages API 原生 assistant content blocks（与官方协议字段一一对应）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicContentBlock {
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    Text {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<AnthropicCitation>,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    /// 服务端代执行的工具调用（web_search / web_fetch），结果块由服务端直接产出
+    ServerToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    WebSearchToolResult {
+        tool_use_id: String,
+        content: AnthropicSearchResultContent,
+    },
+    WebFetchToolResult {
+        tool_use_id: String,
+        content: AnthropicFetchResultContent,
+    },
+    /// 安全脱敏的思考块：无明文内容，按官方语义原样回传
+    RedactedThinking { data: String },
+}
+
+/// web_search_result_location 引用：以被引文本与 encrypted_index 定位
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicCitation {
+    WebSearchResultLocation {
+        url: String,
+        title: String,
+        /// 被引内容摘录（至多 150 字符）
+        cited_text: String,
+        /// 服务端加密索引，多轮对话回传必需
+        encrypted_index: String,
+    },
+}
+
+/// web_search_tool_result.content：结果列表或错误对象（HTTP 200 内嵌失败语义）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AnthropicSearchResultContent {
+    Results(Vec<AnthropicSearchResult>),
+    Error(AnthropicToolResultError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicSearchResult {
+    WebSearchResult {
+        url: String,
+        title: String,
+        /// 服务端加密的页面内容快照，多轮回传必须原样保留
+        encrypted_content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        page_age: Option<String>,
+    },
+}
+
+/// web_fetch_tool_result.content：抓取结果或错误对象
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AnthropicFetchResultContent {
+    Result(AnthropicFetchResult),
+    Error(AnthropicToolResultError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicFetchResult {
+    WebFetchResult {
+        url: String,
+        /// 抓取页面的正文 document 块（text 或 base64 PDF）
+        content: AnthropicDocumentBlock,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retrieved_at: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicDocumentBlock {
+    Document {
+        source: AnthropicDocumentSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AnthropicDocumentSource {
+    Text { media_type: String, data: String },
+    Base64 { media_type: String, data: String },
+}
+
+/// server tool 结果错误对象（type 固定为对应 *_tool_result_error，原样回传）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AnthropicToolResultError {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub error_code: String,
 }
 
 // ================== Google Gemini 专有元数据 ==================

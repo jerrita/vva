@@ -144,23 +144,6 @@ pre {
   font-family: var(--font-mono);
 }
 
-/* ---- 品牌光标（终端闪烁块） ---- */
-
-.brand-cursor {
-  display: inline-block;
-  width: 0.5em;
-  height: 0.95em;
-  margin-left: 0.12em;
-  background: var(--rose);
-  animation: blink 1.15s steps(1) infinite;
-}
-
-@keyframes blink {
-  50% {
-    opacity: 0;
-  }
-}
-
 /* ---- 入场编排 ---- */
 
 @keyframes rise {
@@ -310,17 +293,23 @@ body.resizing .chat-scroll {
   user-select: none;
 }
 
-.group-hide {
+.group-hide,
+.group-new {
   flex-shrink: 0;
   display: none;
   color: var(--muted);
   padding: 3px;
   border-radius: 6px;
-  margin-left: 2px;
 }
 
-.group-label:hover .group-hide {
+.group-label:hover .group-hide,
+.group-label:hover .group-new {
   display: inline-flex;
+}
+
+.group-new:hover {
+  color: var(--accent);
+  background: var(--border-soft);
 }
 
 .group-hide:hover {
@@ -751,6 +740,10 @@ body.resizing .chat-scroll {
   border-left: 1px solid var(--border);
 }
 
+.topbar-stats .sess-id {
+  color: var(--faint);
+}
+
 /* ---- 提示条 ---- */
 
 .banner {
@@ -805,6 +798,64 @@ body.resizing .chat-scroll {
   word-break: break-word;
 }
 
+/* 气泡 + 操作行的右对齐列；85% 宽度约束上移到列 */
+.msg.user .user-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  max-width: 85%;
+}
+
+.msg.user .user-col .bubble {
+  max-width: 100%;
+}
+
+/* 用户消息操作（回退 / 分叉）：悬停或聚焦时显示，触屏常显 */
+.turn-actions {
+  display: flex;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.msg.user:hover .turn-actions,
+.msg.user:focus-within .turn-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .turn-actions {
+    opacity: 1;
+  }
+}
+
+.turn-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.turn-actions button:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--panel-2);
+}
+
+.turn-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .msg.assistant,
 .msg.tool {
   word-break: break-word;
@@ -846,28 +897,64 @@ body.resizing .chat-scroll {
   }
 }
 
-/* ---- 内容块 (思考 / 工具 / 搜索 / Worked) ---- */
+/* ---- 内容块 (思考 / 工具 / 搜索 / Worked) ----
+   收起为无底色行，展开整块着 --panel-2；高度过渡依赖
+   ::details-content + interpolate-size（Chromium 131+，不支持则直接切换） */
+
+:root {
+  interpolate-size: allow-keywords;
+}
 
 .block {
   display: block;
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--border);
   border-radius: 10px;
-  margin: 8px 0;
+  margin: 2px 0;
   font-size: 13px;
-  background: var(--panel);
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.block[open] {
+  background: var(--panel-2);
+}
+
+.block.tool:has(> summary .status.error)[open] {
+  background: var(--danger-soft);
+}
+
+.block::details-content,
+.worked::details-content,
+.tool-more::details-content,
+.citations::details-content {
+  block-size: 0;
+  overflow: hidden;
+  transition: block-size 0.22s ease, content-visibility 0.22s allow-discrete;
+}
+
+.block[open]::details-content,
+.worked[open]::details-content,
+.tool-more[open]::details-content,
+.citations[open]::details-content {
+  block-size: auto;
 }
 
 .block > summary {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 5px 10px;
+  border-radius: 10px;
   cursor: pointer;
   color: var(--muted);
   user-select: none;
   list-style: none;
+  transition: background 0.15s;
+}
+
+.block:not([open]) > summary:hover {
+  background: var(--panel-2);
 }
 
 .block > summary::-webkit-details-marker {
@@ -1113,11 +1200,46 @@ body.resizing .chat-scroll {
 /* ---- 引用与图片 ---- */
 
 .citations {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: 12.5px;
+}
+
+.citations > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.citations > summary::-webkit-details-marker {
+  display: none;
+}
+
+.citations > summary::after {
+  content: '›';
+  transition: transform 0.15s;
+}
+
+.citations[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.citations > summary:hover {
+  color: var(--muted);
+}
+
+.citations ol {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 
 .part-image {
@@ -1226,12 +1348,6 @@ body.resizing .chat-scroll {
   line-height: 1;
 }
 
-.chat-empty-brand .brand-cursor {
-  width: 0.5em;
-  height: 0.82em;
-  animation-duration: 1.15s;
-}
-
 .chat-empty-hint {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -1261,11 +1377,6 @@ body.resizing .chat-scroll {
   display: inline-flex;
   align-items: baseline;
   line-height: 1;
-}
-
-.empty-brand .brand-cursor {
-  width: 0.5em;
-  height: 0.82em;
 }
 
 .empty-hint {
@@ -1345,27 +1456,110 @@ body.resizing .chat-scroll {
   margin-left: -8px;
 }
 
-select.chip {
-  appearance: none;
+.chip-select {
+  position: relative;
+  min-width: 0;
+}
+
+.chip-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-mono);
   font-size: 11.5px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='9' viewBox='0 0 24 24' fill='none' stroke='%239a90b8' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 7px center;
-  border: none;
   border-radius: 8px;
-  padding: 4px 22px 4px 8px;
+  padding: 4px 8px;
   color: var(--muted);
   max-width: 190px;
-  text-overflow: ellipsis;
   outline: none;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.chip-trigger:hover,
+.chip-trigger:focus-visible,
+.chip-select.open .chip-trigger {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-trigger svg {
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.chip-select.open .chip-trigger svg {
+  transform: rotate(180deg);
+}
+
+.chip-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: max(100%, 160px);
+  max-width: 300px;
+  max-height: min(340px, 44vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+  animation: rise 0.14s ease;
+  /* 标准属性置 auto，否则 Chromium 121+ 会禁用 ::-webkit-scrollbar 伪元素样式 */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+/* 窄面板细滚动条：8px 槽位 + 4px 圆角拇指，透明轨道 */
+.chip-menu::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chip-menu::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.chip-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  text-align: left;
   cursor: pointer;
 }
 
-select.chip:hover,
-select.chip:focus {
-  background-color: var(--panel-2);
-  color: var(--text);
+.chip-option:hover {
+  background: var(--panel-2);
+}
+
+.chip-option.selected {
+  color: var(--accent);
+}
+
+.chip-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chip-toggle {

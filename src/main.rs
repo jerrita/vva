@@ -197,11 +197,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         use std::io::Write;
                         let _ = std::io::stdout().flush();
                     }
-                    AgentEvent::Citation { annotation, .. } => {
-                        if let Annotation::UrlCitation { title, url, .. } = annotation {
+                    AgentEvent::Citation { annotation, .. } => match annotation {
+                        Annotation::UrlCitation { title, url, .. }
+                        | Annotation::WebSearchResultLocation { title, url, .. } => {
                             println!("\n🔗 [Citation] {} ({})", title, url);
                         }
-                    }
+                        Annotation::FileCitation { .. } => {}
+                    },
                     AgentEvent::Notice(notice) => {
                         eprintln!("\n⚠️  [Notice] {notice}");
                     }
@@ -344,17 +346,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ContentPart::Text { text, annotations } => {
                                     println!("    [Text]: {}", text);
                                     for ann in annotations {
-                                        if let Annotation::UrlCitation {
-                                            url,
-                                            title,
-                                            start_index,
-                                            end_index,
-                                        } = ann
-                                        {
-                                            println!(
-                                                "      🔗 Citation: {} ({}) [{}-{}]",
-                                                title, url, start_index, end_index
-                                            );
+                                        match ann {
+                                            Annotation::UrlCitation {
+                                                url,
+                                                title,
+                                                start_index,
+                                                end_index,
+                                            } => {
+                                                println!(
+                                                    "      🔗 Citation: {} ({}) [{}-{}]",
+                                                    title, url, start_index, end_index
+                                                );
+                                            }
+                                            Annotation::WebSearchResultLocation {
+                                                url,
+                                                title,
+                                                cited_text,
+                                            } => {
+                                                println!(
+                                                    "      🔗 Citation: {} ({}) \"{}\"",
+                                                    title, url, cited_text
+                                                );
+                                            }
+                                            Annotation::FileCitation { .. } => {}
                                         }
                                     }
                                 }

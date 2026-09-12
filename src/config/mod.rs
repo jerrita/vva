@@ -160,6 +160,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_model_annotation_disables_web_fetch_declaration() {
+        let json = r#"{
+            "providers": {
+                "prov": {
+                    "type": "anthropic",
+                    "models": {
+                        "with-annotation": {
+                            "name": "With Annotation",
+                            "annotation": { "web_fetch": false }
+                        },
+                        "without-annotation": { "name": "Without Annotation" }
+                    }
+                }
+            }
+        }"#;
+        let config = parse_config_str(json).expect("parse config");
+
+        let annotated = &config.providers["prov"].models["with-annotation"];
+        assert!(!annotated.declare_web_fetch());
+
+        let plain = &config.providers["prov"].models["without-annotation"];
+        assert!(plain.declare_web_fetch());
+    }
+
+    #[test]
     fn test_config_merge_project_over_global() {
         let global_json = r#"{
             "settings": {

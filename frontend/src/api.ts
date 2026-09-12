@@ -44,6 +44,12 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
   submit: (id: string, prompt: string) =>
     request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt })),
+  /** 回退到指定用户轮次：丢弃该轮次及其后的内容 */
+  revert: (id: string, turnIndex: number) =>
+    request<SessionSnapshot>(`/api/sessions/${id}/revert`, json('POST', { turn_index: turnIndex })),
+  /** 从指定用户轮次分叉新会话：保留该轮次之前的历史 */
+  fork: (id: string, turnIndex: number) =>
+    request<SessionSnapshot>(`/api/sessions/${id}/fork`, json('POST', { turn_index: turnIndex })),
   abort: (id: string) => request<void>(`/api/sessions/${id}/abort`, { method: 'POST' }),
   configure: (id: string, body: ConfigureBody) =>
     request<SessionSnapshot>(`/api/sessions/${id}/config`, json('POST', body)),

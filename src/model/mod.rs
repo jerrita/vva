@@ -11,9 +11,12 @@ pub use content::{
 };
 pub use message::{Message, Role};
 pub use meta::{
-    AnthropicTurnMeta, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
-    ResponseMessageContent, ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent,
-    ResponseReasoningSummary, ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
+    AnthropicCitation, AnthropicContentBlock, AnthropicDocumentBlock, AnthropicDocumentSource,
+    AnthropicFetchResult, AnthropicFetchResultContent, AnthropicSearchResult,
+    AnthropicSearchResultContent, AnthropicToolResultError, AnthropicTurnMeta,
+    GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta, ResponseMessageContent,
+    ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent, ResponseReasoningSummary,
+    ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
     ResponseWebSearchSourceType, TurnMeta,
 };
 pub use session::{

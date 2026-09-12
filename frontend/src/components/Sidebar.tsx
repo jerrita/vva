@@ -4,6 +4,8 @@ import { api } from '../api'
 import type { SessionSummary } from '../types'
 export interface SessionGroup {
   project: string
+  /** 项目 workspace 路径，用于分组内直接新建会话 */
+  root: string
   sessions: SessionSummary[]
 }
 
@@ -34,6 +36,7 @@ export function groupByProject(sessions: SessionSummary[]): SessionGroup[] {
   return [...groups.values()]
     .map(list => ({
       project: projectName(list[0].workspace_root),
+      root: list[0].workspace_root,
       sessions: list.sort((a, b) => b.created_at.localeCompare(a.created_at)),
     }))
     .sort(
@@ -291,15 +294,19 @@ export function Sidebar({
     localStorage.setItem('vva.projects-collapsed', JSON.stringify([...collapsed]))
   }, [collapsed])
 
-  // Esc 关闭删除确认弹窗
+  // Esc 关闭 / Enter 确认删除
   useEffect(() => {
     if (!pendingDelete) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPendingDelete(null)
+      if (event.key === 'Enter') {
+        onDelete(pendingDelete.id)
+        setPendingDelete(null)
+      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [pendingDelete])
+  }, [pendingDelete, onDelete])
 
   const toggle = (project: string) => {
     setCollapsed(prev => {
@@ -326,7 +333,6 @@ export function Sidebar({
       <div className="sidebar-top">
         <span className="brand">
           vva
-          <span className="brand-cursor" aria-hidden />
         </span>
         {newOpen && projects.length > 0 ? (
           <NewChatPanel
@@ -383,6 +389,28 @@ export function Sidebar({
               />
               <span className="group-name">{group.project}</span>
               <span className="group-count">{group.sessions.length}</span>
+              <button
+                className="group-new"
+                title={`在 ${group.project} 新建会话`}
+                aria-label={`在 ${group.project} 新建会话`}
+                onClick={event => {
+                  event.stopPropagation()
+                  onCreate(group.root)
+                }}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="12"
+                  height="12"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  aria-hidden
+                >
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
               <button
                 className="group-hide"
                 title="隐藏项目"

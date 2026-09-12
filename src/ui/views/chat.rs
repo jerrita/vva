@@ -88,6 +88,15 @@ fn url_display_domain(url: &str) -> &str {
     host.strip_prefix("www.").unwrap_or(host)
 }
 
+/// 引用注脚的展示字段（url 与标题）：覆盖 Responses url_citation 与 Anthropic web_search_result_location
+fn citation_ref(annotation: &Annotation) -> Option<(&str, &str)> {
+    match annotation {
+        Annotation::UrlCitation { url, title, .. } => Some((url, title)),
+        Annotation::WebSearchResultLocation { url, title, .. } => Some((url, title)),
+        Annotation::FileCitation { .. } => None,
+    }
+}
+
 /// Collect cited URLs in first-appearance order within a response.
 fn search_citations<'a>(
     parts: impl IntoIterator<Item = &'a ContentPart>,
@@ -97,10 +106,10 @@ fn search_citations<'a>(
     for part in parts {
         if let ContentPart::Text { annotations, .. } = part {
             for a in annotations {
-                if let Annotation::UrlCitation { url, title, .. } = a
-                    && seen.insert(url.as_str())
+                if let Some((url, title)) = citation_ref(a)
+                    && seen.insert(url)
                 {
-                    citations.push((url.as_str(), title.as_str()));
+                    citations.push((url, title));
                 }
             }
         }
@@ -1159,18 +1168,14 @@ pub(crate) fn append_parts<'a>(
             (Role::Assistant, ContentPart::Text { text, annotations }) => {
                 state.prev_reasoning = false;
                 state.prev_text = true;
-                let citations: Vec<_> = annotations
-                    .iter()
-                    .filter_map(|a| {
-                        if let Annotation::UrlCitation { title, url, .. } = a
-                            && !calls.iter().any(|call| call_covers_url(call, url))
-                        {
-                            Some((title, url))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let mut citations: Vec<(&str, &str)> = Vec::new();
+                for a in annotations {
+                    if let Some((url, title)) = citation_ref(a)
+                        && !calls.iter().any(|call| call_covers_url(call, url))
+                    {
+                        citations.push((title, url));
+                    }
+                }
                 render.lines.push(Line::from(""));
                 let (mut md_lines, mut md_links) = render_markdown(text, max_width);
                 for link in &mut md_links {
@@ -1203,10 +1208,10 @@ pub(crate) fn append_parts<'a>(
                     for (i, (title, url)) in citations.iter().enumerate() {
                         let spans = vec![
                             Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Cyan)),
-                            Span::styled((*title).clone(), Style::default().fg(Color::White)),
+                            Span::styled((*title).to_string(), Style::default().fg(Color::White)),
                             Span::raw(" - "),
                             Span::styled(
-                                (*url).clone(),
+                                (*url).to_string(),
                                 Style::default().fg(Color::Rgb(100, 160, 255)),
                             ),
                         ];

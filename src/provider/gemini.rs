@@ -267,6 +267,8 @@ impl Provider for GeminiProvider {
         ProviderCapabilities {
             supports_native_search: true,
             supports_reasoning_effort: false,
+            // google_search 由服务端以 groundingMetadata 投影，模型不按名调用
+            server_tool_names: Vec::new(),
         }
     }
 

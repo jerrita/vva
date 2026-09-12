@@ -240,18 +240,28 @@ function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: bool
 }
 
 function Citations({ annotations }: { annotations: Annotation[] }) {
-  const citations = annotations.filter(
-    (a): a is Extract<Annotation, { type: 'url_citation' }> => a.type === 'url_citation',
-  )
+  // 与 TUI citation_ref 一致：url_citation 与 web_search_result_location 均展示，按 URL 去重
+  type CitedAnnotation = Extract<Annotation, { type: 'url_citation' | 'web_search_result_location' }>
+  const seen = new Set<string>()
+  const citations = annotations.filter((a): a is CitedAnnotation => {
+    if ((a.type !== 'url_citation' && a.type !== 'web_search_result_location') || seen.has(a.url)) return false
+    seen.add(a.url)
+    return true
+  })
   if (citations.length === 0) return null
   return (
-    <div className="citations">
-      {citations.map((citation, index) => (
-        <a key={index} href={citation.url} target="_blank" rel="noreferrer">
-          {index + 1}. {citation.title || citation.url}
-        </a>
-      ))}
-    </div>
+    <details className="citations">
+      <summary>引用来源（{citations.length}）</summary>
+      <ol>
+        {citations.map((citation, index) => (
+          <li key={index}>
+            <a href={citation.url} target="_blank" rel="noreferrer">
+              {index + 1}. {citation.title || citation.url}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </details>
   )
 }
 

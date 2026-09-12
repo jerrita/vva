@@ -41,6 +41,8 @@ pub async fn run_server(
             get(api::get_session).delete(api::delete_session),
         )
         .route("/api/sessions/{id}/messages", post(api::submit_message))
+        .route("/api/sessions/{id}/revert", post(api::revert_session))
+        .route("/api/sessions/{id}/fork", post(api::fork_session))
         .route("/api/sessions/{id}/abort", post(api::abort_session))
         .route("/api/sessions/{id}/config", post(api::configure_session))
         .route("/api/sessions/{id}/events", get(api::stream_events))

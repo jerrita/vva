@@ -4,7 +4,7 @@ pub mod shell;
 use crate::model::{ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -37,6 +37,9 @@ pub trait Tool: Send + Sync {
 pub struct ToolRegistry {
     tools: BTreeMap<String, Arc<dyn Tool>>,
     tool_outputs: Option<PathBuf>,
+    /// 原生服务端工具名（web_search / web_fetch 等）：声明给 API 端点由其代执行，
+    /// 本注册表不可执行；模型误发起同名客户端调用时用于产出显式诊断
+    server_tools: HashSet<String>,
 }
 
 impl ToolRegistry {
@@ -44,6 +47,7 @@ impl ToolRegistry {
         Self {
             tools: BTreeMap::new(),
             tool_outputs: None,
+            server_tools: HashSet::new(),
         }
     }
 
@@ -66,6 +70,17 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), tool);
     }
 
+    /// 预留原生服务端工具名（来自 ProviderCapabilities::server_tool_names，
+    /// 开启原生联网搜索时注入）
+    pub fn reserve_server_tools<I: IntoIterator<Item = &'static str>>(&mut self, names: I) {
+        self.server_tools
+            .extend(names.into_iter().map(str::to_string));
+    }
+
+    pub fn is_server_tool(&self, name: &str) -> bool {
+        self.server_tools.contains(name)
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.get(name).cloned()
     }
@@ -83,6 +98,17 @@ impl ToolRegistry {
 
     pub async fn execute_call(&self, call: &ToolCall) -> ToolResult {
         let Some(tool) = self.get(&call.name) else {
+            if self.server_tools.contains(&call.name) {
+                return ToolResult::error(
+                    &call.id,
+                    format!(
+                        "{} is a native server-side tool executed by the API endpoint; the endpoint \
+                         returned a client tool call for it instead of executing it server-side, \
+                         which indicates the endpoint does not support native server tools.",
+                        call.name
+                    ),
+                );
+            }
             return ToolResult::error(&call.id, format!("Tool not found: {}", call.name));
         };
         if let Err(err) = validate_arguments(&call.arguments, &tool.parameters()) {
@@ -255,6 +281,38 @@ mod tests {
 
         assert!(result.is_error);
         assert_eq!(result.content, "Unexpected parameter: extra");
+    }
+
+    #[tokio::test]
+    async fn execute_call_diagnoses_client_call_on_server_tool() {
+        // 端点未代执行原生服务端工具、模型误发起客户端调用时，
+        // 错误信息需指明端点不支持 server tools，而非误导性的 Tool not found
+        let mut registry = ToolRegistry::new();
+        registry.reserve_server_tools(["web_search", "web_fetch"]);
+
+        let result = registry
+            .execute_call(&ToolCall::new(
+                "toolu_1",
+                "web_search",
+                r#"{"query":"rust"}"#,
+            ))
+            .await;
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .content
+                .contains("does not support native server tools"),
+            "unexpected error: {}",
+            result.content
+        );
+        assert!(!registry.is_server_tool("Read"));
+
+        // 未预留服务端工具名时维持原语义
+        let result = registry
+            .execute_call(&ToolCall::new("call_2", "Nope", "{}"))
+            .await;
+        assert_eq!(result.content, "Tool not found: Nope");
     }
 
     #[test]

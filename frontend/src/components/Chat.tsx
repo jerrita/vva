@@ -19,13 +19,7 @@ function isSystemReminder(turn: Turn): boolean {
   return text.startsWith('<system-reminder') && text.endsWith('</system-reminder>')
 }
 
-const isWorkPart = (part: ContentPart) =>
-  part.type === 'reasoning' ||
-  part.type === 'web_search_call' ||
-  part.type === 'tool_call' ||
-  part.type === 'tool_result'
-
-/** 历史轮次中的连续工作段（思考/搜索/工具），折叠为一个用时行 */
+/** 历史轮次中的连续工作段（思考/搜索/工具与中间轮文本），折叠为一个用时行 */
 interface WorkGroup {
   parts: ContentPart[]
   /** 各响应耗时之和 */
@@ -36,7 +30,7 @@ interface WorkGroup {
 }
 
 type Item =
-  | { kind: 'user'; turn: Turn }
+  | { kind: 'user'; turn: Turn; index: number }
   | { kind: 'work'; group: WorkGroup }
   | { kind: 'assistant'; turn: Turn; parts: ContentPart[] }
 
@@ -47,36 +41,44 @@ function buildItems(turns: Turn[]): Item[] {
     if (group && group.parts.length > 0) items.push({ kind: 'work', group })
     group = null
   }
-  for (const turn of turns) {
+  const pushTurn = (turn: Turn, parts: ContentPart[]) => {
+    group ??= { parts: [], elapsedMs: null, workedMs: null, errors: 0 }
+    for (const part of parts) {
+      group.parts.push(part)
+      if (part.type === 'tool_result' && part.is_error) group.errors++
+    }
+    if (turn.elapsed_ms != null) {
+      group.elapsedMs = (group.elapsedMs ?? 0) + turn.elapsed_ms
+    }
+    if (turn.worked_ms != null) {
+      group.workedMs = turn.worked_ms
+    }
+  }
+  for (let index = 0; index < turns.length; index++) {
+    const turn = turns[index]
+    if (turn.role === 'system' || isSystemReminder(turn)) continue
     if (turn.role === 'user') {
       flush()
-      items.push({ kind: 'user', turn })
+      items.push({ kind: 'user', turn, index })
       continue
     }
     const parts = turn.messages.flatMap(message => message.parts)
-    const work = parts.filter(isWorkPart)
-    const text = parts.filter(part => !isWorkPart(part))
-    if (work.length > 0) {
-      group ??= {
-        parts: [],
-        elapsedMs: null,
-        workedMs: null,
-        errors: 0,
-      }
-      for (const part of work) {
-        group.parts.push(part)
-        if (part.type === 'tool_result' && part.is_error) group.errors++
-      }
-      if (turn.elapsed_ms != null) {
-        group.elapsedMs = (group.elapsedMs ?? 0) + turn.elapsed_ms
-      }
-      if (turn.worked_ms != null) {
-        group.workedMs = turn.worked_ms
-      }
+    // 运行段 = 相邻助手轮直到用户消息；折叠折到运行段最后一条消息，
+    // 中间轮的思考/工具与文本均并入折叠组，不单独展示
+    const next = turns[index + 1]
+    const isRunEnd = next == null || next.role === 'user'
+    if (!isRunEnd) {
+      pushTurn(turn, parts)
+      continue
     }
-    if (text.length > 0) {
+    // 末段连续文本 = 最终回答；其余部分（思考/搜索/工具及其前导过渡文本）
+    // 按原位顺序并入折叠组，保持与模型输出一致的块序
+    let answerStart = parts.length
+    while (answerStart > 0 && parts[answerStart - 1].type === 'text') answerStart--
+    if (answerStart > 0) pushTurn(turn, parts.slice(0, answerStart))
+    if (answerStart < parts.length) {
       flush()
-      items.push({ kind: 'assistant', turn, parts: text })
+      items.push({ kind: 'assistant', turn, parts: parts.slice(answerStart) })
     }
   }
   flush()
@@ -115,10 +117,75 @@ function TurnMeta({ turn }: { turn: Turn }) {
   return <div className="turn-meta">{bits.join(' · ')}</div>
 }
 
-function UserBubble({ turn }: { turn: Turn }) {
+function UserBubble({
+  turn,
+  index,
+  disabled,
+  onRevert,
+  onFork,
+}: {
+  turn: Turn
+  /** 轮次在 session.turns 中的原始下标；乐观展示的 pending 消息无下标、无操作 */
+  index?: number
+  disabled?: boolean
+  onRevert?: (index: number, prompt: string) => void
+  onFork?: (index: number) => void
+}) {
+  const actions =
+    index == null || !onRevert || !onFork ? null : (
+      <div className="turn-actions">
+        <button
+          disabled={disabled}
+          onClick={() => onRevert(index, turnText(turn))}
+          title="回退：丢弃此消息及之后的内容，放回输入框重新编辑"
+          aria-label="回退"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="12"
+            height="12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M9 14 4 9l5-5" />
+            <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+          </svg>
+        </button>
+        <button
+          disabled={disabled}
+          onClick={() => onFork(index)}
+          title="分叉：保留此消息之前的历史，创建新会话"
+          aria-label="分叉"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="12"
+            height="12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <line x1="6" x2="6" y1="3" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+          </svg>
+        </button>
+      </div>
+    )
   return (
     <div className="msg user">
-      <div className="bubble">{turnText(turn)}</div>
+      <div className="user-col">
+        <div className="bubble">{turnText(turn)}</div>
+        {actions}
+      </div>
     </div>
   )
 }
@@ -126,31 +193,41 @@ function UserBubble({ turn }: { turn: Turn }) {
 export function Chat({
   snap,
   pending,
+  onRevert,
+  onFork,
 }: {
   snap: { state: string; draft: ContentPart[]; session: Session } | null
   pending: string | null
+  onRevert?: (index: number, prompt: string) => void
+  onFork?: (index: number) => void
 }) {
   if (!snap) {
     return (
       <div className="chat-empty">
-        <div className="chat-empty-brand">
-          vva
-          <span className="brand-cursor" aria-hidden />
-        </div>
+      <div className="chat-empty-brand">vva</div>
         <div className="chat-empty-hint">点击左侧「新对话」开始</div>
       </div>
     )
   }
 
   const running = snap.state !== ''
-  const turns = snap.session.turns.filter(turn => turn.role !== 'system' && !isSystemReminder(turn))
+  const turns = snap.session.turns
   const showDraft = snap.draft.length > 0 || running
 
   return (
     <div className="chat">
       {buildItems(turns).map((item, index) => {
         if (item.kind === 'user') {
-          return <UserBubble key={item.turn.id} turn={item.turn} />
+          return (
+            <UserBubble
+              key={item.turn.id}
+              turn={item.turn}
+              index={item.index}
+              disabled={running}
+              onRevert={onRevert}
+              onFork={onFork}
+            />
+          )
         }
         if (item.kind === 'work') {
           return <WorkedBlock key={`work-${index}`} group={item.group} />

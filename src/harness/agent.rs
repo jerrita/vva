@@ -50,15 +50,27 @@ impl AgentEngine {
         tools.register(Arc::new(
             crate::tools::filesystem::ReadTool::new(&session.workspace_root).with_inputs(inputs),
         ));
+        let provider = resolved.create_provider();
+        let options = CompletionOptions {
+            model: resolved.model_id,
+            reasoning_effort: resolved.selected_variant,
+            enable_web_search: session.web_search,
+            enable_web_fetch: resolved.model_config.declare_web_fetch(),
+            ..Default::default()
+        };
+        // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
+        // 客户端调用时，注册表给出显式诊断而非误导性的 Tool not found
+        if options.enable_web_search {
+            let mut server_tools = provider.capabilities().server_tool_names.clone();
+            if !options.enable_web_fetch {
+                server_tools.retain(|name| *name != "web_fetch");
+            }
+            tools.reserve_server_tools(server_tools);
+        }
         Ok(Self {
-            provider: resolved.create_provider(),
+            provider,
             tools,
-            options: CompletionOptions {
-                model: resolved.model_id,
-                reasoning_effort: resolved.selected_variant,
-                enable_web_search: session.web_search,
-                ..Default::default()
-            },
+            options,
         })
     }
 }
@@ -83,6 +95,7 @@ pub(super) async fn generate_title(
         temperature: Some(0.3),
         max_tokens: Some(30),
         enable_web_search: false,
+        enable_web_fetch: false,
         reasoning_effort: None,
     };
     let response = resolved
@@ -107,9 +120,72 @@ pub(super) async fn generate_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{ProviderError, ProviderResponse};
+
+    /// 无原生搜索能力的供应商桩：覆盖能力协商的降级通知分支
+    struct NoSearchProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for NoSearchProvider {
+        fn name(&self) -> &str {
+            "no-search"
+        }
+
+        fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+            crate::provider::ProviderCapabilities {
+                supports_native_search: false,
+                supports_reasoning_effort: false,
+                server_tool_names: Vec::new(),
+            }
+        }
+
+        async fn complete(
+            &self,
+            _session: &Session,
+            _tools: &[crate::model::ToolDefinition],
+            _options: &CompletionOptions,
+        ) -> Result<ProviderResponse, ProviderError> {
+            unimplemented!()
+        }
+
+        async fn complete_stream(
+            &self,
+            _session: &Session,
+            _tools: &[crate::model::ToolDefinition],
+            _options: &CompletionOptions,
+            _event_sender: Option<tokio::sync::mpsc::Sender<crate::event::AgentEvent>>,
+        ) -> Result<ProviderResponse, ProviderError> {
+            unimplemented!()
+        }
+    }
 
     #[test]
     fn test_capability_notices_flag_unsupported_options() {
+        // 全能力供应商（Responses）无通知
+        let options = CompletionOptions {
+            model: "claude-x".into(),
+            enable_web_search: true,
+            reasoning_effort: Some("high".into()),
+            ..Default::default()
+        };
+        let response = crate::provider::response::ResponseProvider::new("k");
+        assert!(capability_notices(&response, &options).is_empty());
+
+        // 无原生搜索能力的供应商生成搜索降级通知
+        let search_only = CompletionOptions {
+            model: "claude-x".into(),
+            enable_web_search: true,
+            ..Default::default()
+        };
+        let notices = capability_notices(&NoSearchProvider, &search_only);
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("native search"));
+        assert!(notices[0].contains("no-search"));
+    }
+
+    #[test]
+    fn test_capability_notices_flag_reasoning_effort_only() {
+        // Anthropic 已支持原生搜索，仅推理档位生成降级通知
         let provider = crate::provider::anthropic::AnthropicProvider::new("k");
         let options = CompletionOptions {
             model: "claude-x".into(),
@@ -118,12 +194,7 @@ mod tests {
             ..Default::default()
         };
         let notices = capability_notices(&provider, &options);
-        assert_eq!(notices.len(), 2);
-        assert!(notices[0].contains("native search"));
-        assert!(notices[1].contains("Reasoning effort 'high'"));
-
-        // 全能力供应商（Responses）无通知
-        let response = crate::provider::response::ResponseProvider::new("k");
-        assert!(capability_notices(&response, &options).is_empty());
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("Reasoning effort 'high'"));
     }
 }
