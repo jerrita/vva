@@ -1,5 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
-import type { KeyboardEvent, ReactNode, Ref } from 'react'
+import type { ClipboardEvent, KeyboardEvent, ReactNode, Ref } from 'react'
+import type { ImageAttachment } from '../types'
 
 /** 外部写入输入框内容（回退后还原提示词） */
 export interface ComposerHandle {
@@ -14,12 +15,13 @@ export function Composer({
   ref,
 }: {
   running: boolean
-  onSend: (text: string) => void
+  onSend: (text: string, images: ImageAttachment[]) => void
   onStop: () => void
   controls?: ReactNode
   ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
+  const [images, setImages] = useState<ImageAttachment[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const resize = () => {
@@ -37,11 +39,31 @@ export function Composer({
     },
   }))
 
+  // 粘贴板中的图片转为 Base64 附件，非图片粘贴保持默认行为
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...event.clipboardData.items]
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => file !== null)
+    if (files.length === 0) return
+    event.preventDefault()
+    for (const file of files) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = typeof reader.result === 'string' ? reader.result : ''
+        const data = result.slice(result.indexOf(',') + 1)
+        if (data) setImages(prev => [...prev, { mime_type: file.type, data }])
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
   const send = () => {
     const trimmed = text.trim()
-    if (!trimmed || running) return
-    onSend(trimmed)
+    if ((!trimmed && images.length === 0) || running) return
+    onSend(trimmed, images)
     setText('')
+    setImages([])
     requestAnimationFrame(resize)
   }
 
@@ -58,16 +80,44 @@ export function Composer({
 
   return (
     <div className="composer">
+      {images.length > 0 && (
+        <div className="composer-attachments">
+          {images.map((image, index) => (
+            <figure key={index} className="attachment-chip">
+              <img src={`data:${image.mime_type};base64,${image.data}`} alt="" />
+              <button
+                onClick={() => setImages(prev => prev.filter((_, i) => i !== index))}
+                title="移除图片"
+                aria-label="移除图片"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  width="11"
+                  height="11"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  aria-hidden
+                >
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </figure>
+          ))}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行'}
+        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行，可粘贴图片'}
         onChange={event => {
           setText(event.target.value)
           resize()
         }}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
       <div className="composer-foot">
         <div className="composer-tools">{controls}</div>
@@ -81,7 +131,7 @@ export function Composer({
           <button
             className="send-button"
             onClick={send}
-            disabled={!text.trim()}
+            disabled={!text.trim() && images.length === 0}
             title="发送"
             aria-label="发送"
           >

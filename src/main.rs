@@ -171,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("📂 Workspace: {}", view.session.workspace_root.display());
             println!("🎯 Session Model: {}", view.session.current_model);
             let (tx, mut rx) = mpsc::channel::<AgentEvent>(32);
-            session.submit(&prompt, Some(tx)).await?;
+            session.submit(&prompt, Vec::new(), Some(tx)).await?;
 
             let mut in_thought = false;
             let mut in_text = false;

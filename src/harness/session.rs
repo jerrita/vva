@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use super::agent::{AgentEngine, capability_notices, generate_title};
 use crate::config::{AppConfig, AppState};
 use crate::event::AgentEvent;
-use crate::model::{ContentPart, Message, Role, Session, Turn};
+use crate::model::{ContentPart, MediaSource, Message, Role, Session, Turn};
 use crate::storage::SessionStore;
 
 type Reply = oneshot::Sender<Result<(), String>>;
@@ -51,6 +51,8 @@ pub struct SessionView {
 enum Command {
     Submit {
         prompt: String,
+        /// 用户随提示词提交的图片附件（Base64）
+        images: Vec<ContentPart>,
         events: Option<mpsc::Sender<AgentEvent>>,
         reply: Reply,
     },
@@ -106,10 +108,12 @@ impl ManagedSession {
     pub async fn submit(
         &self,
         prompt: &str,
+        images: Vec<ContentPart>,
         events: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<(), String> {
         self.request(|reply| Command::Submit {
             prompt: prompt.into(),
+            images,
             events,
             reply,
         })
@@ -357,7 +361,7 @@ impl SessionManager {
         handle: Arc<ManagedSession>,
         prompt: &str,
     ) -> Result<(), String> {
-        handle.submit(prompt, None).await
+        handle.submit(prompt, Vec::new(), None).await
     }
 
     /// 从指定用户轮次处分叉：新会话持有该轮次之前的历史，原会话不变。
@@ -637,7 +641,11 @@ impl SessionTask {
         Ok(())
     }
 
-    async fn start(&mut self, prompt: &str) -> Result<AgentEngine, String> {
+    async fn start(
+        &mut self,
+        prompt: &str,
+        images: Vec<ContentPart>,
+    ) -> Result<AgentEngine, String> {
         self.view.notices.clear();
         let tool_outputs = self
             .store
@@ -645,6 +653,33 @@ impl SessionTask {
             .await
             .map_err(|e| e.to_string())?;
         let engine = AgentEngine::new(&self.config, &self.view.session, tool_outputs)?;
+        // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
+        for image in &images {
+            if let ContentPart::Image { source, mime_type } = image {
+                let mime = match source {
+                    MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
+                    MediaSource::Url { .. } => mime_type.as_deref(),
+                };
+                match mime {
+                    Some(mime) => engine
+                        .inputs
+                        .require(crate::model::MediaKind::Image, mime)?,
+                    None => {
+                        if !engine
+                            .inputs
+                            .modalities
+                            .iter()
+                            .any(|input| input == "image")
+                        {
+                            return Err(format!(
+                                "Model '{}' does not support image input",
+                                engine.inputs.model
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         let generate = self.view.session.title.is_none();
         if !self.view.persisted {
             let mut session = (*self.view.session).clone();
@@ -694,7 +729,9 @@ impl SessionTask {
             self.view.persisted = true;
         }
         self.view.draft.clear();
-        self.append(Turn::user_turn(Message::text(prompt))).await?;
+        let mut parts = images;
+        parts.push(ContentPart::text(prompt));
+        self.append(Turn::user_turn(Message::new(parts))).await?;
         self.view.state = RunState::Thinking;
         self.publish();
         if generate {
@@ -936,10 +973,11 @@ impl SessionTask {
             match command {
                 Command::Submit {
                     prompt,
+                    images,
                     events,
                     reply,
                 } => {
-                    let engine = match self.start(&prompt).await {
+                    let engine = match self.start(&prompt, images).await {
                         Ok(engine) => {
                             let _ = reply.send(Ok(()));
                             engine
@@ -1162,6 +1200,7 @@ mod tests {
                 enable_web_search: false,
                 ..Default::default()
             },
+            inputs: Default::default(),
         };
         let (_tx, mut rx) = mpsc::channel(1);
         let finished = tokio::time::timeout(Duration::from_secs(2), task.execute(engine, &mut rx))
@@ -1504,7 +1543,7 @@ mod tests {
         ));
         task.store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
 
-        task.start("hello").await.unwrap();
+        task.start("hello", Vec::new()).await.unwrap();
         let snap = task.view.session;
 
         // 断言相对结构而非固定下标：存在全局 ~/.vva/AGENTS.md 的机器会多出一个 Global 轮次

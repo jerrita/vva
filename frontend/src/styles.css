@@ -817,6 +817,19 @@ body.resizing .chat-scroll {
   max-width: 100%;
 }
 
+/* 用户消息内的图片附件缩略图 */
+.bubble-img {
+  display: block;
+  max-width: min(220px, 100%);
+  max-height: 160px;
+  border-radius: 10px;
+  margin: 4px 0;
+}
+
+.bubble-img:first-child {
+  margin-top: 0;
+}
+
 /* 用户消息操作（回退 / 分叉）：悬停或聚焦时显示，触屏常显 */
 .turn-actions {
   display: flex;
@@ -866,6 +879,13 @@ body.resizing .chat-scroll {
 .msg.assistant,
 .msg.tool {
   word-break: break-word;
+}
+
+/* 运行段摘要（用时行）与最终回答之间的弱分隔线 */
+.msg.answer {
+  margin-top: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .turn-meta {
@@ -1447,6 +1467,48 @@ body.resizing .chat-scroll {
 
 .composer textarea::placeholder {
   color: var(--faint);
+}
+
+/* 待发送图片附件缩略图条 */
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 0 10px;
+}
+
+.attachment-chip {
+  position: relative;
+  margin: 0;
+}
+
+.attachment-chip img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+.attachment-chip button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bubble-user);
+  color: var(--bubble-user-text);
+  box-shadow: 0 1px 3px rgba(46, 36, 82, 0.25);
+}
+
+.attachment-chip button:hover {
+  background: var(--danger);
+  color: #fff;
 }
 
 .composer-foot {

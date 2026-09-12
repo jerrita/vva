@@ -42,11 +42,11 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **侧栏**：宽度可拖拽（200–420px，经右缘 `.sidebar-resize` 手柄，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。
 - **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章 + 悬停显示新建与隐藏按钮（新建直接在该项目 workspace 下创建会话）。折叠状态与隐藏列表均持久化于 localStorage（`vva.projects-collapsed` / `vva.projects-hidden`）；打开或新建位于隐藏项目的会话时该项目自动恢复显示。
 - **新建项目目录点选**：新建模式为多级目录点选（`GET /api/fs/dirs` 列一级子目录，含上一级按钮），路径文本保持原始大小写（父级 uppercase 需显式覆盖）。
-- **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；悬停气泡显示操作行（回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
+- **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；支持在输入框粘贴图片附件（Base64 随消息提交），气泡内以缩略图展示；悬停气泡显示操作行（回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
 - **空态**：无会话时为 `.empty-stage` 居中版式（品牌大字 + 提示 + 强调输入框），输入框工具行含项目指定；发首条消息即按所选项目创建会话。
 - **内容块**：统一走 `.block`（`<details>` + `<summary>` + `▸` 箭头旋转展开），宽度恒 100%；收起为 `--panel` 底 + `--border-soft` 描边的弱卡片行（hover 加深），展开整块着 `--panel-2` 且描边加深（错误块 `--danger-soft`）；展开/收起经 `::details-content` + `interpolate-size` 高度过渡（Chromium 131+，不支持则直接切换）。搜索/思考/工具块共用此模式。
 - **工具卡片**：`tool_call` 与其 `tool_result` 按 `tool_call_id` 配对为单块，展示粒度对齐 TUI `src/ui/views/chat.rs`——摘要行=状态（✓/✕/运行中脉冲）+ 工具名 + 按工具类型 detail（Read 带 `[offset,limit]`、Edit 带 `(+n,-n)` 着色、Glob 带 matches、Grep 带 `include, pattern`、Shell 用 intent 字段）；主体=命令/路径行（Shell 为 `$ command`）+ 结果前 10 行（`PREVIEW_LIMIT`）+「展开全部」嵌套 details；展开跟随响应：响应中末尾块自动展开、结束后全部收起（错误块保持展开），用户可手动开合。
-- **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；折叠粒度为整个运行段（两次用户消息之间的助手轮序列）——中间轮的思考/工具与文本消息均并入折叠，仅运行段最后一条助手消息正常展示，用时取末轮 `worked_ms`（整请求周期）；运行段进行中保持展开、结束自动收起（错误段保持展开），展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
+- **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；折叠粒度为整个运行段（两次用户消息之间的助手轮序列）——中间轮的思考/工具与文本消息均并入折叠，仅运行段最后一条助手消息正常展示，用时取末轮 `worked_ms`（整请求周期）；运行段进行中保持展开、结束自动收起（错误段保持展开），与最终回答之间以 `--border-soft` 弱分隔线区隔，展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
 - **引用注脚**：消息文本的 url_citation 渲染为 `.citations` 折叠行（`引用来源（N）`），按 URL 去重（对齐 TUI `search_citations`），默认收起，展开为编号列表。
 - **按钮体系**：`new-create`/`send-button`（主色实心）、`ghost-button`/`new-cancel`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
 - **浮层**：

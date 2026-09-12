@@ -81,6 +81,12 @@ export interface ToolResult {
   is_error: boolean
 }
 
+/** 随消息提交的图片附件（Base64） */
+export interface ImageAttachment {
+  mime_type: string
+  data: string
+}
+
 export type ContentPart =
   | { type: 'text'; text: string; annotations?: Annotation[] }
   | { type: 'reasoning'; content: string; signature?: string }

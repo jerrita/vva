@@ -183,7 +183,30 @@ function UserBubble({
   return (
     <div className="msg user">
       <div className="user-col">
-        <div className="bubble">{turnText(turn)}</div>
+        <div className="bubble">
+          {turn.messages
+            .flatMap(message => message.parts)
+            .map((part, index) => {
+              if (part.type === 'image') {
+                return (
+                  <img
+                    key={index}
+                    className="bubble-img"
+                    src={
+                      part.source.kind === 'url'
+                        ? part.source.url
+                        : `data:${part.source.mime_type};base64,${part.source.data}`
+                    }
+                    alt=""
+                  />
+                )
+              }
+              if (part.type === 'text') {
+                return <span key={index}>{part.text}</span>
+              }
+              return null
+            })}
+        </div>
         {actions}
       </div>
     </div>
@@ -244,7 +267,7 @@ export function Chat({
           return <WorkedBlock key={`work-${index}`} group={item.group} live={index === liveWork} />
         }
         return (
-          <div key={item.turn.id} className="msg assistant">
+          <div key={item.turn.id} className="msg assistant answer">
             <Parts parts={item.parts} />
             <TurnMeta turn={item.turn} />
           </div>

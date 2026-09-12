@@ -7,7 +7,7 @@ import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
 import type { ProjectOption } from './components/Sidebar'
-import type { ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
+import type { ImageAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -201,7 +201,7 @@ export default function App() {
   }
 
   const submit = useCallback(
-    async (text: string) => {
+    async (text: string, images: ImageAttachment[] = []) => {
       setError(null)
       try {
         if (!activeId) {
@@ -212,11 +212,11 @@ export default function App() {
             workspace: draftProject || undefined,
           })
           setActiveId(created.session.id)
-          await api.submit(created.session.id, text)
+          await api.submit(created.session.id, text, images)
         } else {
-          await api.submit(activeId, text)
+          await api.submit(activeId, text, images)
         }
-        setPending(text)
+        setPending(text || null)
       } catch (e) {
         setError(toError(e))
       }

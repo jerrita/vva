@@ -32,6 +32,8 @@ pub(super) struct AgentEngine {
     pub provider: Arc<dyn Provider>,
     pub tools: ToolRegistry,
     pub options: CompletionOptions,
+    /// 当前模型的输入能力，供提交前校验用户附件
+    pub(super) inputs: crate::config::resolver::InputCapabilities,
 }
 
 impl AgentEngine {
@@ -48,7 +50,8 @@ impl AgentEngine {
         let mut tools =
             ToolRegistry::with_workspace_defaults(&session.workspace_root, Some(tool_outputs));
         tools.register(Arc::new(
-            crate::tools::filesystem::ReadTool::new(&session.workspace_root).with_inputs(inputs),
+            crate::tools::filesystem::ReadTool::new(&session.workspace_root)
+                .with_inputs(inputs.clone()),
         ));
         let provider = resolved.create_provider();
         let options = CompletionOptions {
@@ -71,6 +74,7 @@ impl AgentEngine {
             provider,
             tools,
             options,
+            inputs,
         })
     }
 }

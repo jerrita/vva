@@ -212,6 +212,14 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
 #[derive(Deserialize)]
 pub struct SubmitMessageRequest {
     pub prompt: String,
+    /// 随提示词提交的图片附件（Base64 编码）
+    pub images: Option<Vec<SubmitImage>>,
+}
+
+#[derive(Deserialize)]
+pub struct SubmitImage {
+    pub mime_type: String,
+    pub data: String,
 }
 
 pub async fn submit_message(
@@ -223,7 +231,19 @@ pub async fn submit_message(
         Ok(handle) => handle,
         Err(_) => return not_found(&id),
     };
-    match handle.submit(&request.prompt, None).await {
+    let images = request
+        .images
+        .unwrap_or_default()
+        .into_iter()
+        .map(|image| crate::model::ContentPart::Image {
+            source: crate::model::MediaSource::Base64 {
+                data: image.data,
+                mime_type: image.mime_type,
+            },
+            mime_type: None,
+        })
+        .collect();
+    match handle.submit(&request.prompt, images, None).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         // 会话正在执行其他请求时拒绝重复提交
         Err(e) => error(StatusCode::CONFLICT, e),
