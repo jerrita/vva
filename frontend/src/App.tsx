@@ -478,6 +478,9 @@ export default function App() {
               title={`输入 ${fmtNum(stats.prompt_tokens)} · 输出 ${fmtNum(stats.completion_tokens)} · 缓存读 ${fmtNum(stats.cache_read_tokens)} · 缓存写 ${fmtNum(stats.cache_write_tokens)} · 上下文 ${fmtNum(stats.context_tokens)}${stats.context_limit ? ` / ${fmtNum(stats.context_limit)}` : ''} · ${stats.total_turns} 轮`}
             >
               <span className="stat-item">{fmtNum(stats.total_tokens)} tok</span>
+              {stats.tps != null && (
+                <span className="stat-item">{stats.tps.toFixed(1)} tok/s</span>
+              )}
               <span className="stat-item">
                 {stats.context_limit
                   ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}% ctx`

@@ -8,6 +8,8 @@ use serde::Serialize;
 pub struct SidebarStats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// 会话级输出吞吐：Σ completion_tokens / Σ 模型响应耗时 (tok/s)，无计时数据时为 None
+    pub tps: Option<f64>,
     pub total_tokens: u64,
     pub context_tokens: u64,
     pub context_limit: Option<u64>,
@@ -25,6 +27,8 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
     let mut context_tok = 0u64;
     let mut cache_read = 0u64;
     let mut cache_write = 0u64;
+    let mut gen_tokens = 0u64;
+    let mut gen_ms = 0u64;
 
     for turn in &session.turns {
         if let Some(usage) = &turn.usage {
@@ -33,6 +37,10 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
             tot_tok += usage.total_tokens as u64;
             cache_read += usage.cached_tokens.unwrap_or_default() as u64;
             context_tok = usage.total_tokens as u64;
+            if let Some(elapsed_ms) = turn.elapsed_ms.filter(|ms| *ms > 0) {
+                gen_tokens += usage.completion_tokens as u64;
+                gen_ms += elapsed_ms;
+            }
         }
         if let Some(anthropic) = &turn.meta.anthropic
             && let Some(w) = anthropic.cache_creation_input_tokens
@@ -85,6 +93,7 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
     SidebarStats {
         prompt_tokens: prompt_tok,
         completion_tokens: comp_tok,
+        tps: (gen_ms > 0).then(|| gen_tokens as f64 * 1000.0 / gen_ms as f64),
         total_tokens: tot_tok,
         context_tokens: context_tok,
         context_limit,
@@ -220,6 +229,38 @@ mod tests {
         let stats = compute_stats(&session, &AppConfig::default());
         assert_eq!(stats.total_tokens, 450);
         assert_eq!(stats.context_tokens, 300);
+    }
+
+    #[test]
+    fn tps_is_generation_time_weighted() {
+        let mut session = Session::with_model(
+            std::path::PathBuf::from("/ws"),
+            None,
+            "model_a",
+            None,
+            false,
+        );
+        for (completion_tokens, elapsed_ms) in [(50, 500), (150, 1_500)] {
+            let mut turn = Turn::assistant_turn(vec![]);
+            turn.usage = Some(TokenUsage {
+                completion_tokens,
+                total_tokens: completion_tokens,
+                ..Default::default()
+            });
+            turn.elapsed_ms = Some(elapsed_ms);
+            session.turns.push(turn);
+        }
+        let mut untimed = Turn::assistant_turn(vec![]);
+        untimed.usage = Some(TokenUsage {
+            completion_tokens: 1_000,
+            total_tokens: 1_000,
+            ..Default::default()
+        });
+        session.turns.push(untimed);
+
+        let stats = compute_stats(&session, &AppConfig::default());
+        assert_eq!(stats.completion_tokens, 1_200);
+        assert!((stats.tps.unwrap() - 100.0).abs() < 1e-9);
     }
 
     #[test]

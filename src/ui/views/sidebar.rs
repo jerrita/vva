@@ -141,6 +141,13 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         ),
         Style::default().fg(Color::Rgb(170, 170, 170)),
     );
+    if let Some(tps) = app.stats.tps {
+        lines[11] = label_value(
+            "TPS",
+            format!("{tps:.1}"),
+            Style::default().fg(Color::White),
+        );
+    }
     lines[13] = label_value(
         "Cache Read",
         format_number(app.stats.cache_read_tokens),
@@ -231,6 +238,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
         Paragraph::new(context_gauge_line(token_chunks[1].width, ratio, percent)),
         token_chunks[1],
     );
+    frame.render_widget(Paragraph::new(lines[11..13].to_vec()), token_chunks[2]);
 
     frame.render_widget(
         Paragraph::new(lines[13..16].to_vec()).block(separator()),

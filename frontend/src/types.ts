@@ -155,6 +155,7 @@ export interface ModelsResponse {
 export interface SidebarStats {
   prompt_tokens: number
   completion_tokens: number
+  tps?: number | null
   total_tokens: number
   context_tokens: number
   context_limit?: number | null
