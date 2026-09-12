@@ -150,15 +150,12 @@ function RowsView({ rows }: { rows: BodyRow[] }) {
   )
 }
 
-function ToolGroupView({ node }: { node: ToolGroupNode }) {
+function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expanded?: boolean }) {
   const { call, result } = node
   const detail = toolDetail(call, result)
   const args = parseArgs(call.arguments)
   const command = toolCommand(call)
   const isError = result?.is_error ?? false
-
-  // 与 TUI default_tool_expand 一致：Edit/Write 全量、Shell 预览、其余收起
-  const defaultOpen = isError || call.name === 'Edit' || call.name === 'Write' || call.name === 'Shell'
 
   let rows: BodyRow[] | null = null
   if (result && !isError && args) {
@@ -171,7 +168,7 @@ function ToolGroupView({ node }: { node: ToolGroupNode }) {
   const rest = resultLines.length - preview.length
 
   return (
-    <details className="block tool" open={defaultOpen}>
+    <details className="block tool" open={expanded || isError}>
       <summary>
         {result ? (
           <span className={`block-icon status ${isError ? 'error' : 'ok'}`}>
@@ -316,8 +313,8 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
 }
 
 /**
- * live 表示流式生成中：末尾块保持展开，出现后续块时自动收起；
- * 历史内容默认收起，用户可手动展开。
+ * live 表示流式生成中：末尾块（思考 / 搜索 / 工具）保持展开，出现后续块或响应结束后自动收起，
+ * 错误块不受此约束保持展开；历史内容默认收起，用户可手动展开。
  * tool_call 与同 tool_call_id 的 tool_result 配对为一个节点；
  * 未配对的 result（如无调用上下文）独立渲染。
  */
@@ -347,17 +344,14 @@ export function Parts({ parts, live = false }: { parts: ContentPart[]; live?: bo
 
   return (
     <>
-      {nodes.map((node, index) =>
-        node.kind === 'tool' ? (
-          <ToolGroupView key={`tool-${index}`} node={node.group} />
+      {nodes.map((node, index) => {
+        const expanded = live && index === nodes.length - 1
+        return node.kind === 'tool' ? (
+          <ToolGroupView key={`tool-${index}`} node={node.group} expanded={expanded} />
         ) : (
-          <Part
-            key={`part-${index}`}
-            part={node.part}
-            expanded={live && index === nodes.length - 1}
-          />
-        ),
-      )}
+          <Part key={`part-${index}`} part={node.part} expanded={expanded} />
+        )
+      })}
     </>
   )
 }

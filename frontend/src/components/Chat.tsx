@@ -91,13 +91,13 @@ function fmtDuration(ms: number): string {
   return `${Math.floor(total / 60)}m ${total % 60}s`
 }
 
-function WorkedBlock({ group }: { group: WorkGroup }) {
+function WorkedBlock({ group, live = false }: { group: WorkGroup; live?: boolean }) {
   const ms = group.workedMs ?? group.elapsedMs
   return (
-    <details className="worked" open={group.errors > 0}>
+    <details className="worked" open={live || group.errors > 0}>
       <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
       <div className="worked-body">
-        <Parts parts={group.parts} />
+        <Parts parts={group.parts} live={live} />
       </div>
     </details>
   )
@@ -213,10 +213,21 @@ export function Chat({
   const running = snap.state !== ''
   const turns = snap.session.turns
   const showDraft = snap.draft.length > 0 || running
+  // 运行中最后一个工作段即当前响应段：保持展开，结束后随 live 翻转自动收起
+  const items = buildItems(turns)
+  let liveWork = -1
+  if (running) {
+    for (let index = items.length - 1; index >= 0; index--) {
+      if (items[index].kind === 'work') {
+        liveWork = index
+        break
+      }
+    }
+  }
 
   return (
     <div className="chat">
-      {buildItems(turns).map((item, index) => {
+      {items.map((item, index) => {
         if (item.kind === 'user') {
           return (
             <UserBubble
@@ -230,7 +241,7 @@ export function Chat({
           )
         }
         if (item.kind === 'work') {
-          return <WorkedBlock key={`work-${index}`} group={item.group} />
+          return <WorkedBlock key={`work-${index}`} group={item.group} live={index === liveWork} />
         }
         return (
           <div key={item.turn.id} className="msg assistant">

@@ -15,6 +15,7 @@
   --accent: #7252d9;
   --accent-hover: #5f42c4;
   --accent-soft: rgba(114, 82, 217, 0.09);
+  --accent-soft-strong: rgba(114, 82, 217, 0.16);
   --on-accent: #ffffff;
   --rose: #d63360;
   --bubble-user: #2c2440;
@@ -46,6 +47,7 @@
     --accent: #9d82f5;
     --accent-hover: #b29cfa;
     --accent-soft: rgba(157, 130, 245, 0.14);
+    --accent-soft-strong: rgba(157, 130, 245, 0.24);
     --on-accent: #171126;
     --rose: #f0627e;
     --bubble-user: #e9e3f8;
@@ -369,8 +371,12 @@ body.resizing .chat-scroll {
 }
 
 .session-item.active {
-  background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--accent-soft-strong);
+}
+
+.session-item.active .session-title {
+  color: var(--accent);
+  font-weight: 500;
 }
 
 .session-title {
@@ -383,8 +389,9 @@ body.resizing .chat-scroll {
 
 .session-delete {
   position: absolute;
-  top: 5px;
+  top: 50%;
   right: 6px;
+  transform: translateY(-50%);
   display: none;
   color: var(--muted);
   padding: 3px;
@@ -898,8 +905,8 @@ body.resizing .chat-scroll {
 }
 
 /* ---- 内容块 (思考 / 工具 / 搜索 / Worked) ----
-   收起为无底色行，展开整块着 --panel-2；高度过渡依赖
-   ::details-content + interpolate-size（Chromium 131+，不支持则直接切换） */
+   收起为 --panel 弱卡片行（hover 加深），展开整块着 --panel-2；
+   高度过渡依赖 ::details-content + interpolate-size（Chromium 131+，不支持则直接切换） */
 
 :root {
   interpolate-size: allow-keywords;
@@ -910,14 +917,16 @@ body.resizing .chat-scroll {
   width: 100%;
   box-sizing: border-box;
   border-radius: 10px;
-  margin: 2px 0;
+  border: 1px solid var(--border-soft);
+  margin: 3px 0;
   font-size: 13px;
-  background: transparent;
-  transition: background 0.15s;
+  background: var(--panel);
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .block[open] {
   background: var(--panel-2);
+  border-color: var(--border);
 }
 
 .block.tool:has(> summary .status.error)[open] {
@@ -945,7 +954,7 @@ body.resizing .chat-scroll {
   align-items: center;
   gap: 8px;
   padding: 5px 10px;
-  border-radius: 10px;
+  border-radius: 9px;
   cursor: pointer;
   color: var(--muted);
   user-select: none;
