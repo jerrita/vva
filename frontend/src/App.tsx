@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { api } from './api'
+import { subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
 import { ChipSelect } from './components/ChipSelect'
@@ -126,15 +127,7 @@ export default function App() {
     setSnap(null)
     setPending(null)
     setStats(null)
-    const source = new EventSource(`/api/sessions/${activeId}/events`)
-    source.onmessage = event => {
-      try {
-        setSnap(JSON.parse(event.data) as SessionSnapshot)
-      } catch {
-        // 忽略无法解析的帧
-      }
-    }
-    return () => source.close()
+    return subscribeSession(activeId, setSnap, e => setError(toError(e)))
   }, [activeId])
 
   // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次变化时）
@@ -360,7 +353,7 @@ export default function App() {
     async (body: ConfigureBody) => {
       if (!activeId) return
       try {
-        setSnap(await api.configure(activeId, body))
+        await api.configure(activeId, body)
       } catch (e) {
         setError(toError(e))
       }

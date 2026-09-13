@@ -2,5 +2,6 @@
 
 pub mod api;
 pub mod server;
+mod sync;
 
 pub use server::run_server;

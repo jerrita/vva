@@ -9,12 +9,11 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::harness::SessionView;
 use crate::ui::history::compute_stats;
 
 use super::server::AppState;
+use super::sync::{SessionDelta, SessionSnapshot};
 
 fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
     (
@@ -26,30 +25,6 @@ fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
 
 fn not_found(id: &str) -> Response {
     error(StatusCode::NOT_FOUND, format!("Session not found: {id}"))
-}
-
-/// 会话快照：已完成轮次 + 流式草稿 + 运行状态，前端以 revision 判定更新
-#[derive(Serialize)]
-struct SessionSnapshot {
-    revision: u64,
-    state: String,
-    persisted: bool,
-    notices: Vec<String>,
-    session: Value,
-    draft: Value,
-}
-
-impl From<&SessionView> for SessionSnapshot {
-    fn from(view: &SessionView) -> Self {
-        Self {
-            revision: view.revision,
-            state: view.state.status(),
-            persisted: view.persisted,
-            notices: view.notices.clone(),
-            session: serde_json::to_value(&*view.session).unwrap_or(Value::Null),
-            draft: serde_json::to_value(&view.draft).unwrap_or(Value::Null),
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -423,34 +398,39 @@ pub async fn update_global_config(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// SSE 订阅会话视图；连接建立即推送当前快照，此后按发布节流推送增量
+/// 每条连接以快照建立基线，再发送相对已发送版本的增量。
+/// watch 可合并中间发布；慢客户端仍从自己的基线更新到最新状态。
 pub async fn stream_events(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let handle = match state.manager.get_or_load(&id).await {
         Ok(handle) => handle,
         Err(_) => return not_found(&id),
     };
 
-    let rx = handle.subscribe();
-    let pending = Some(handle.snapshot());
-    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
-        futures::stream::unfold((rx, pending), |(mut rx, mut pending)| async move {
-            if let Some(view) = pending.take() {
-                return Some((Ok(sse_event(&view)), (rx, None)));
-            }
-            match rx.changed().await {
-                Ok(()) => {
-                    let view = rx.borrow_and_update().clone();
-                    Some((Ok(sse_event(&view)), (rx, None)))
+    let mut rx = handle.subscribe();
+    let initial = rx.borrow_and_update().clone();
+    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
+        Box::pin(futures::stream::unfold(
+            (rx, initial, true),
+            |(mut rx, previous, first)| async move {
+                if first {
+                    let event = Event::default()
+                        .event("snapshot")
+                        .json_data(SessionSnapshot::from(&*previous))
+                        .expect("session snapshot is serializable");
+                    return Some((Ok(event), (rx, previous, false)));
                 }
-                Err(_) => None,
-            }
-        }),
-    );
+                if rx.changed().await.is_err() {
+                    return None;
+                }
+                let current = rx.borrow_and_update().clone();
+                let event = Event::default()
+                    .event("delta")
+                    .json_data(SessionDelta::between(&previous, &current))
+                    .expect("session delta is serializable");
+                Some((Ok(event), (rx, current, false)))
+            },
+        ));
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
-}
-
-fn sse_event(view: &SessionView) -> Event {
-    Event::default().data(serde_json::to_string(&SessionSnapshot::from(view)).unwrap_or_default())
 }

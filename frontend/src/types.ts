@@ -140,6 +140,24 @@ export interface SessionSnapshot {
   draft: ContentPart[]
 }
 
+/** Web 传输增量；session 元信息整体替换，缺席的可选字段随之清空。 */
+export interface SessionDelta {
+  base_revision: number
+  revision: number
+  state: string
+  persisted: boolean
+  notices?: string[]
+  session?: Omit<Session, 'turns'>
+  turns?: { from: number; items: Turn[] }
+  draft?: {
+    len: number
+    updates: (
+      | { type: 'set'; index: number; part: ContentPart }
+      | { type: 'text' | 'reasoning'; index: number; delta: string }
+    )[]
+  }
+}
+
 export interface ModelEntry {
   spec: string
   name: string
