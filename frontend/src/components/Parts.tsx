@@ -168,7 +168,7 @@ function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expand
   const rest = resultLines.length - preview.length
 
   return (
-    <details className="block tool" open={expanded || isError}>
+    <details className="block tool" open={expanded}>
       <summary>
         {result ? (
           <span className={`block-icon status ${isError ? 'error' : 'ok'}`}>
@@ -285,7 +285,7 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
       )
     case 'tool_result':
       return (
-        <details className="block tool" open={part.is_error}>
+        <details className="block tool" open={expanded}>
           <summary>
             <span className={`block-icon status ${part.is_error ? 'error' : 'ok'}`}>
               {part.is_error ? '✕' : '✓'}
@@ -313,8 +313,8 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
 }
 
 /**
- * live 表示流式生成中：末尾块（思考 / 搜索 / 工具）保持展开，出现后续块或响应结束后自动收起，
- * 错误块不受此约束保持展开；历史内容默认收起，用户可手动展开。
+ * live 表示流式生成中：末尾块（思考 / 搜索 / 工具）保持展开，出现后续块或响应结束后自动收起；
+ * 错误块不例外，仅摘要行保留 ✕ 标识。历史内容默认收起，用户可手动展开。
  * tool_call 与同 tool_call_id 的 tool_result 配对为一个节点；
  * 未配对的 result（如无调用上下文）独立渲染。
  */
