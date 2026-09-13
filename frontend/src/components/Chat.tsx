@@ -26,7 +26,6 @@ interface WorkGroup {
   elapsedMs: number | null
   /** 整个请求周期的总耗时（最终响应携带） */
   workedMs: number | null
-  errors: number
 }
 
 type Item =
@@ -42,10 +41,9 @@ function buildItems(turns: Turn[]): Item[] {
     group = null
   }
   const pushTurn = (turn: Turn, parts: ContentPart[]) => {
-    group ??= { parts: [], elapsedMs: null, workedMs: null, errors: 0 }
+    group ??= { parts: [], elapsedMs: null, workedMs: null }
     for (const part of parts) {
       group.parts.push(part)
-      if (part.type === 'tool_result' && part.is_error) group.errors++
     }
     if (turn.elapsed_ms != null) {
       group.elapsedMs = (group.elapsedMs ?? 0) + turn.elapsed_ms
@@ -103,7 +101,7 @@ function WorkedBlock({
 }) {
   const ms = group.workedMs ?? group.elapsedMs
   return (
-    <details className="worked" open={live || group.errors > 0}>
+    <details className="worked" open={live}>
       <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
       <div className="worked-body">
         <Parts parts={group.parts} live={autoExpand} />
