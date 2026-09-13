@@ -7,6 +7,7 @@
   --bg: #f1edf9;
   --panel: #fbfaff;
   --panel-2: #f3effa;
+  --block: rgba(251, 250, 255, 0.6);
   --border: #e2dcf0;
   --border-soft: #ebe6f5;
   --text: #241d38;
@@ -39,6 +40,7 @@
     --bg: #131020;
     --panel: #1b1728;
     --panel-2: #241f33;
+    --block: rgba(27, 23, 40, 0.62);
     --border: #322b45;
     --border-soft: #2a2439;
     --text: #ece7f8;
@@ -979,7 +981,7 @@ body.resizing .chat-scroll {
   border: 1px solid var(--border-soft);
   margin: 3px 0;
   font-size: 13px;
-  background: var(--panel);
+  background: var(--block);
   transition: background 0.15s, border-color 0.15s;
 }
 
