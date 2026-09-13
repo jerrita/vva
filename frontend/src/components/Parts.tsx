@@ -278,7 +278,7 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
         <details className="block reasoning" open={expanded}>
           <summary>
             <span className="block-icon">✦</span>
-            <span>思考过程</span>
+            <span>Thinking</span>
           </summary>
           <div className="reasoning-body">{part.content}</div>
         </details>
