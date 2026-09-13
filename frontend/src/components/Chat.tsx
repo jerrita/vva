@@ -91,13 +91,22 @@ function fmtDuration(ms: number): string {
   return `${Math.floor(total / 60)}m ${total % 60}s`
 }
 
-function WorkedBlock({ group, live = false }: { group: WorkGroup; live?: boolean }) {
+function WorkedBlock({
+  group,
+  live = false,
+  autoExpand = false,
+}: {
+  group: WorkGroup
+  live?: boolean
+  /** 草稿为空的间隙（如工具执行中）当前块仍在工作段内：末尾块保持展开 */
+  autoExpand?: boolean
+}) {
   const ms = group.workedMs ?? group.elapsedMs
   return (
     <details className="worked" open={live || group.errors > 0}>
       <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
       <div className="worked-body">
-        <Parts parts={group.parts} live={live} />
+        <Parts parts={group.parts} live={autoExpand} />
       </div>
     </details>
   )
@@ -236,7 +245,7 @@ export function Chat({
   const running = snap.state !== ''
   const turns = snap.session.turns
   const showDraft = snap.draft.length > 0 || running
-  // 运行中最后一个工作段即当前响应段：保持展开，结束后随 live 翻转自动收起
+  // 运行中最后一个工作段即当前响应段：容器保持展开，结束后随 live 翻转自动收起
   const items = buildItems(turns)
   let liveWork = -1
   if (running) {
@@ -247,6 +256,8 @@ export function Chat({
       }
     }
   }
+  // 末尾展开块全局唯一：草稿持有流式块时，工作段不再保留末尾展开块
+  const draftActive = running && snap.draft.length > 0
 
   return (
     <div className="chat">
@@ -264,7 +275,14 @@ export function Chat({
           )
         }
         if (item.kind === 'work') {
-          return <WorkedBlock key={`work-${index}`} group={item.group} live={index === liveWork} />
+          return (
+            <WorkedBlock
+              key={`work-${index}`}
+              group={item.group}
+              live={index === liveWork}
+              autoExpand={index === liveWork && !draftActive}
+            />
+          )
         }
         return (
           <div key={item.turn.id} className="msg assistant answer">
