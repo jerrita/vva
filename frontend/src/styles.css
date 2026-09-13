@@ -1206,6 +1206,15 @@ body.resizing .chat-scroll {
   text-overflow: ellipsis;
 }
 
+.search-target a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.search-target a:hover {
+  text-decoration: underline;
+}
+
 .search-status {
   flex-shrink: 0;
   font-family: var(--font-mono);
