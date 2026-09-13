@@ -269,6 +269,7 @@ export function Sidebar({
   onSelect,
   onCreate,
   onDelete,
+  onOpenSettings,
 }: {
   groups: SessionGroup[]
   projects: ProjectOption[]
@@ -282,6 +283,7 @@ export function Sidebar({
   onSelect: (id: string) => void
   onCreate: (workspace: string) => void
   onDelete: (id: string) => void
+  onOpenSettings: () => void
 }) {
   // 每项目折叠状态持久化
   const [collapsed, setCollapsed] = useState<Set<string>>(
@@ -470,7 +472,9 @@ export function Sidebar({
           </div>
         ))}
       </nav>
-      <div className="sidebar-foot">Vendor-Versatile Agent Harness</div>
+      <button className="sidebar-foot" onClick={onOpenSettings} title="全局设置">
+        Settings
+      </button>
       {pendingDelete && (
         <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
           <div className="confirm-modal" onClick={event => event.stopPropagation()}>

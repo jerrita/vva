@@ -6,6 +6,7 @@ import { Chat, turnText } from './components/Chat'
 import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
+import { SettingsModal } from './components/SettingsModal'
 import type { ProjectOption } from './components/Sidebar'
 import type { ImageAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
@@ -52,6 +53,10 @@ export default function App() {
     const stored = Number(localStorage.getItem('vva.sidebar-width'))
     return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
   })
+  const [statsCollapsed, setStatsCollapsed] = useState(
+    () => localStorage.getItem('vva.stats-collapsed') === '1',
+  )
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const resizing = useRef(false)
   const resizeStartX = useRef(0)
   const resizeStartW = useRef(0)
@@ -68,6 +73,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('vva.sidebar-width', String(sidebarWidth))
   }, [sidebarWidth])
+
+  useEffect(() => {
+    localStorage.setItem('vva.stats-collapsed', statsCollapsed ? '1' : '0')
+  }, [statsCollapsed])
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)
@@ -426,6 +435,7 @@ export default function App() {
         }}
         onCreate={newChat}
         onDelete={removeSession}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
       {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)} />}
       <main className="main">
@@ -479,8 +489,30 @@ export default function App() {
             )}
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
+          {stats && active && (
+            <button
+              className={`icon-ghost stats-toggle${statsCollapsed ? '' : ' active'}`}
+              onClick={() => setStatsCollapsed(value => !value)}
+              title={statsCollapsed ? '展开用量面板' : '收起用量面板'}
+              aria-label="用量面板"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+              </svg>
+            </button>
+          )}
         </header>
-        {stats && active && (
+        {stats && active && !statsCollapsed && (
           <div className="stats-panel">
             <div className="stat-row">
               <span className="stat-label">Session</span>
@@ -569,6 +601,14 @@ export default function App() {
           </>
         )}
       </main>
+      {settingsOpen && (
+        <SettingsModal
+          onClose={() => setSettingsOpen(false)}
+          onSaved={() => {
+            api.models().then(setModels).catch(() => {})
+          }}
+        />
+      )}
     </div>
   )
 }

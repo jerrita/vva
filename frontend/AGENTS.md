@@ -39,7 +39,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 ## 4. 版式与组件契约
 
 - **内容列**：聊天与输入框 `max-width: 760px` 居中；聊天区背景为 22px 网格点阵（`--dot`）。
-- **侧栏**：宽度可拖拽（200–420px，经右缘 `.sidebar-resize` 手柄，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。
+- **侧栏**：宽度可拖拽（200–420px，经右缘 `.sidebar-resize` 手柄，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。页脚为 Settings 入口（`.sidebar-foot` 按钮），打开全局配置弹窗。
 - **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章 + 悬停显示新建与隐藏按钮（新建直接在该项目 workspace 下创建会话）。折叠状态与隐藏列表均持久化于 localStorage（`vva.projects-collapsed` / `vva.projects-hidden`）；打开或新建位于隐藏项目的会话时该项目自动恢复显示。
 - **新建项目目录点选**：新建模式为多级目录点选（`GET /api/fs/dirs` 列一级子目录，含上一级按钮），路径文本保持原始大小写（父级 uppercase 需显式覆盖）。
 - **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；支持在输入框粘贴图片附件（Base64 随消息提交），气泡内以缩略图展示；悬停气泡显示操作行（回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
@@ -49,9 +49,11 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；折叠粒度为整个运行段（两次用户消息之间的助手轮序列）——中间轮的思考/工具与文本消息均并入折叠，仅运行段最后一条助手消息正常展示，用时取末轮 `worked_ms`（整请求周期）；运行段进行中保持展开、结束自动收起，中断或含错误的段同样收起（失败标识在段内卡片摘要行），与最终回答之间以 `--border-soft` 弱分隔线区隔，展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
 - **引用注脚**：消息文本的 url_citation 渲染为 `.citations` 折叠行（`引用来源（N）`），按 URL 去重（对齐 TUI `search_citations`），默认收起，展开为编号列表。
 - **按钮体系**：`new-create`/`send-button`（主色实心）、`ghost-button`/`new-cancel`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
+- **顶栏**：半透明毛玻璃（`color-mix` 半透明 `--panel` + `backdrop-filter: blur`），脱离文档流覆盖主区（高度令牌 `--topbar-h`），聊天内容从其下方滚过；横幅、聊天区与空态自行让出顶栏高度。
 - **浮层**：
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
-  - 统计浮块（`.stats-panel`）：右上角浮动常驻（会话活跃时），**非阻塞**——无遮罩，主界面可操作；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；
+  - 统计浮块（`.stats-panel`）：右上角浮动（会话活跃时），**非阻塞**——无遮罩，主界面可操作；收起/展开开关位于顶栏右缘（`.stats-toggle`，展开时着色，状态持久化于 localStorage `vva.stats-collapsed`），收起后无任何浮动元素；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；
+  - 设置弹窗（`.settings-modal`）：侧栏页脚打开，编辑全局配置文件原文（JSONC，路径示于标题行右侧），后端校验解析通过后落盘并热重载；Esc/遮罩点击关闭；
   - 居中确认弹窗（`.modal-overlay` + `.confirm-modal`）：**仅用于破坏性操作**，带遮罩与模糊。
 - **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。
 - **图标**：内联 SVG（stroke 2、round），不引入图标库；颜色继承 `currentColor`。

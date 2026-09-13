@@ -54,4 +54,8 @@ export const api = {
   configure: (id: string, body: ConfigureBody) =>
     request<SessionSnapshot>(`/api/sessions/${id}/config`, json('POST', body)),
   stats: (id: string) => request<SidebarStats>(`/api/sessions/${id}/stats`),
+  /** 全局配置文件原文（JSONC）；文件不存在时 content 为 null */
+  getConfig: () => request<{ path: string; content: string | null }>('/api/config'),
+  /** 保存全局配置：后端校验解析通过后落盘并热重载 */
+  saveConfig: (content: string) => request<void>('/api/config', json('POST', { content })),
 }

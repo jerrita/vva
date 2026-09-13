@@ -41,6 +41,8 @@
   --warning-soft: #f7f0da;
   --dot: rgba(36, 29, 60, 0.05);
   --shadow: 0 1px 2px rgba(46, 36, 82, 0.06), 0 8px 28px rgba(46, 36, 82, 0.1);
+  /* 顶栏高度：上下 padding 10px ×2 + 内容行 30px + 1px 底边 */
+  --topbar-h: 51px;
   --font-display: 'Space Grotesk', -apple-system, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
@@ -436,6 +438,9 @@ body.resizing .chat-scroll {
 }
 
 .sidebar-foot {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   padding: 10px 14px;
   border-top: 1px solid var(--border);
   color: var(--faint);
@@ -446,6 +451,12 @@ body.resizing .chat-scroll {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-align: left;
+  transition: color 0.15s;
+}
+
+.sidebar-foot:hover {
+  color: var(--accent);
 }
 
 /* ---- 新建会话弹层 ---- */
@@ -687,6 +698,80 @@ body.resizing .chat-scroll {
   margin-top: 18px;
 }
 
+/* ---- 设置弹窗（全局配置编辑） ---- */
+
+.settings-modal {
+  width: min(720px, calc(100vw - 40px));
+  height: min(560px, calc(100dvh - 80px));
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+  animation: rise 0.16s ease;
+}
+
+.settings-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.settings-path {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-error {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.settings-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.settings-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .ghost-button {
   padding: 5px 14px;
   border-radius: 8px;
@@ -714,13 +799,21 @@ body.resizing .chat-scroll {
 
 /* ---- 顶栏 ---- */
 
+/* 半透明毛玻璃顶栏：脱离文档流覆盖主区，聊天内容从其下方滚过 */
 .topbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 6;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .icon-ghost {
@@ -761,7 +854,7 @@ body.resizing .chat-scroll {
 
 .stats-panel {
   position: absolute;
-  top: 58px;
+  top: calc(var(--topbar-h) + 7px);
   right: 14px;
   z-index: 5;
   display: flex;
@@ -777,6 +870,11 @@ body.resizing .chat-scroll {
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
+}
+
+/* 顶栏用量开关：面板展开时着色提示 */
+.stats-toggle.active {
+  color: var(--accent);
 }
 
 .stat-row {
@@ -820,10 +918,16 @@ body.resizing .chat-scroll {
 
 /* ---- 提示条 ---- */
 
+/* 顶栏脱离文档流后，提示条下移让出顶栏位置 */
 .banner {
   font-size: 13px;
   padding: 8px 16px;
+  margin-top: var(--topbar-h);
   border-bottom: 1px solid var(--border);
+}
+
+.banner + .banner {
+  margin-top: 0;
 }
 
 .banner.error {
@@ -843,6 +947,7 @@ body.resizing .chat-scroll {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
+  padding-top: var(--topbar-h);
   background-image: radial-gradient(circle, var(--dot) 1px, transparent 1px);
   background-size: 22px 22px;
 }
@@ -1610,7 +1715,7 @@ body.resizing .chat-scroll {
   align-items: center;
   justify-content: center;
   gap: 16px;
-  padding: 24px;
+  padding: calc(var(--topbar-h) + 24px) 24px 24px;
   background-image: radial-gradient(circle, var(--dot) 1px, transparent 1px);
   background-size: 22px 22px;
 }

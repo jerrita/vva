@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
@@ -152,7 +152,11 @@ impl ManagedSession {
 /// 只管理会话句柄；Session 的修改与存储由对应任务顺序执行。
 pub struct SessionManager {
     store: Arc<dyn SessionStore>,
-    config: Arc<AppConfig>,
+    /// 启动时加载的合并配置；Settings 保存后可整体热替换。
+    /// 已运行的会话任务持有创建时的 Arc 快照，不受替换影响。
+    config: RwLock<Arc<AppConfig>>,
+    /// 启动时的自定义配置路径（CLI `--config`），热重载按相同寻址规则重新合并
+    config_path: Option<PathBuf>,
     workspace: PathBuf,
     state_path: PathBuf,
     sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
@@ -167,21 +171,39 @@ impl SessionManager {
     ) -> Self {
         Self {
             store,
-            config: Arc::new(config),
+            config: RwLock::new(Arc::new(config)),
+            config_path: None,
             workspace: workspace.into(),
             state_path: state_path.into(),
             sessions: Mutex::new(HashMap::new()),
         }
     }
 
+    /// 记录启动时的自定义配置路径，供 reload_config 复用相同寻址
+    pub fn with_config_path(mut self, path: Option<&Path>) -> Self {
+        self.config_path = path.map(crate::config::expand_tilde);
+        self
+    }
+
     pub fn store(&self) -> &Arc<dyn SessionStore> {
         &self.store
     }
-    pub fn app_config(&self) -> &AppConfig {
-        &self.config
+    pub fn app_config(&self) -> Arc<AppConfig> {
+        self.config.read().expect("config lock poisoned").clone()
     }
     pub fn workspace(&self) -> &Path {
         &self.workspace
+    }
+
+    /// 重新加载合并配置（全局 + 项目），供 Settings 保存后热应用
+    pub fn reload_config(&self) -> Result<(), String> {
+        let config = crate::config::load_config_with_workspace(
+            self.config_path.as_deref(),
+            Some(&self.workspace),
+        )
+        .map_err(|e| e.to_string())?;
+        *self.config.write().expect("config lock poisoned") = Arc::new(config);
+        Ok(())
     }
 
     fn spawn(&self, session: Session, persisted: bool) -> Arc<ManagedSession> {
@@ -200,7 +222,7 @@ impl SessionManager {
             view,
             view_tx,
             store: self.store.clone(),
-            config: self.config.clone(),
+            config: self.app_config(),
             state_path: self.state_path.clone(),
             commands: commands.downgrade(),
             dirty: false,
@@ -264,8 +286,8 @@ impl SessionManager {
         if !workspace.exists() {
             std::fs::create_dir_all(&workspace).map_err(|e| format!("创建项目目录失败: {e}"))?;
         }
-        let resolved = self
-            .config
+        let config = self.app_config();
+        let resolved = config
             .resolve_model(&model, variant.as_deref())
             .map_err(|e| e.to_string())?;
         let mut session =
@@ -323,18 +345,18 @@ impl SessionManager {
         let state = AppState::load(&self.state_path);
         if !state.last_model.is_empty() {
             let inherited = variant.clone().or(state.last_variant.clone());
-            if self
-                .config
+            let config = self.app_config();
+            if config
                 .resolve_model(&state.last_model, inherited.as_deref())
                 .is_ok()
             {
                 return (state.last_model, inherited);
             }
-            if self.config.resolve_model(&state.last_model, None).is_ok() {
+            if config.resolve_model(&state.last_model, None).is_ok() {
                 return (state.last_model, variant);
             }
         }
-        (self.config.settings.default.clone(), variant)
+        (self.app_config().settings.default.clone(), variant)
     }
 
     fn remember_session(&self, session: &Session) {

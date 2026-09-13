@@ -6,7 +6,7 @@ impl App {
     pub fn refresh_view(&mut self) {
         let view = self.active_session.snapshot();
         if !std::sync::Arc::ptr_eq(&view.session, &self.view.session) {
-            self.stats = compute_stats(&view.session, self.session_mgr.app_config());
+            self.stats = compute_stats(&view.session, &self.session_mgr.app_config());
         }
         // 会话任务的新通知按到达顺序汇入界面通知流
         if view.notices.len() > self.consumed_notices {
@@ -132,11 +132,8 @@ impl App {
 
     /// 当前模型可用的推理档位选项（default 置首，与 /variant 弹窗同源）
     fn variant_options(&self) -> Vec<VariantItem> {
-        let Ok(model) = self
-            .session_mgr
-            .app_config()
-            .resolve_model(&self.view.session.current_model, None)
-        else {
+        let config = self.session_mgr.app_config();
+        let Ok(model) = config.resolve_model(&self.view.session.current_model, None) else {
             return Vec::new();
         };
         let Some(variants) = model.model_config.variants else {

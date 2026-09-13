@@ -260,7 +260,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let workspace =
                 workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
             let manager =
-                SessionManager::new(store, app_config, workspace, vva_dir.join("state.json"));
+                SessionManager::new(store, app_config, workspace, vva_dir.join("state.json"))
+                    .with_config_path(cli.config.as_deref());
             vva::web::run_server(Arc::new(manager), host, port).await?;
         }
 

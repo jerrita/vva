@@ -359,7 +359,68 @@ pub async fn session_stats(State(state): State<AppState>, Path(id): Path<String>
         Err(_) => return not_found(&id),
     };
     let view = handle.snapshot();
-    Json(compute_stats(&view.session, state.manager.app_config())).into_response()
+    Json(compute_stats(&view.session, &state.manager.app_config())).into_response()
+}
+
+/// 全局配置文件寻址：`~/.vva/config.jsonc` 优先，其次 `config.json`，
+/// 两者都不存在时以 `config.json` 作为写入目标
+fn global_config_path() -> Option<std::path::PathBuf> {
+    let dir = crate::config::home_dir()?.join(".vva");
+    let jsonc = dir.join("config.jsonc");
+    if jsonc.exists() {
+        return Some(jsonc);
+    }
+    let json = dir.join("config.json");
+    if json.exists() {
+        return Some(json);
+    }
+    Some(dir.join("config.json"))
+}
+
+/// 读取全局配置文件原文（JSONC），供 Settings 弹窗编辑；文件不存在时内容为 null
+pub async fn get_global_config() -> Response {
+    let Some(path) = global_config_path() else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "无法定位用户主目录 (~)");
+    };
+    let content = tokio::fs::read_to_string(&path).await.ok();
+    Json(serde_json::json!({
+        "path": path.display().to_string(),
+        "content": content,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct UpdateConfigRequest {
+    pub content: String,
+}
+
+/// 保存全局配置：先按完整解析流程校验，落盘后热重载合并配置供后续会话使用
+pub async fn update_global_config(
+    State(state): State<AppState>,
+    Json(request): Json<UpdateConfigRequest>,
+) -> Response {
+    let Some(path) = global_config_path() else {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "无法定位用户主目录 (~)");
+    };
+    if let Err(e) = crate::config::parse_config_str(&request.content) {
+        return error(StatusCode::BAD_REQUEST, e);
+    }
+    if let Some(parent) = path.parent()
+        && let Err(e) = tokio::fs::create_dir_all(parent).await
+    {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    if let Err(e) = tokio::fs::write(&path, &request.content).await {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, e);
+    }
+    if let Err(e) = state.manager.reload_config() {
+        return error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("配置已保存，但热重载失败: {e}"),
+        );
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// SSE 订阅会话视图；连接建立即推送当前快照，此后按发布节流推送增量

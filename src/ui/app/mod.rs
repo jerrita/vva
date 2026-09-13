@@ -82,7 +82,7 @@ impl App {
     ) -> Self {
         let view_rx = initial_session.subscribe();
         let view = initial_session.snapshot();
-        let stats = compute_stats(&view.session, session_mgr.app_config());
+        let stats = compute_stats(&view.session, &session_mgr.app_config());
         Self {
             session_mgr,
             active_session: initial_session,

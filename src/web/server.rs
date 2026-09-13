@@ -33,6 +33,10 @@ pub async fn run_server(
         .route("/api/workspace", get(api::default_workspace))
         .route("/api/fs/dirs", get(api::list_dirs))
         .route(
+            "/api/config",
+            get(api::get_global_config).post(api::update_global_config),
+        )
+        .route(
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
         )
