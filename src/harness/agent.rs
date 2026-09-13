@@ -54,8 +54,18 @@ impl AgentEngine {
                 .with_inputs(inputs.clone()),
         ));
         let provider = resolved.create_provider();
+        let max_tokens = resolved
+            .model_config
+            .limit
+            .as_ref()
+            .map(|limit| {
+                u32::try_from(limit.output)
+                    .map_err(|_| format!("Model output limit exceeds u32: {}", limit.output))
+            })
+            .transpose()?;
         let options = CompletionOptions {
             model: resolved.model_id,
+            max_tokens,
             reasoning_effort: resolved.selected_variant,
             enable_web_search: session.web_search,
             enable_web_fetch: resolved.model_config.declare_web_fetch(),

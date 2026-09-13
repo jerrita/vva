@@ -65,7 +65,7 @@ pub(super) struct SessionSnapshot<'a> {
     persisted: bool,
     notices: &'a [String],
     session: SessionData<'a>,
-    draft: &'a [ContentPart],
+    draft: Vec<&'a ContentPart>,
 }
 
 impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
@@ -79,7 +79,7 @@ impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
                 info: SessionInfo::from(&*view.session),
                 turns: view.session.turns.iter().map(TurnView::from).collect(),
             },
-            draft: &view.draft,
+            draft: view.draft.iter().map(|part| &**part).collect(),
         }
     }
 }
@@ -151,10 +151,11 @@ impl<'a> SessionDelta<'a> {
         let mut updates = Vec::new();
         for (index, part) in current.draft.iter().enumerate() {
             let old = previous.draft.get(index);
-            if old == Some(part) {
+            // 部件身份相同即内容未变（发布侧写时复制保证），O(1) 跳过
+            if old.is_some_and(|old| Arc::ptr_eq(old, part)) {
                 continue;
             }
-            let update = match (old, part) {
+            let update = match (old.map(Arc::as_ref), part.as_ref()) {
                 (
                     Some(ContentPart::Text {
                         text: before,
@@ -215,7 +216,7 @@ mod tests {
         SessionView {
             revision: 1,
             session: Arc::new(Session::new("/synthetic", None)),
-            draft: vec![ContentPart::text("起点🙂")],
+            draft: vec![Arc::new(ContentPart::text("起点🙂"))],
             notices: Vec::new(),
             state: RunState::Responding,
             persisted: true,
@@ -233,10 +234,10 @@ mod tests {
             let mut before = view();
             Arc::make_mut(&mut before.session)
                 .append_turn(Turn::user_turn(Message::text("h".repeat(length))));
-            before.draft = vec![ContentPart::text("文".repeat(length))];
+            before.draft = vec![Arc::new(ContentPart::text("文".repeat(length)))];
             let mut after = before.clone();
             after.revision = 2;
-            if let ContentPart::Text { text, .. } = &mut after.draft[0] {
+            if let ContentPart::Text { text, .. } = Arc::make_mut(&mut after.draft[0]) {
                 text.push_str("新增🙂");
             }
             let encoded = delta(&before, &after);
@@ -288,11 +289,13 @@ mod tests {
     #[test]
     fn draft_handles_reasoning_citations_relocation_and_abort() {
         let mut before = view();
-        before.draft.insert(0, ContentPart::reasoning("思考", None));
+        before
+            .draft
+            .insert(0, Arc::new(ContentPart::reasoning("思考", None)));
         let mut after = before.clone();
         after.revision += 1;
-        after.draft[0] = ContentPart::reasoning("思考继续", None);
-        if let ContentPart::Text { annotations, .. } = &mut after.draft[1] {
+        after.draft[0] = Arc::new(ContentPart::reasoning("思考继续", None));
+        if let ContentPart::Text { annotations, .. } = Arc::make_mut(&mut after.draft[1]) {
             annotations.push(Annotation::UrlCitation {
                 url: "https://example.com".into(),
                 title: "example".into(),
@@ -359,7 +362,7 @@ mod tests {
         for _ in 0..30 {
             let before = current.clone();
             current.revision += 1;
-            if let ContentPart::Text { text, .. } = &mut current.draft[0] {
+            if let ContentPart::Text { text, .. } = Arc::make_mut(&mut current.draft[0]) {
                 text.push_str("abcdefghij");
             }
             full_bytes += serde_json::to_vec(&SessionSnapshot::from(&current))

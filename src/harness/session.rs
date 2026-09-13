@@ -38,11 +38,16 @@ impl RunState {
 
 /// 会话任务发布的只读视图；草稿与已完成消息使用相同的内容类型。
 /// `revision` 每次发布递增，供订阅方判定缓存是否失效。
+///
+/// 草稿部件以 `Arc` 共享：发布只复制指针序列，修改单个部件仅克隆该部件。
+/// 部件身份（`Arc::ptr_eq`）即内容未变判定，订阅方（Web 增量、TUI 渲染缓存）
+/// 以身份对齐前缀，避免逐内容比较。文本增量只做追加，保证同身份部件的内容
+/// 前缀稳定。
 #[derive(Clone)]
 pub struct SessionView {
     pub revision: u64,
     pub session: Arc<Session>,
-    pub draft: Vec<ContentPart>,
+    pub draft: Vec<Arc<ContentPart>>,
     pub notices: Vec<String>,
     pub state: RunState,
     pub persisted: bool,
@@ -480,7 +485,7 @@ impl SessionTask {
             index
         } else {
             let index = self.view.draft.len();
-            self.view.draft.push(ContentPart::text(""));
+            self.view.draft.push(Arc::new(ContentPart::text("")));
             self.text_parts.insert(text_id.to_string(), index);
             index
         };
@@ -495,7 +500,7 @@ impl SessionTask {
         if index + 1 == self.view.draft.len()
             || self.view.draft[index + 1..]
                 .iter()
-                .any(|part| matches!(part, ContentPart::Text { .. }))
+                .any(|part| matches!(&**part, ContentPart::Text { .. }))
         {
             return index;
         }
@@ -523,20 +528,29 @@ impl SessionTask {
         match &event {
             AgentEvent::Thought(text) => {
                 self.view.state = RunState::Thinking;
-                if let Some(ContentPart::Reasoning { content, .. }) = self.view.draft.last_mut() {
+                let append_new = match self.view.draft.last() {
+                    Some(part) => !matches!(&**part, ContentPart::Reasoning { .. }),
+                    None => true,
+                };
+                if append_new {
+                    self.view.draft.push(Arc::new(ContentPart::reasoning(text, None)));
+                } else if let ContentPart::Reasoning { content, .. } =
+                    Arc::make_mut(self.view.draft.last_mut().expect("checked above"))
+                {
                     content.push_str(text);
-                } else {
-                    self.view.draft.push(ContentPart::reasoning(text, None));
                 }
             }
             AgentEvent::Text { delta, .. } => {
                 self.view.state = RunState::Responding;
-                if let ContentPart::Text { text, .. } = &mut self.view.draft[text_part.unwrap()] {
+                if let ContentPart::Text { text, .. } =
+                    Arc::make_mut(&mut self.view.draft[text_part.unwrap()])
+                {
                     text.push_str(delta);
                 }
             }
             AgentEvent::Citation { annotation, .. } => {
-                if let ContentPart::Text { annotations, .. } = &mut self.view.draft[text_part.unwrap()]
+                if let ContentPart::Text { annotations, .. } =
+                    Arc::make_mut(&mut self.view.draft[text_part.unwrap()])
                     && !annotations.contains(annotation)
                 {
                     annotations.push(annotation.clone());
@@ -546,12 +560,15 @@ impl SessionTask {
                 self.view.state = RunState::Tool(name.clone())
             }
             AgentEvent::WebSearchCall(call) => {
-                if let Some(ContentPart::WebSearchCall(existing)) = self.view.draft.iter_mut()
-                    .find(|part| matches!(part, ContentPart::WebSearchCall(existing) if existing.id == call.id))
+                if let Some(index) = self
+                    .view
+                    .draft
+                    .iter()
+                    .position(|part| matches!(&**part, ContentPart::WebSearchCall(existing) if existing.id == call.id))
                 {
-                    *existing = call.clone();
+                    self.view.draft[index] = Arc::new(ContentPart::WebSearchCall(call.clone()));
                 } else {
-                    self.view.draft.push(ContentPart::WebSearchCall(call.clone()));
+                    self.view.draft.push(Arc::new(ContentPart::WebSearchCall(call.clone())));
                 }
             }
             AgentEvent::ToolFinished { .. } => {}
@@ -1259,7 +1276,7 @@ mod tests {
         assert!(view_rx.has_changed().unwrap());
         assert_eq!(
             view_rx.borrow_and_update().draft,
-            vec![ContentPart::text("Alpha ")]
+            vec![Arc::new(ContentPart::text("Alpha "))]
         );
 
         let search = WebSearchCall::completed("search", "sources", Vec::new());
@@ -1301,12 +1318,12 @@ mod tests {
         assert_eq!(
             published.draft,
             vec![
-                ContentPart::Text {
+                Arc::new(ContentPart::Text {
                     text: "Alpha Beta".into(),
                     annotations: vec![first, second],
-                },
-                ContentPart::WebSearchCall(search),
-                ContentPart::text("Other text"),
+                }),
+                Arc::new(ContentPart::WebSearchCall(search)),
+                Arc::new(ContentPart::text("Other text")),
             ]
         );
         assert!(matches!(published.state, RunState::Responding));
@@ -1337,10 +1354,10 @@ mod tests {
         assert_eq!(
             published.draft,
             vec![
-                ContentPart::reasoning("plan", None),
-                ContentPart::WebSearchCall(search),
-                ContentPart::reasoning("review", None),
-                ContentPart::text("early later"),
+                Arc::new(ContentPart::reasoning("plan", None)),
+                Arc::new(ContentPart::WebSearchCall(search)),
+                Arc::new(ContentPart::reasoning("review", None)),
+                Arc::new(ContentPart::text("early later")),
             ]
         );
         std::fs::remove_dir_all(&published.session.workspace_root).unwrap();
@@ -1361,7 +1378,7 @@ mod tests {
         let initial = view_rx.borrow_and_update().clone();
         assert_eq!(
             initial.draft,
-            vec![ContentPart::WebSearchCall(pending.clone())]
+            vec![Arc::new(ContentPart::WebSearchCall(pending.clone()))]
         );
 
         task.event(AgentEvent::Text {
@@ -1396,9 +1413,9 @@ mod tests {
             assert_eq!(
                 published.draft,
                 vec![
-                    ContentPart::WebSearchCall(snapshot),
-                    ContentPart::text("Draft answer"),
-                    ContentPart::WebSearchCall(other.clone()),
+                    Arc::new(ContentPart::WebSearchCall(snapshot)),
+                    Arc::new(ContentPart::text("Draft answer")),
+                    Arc::new(ContentPart::WebSearchCall(other.clone())),
                 ]
             );
             assert!(matches!(published.state, RunState::Responding));

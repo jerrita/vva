@@ -7,9 +7,11 @@ use super::selection::SelectionTracker;
 use crate::model::Session;
 use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
-    ChatRender, RenderState, append_chat_tail, append_parts, collect_tool_results,
-    extract_selected_text,
+    ChatRender, RenderState, append_notices, append_parts, collect_tool_results,
+    extract_selected_text, is_empty_session,
 };
+
+use super::draft::DraftRenderCache;
 
 /// 可选中文本面板：渲染行、命中区域与选区是同一件事的三个侧面。
 /// 聊天流与侧边栏共用该结构，交互代码按面板列表派发而不逐个枚举目标。
@@ -152,6 +154,7 @@ impl ThoughtHit {
 }
 
 /// 仅记录历史前缀边界及其排版状态，不另存文本或持有旧会话快照。
+/// 草稿区由 [`super::draft::DraftRenderCache`] 以部件身份增量渲染。
 #[derive(Default)]
 pub struct ChatCache {
     session: Weak<Session>,
@@ -166,6 +169,7 @@ pub struct ChatCache {
     thought_expand: HashMap<String, bool>,
     response_expand: HashMap<String, bool>,
     citations_expand: HashMap<String, bool>,
+    pub(crate) draft: DraftRenderCache,
     pub(crate) user_hits: Vec<UserMessageHit>,
     pub(crate) tool_hits: Vec<ToolHit>,
     pub(crate) thought_hits: Vec<ThoughtHit>,
@@ -345,24 +349,17 @@ impl super::App {
             cache.thought_expand.clone_from(&self.thought_expand);
             cache.response_expand.clone_from(&self.response_expand);
             cache.citations_expand.clone_from(&self.citations_expand);
+            cache.draft.reset();
         } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
             return;
         }
-        self.chat.lines.truncate(cache.history_lines);
-        self.chat
-            .links
-            .retain(|link| link.line < cache.history_lines);
-        cache
-            .tool_hits
-            .retain(|hit| hit.header_start < cache.history_lines);
-        cache
-            .thought_hits
-            .retain(|hit| hit.header_start < cache.history_lines);
-        cache
-            .citations_hits
-            .retain(|hit| hit.header_start < cache.history_lines);
-        append_chat_tail(
-            &mut ChatRender {
+        // 草稿与通知区：历史边界之后增量渲染，未变部件与已提交行不重算
+        let draft = self.view.draft.clone();
+        let empty_session = is_empty_session(&self.view);
+        let history_lines = cache.history_lines;
+        let mut state = cache.render_state;
+        {
+            let mut render = ChatRender {
                 lines: &mut self.chat.lines,
                 links: &mut self.chat.links,
                 max_width: width,
@@ -375,11 +372,16 @@ impl super::App {
                 citations_expand: &self.citations_expand,
                 citations_hits: &mut cache.citations_hits,
                 response_hits: &mut cache.response_hits,
-            },
-            &self.view,
-            &self.notices,
-            cache.render_state,
-        );
+            };
+            cache.draft.render(
+                &mut render,
+                &draft,
+                history_lines,
+                &mut state,
+                empty_session,
+            );
+            append_notices(&mut render, &self.notices, &state);
+        }
         cache.revision = self.view.revision;
         cache.notices = self.notices.len();
     }

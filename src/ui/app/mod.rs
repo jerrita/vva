@@ -20,6 +20,7 @@ pub use selection::{
 };
 
 pub mod dispatch;
+pub mod draft;
 pub mod editor;
 pub mod pane;
 pub mod scroll;

@@ -36,13 +36,13 @@ const SELECTION_STYLE: Style = Style::new().fg(Color::White).bg(Color::Rgb(60, 9
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RenderState {
-    prev_reasoning: bool,
-    prev_text: bool,
-    prev_web: bool,
-    thought_groups: usize,
-    thought_expanded: bool,
-    thought_inline: bool,
-    citation_groups: usize,
+    pub(crate) prev_reasoning: bool,
+    pub(crate) prev_text: bool,
+    pub(crate) prev_web: bool,
+    pub(crate) thought_groups: usize,
+    pub(crate) thought_expanded: bool,
+    pub(crate) thought_inline: bool,
+    pub(crate) citation_groups: usize,
 }
 
 /// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
@@ -281,7 +281,7 @@ pub(crate) fn collect_tool_results(view: &SessionView) -> HashMap<String, &ToolR
         .turns
         .iter()
         .flat_map(|turn| turn.messages.iter().flat_map(|message| &message.parts))
-        .chain(view.draft.iter());
+        .chain(view.draft.iter().map(|part| &**part));
     for part in parts {
         if let ContentPart::ToolResult(result) = part {
             map.insert(result.tool_call_id.clone(), result);
@@ -976,285 +976,351 @@ pub(crate) fn append_parts<'a>(
     parts: impl Iterator<Item = &'a ContentPart> + Clone,
     state: &mut RenderState,
 ) {
+    let ctx = part_context(parts.clone());
+    for part in parts {
+        append_part(render, role, part, &ctx, state);
+    }
+}
+
+/// 跨部件上下文：响应内 Web 搜索调用与首现引用。
+/// 增量渲染只重建尾部部件时，上下文仍取自完整草稿。
+pub(crate) struct PartContext<'a> {
+    pub(crate) calls: Vec<&'a WebSearchCall>,
+    pub(crate) citations: Vec<(&'a str, &'a str)>,
+}
+
+pub(crate) fn part_context<'a>(
+    parts: impl Iterator<Item = &'a ContentPart> + Clone,
+) -> PartContext<'a> {
+    PartContext {
+        calls: parts
+            .clone()
+            .filter_map(|part| match part {
+                ContentPart::WebSearchCall(call) => Some(call),
+                _ => None,
+            })
+            .collect(),
+        citations: search_citations(parts),
+    }
+}
+
+/// 思考部件的展示形态，判定与 [`append_part`] 思考臂一致。
+pub(crate) enum ThoughtKind {
+    Inline,
+    Collapsed,
+    Expanded,
+}
+
+pub(crate) fn thought_kind(
+    render: &ChatRender<'_>,
+    state: &RenderState,
+    content: &str,
+) -> ThoughtKind {
+    if !state.prev_reasoning {
+        if content.lines().count() <= 1
+            && !thought_is_prose(content)
+            && thought_is_title(content, render.max_width)
+        {
+            return ThoughtKind::Inline;
+        }
+        let expanded = render
+            .thought_expand
+            .get(&format!("thought-{}", state.thought_groups + 1))
+            .copied()
+            .unwrap_or(!render.thinking_concise);
+        return if expanded {
+            ThoughtKind::Expanded
+        } else {
+            ThoughtKind::Collapsed
+        };
+    }
+    if state.thought_inline {
+        ThoughtKind::Inline
+    } else if state.thought_expanded {
+        ThoughtKind::Expanded
+    } else {
+        ThoughtKind::Collapsed
+    }
+}
+
+/// 追加 markdown 渲染结果：链接偏移校正、首 span 缩进剥离与可选思考样式
+pub(crate) fn append_md(
+    render: &mut ChatRender<'_>,
+    mut md_lines: Vec<Line<'static>>,
+    mut md_links: Vec<LinkRegion>,
+    body_style: Option<Style>,
+) {
+    let offset = render.lines.len();
+    for link in &mut md_links {
+        link.line += offset;
+        link.columns.start = link.columns.start.saturating_sub(1);
+        link.columns.end = link.columns.end.saturating_sub(1);
+    }
+    for line in &mut md_lines {
+        if let Some(span) = line.spans.first_mut()
+            && span.content.starts_with(' ')
+        {
+            span.content.to_mut().remove(0);
+        }
+        if let Some(style) = body_style {
+            for span in &mut line.spans {
+                span.style = span.style.patch(style);
+            }
+        }
+    }
+    render.links.extend(md_links);
+    render.lines.extend(md_lines);
+}
+
+/// 渲染单个部件，跨部件引用上下文由 ctx 提供
+pub(crate) fn append_part(
+    render: &mut ChatRender<'_>,
+    role: Role,
+    part: &ContentPart,
+    ctx: &PartContext<'_>,
+    state: &mut RenderState,
+) {
     let max_width = render.max_width;
     let thinking_concise = render.thinking_concise;
-    let calls = parts
-        .clone()
-        .filter_map(|part| match part {
-            ContentPart::WebSearchCall(call) => Some(call),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let citations = search_citations(parts.clone());
-    for part in parts {
-        let prev_web = state.prev_web;
-        state.prev_web = matches!(
-            (role, part),
-            (Role::Assistant, ContentPart::WebSearchCall(_))
-        );
-        match (role, part) {
-            (Role::User, ContentPart::Text { text, .. }) => {
-                if let Some(reminder) = crate::system::parse_agents_reminder(text) {
-                    match reminder.kind {
-                        crate::system::AgentsReminderKind::Global
-                        | crate::system::AgentsReminderKind::Project => {
-                            // 全局与项目不展示
-                        }
-                        crate::system::AgentsReminderKind::Directory => {
-                            // 按需自动加载的展示 Load xxx/AGENTS.md
-                            let needs_separator = state.prev_reasoning || state.prev_text;
-                            state.prev_reasoning = false;
-                            state.prev_text = true;
-                            if needs_separator {
-                                render.lines.push(Line::from(""));
-                            }
-                            let spans = vec![Span::styled(
-                                format!("Load {}", reminder.path),
-                                Style::default().fg(Color::Rgb(150, 150, 150)),
-                            )];
-                            render
-                                .lines
-                                .extend(wrap_spans_to_lines(&spans, max_width, "", "   "));
-                        }
+    let citations = &ctx.citations;
+    let prev_web = state.prev_web;
+    state.prev_web = matches!(
+        (role, part),
+        (Role::Assistant, ContentPart::WebSearchCall(_))
+    );
+    match (role, part) {
+        (Role::User, ContentPart::Text { text, .. }) => {
+            if let Some(reminder) = crate::system::parse_agents_reminder(text) {
+                match reminder.kind {
+                    crate::system::AgentsReminderKind::Global
+                    | crate::system::AgentsReminderKind::Project => {
+                        // 全局与项目不展示
                     }
-                    continue;
+                    crate::system::AgentsReminderKind::Directory => {
+                        // 按需自动加载的展示 Load xxx/AGENTS.md
+                        let needs_separator = state.prev_reasoning || state.prev_text;
+                        state.prev_reasoning = false;
+                        state.prev_text = true;
+                        if needs_separator {
+                            render.lines.push(Line::from(""));
+                        }
+                        let spans = vec![Span::styled(
+                            format!("Load {}", reminder.path),
+                            Style::default().fg(Color::Rgb(150, 150, 150)),
+                        )];
+                        render
+                            .lines
+                            .extend(wrap_spans_to_lines(&spans, max_width, "", "   "));
+                    }
                 }
-                state.prev_reasoning = false;
-                state.prev_text = false;
-                render.lines.push(Line::from(""));
-                push_user_block(render.lines, text, max_width);
+                return;
             }
-            (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
-                // 连续思考段归为一段，组间保留空行。
-                let group_start = !state.prev_reasoning;
-                state.prev_reasoning = true;
-                state.prev_text = false;
-                if group_start {
-                    render.lines.push(Line::from(""));
-                }
-                let body_style = Style::default()
-                    .fg(Color::Rgb(120, 120, 120))
-                    .add_modifier(Modifier::ITALIC);
-                let prefix_style = Style::default()
-                    .fg(Color::Rgb(140, 140, 140))
-                    .add_modifier(Modifier::BOLD);
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            render.lines.push(Line::from(""));
+            push_user_block(render.lines, text, max_width);
+        }
+        (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
+            // 连续思考段归为一段，组间保留空行。
+            let group_start = !state.prev_reasoning;
+            state.prev_reasoning = true;
+            state.prev_text = false;
+            if group_start {
+                render.lines.push(Line::from(""));
+            }
+            let body_style = Style::default()
+                .fg(Color::Rgb(120, 120, 120))
+                .add_modifier(Modifier::ITALIC);
+            let prefix_style = Style::default()
+                .fg(Color::Rgb(140, 140, 140))
+                .add_modifier(Modifier::BOLD);
 
-                if group_start {
-                    state.thought_groups += 1;
-                    state.thought_expanded = render
-                        .thought_expand
-                        .get(&format!("thought-{}", state.thought_groups))
-                        .copied()
-                        .unwrap_or(!thinking_concise);
-                    state.thought_inline = thought_is_title(content, max_width);
-                    if state.thought_inline {
-                        push_inline_thought(render, content, prefix_style, body_style);
-                        continue;
-                    }
-                    let marker = if state.thought_expanded {
-                        "- Thought"
-                    } else {
-                        "+ Thought"
-                    };
-                    let header_start = render.lines.len();
-                    render
-                        .lines
-                        .push(Line::from(vec![Span::styled(marker, prefix_style)]));
-                    render.thought_hits.push(ThoughtHit {
-                        id: format!("thought-{}", state.thought_groups),
-                        header_start,
-                        header_end: header_start + 1,
-                        body_start: header_start + 1,
-                        body_end: header_start + 1,
-                    });
-                }
+            if group_start {
+                state.thought_groups += 1;
+                state.thought_expanded = render
+                    .thought_expand
+                    .get(&format!("thought-{}", state.thought_groups))
+                    .copied()
+                    .unwrap_or(!thinking_concise);
+                state.thought_inline = thought_is_title(content, max_width);
                 if state.thought_inline {
-                    continue;
+                    push_inline_thought(render, content, prefix_style, body_style);
+                    return;
                 }
-                if state.thought_expanded {
-                    let (mut body, mut body_links) = render_markdown(content, max_width);
-                    for link in &mut body_links {
-                        link.line += render.lines.len();
-                        link.columns.start = link.columns.start.saturating_sub(1);
-                        link.columns.end = link.columns.end.saturating_sub(1);
-                    }
-                    render.links.extend(body_links);
-                    for line in &mut body {
-                        if let Some(span) = line.spans.first_mut()
-                            && span.content.starts_with(' ')
-                        {
-                            span.content.to_mut().remove(0);
-                        }
-                        for span in &mut line.spans {
-                            span.style = span.style.patch(body_style);
-                        }
-                    }
-                    render.lines.extend(body);
-                    // 当前分组的命中必为最新压入的一条；正文行持续累积，遇其他内容不再延伸
-                    if let Some(hit) = render.thought_hits.last_mut() {
-                        hit.body_end = render.lines.len();
-                    }
-                }
-            }
-            (Role::Assistant, ContentPart::ToolCall(call)) => {
-                let needs_separator = state.prev_reasoning || state.prev_text || prev_web;
-                state.prev_reasoning = false;
-                state.prev_text = false;
-                if needs_separator {
-                    render.lines.push(Line::from(""));
-                }
-                push_tool_call(render, call);
-            }
-            (Role::Tool, ContentPart::ToolResult(_)) => {
-                state.prev_reasoning = false;
-                state.prev_text = false;
-            }
-            (Role::Assistant, ContentPart::WebSearchCall(call)) => {
-                let needs_separator = state.prev_reasoning || state.prev_text;
-                state.prev_reasoning = false;
-                state.prev_text = false;
-                let (label, detail) = match &call.action {
-                    WebSearchAction::Search => (
-                        "web_search",
-                        format!("{} ({} sources)", call.query, call.sources.len()),
-                    ),
-                    WebSearchAction::OpenPage { url } => ("web_open", url.clone()),
-                    WebSearchAction::FindInPage { url, pattern } => {
-                        ("web_find", format!("{url} / {pattern}"))
-                    }
+                let marker = if state.thought_expanded {
+                    "- Thought"
+                } else {
+                    "+ Thought"
                 };
-                if needs_separator {
-                    render.lines.push(Line::from(""));
+                let header_start = render.lines.len();
+                render
+                    .lines
+                    .push(Line::from(vec![Span::styled(marker, prefix_style)]));
+                render.thought_hits.push(ThoughtHit {
+                    id: format!("thought-{}", state.thought_groups),
+                    header_start,
+                    header_end: header_start + 1,
+                    body_start: header_start + 1,
+                    body_end: header_start + 1,
+                });
+            }
+            if state.thought_inline {
+                return;
+            }
+            if state.thought_expanded {
+                let (body, body_links) = render_markdown(content, max_width);
+                append_md(render, body, body_links, Some(body_style));
+                // 当前分组的命中必为最新压入的一条；正文行持续累积，遇其他内容不再延伸
+                if let Some(hit) = render.thought_hits.last_mut() {
+                    hit.body_end = render.lines.len();
                 }
-                let spans = vec![
-                    Span::styled(
-                        label,
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(" "),
-                    Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
-                ];
-                let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-                render.lines.extend(wrapped);
+            }
+        }
+        (Role::Assistant, ContentPart::ToolCall(call)) => {
+            let needs_separator = state.prev_reasoning || state.prev_text || prev_web;
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            if needs_separator {
+                render.lines.push(Line::from(""));
+            }
+            push_tool_call(render, call);
+        }
+        (Role::Tool, ContentPart::ToolResult(_)) => {
+            state.prev_reasoning = false;
+            state.prev_text = false;
+        }
+        (Role::Assistant, ContentPart::WebSearchCall(call)) => {
+            let needs_separator = state.prev_reasoning || state.prev_text;
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            let (label, detail) = match &call.action {
+                WebSearchAction::Search => (
+                    "web_search",
+                    format!("{} ({} sources)", call.query, call.sources.len()),
+                ),
+                WebSearchAction::OpenPage { url } => ("web_open", url.clone()),
+                WebSearchAction::FindInPage { url, pattern } => {
+                    ("web_find", format!("{url} / {pattern}"))
+                }
+            };
+            if needs_separator {
+                render.lines.push(Line::from(""));
+            }
+            let spans = vec![
+                Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
+            ];
+            let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
+            render.lines.extend(wrapped);
 
-                if matches!(call.action, WebSearchAction::OpenPage { .. }) {
+            if matches!(call.action, WebSearchAction::OpenPage { .. }) {
+                return;
+            }
+
+            // Citation titles on the left, domains aligned to the right.
+            for (url, title) in citations.iter() {
+                if !call_covers_url(call, url) {
                     continue;
                 }
-
-                // Citation titles on the left, domains aligned to the right.
-                for (url, title) in &citations {
-                    if !call_covers_url(call, url) {
-                        continue;
-                    }
-                    let domain = url_display_domain(url);
-                    let title = title.trim();
-                    let title = if title.is_empty() || title == *url {
-                        domain
-                    } else {
-                        title
-                    };
-                    let domain = truncate(domain, max_width.saturating_sub(4) / 2);
-                    let right_w = domain.width();
-                    let title_max = max_width.saturating_sub(3 + right_w + 1);
-                    let title = truncate(title, title_max);
-                    let pad = title_max - title.width() + 1;
-                    render.lines.push(Line::from(vec![
-                        Span::raw("   "),
-                        Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
-                        Span::raw(" ".repeat(pad)),
-                        Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
-                    ]));
-                }
+                let domain = url_display_domain(url);
+                let title = title.trim();
+                let title = if title.is_empty() || title == *url {
+                    domain
+                } else {
+                    title
+                };
+                let domain = truncate(domain, max_width.saturating_sub(4) / 2);
+                let right_w = domain.width();
+                let title_max = max_width.saturating_sub(3 + right_w + 1);
+                let title = truncate(title, title_max);
+                let pad = title_max - title.width() + 1;
+                render.lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
+                ]));
             }
-            (Role::Assistant, ContentPart::Text { text, annotations }) => {
-                state.prev_reasoning = false;
-                state.prev_text = true;
-                let mut citations: Vec<(&str, &str)> = Vec::new();
-                for a in annotations {
-                    if let Some((url, title)) = citation_ref(a)
-                        && !calls.iter().any(|call| call_covers_url(call, url))
-                    {
-                        citations.push((title, url));
-                    }
-                }
-                render.lines.push(Line::from(""));
-                let (mut md_lines, mut md_links) = render_markdown(text, max_width);
-                for link in &mut md_links {
-                    link.line += render.lines.len();
-                    link.columns.start = link.columns.start.saturating_sub(1);
-                    link.columns.end = link.columns.end.saturating_sub(1);
-                }
-                for line in &mut md_lines {
-                    if let Some(span) = line.spans.first_mut()
-                        && span.content.starts_with(' ')
-                    {
-                        span.content.to_mut().remove(0);
-                    }
-                }
-                render.links.extend(md_links);
-                render.lines.extend(md_lines);
+        }
+        (Role::Assistant, ContentPart::Text { text, annotations }) => {
+            state.prev_reasoning = false;
+            state.prev_text = true;
+            render.lines.push(Line::from(""));
+            let (md_lines, md_links) = render_markdown(text, max_width);
+            append_md(render, md_lines, md_links, None);
+            push_citations_block(render, ctx, annotations, state);
+        }
+        // WebSearchCall 等未渲染的 part 不打断思考分组的连续性
+        _ => {}
+    }
+}
 
-                // Citations not covered by a call remain below the text, folded by default.
-                if !citations.is_empty() {
-                    render.lines.push(Line::from(""));
-                    state.citation_groups += 1;
-                    let id = format!("citations-{}", state.citation_groups);
-                    let expanded = render.citations_expand.get(&id).copied().unwrap_or(false);
-                    let marker = if expanded { "-" } else { "+" };
-                    let header_start = render.lines.len();
-                    render.lines.push(Line::from(vec![
-                        Span::raw("   "),
-                        Span::styled(
-                            format!("{marker} Sources / Citations ({})", citations.len()),
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                    render.citations_hits.push(CitationsHit {
-                        id,
-                        header_start,
-                        header_end: render.lines.len(),
-                    });
-                    if expanded {
-                        for (i, (title, url)) in citations.iter().enumerate() {
-                            let spans = vec![
-                                Span::styled(
-                                    format!("[{}] ", i + 1),
-                                    Style::default().fg(Color::Cyan),
-                                ),
-                                Span::styled(
-                                    (*title).to_string(),
-                                    Style::default().fg(Color::White),
-                                ),
-                                Span::raw(" - "),
-                                Span::styled(
-                                    (*url).to_string(),
-                                    Style::default().fg(Color::Rgb(100, 160, 255)),
-                                ),
-                            ];
-                            let wrapped =
-                                wrap_spans_to_lines(&spans, max_width, "     ", "       ");
-                            render.lines.extend(wrapped);
-                        }
-                    }
-                }
-            }
-            // WebSearchCall 等未渲染的 part 不打断思考分组的连续性
-            _ => {}
+/// 该文本部件未被 Web 搜索调用覆盖的引用汇总块，默认折叠
+pub(crate) fn push_citations_block(
+    render: &mut ChatRender<'_>,
+    ctx: &PartContext<'_>,
+    annotations: &[crate::model::Annotation],
+    state: &mut RenderState,
+) {
+    let max_width = render.max_width;
+    let mut citations: Vec<(&str, &str)> = Vec::new();
+    for a in annotations {
+        if let Some((url, title)) = citation_ref(a)
+            && !ctx.calls.iter().any(|call| call_covers_url(call, url))
+        {
+            citations.push((title, url));
+        }
+    }
+    // Citations not covered by a call remain below the text, folded by default.
+    if citations.is_empty() {
+        return;
+    }
+    render.lines.push(Line::from(""));
+    state.citation_groups += 1;
+    let id = format!("citations-{}", state.citation_groups);
+    let expanded = render.citations_expand.get(&id).copied().unwrap_or(false);
+    let marker = if expanded { "-" } else { "+" };
+    let header_start = render.lines.len();
+    render.lines.push(Line::from(vec![
+        Span::raw("   "),
+        Span::styled(
+            format!("{marker} Sources / Citations ({})", citations.len()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    render.citations_hits.push(CitationsHit {
+        id,
+        header_start,
+        header_end: render.lines.len(),
+    });
+    if expanded {
+        for (i, (title, url)) in citations.iter().enumerate() {
+            let spans = vec![
+                Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Cyan)),
+                Span::styled((*title).to_string(), Style::default().fg(Color::White)),
+                Span::raw(" - "),
+                Span::styled(
+                    (*url).to_string(),
+                    Style::default().fg(Color::Rgb(100, 160, 255)),
+                ),
+            ];
+            let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "       ");
+            render.lines.extend(wrapped);
         }
     }
 }
 
-pub(crate) fn append_chat_tail(
-    render: &mut ChatRender<'_>,
-    view: &SessionView,
-    notices: &[String],
-    mut state: RenderState,
-) {
-    let is_empty_session = view.session.turns.iter().all(|t| {
+/// 会话尚无有效内容（仅系统轮与 AGENTS 提醒轮）且草稿为空
+pub(crate) fn is_empty_session(view: &SessionView) -> bool {
+    view.session.turns.iter().all(|t| {
         t.role == Role::System
             || (t.role == Role::User
                 && t.messages.iter().all(|m| {
@@ -1271,28 +1337,32 @@ pub(crate) fn append_chat_tail(
                         _ => false,
                     })
                 }))
-    }) && view.draft.is_empty();
+    }) && view.draft.is_empty()
+}
 
-    if is_empty_session {
-        render.lines.push(Line::from(""));
-        render.lines.push(Line::from(vec![
-            Span::styled(
-                "  Start typing a prompt or use ",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                "/",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                " to access commands (/sessions to resume).",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
-    append_parts(render, Role::Assistant, view.draft.iter(), &mut state);
+/// 空会话输入提示
+pub(crate) fn push_empty_hint(render: &mut ChatRender<'_>) {
+    render.lines.push(Line::from(""));
+    render.lines.push(Line::from(vec![
+        Span::styled(
+            "  Start typing a prompt or use ",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "/",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " to access commands (/sessions to resume).",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+}
+
+/// 草稿之后的通知区；无通知且正文刚结束时补一个空行
+pub(crate) fn append_notices(render: &mut ChatRender<'_>, notices: &[String], state: &RenderState) {
     for text in notices {
         render.lines.push(Line::from(""));
         let spans = vec![Span::styled(
@@ -1974,7 +2044,46 @@ mod tests {
                 &mut state,
             );
         }
-        append_chat_tail(
+        if is_empty_session(&app.view) {
+            push_empty_hint(&mut ChatRender {
+                lines: &mut lines,
+                links: &mut Vec::new(),
+                max_width: width.max(20),
+                thinking_concise: app.thinking_concise,
+                results: &results,
+                expand: &app.tool_expand,
+                hits: &mut hits,
+                thought_expand: &app.thought_expand,
+                thought_hits: &mut thought_hits,
+                citations_expand: &app.citations_expand,
+                citations_hits: &mut citations_hits,
+                response_hits: &mut response_hits,
+            });
+        }
+        let draft_ctx = part_context(app.view.draft.iter().map(|part| &**part));
+        for part in &app.view.draft {
+            append_part(
+                &mut ChatRender {
+                    lines: &mut lines,
+                    links: &mut Vec::new(),
+                    max_width: width.max(20),
+                    thinking_concise: app.thinking_concise,
+                    results: &results,
+                    expand: &app.tool_expand,
+                    hits: &mut hits,
+                    thought_expand: &app.thought_expand,
+                    thought_hits: &mut thought_hits,
+                    citations_expand: &app.citations_expand,
+                    citations_hits: &mut citations_hits,
+                    response_hits: &mut response_hits,
+                },
+                Role::Assistant,
+                part,
+                &draft_ctx,
+                &mut state,
+            );
+        }
+        append_notices(
             &mut ChatRender {
                 lines: &mut lines,
                 links: &mut Vec::new(),
@@ -1989,9 +2098,8 @@ mod tests {
                 citations_hits: &mut citations_hits,
                 response_hits: &mut response_hits,
             },
-            &app.view,
             &app.notices,
-            state,
+            &state,
         );
         lines
     }
@@ -2046,10 +2154,10 @@ mod tests {
         };
         let history = history_text(app);
         for draft in [
-            vec![ContentPart::reasoning("**Next thought**", None)],
+            vec![Arc::new(ContentPart::reasoning("**Next thought**", None))],
             vec![
-                ContentPart::reasoning("**Next thought**", None),
-                ContentPart::text("**Answer**"),
+                Arc::new(ContentPart::reasoning("**Next thought**", None)),
+                Arc::new(ContentPart::text("**Answer**")),
             ],
             vec![],
         ] {
@@ -2068,7 +2176,7 @@ mod tests {
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
         view.draft
-            .push(ContentPart::reasoning("**Next thought**", None));
+            .push(Arc::new(ContentPart::reasoning("**Next thought**", None)));
         for concise in [false, true] {
             app.thinking_concise = concise;
             for width in [30, 120, 80] {
@@ -2088,6 +2196,48 @@ mod tests {
                 .iter()
                 .any(|line| line.to_string().contains("Start typing"))
         );
+        std::fs::remove_dir_all(ta.temp_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_draft_stream_keeps_committed_prefix_and_matches_full_render() {
+        let mut ta =
+            crate::ui::test_support::create_test_app("init_model", None, None, false).await;
+        let app = &mut ta.app;
+        let check = |app: &mut App, width| {
+            let expected = build_chat_lines(app, width);
+            app.refresh_chat_lines(width);
+            assert_eq!(app.chat.lines, expected);
+        };
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        view.draft = vec![Arc::new(ContentPart::text("第一段。\n\n第二段开始"))];
+        check(app, 80);
+        let prefix = app
+            .chat
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.contains("第一段"))
+            .unwrap()
+            .content
+            .as_ptr();
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        if let ContentPart::Text { text, .. } = Arc::make_mut(&mut view.draft[0]) {
+            text.push_str("，续写。");
+        }
+        check(app, 80);
+        let prefix_after = app
+            .chat
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.contains("第一段"))
+            .unwrap()
+            .content
+            .as_ptr();
+        assert_eq!(prefix, prefix_after);
         std::fs::remove_dir_all(ta.temp_dir).unwrap();
     }
 
@@ -2422,8 +2572,8 @@ mod tests {
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
         view.draft = vec![
-            ContentPart::text("Before search"),
-            ContentPart::WebSearchCall(WebSearchCall::completed(
+            Arc::new(ContentPart::text("Before search")),
+            Arc::new(ContentPart::WebSearchCall(WebSearchCall::completed(
                 "ws_1",
                 "query A; query A2",
                 vec![
@@ -2438,16 +2588,16 @@ mod tests {
                         None,
                     ),
                 ],
-            )),
-            ContentPart::text("Between searches"),
-            ContentPart::WebSearchCall(WebSearchCall::completed(
+            ))),
+            Arc::new(ContentPart::text("Between searches")),
+            Arc::new(ContentPart::WebSearchCall(WebSearchCall::completed(
                 "ws_2",
                 "query B",
                 vec![
                     WebSearchSource::new("https://www.cited.example/page", "Ignored", None),
                     WebSearchSource::new("https://other.example/page", "Ignored", None),
                 ],
-            )),
+            ))),
         ];
         app.refresh_chat_lines(100);
         let text = |lines: &[Line<'_>]| -> String {
@@ -2473,10 +2623,10 @@ mod tests {
         };
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
-        view.draft.push(ContentPart::Text {
+        view.draft.push(Arc::new(ContentPart::Text {
             text: "Answer".into(),
             annotations: vec![citation.clone()],
-        });
+        }));
         app.refresh_chat_lines(100);
         let updated = text(&app.chat.lines);
         assert!(updated.contains("query A; query A2 (2 sources)"));
@@ -2487,7 +2637,7 @@ mod tests {
 
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
-        view.draft.push(ContentPart::Text {
+        view.draft.push(Arc::new(ContentPart::Text {
             text: "More".into(),
             annotations: vec![
                 citation,
@@ -2504,7 +2654,7 @@ mod tests {
                     end_index: 1,
                 },
             ],
-        });
+        }));
         // 末尾来源汇总默认折叠；展开后断言未命中调用覆盖的引用列表
         app.citations_expand.insert("citations-1".into(), true);
         app.refresh_chat_lines(100);
@@ -2530,7 +2680,7 @@ mod tests {
         view.revision += 1;
         let messages = std::mem::take(&mut view.draft)
             .into_iter()
-            .map(|part| crate::model::Message::new(vec![part]))
+            .map(|part| crate::model::Message::new(vec![Arc::unwrap_or_clone(part)]))
             .collect();
         Arc::make_mut(&mut view.session)
             .append_turn(crate::model::Turn::new(Role::Assistant, messages));
@@ -2539,8 +2689,8 @@ mod tests {
 
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
-        view.draft
-            .push(ContentPart::WebSearchCall(WebSearchCall::completed(
+        view.draft.push(Arc::new(ContentPart::WebSearchCall(
+            WebSearchCall::completed(
                 "ws_3",
                 "query C",
                 vec![WebSearchSource::new(
@@ -2548,7 +2698,8 @@ mod tests {
                     "Ignored",
                     None,
                 )],
-            )));
+            ),
+        )));
         app.refresh_chat_lines(100);
         let separate = text(&app.chat.lines);
         assert_eq!(separate.matches("web_search").count(), 3);
@@ -2578,10 +2729,10 @@ mod tests {
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
         view.draft = vec![
-            ContentPart::WebSearchCall(open),
-            ContentPart::text("Between actions"),
-            ContentPart::WebSearchCall(find),
-            ContentPart::Text {
+            Arc::new(ContentPart::WebSearchCall(open)),
+            Arc::new(ContentPart::text("Between actions")),
+            Arc::new(ContentPart::WebSearchCall(find)),
+            Arc::new(ContentPart::Text {
                 text: "Answer".into(),
                 annotations: vec![
                     Annotation::UrlCitation {
@@ -2597,7 +2748,7 @@ mod tests {
                         end_index: 1,
                     },
                 ],
-            },
+            }),
         ];
         // 末尾来源汇总默认折叠；展开后断言未命中调用覆盖的引用列表
         app.citations_expand.insert("citations-1".into(), true);
@@ -2639,7 +2790,10 @@ mod tests {
         }
         let view = Arc::make_mut(&mut app.view);
         view.revision += 1;
-        let parts = std::mem::take(&mut view.draft);
+        let parts = std::mem::take(&mut view.draft)
+            .into_iter()
+            .map(Arc::unwrap_or_clone)
+            .collect::<Vec<_>>();
         Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
             Role::Assistant,
             vec![crate::model::Message::new(parts)],

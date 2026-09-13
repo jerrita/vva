@@ -292,6 +292,29 @@ fn normalize_cjk_bold_in_line(line: &str) -> String {
 
 /// Markdown 原生渲染器：将 CommonMark 文本解析并排版为具备美化样式的 Ratatui Line 列表
 pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Vec<LinkRegion>) {
+    let (mut output_lines, links) = render_markdown_open(input, max_width, false);
+    // 去除末尾冗余空行
+    while let Some(last) = output_lines.last() {
+        if strippable_line(last) {
+            output_lines.pop();
+        } else {
+            break;
+        }
+    }
+    (output_lines, links)
+}
+
+pub(crate) fn strippable_line(line: &Line<'_>) -> bool {
+    line.spans.is_empty() || (line.spans.len() == 1 && line.spans[0].content.trim().is_empty())
+}
+
+/// 增量渲染用开放尾渲染：不剥除末尾空行；`preceded` 表示本次调用之前已有输出，
+/// 影响标题与代码块前的空行判定。
+pub(crate) fn render_markdown_open(
+    input: &str,
+    max_width: usize,
+    preceded: bool,
+) -> (Vec<Line<'static>>, Vec<LinkRegion>) {
     let preprocessed = preprocess_cjk_markdown(input);
 
     let mut options = Options::empty();
@@ -375,7 +398,7 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
                         in_blockquote,
                         &mut links,
                     );
-                    if !output_lines.is_empty() {
+                    if preceded || !output_lines.is_empty() {
                         output_lines.push(Line::from(""));
                     }
                     current_heading_level = Some(level);
@@ -543,45 +566,14 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
-                    if !output_lines.is_empty() {
+                    if preceded || !output_lines.is_empty() {
                         output_lines.push(Line::from(""));
                     }
-
-                    let lang_tag = if code_block_lang.is_empty() {
-                        "code".to_string()
-                    } else {
-                        code_block_lang.clone()
-                    };
-                    let lang_tag = truncate(&lang_tag, max_width.saturating_sub(12));
-
-                    let code_width = max_width.saturating_sub(7).max(13);
-                    let header_line = format!(
-                        "   ┌── [{lang_tag}] {}┐",
-                        "─".repeat(max_width.saturating_sub(11 + lang_tag.width()))
-                    );
-                    output_lines.push(Line::from(vec![Span::styled(
-                        header_line,
-                        Style::default().fg(Color::Rgb(100, 100, 110)),
-                    )]));
-
+                    output_lines.push(code_box_header_line(&code_block_lang, max_width));
                     for code_l in &code_block_lines {
-                        let code_l = truncate(code_l, code_width);
-                        let padding = " ".repeat(code_width.saturating_sub(code_l.width()));
-                        output_lines.push(Line::from(vec![
-                            Span::styled("   │ ", Style::default().fg(Color::Rgb(100, 100, 110))),
-                            Span::styled(code_l, Style::default().fg(Color::Rgb(220, 225, 230))),
-                            Span::styled(
-                                format!("{padding} │"),
-                                Style::default().fg(Color::Rgb(100, 100, 110)),
-                            ),
-                        ]));
+                        output_lines.push(code_box_line(code_l, max_width));
                     }
-
-                    let footer_line = format!("   └{}┘", "─".repeat(max_width.saturating_sub(5)));
-                    output_lines.push(Line::from(vec![Span::styled(
-                        footer_line,
-                        Style::default().fg(Color::Rgb(100, 100, 110)),
-                    )]));
+                    output_lines.push(code_box_footer_line(max_width));
                     output_lines.push(Line::from(""));
                 }
                 TagEnd::TableCell => {
@@ -686,18 +678,48 @@ pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Ve
         &mut links,
     );
 
-    // 去除末尾冗余空行
-    while let Some(last) = output_lines.last() {
-        if last.spans.is_empty()
-            || (last.spans.len() == 1 && last.spans[0].content.trim().is_empty())
-        {
-            output_lines.pop();
-        } else {
-            break;
-        }
-    }
-
     (output_lines, links.regions)
+}
+
+/// 代码盒头部行（语言标签来自围栏 info string 或为空）
+pub(crate) fn code_box_header_line(lang: &str, max_width: usize) -> Line<'static> {
+    let lang_tag = if lang.is_empty() {
+        "code".to_string()
+    } else {
+        lang.to_string()
+    };
+    let lang_tag = truncate(&lang_tag, max_width.saturating_sub(12));
+    let header_line = format!(
+        "   ┌── [{lang_tag}] {}┐",
+        "─".repeat(max_width.saturating_sub(11 + lang_tag.width()))
+    );
+    Line::from(vec![Span::styled(
+        header_line,
+        Style::default().fg(Color::Rgb(100, 100, 110)),
+    )])
+}
+
+/// 代码盒内容行（超宽截断，右侧补齐）
+pub(crate) fn code_box_line(content: &str, max_width: usize) -> Line<'static> {
+    let code_width = max_width.saturating_sub(7).max(13);
+    let code_l = truncate(content, code_width);
+    let padding = " ".repeat(code_width.saturating_sub(code_l.width()));
+    Line::from(vec![
+        Span::styled("   │ ", Style::default().fg(Color::Rgb(100, 100, 110))),
+        Span::styled(code_l, Style::default().fg(Color::Rgb(220, 225, 230))),
+        Span::styled(
+            format!("{padding} │"),
+            Style::default().fg(Color::Rgb(100, 100, 110)),
+        ),
+    ])
+}
+
+pub(crate) fn code_box_footer_line(max_width: usize) -> Line<'static> {
+    let footer_line = format!("   └{}┘", "─".repeat(max_width.saturating_sub(5)));
+    Line::from(vec![Span::styled(
+        footer_line,
+        Style::default().fg(Color::Rgb(100, 100, 110)),
+    )])
 }
 
 /// 格式化渲染美观的 Unicode 表格

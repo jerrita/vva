@@ -750,6 +750,7 @@ mod tests {
             .build_request_body(&session, &[], &options)
             .expect("build body1");
         assert!(body1.get("previous_response_id").is_none());
+        assert!(body1.get("max_output_tokens").is_none());
         assert_eq!(body1["tools"][0]["type"], "web_search");
         // Responses API 标准：reasoning.effort，禁止 top-level reasoning_effort
         assert_eq!(body1["reasoning"]["effort"], "medium");

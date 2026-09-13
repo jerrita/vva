@@ -67,7 +67,7 @@ impl Default for CompletionOptions {
         Self {
             model: String::new(),
             temperature: None,
-            max_tokens: Some(4096),
+            max_tokens: None,
             enable_web_search: true,
             enable_web_fetch: true,
             reasoning_effort: None,
