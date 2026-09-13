@@ -23,9 +23,17 @@ function fmtNum(value: number): string {
   return value.toLocaleString()
 }
 
-function fmtCost(value: number): string {
-  if (value <= 0) return '—'
-  return `$${value >= 0.01 ? value.toFixed(2) : value.toFixed(4)}`
+/** 上下文窗口上限缩写，对齐 TUI format_context_limit */
+function fmtLimit(value: number): string {
+  if (value >= 1_000_000 && value % 1_000_000 === 0) return `${value / 1_000_000}M`
+  return `${Math.floor(value / 1000)}k`
+}
+
+/** 模型规格拆分展示，对齐 TUI 侧栏：无 provider 时回退 Default */
+function splitModelSpec(spec: string): { provider: string; model: string } {
+  const slash = spec.indexOf('/')
+  if (slash <= 0) return { provider: 'Default', model: spec || 'Default' }
+  return { provider: spec.slice(0, slash), model: spec.slice(slash + 1) }
 }
 
 export default function App() {
@@ -310,6 +318,13 @@ export default function App() {
   const currentVariant = active?.current_variant ?? draftVariant
   const currentSearch = active?.web_search ?? draftSearch
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
+  const modelSpec = active ? splitModelSpec(active.current_model) : null
+  const workspaceName =
+    active?.workspace_root.split('/').filter(Boolean).pop() ?? active?.workspace_root ?? null
+  const contextLimit = stats?.context_limit ?? 200_000
+  const contextPercent = stats
+    ? Math.min(100, Math.round((stats.context_tokens / contextLimit) * 100))
+    : 0
 
   const changeModel = (spec: string) => {
     if (activeId) {
@@ -473,22 +488,68 @@ export default function App() {
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
         </header>
-        {stats && (
-          <div
-            className="stats-panel"
-            title={`输入 ${fmtNum(stats.prompt_tokens)} · 输出 ${fmtNum(stats.completion_tokens)} · 缓存读 ${fmtNum(stats.cache_read_tokens)} · 缓存写 ${fmtNum(stats.cache_write_tokens)} · 上下文 ${fmtNum(stats.context_tokens)}${stats.context_limit ? ` / ${fmtNum(stats.context_limit)}` : ''} · ${stats.total_turns} 轮`}
-          >
-            <span className="stat-item">{fmtNum(stats.total_tokens)} tok</span>
+        {stats && active && (
+          <div className="stats-panel">
+            <div className="stat-row">
+              <span className="stat-label">Session</span>
+              <span className="stat-value">{active.id}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Workspace</span>
+              <span className="stat-value">{workspaceName}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Turns</span>
+              <span className="stat-value">{fmtNum(stats.total_turns)}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Model</span>
+              <span className="stat-value">{modelSpec?.model}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Provider</span>
+              <span className="stat-value">{modelSpec?.provider}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Variant</span>
+              <span className="stat-value">{active.current_variant ?? 'none'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Context</span>
+              <span className="stat-value">
+                {fmtNum(stats.context_tokens)} / {fmtLimit(contextLimit)}
+              </span>
+            </div>
+            <div className="ctx-gauge">
+              <span className="ctx-gauge-track">
+                <span className="ctx-gauge-fill" style={{ width: `${contextPercent}%` }} />
+              </span>
+              <span>{contextPercent}%</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">In/Out</span>
+              <span className="stat-value">
+                {fmtNum(stats.prompt_tokens)} / {fmtNum(stats.completion_tokens)}
+              </span>
+            </div>
             {stats.tps != null && (
-              <span className="stat-item">{stats.tps.toFixed(1)} tok/s</span>
+              <div className="stat-row">
+                <span className="stat-label">TPS</span>
+                <span className="stat-value">{stats.tps.toFixed(1)}</span>
+              </div>
             )}
-            <span className="stat-item">
-              {stats.context_limit
-                ? `${Math.min(100, Math.round((stats.context_tokens / stats.context_limit) * 100))}% ctx`
-                : `${fmtNum(stats.context_tokens)} ctx`}
-            </span>
-            <span className="stat-item">{fmtCost(stats.estimated_cost_usd)}</span>
-            {active && <span className="stat-item sess-id">{active.id}</span>}
+            <div className="stat-row">
+              <span className="stat-label">Cache Read</span>
+              <span className="stat-value">{fmtNum(stats.cache_read_tokens)}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Cache Write</span>
+              <span className="stat-value">{fmtNum(stats.cache_write_tokens)}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Est. Cost</span>
+              <span className="stat-value">${stats.estimated_cost_usd.toFixed(4)}</span>
+            </div>
           </div>
         )}
         {error && (
