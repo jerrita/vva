@@ -1,4 +1,5 @@
 import type { ContentPart, Session, Turn } from '../types'
+import { CopyButton } from './CopyButton'
 import { Parts } from './Parts'
 
 export function turnText(turn: Turn): string {
@@ -9,6 +10,14 @@ export function turnText(turn: Turn): string {
         .map(part => part.text)
         .join(''),
     )
+    .join('')
+}
+
+/** 部件列表中的纯文本（复制回答原文用） */
+function partsText(parts: ContentPart[]): string {
+  return parts
+    .filter(part => part.type === 'text')
+    .map(part => part.text)
     .join('')
 }
 
@@ -138,55 +147,59 @@ function UserBubble({
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
 }) {
-  const actions =
-    index == null || !onRevert || !onFork ? null : (
-      <div className="turn-actions">
-        <button
-          disabled={disabled}
-          onClick={() => onRevert(index, turnText(turn))}
-          title="回退：丢弃此消息及之后的内容，放回输入框重新编辑"
-          aria-label="回退"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="12"
-            height="12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
+  const actions = (
+    <div className="turn-actions">
+      <CopyButton text={turnText(turn)} />
+      {index != null && onRevert && onFork && (
+        <>
+          <button
+            disabled={disabled}
+            onClick={() => onRevert(index, turnText(turn))}
+            title="回退：丢弃此消息及之后的内容，放回输入框重新编辑"
+            aria-label="回退"
           >
-            <path d="M9 14 4 9l5-5" />
-            <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
-          </svg>
-        </button>
-        <button
-          disabled={disabled}
-          onClick={() => onFork(index)}
-          title="分叉：保留此消息之前的历史，创建新会话"
-          aria-label="分叉"
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="12"
-            height="12"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
+            <svg
+              viewBox="0 0 24 24"
+              width="12"
+              height="12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M9 14 4 9l5-5" />
+              <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+            </svg>
+          </button>
+          <button
+            disabled={disabled}
+            onClick={() => onFork(index)}
+            title="分叉：保留此消息之前的历史，创建新会话"
+            aria-label="分叉"
           >
-            <line x1="6" x2="6" y1="3" y2="15" />
-            <circle cx="18" cy="6" r="3" />
-            <circle cx="6" cy="18" r="3" />
-            <path d="M18 9a9 9 0 0 1-9 9" />
-          </svg>
-        </button>
-      </div>
-    )
+            <svg
+              viewBox="0 0 24 24"
+              width="12"
+              height="12"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <line x1="6" x2="6" y1="3" y2="15" />
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M18 9a9 9 0 0 1-9 9" />
+            </svg>
+          </button>
+        </>
+      )}
+    </div>
+  )
   return (
     <div className="msg user">
       <div className="user-col">
@@ -286,6 +299,9 @@ export function Chat({
           <div key={item.turn.id} className="msg assistant answer">
             <Parts parts={item.parts} />
             <TurnMeta turn={item.turn} />
+            <div className="turn-actions">
+              <CopyButton text={partsText(item.parts)} />
+            </div>
           </div>
         )
       })}

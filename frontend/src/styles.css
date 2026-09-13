@@ -1002,7 +1002,7 @@ body.resizing .chat-scroll {
   margin-top: 0;
 }
 
-/* 用户消息操作（回退 / 分叉）：悬停或聚焦时显示，触屏常显 */
+/* 消息操作（用户：复制/回退/分叉；回答：复制）：悬停或聚焦时显示，触屏常显 */
 .turn-actions {
   display: flex;
   gap: 2px;
@@ -1011,8 +1011,8 @@ body.resizing .chat-scroll {
   transition: opacity 0.15s;
 }
 
-.msg.user:hover .turn-actions,
-.msg.user:focus-within .turn-actions {
+.msg:hover .turn-actions,
+.msg:focus-within .turn-actions {
   opacity: 1;
 }
 
