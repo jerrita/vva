@@ -52,7 +52,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **顶栏**：半透明毛玻璃（`color-mix` 半透明 `--panel` + `backdrop-filter: blur`），脱离文档流覆盖主区（高度令牌 `--topbar-h`），聊天内容从其下方滚过；横幅、聊天区与空态自行让出顶栏高度。
 - **浮层**：
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
-  - 统计浮块（`.stats-panel`）：右上角浮动（会话活跃时），**非阻塞**——无遮罩，主界面可操作；收起/展开开关位于顶栏右缘（`.stats-toggle`，展开时着色，状态持久化于 localStorage `vva.stats-collapsed`），收起后无任何浮动元素；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；
+  - 统计浮块（`.stats-panel`）：右上角浮动（会话活跃时），**非阻塞**——无遮罩，主界面可操作；内容滚入面板区域时自动收起（`opacity: 0` 保留测量、不参与命中测试），离开后自动展开；顶栏右缘开关（`.stats-toggle`）为手动覆盖——隐藏时点击强制显示（保持到不再遮挡）、展开时点击手动收起（持久化于 localStorage `vva.stats-collapsed`）；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；
   - 设置弹窗（`.settings-modal`）：侧栏页脚打开，编辑全局配置文件原文（JSONC，路径示于标题行右侧），后端校验解析通过后落盘并热重载；Esc/遮罩点击关闭；
   - 居中确认弹窗（`.modal-overlay` + `.confirm-modal`）：**仅用于破坏性操作**，带遮罩与模糊。
 - **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。

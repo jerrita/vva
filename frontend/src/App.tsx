@@ -56,7 +56,12 @@ export default function App() {
   const [statsCollapsed, setStatsCollapsed] = useState(
     () => localStorage.getItem('vva.stats-collapsed') === '1',
   )
+  // 遮挡自动收起：内容滚入面板区域时隐藏，离开后恢复；顶栏开关可手动覆盖
+  const [statsAutoHidden, setStatsAutoHidden] = useState(false)
+  const [statsPinned, setStatsPinned] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const statsPanelRef = useRef<HTMLDivElement>(null)
+  const statsOverlapRaf = useRef(0)
   const resizing = useRef(false)
   const resizeStartX = useRef(0)
   const resizeStartW = useRef(0)
@@ -87,6 +92,8 @@ export default function App() {
   const running = snap !== null && snap.state !== ''
   const active = snap?.session ?? null
   const turnCount = active?.turns.length ?? 0
+  const statsVisible =
+    stats !== null && active !== null && !statsCollapsed && (!statsAutoHidden || statsPinned)
 
   // 打开或新建位于隐藏项目的会话时，该项目重新显示
   useEffect(() => {
@@ -184,10 +191,55 @@ export default function App() {
     }
   }, [activeId, turnCount])
 
+  // 用量面板遮挡检测：任一消息内容与面板矩形相交即视为遮挡
+  const refreshStatsOverlap = useCallback(() => {
+    if (statsOverlapRaf.current) return
+    statsOverlapRaf.current = requestAnimationFrame(() => {
+      statsOverlapRaf.current = 0
+      const panel = statsPanelRef.current
+      const scroller = scrollRef.current
+      if (!panel || !scroller) return
+      const pr = panel.getBoundingClientRect()
+      let overlap = false
+      for (const el of scroller.querySelectorAll('.chat > *')) {
+        const r = el.getBoundingClientRect()
+        if (
+          Math.min(pr.right, r.right) - Math.max(pr.left, r.left) > 8 &&
+          Math.min(pr.bottom, r.bottom) - Math.max(pr.top, r.top) > 8
+        ) {
+          overlap = true
+          break
+        }
+      }
+      setStatsAutoHidden(overlap)
+      if (!overlap) setStatsPinned(false)
+    })
+  }, [])
+
+  // 内容变化（流式增量、切换会话、手动开合）后重新评估遮挡
+  useEffect(() => {
+    refreshStatsOverlap()
+  }, [snap, statsCollapsed, statsPinned, refreshStatsOverlap])
+
+  // 视口与布局尺寸变化（窗口缩放、侧栏拖宽）后重新评估遮挡
+  useEffect(() => {
+    if (!activeId) return
+    const scroller = scrollRef.current
+    if (!scroller) return
+    const observer = new ResizeObserver(refreshStatsOverlap)
+    observer.observe(scroller)
+    window.addEventListener('resize', refreshStatsOverlap)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', refreshStatsOverlap)
+    }
+  }, [activeId, refreshStatsOverlap])
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
     nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    refreshStatsOverlap()
   }
 
   // 侧栏拖拽调宽
@@ -491,9 +543,18 @@ export default function App() {
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
           {stats && active && (
             <button
-              className={`icon-ghost stats-toggle${statsCollapsed ? '' : ' active'}`}
-              onClick={() => setStatsCollapsed(value => !value)}
-              title={statsCollapsed ? '展开用量面板' : '收起用量面板'}
+              className={`icon-ghost stats-toggle${statsVisible ? ' active' : ''}`}
+              onClick={() => {
+                if (statsVisible) {
+                  setStatsCollapsed(true)
+                  setStatsPinned(false)
+                } else {
+                  setStatsCollapsed(false)
+                  // 遮挡位置强制显示，保持到滚动至不再遮挡
+                  setStatsPinned(true)
+                }
+              }}
+              title={statsVisible ? '收起用量面板' : '展开用量面板'}
               aria-label="用量面板"
             >
               <svg
@@ -512,8 +573,11 @@ export default function App() {
             </button>
           )}
         </header>
-        {stats && active && !statsCollapsed && (
-          <div className="stats-panel">
+        {stats && active && (
+          <div
+            className={`stats-panel${statsVisible ? '' : ' hidden'}`}
+            ref={statsPanelRef}
+          >
             <div className="stat-row">
               <span className="stat-label">Session</span>
               <span className="stat-value">{active.id}</span>

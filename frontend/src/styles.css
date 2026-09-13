@@ -870,6 +870,13 @@ body.resizing .chat-scroll {
   font-family: var(--font-mono);
   font-size: 11px;
   white-space: nowrap;
+  transition: opacity 0.15s ease;
+}
+
+/* 遮挡自动收起：保留布局以供遮挡测量，不参与命中测试 */
+.stats-panel.hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* 顶栏用量开关：面板展开时着色提示 */
