@@ -1,0 +1,179 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vva 配置",
+  "description": "vva (Vendor-Versatile Agent Harness) 配置文件。支持 JSON 与 JSONC（允许注释）；字符串中的 ${VAR} 展开为环境变量。字段详情见 docs/config-reference.md。",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "指向本 schema 的路径或 URL，供编辑器补全与校验；解析时忽略"
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default": {
+          "type": "string",
+          "description": "缺省模型规格 {provider_id}/{model_id}；未指定 --model 且无运行时记忆时使用"
+        },
+        "small_model": {
+          "type": "string",
+          "description": "会话标题生成用的小模型规格，缺省时沿用主模型"
+        }
+      }
+    },
+    "providers": {
+      "type": "object",
+      "description": "供应商节点，键为自定义 provider_id",
+      "additionalProperties": {
+        "$ref": "#/definitions/provider"
+      }
+    }
+  },
+  "definitions": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": ["response", "anthropic", "gemini", "glm-coding-plan"],
+          "description": "协议类型：response = OpenAI Responses（默认）；anthropic = Anthropic Messages；gemini = Google Gemini；glm-coding-plan = 智谱 GLM Coding Plan 预设（自动补全端点与模型）"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 端点前缀，缺省用官方端点；未带版本后缀时自动补全 /v1 或 /v1beta"
+        },
+        "api_key": {
+          "type": "string",
+          "description": "鉴权密钥，推荐 \"${ENV_VAR}\" 插值"
+        },
+        "models": {
+          "type": "object",
+          "description": "模型清单，键为 model_id；整体省略时该供应商下任意模型名可用",
+          "additionalProperties": {
+            "$ref": "#/definitions/model"
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "显示名"
+        },
+        "type": {
+          "enum": ["response", "anthropic", "gemini"],
+          "description": "模型级协议覆写，缺省继承供应商 type；用于反代网关下个别模型使用不同下层协议"
+        },
+        "modalities": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "input": {
+              "type": "array",
+              "items": {
+                "enum": ["text", "image", "video", "pdf"]
+              },
+              "description": "输入模态声明，附件提交时据此与协议能力双重校验"
+            },
+            "output": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "输出模态声明"
+            }
+          }
+        },
+        "reasoning": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否为推理模型"
+        },
+        "limit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["context", "output"],
+          "properties": {
+            "context": {
+              "type": "integer",
+              "description": "上下文窗口上限（tokens），用于统计面板比例展示"
+            },
+            "output": {
+              "type": "integer",
+              "description": "单轮输出上限（tokens）"
+            }
+          }
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "推理档位白名单，常用 minimal / low / medium / high / xhigh / max；声明后对 --variant 与 /variant 做合法性校验"
+        },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "费率（美元 / 百万 tokens），用于成本估算",
+          "required": ["input", "output"],
+          "properties": {
+            "input": {
+              "type": "number",
+              "description": "普通输入 token 费率"
+            },
+            "output": {
+              "type": "number",
+              "description": "输出 token 费率"
+            },
+            "cache_read": {
+              "type": "number",
+              "description": "缓存读取费率"
+            },
+            "cache_write": {
+              "type": "number",
+              "description": "缓存写入费率"
+            },
+            "context_over_200k": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "上下文超过 200k tokens 时的费率整体替换；cache 字段缺省回落基础费率",
+              "required": ["input", "output"],
+              "properties": {
+                "input": {
+                  "type": "number"
+                },
+                "output": {
+                  "type": "number"
+                },
+                "cache_read": {
+                  "type": "number"
+                },
+                "cache_write": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "annotation": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "服务端工具声明微调",
+          "properties": {
+            "web_fetch": {
+              "type": "boolean",
+              "default": true,
+              "description": "false 时不向端点声明 web_fetch 服务端工具；用于未接线该工具的中转端点（未识别条目会整组丢弃工具声明），仅声明 web_search 可保住原生搜索"
+            }
+          }
+        }
+      }
+    }
+  }
+}

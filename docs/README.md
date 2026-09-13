@@ -46,6 +46,7 @@
     - 推理强度档位（variants）校验与 URL 端点自动规范化
     - 内置供应商预设（`glm-coding-plan` 仅填 api_key）
     - 运行时偏好 `~/.vva/state.json`（上次选用的模型与推理档位）
+    - 字段级用户参考见 [config-reference.md](config-reference.md)
 
 6. **[现代化终端用户界面设计 (ui.md)](ui.md)**
    - 会话任务单一所有权与 `SessionView` 快照订阅

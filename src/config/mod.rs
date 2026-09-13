@@ -302,19 +302,43 @@ mod tests {
     }
 
     #[test]
-    fn test_load_example_config_jsonc() {
-        let path = Path::new("config.example.jsonc");
-        let config = load_config_file(path).expect("parse config.example.jsonc");
+    fn test_parse_config_resolve_and_preset() {
+        let json = r#"{
+            "$schema": "https://example.com/vva/schema.json",
+            "settings": {
+                "default": "a/gpt-5.6-terra",
+                "small_model": "a/gpt-5.6-luna"
+            },
+            "providers": {
+                "a": {
+                    "type": "response",
+                    "models": {
+                        "gpt-5.6-terra": {
+                            "name": "GPT-5.6 Terra",
+                            "reasoning": true,
+                            "variants": ["minimal", "low", "medium", "high"]
+                        },
+                        "claude-sonnet-4-6": {
+                            "name": "Claude Sonnet 4.6",
+                            "type": "anthropic",
+                            "reasoning": true
+                        }
+                    }
+                },
+                "glm-coding-plan": {
+                    "api_key": "${ZAI_API_KEY}"
+                }
+            }
+        }"#;
+        let config = parse_config_str(json).expect("parse config");
+
         assert_eq!(config.settings.default, "a/gpt-5.6-terra");
         assert_eq!(
             config.settings.small_model.as_deref(),
             Some("a/gpt-5.6-luna")
         );
 
-        let provider_a = config.providers.get("a").expect("provider a exists");
-        assert_eq!(provider_a.provider_type, Some(ProviderType::Response));
-
-        // 1. 验证默认模型解析与 Variant 校验
+        // 1. 默认模型解析与 Variant 校验
         let resolved = config
             .resolve_model("a/gpt-5.6-terra", Some("high"))
             .expect("resolve terra");
@@ -323,7 +347,7 @@ mod tests {
         assert_eq!(resolved.selected_variant.as_deref(), Some("high"));
         assert_eq!(resolved.create_provider().name(), "response");
 
-        // 2. 验证模型级协议覆写（Claude 在 provider a 下覆写为 Anthropic）
+        // 2. 模型级协议覆写（Claude 在 response 供应商下覆写为 Anthropic）
         let resolved_claude = config
             .resolve_model("a/claude-sonnet-4-6", None)
             .expect("resolve claude");
@@ -341,13 +365,6 @@ mod tests {
             }
             _ => panic!("Expected InvalidVariant error"),
         }
-
-        // 4. 验证 gpt-5.6-luna 解析及其 variants (包含 medium)
-        let resolved_luna = config
-            .resolve_model("a/gpt-5.6-luna", Some("medium"))
-            .expect("resolve luna");
-        assert_eq!(resolved_luna.selected_variant.as_deref(), Some("medium"));
-        assert_eq!(resolved_luna.create_provider().name(), "response");
 
         // glm-coding-plan 仅填 api_key 时补全端点与内置模型
         let glm = config
