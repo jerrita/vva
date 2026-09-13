@@ -289,6 +289,17 @@ impl App {
         true
     }
 
+    /// 单击引用汇总标题行切换展开/折叠；默认折叠，无全局默认值参与。
+    pub fn handle_citations_click(&mut self, line: usize) -> bool {
+        let Some(hit) = self.chat_cache.citations_hit_at(line) else {
+            return false;
+        };
+        let id = hit.id.clone();
+        let expanded = self.citations_expand.get(&id).copied().unwrap_or(false);
+        self.citations_expand.insert(id, !expanded);
+        true
+    }
+
     /// 单击收折的历史响应摘要，展开该响应。
     pub fn handle_response_click(&mut self, line: usize) -> bool {
         let Some(hit) = self.chat_cache.response_hit_at(line) else {

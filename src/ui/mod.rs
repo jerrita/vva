@@ -317,6 +317,7 @@ async fn handle_crossterm_event(
                 if let Some(line) = user_click
                     && !app.handle_tool_click(line)
                     && !app.handle_thought_click(line)
+                    && !app.handle_citations_click(line)
                     && !app.handle_response_click(line)
                 {
                     app.open_message_action_at_line(line);

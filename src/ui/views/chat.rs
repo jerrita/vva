@@ -13,7 +13,7 @@ use crate::model::{
     Annotation, ContentPart, Role, ToolCall, ToolResult, WebSearchAction, WebSearchCall,
 };
 use crate::ui::app::{
-    App, ResponseHit, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit,
+    App, CitationsHit, ResponseHit, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit,
     char_in_column_range,
 };
 use crate::ui::markdown::{LinkRegion, render_markdown, wrap_spans_to_lines};
@@ -42,6 +42,7 @@ pub(crate) struct RenderState {
     thought_groups: usize,
     thought_expanded: bool,
     thought_inline: bool,
+    citation_groups: usize,
 }
 
 /// 构建用户消息引用块的单行：左侧色条起头，块底色填充至可用宽度
@@ -268,6 +269,8 @@ pub(crate) struct ChatRender<'a> {
     pub hits: &'a mut Vec<ToolHit>,
     pub thought_expand: &'a HashMap<String, bool>,
     pub thought_hits: &'a mut Vec<ThoughtHit>,
+    pub citations_expand: &'a HashMap<String, bool>,
+    pub citations_hits: &'a mut Vec<CitationsHit>,
     pub response_hits: &'a mut Vec<ResponseHit>,
 }
 
@@ -1193,30 +1196,49 @@ pub(crate) fn append_parts<'a>(
                 render.links.extend(md_links);
                 render.lines.extend(md_lines);
 
-                // Citations not covered by a call remain below the text.
+                // Citations not covered by a call remain below the text, folded by default.
                 if !citations.is_empty() {
                     render.lines.push(Line::from(""));
+                    state.citation_groups += 1;
+                    let id = format!("citations-{}", state.citation_groups);
+                    let expanded = render.citations_expand.get(&id).copied().unwrap_or(false);
+                    let marker = if expanded { "-" } else { "+" };
+                    let header_start = render.lines.len();
                     render.lines.push(Line::from(vec![
                         Span::raw("   "),
                         Span::styled(
-                            "Sources / Citations:",
+                            format!("{marker} Sources / Citations ({})", citations.len()),
                             Style::default()
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
                         ),
                     ]));
-                    for (i, (title, url)) in citations.iter().enumerate() {
-                        let spans = vec![
-                            Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Cyan)),
-                            Span::styled((*title).to_string(), Style::default().fg(Color::White)),
-                            Span::raw(" - "),
-                            Span::styled(
-                                (*url).to_string(),
-                                Style::default().fg(Color::Rgb(100, 160, 255)),
-                            ),
-                        ];
-                        let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "       ");
-                        render.lines.extend(wrapped);
+                    render.citations_hits.push(CitationsHit {
+                        id,
+                        header_start,
+                        header_end: render.lines.len(),
+                    });
+                    if expanded {
+                        for (i, (title, url)) in citations.iter().enumerate() {
+                            let spans = vec![
+                                Span::styled(
+                                    format!("[{}] ", i + 1),
+                                    Style::default().fg(Color::Cyan),
+                                ),
+                                Span::styled(
+                                    (*title).to_string(),
+                                    Style::default().fg(Color::White),
+                                ),
+                                Span::raw(" - "),
+                                Span::styled(
+                                    (*url).to_string(),
+                                    Style::default().fg(Color::Rgb(100, 160, 255)),
+                                ),
+                            ];
+                            let wrapped =
+                                wrap_spans_to_lines(&spans, max_width, "     ", "       ");
+                            render.lines.extend(wrapped);
+                        }
                     }
                 }
             }
@@ -1698,6 +1720,7 @@ mod tests {
         let mut lines = Vec::new();
         let mut hits = Vec::new();
         let mut thought_hits = Vec::new();
+        let mut citations_hits = Vec::new();
         let mut response_hits = Vec::new();
         let mut state = RenderState::default();
         append_parts(
@@ -1711,6 +1734,8 @@ mod tests {
                 hits: &mut hits,
                 thought_expand: &HashMap::new(),
                 thought_hits: &mut thought_hits,
+                citations_expand: &HashMap::new(),
+                citations_hits: &mut citations_hits,
                 response_hits: &mut response_hits,
             },
             Role::Assistant,
@@ -1926,6 +1951,7 @@ mod tests {
         let results = collect_tool_results(&app.view);
         let mut hits = Vec::new();
         let mut thought_hits = Vec::new();
+        let mut citations_hits = Vec::new();
         let mut response_hits = Vec::new();
         for turn in &app.view.session.turns {
             append_parts(
@@ -1939,6 +1965,8 @@ mod tests {
                     hits: &mut hits,
                     thought_expand: &app.thought_expand,
                     thought_hits: &mut thought_hits,
+                    citations_expand: &app.citations_expand,
+                    citations_hits: &mut citations_hits,
                     response_hits: &mut response_hits,
                 },
                 turn.role,
@@ -1957,6 +1985,8 @@ mod tests {
                 hits: &mut hits,
                 thought_expand: &app.thought_expand,
                 thought_hits: &mut thought_hits,
+                citations_expand: &app.citations_expand,
+                citations_hits: &mut citations_hits,
                 response_hits: &mut response_hits,
             },
             &app.view,
@@ -2332,6 +2362,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_trailing_citations_fold_and_click_to_expand() {
+        let mut app = create_test_app().await;
+        app.add_part(
+            Role::Assistant,
+            ContentPart::Text {
+                text: "这里是带引用的示例答复。".to_string(),
+                annotations: vec![
+                    Annotation::UrlCitation {
+                        title: "示例来源".into(),
+                        url: "https://source.example/article".into(),
+                        start_index: 0,
+                        end_index: 1,
+                    },
+                    Annotation::UrlCitation {
+                        title: "另一个来源".into(),
+                        url: "https://other.example/page".into(),
+                        start_index: 0,
+                        end_index: 1,
+                    },
+                ],
+            },
+        );
+
+        app.refresh_chat_lines(80);
+        let text = |app: &App| -> String {
+            app.chat
+                .lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                .collect()
+        };
+        // 默认折叠：仅标题行带计数，来源列表不可见
+        assert!(text(&app).contains("+ Sources / Citations (2)"));
+        assert!(!text(&app).contains("source.example"));
+        assert_eq!(app.chat_cache.citations_hits.len(), 1);
+        assert_eq!(app.chat_cache.citations_hits[0].id, "citations-1");
+
+        // 单击标题行展开：来源列表可见，标题切换为展开标记
+        let header = app.chat_cache.citations_hits[0].header_start;
+        assert!(app.handle_citations_click(header));
+        app.refresh_chat_lines(80);
+        let rendered = text(&app);
+        assert!(rendered.contains("- Sources / Citations (2)"));
+        assert!(rendered.contains("[1] 示例来源"));
+        assert!(rendered.contains("[2] 另一个来源"));
+
+        // 再次单击折叠：覆盖值直接记录折叠态
+        let header = app.chat_cache.citations_hits[0].header_start;
+        assert!(app.handle_citations_click(header));
+        app.refresh_chat_lines(80);
+        assert!(text(&app).contains("+ Sources / Citations (2)"));
+        assert!(!text(&app).contains("source.example"));
+    }
+
+    #[tokio::test]
     async fn test_separate_search_calls_track_draft_citations_and_turn_boundaries() {
         let mut app = create_test_app().await;
         let view = Arc::make_mut(&mut app.view);
@@ -2420,6 +2505,8 @@ mod tests {
                 },
             ],
         });
+        // 末尾来源汇总默认折叠；展开后断言未命中调用覆盖的引用列表
+        app.citations_expand.insert("citations-1".into(), true);
         app.refresh_chat_lines(100);
         let rendered = text(&app.chat.lines);
         assert_eq!(rendered.matches("web_search").count(), 2);
@@ -2434,7 +2521,7 @@ mod tests {
         assert!(second_group.contains("other.example"));
         assert!(!rendered.contains("Source title must not appear"));
         assert!(!rendered.contains("Ignored"));
-        let listing = rendered.split("Sources / Citations:").nth(1).unwrap();
+        let listing = rendered.split("Sources / Citations").nth(1).unwrap();
         assert!(listing.contains("Unmatched reference - https://unmatched.example/page"));
         assert!(!listing.contains("Provided title"));
         assert!(!listing.contains("other.example"));
@@ -2512,6 +2599,8 @@ mod tests {
                 ],
             },
         ];
+        // 末尾来源汇总默认折叠；展开后断言未命中调用覆盖的引用列表
+        app.citations_expand.insert("citations-1".into(), true);
         let lines = build_chat_lines(&app, 100);
         let text: String = lines.iter().map(|line| line.to_string()).collect();
         assert!(text.contains(&format!("web_open {url}")));
@@ -2531,7 +2620,7 @@ mod tests {
             .unwrap();
         assert!(find_group.contains("Annotation title"));
         assert!(!find_group.contains("Unmatched title"));
-        let listing = text.split("Sources / Citations:").nth(1).unwrap();
+        let listing = text.split("Sources / Citations").nth(1).unwrap();
         assert!(listing.contains("Unmatched title"));
         assert!(!listing.contains("Annotation title"));
         for width in [20, 30] {
@@ -2605,6 +2694,8 @@ fn main() {
             },
         );
 
+        // 展开末尾来源汇总以断言引用渲染
+        app.citations_expand.insert("citations-1".into(), true);
         let lines = build_chat_lines(&app, 80);
         assert!(!lines.is_empty());
 
@@ -2885,8 +2976,10 @@ def stream_test():
         let results = HashMap::new();
         let expand = HashMap::new();
         let thought_expand = HashMap::new();
+        let citations_expand = HashMap::new();
         let mut hits = Vec::new();
         let mut thought_hits = Vec::new();
+        let mut citations_hits = Vec::new();
         let mut response_hits = Vec::new();
         let mut render = ChatRender {
             lines: &mut lines,
@@ -2898,6 +2991,8 @@ def stream_test():
             hits: &mut hits,
             thought_expand: &thought_expand,
             thought_hits: &mut thought_hits,
+            citations_expand: &citations_expand,
+            citations_hits: &mut citations_hits,
             response_hits: &mut response_hits,
         };
         let mut state = RenderState::default();

@@ -111,6 +111,20 @@ pub struct ThoughtHit {
     pub body_end: usize,
 }
 
+/// 正文末尾引用汇总块的标题行区间，单击切换展开/折叠
+#[derive(Debug, Clone)]
+pub struct CitationsHit {
+    pub id: String,
+    pub header_start: usize,
+    pub header_end: usize,
+}
+
+impl CitationsHit {
+    pub fn contains_header(&self, line: usize) -> bool {
+        line >= self.header_start && line < self.header_end
+    }
+}
+
 /// 助手响应在聊天行缓冲中的区间。
 #[derive(Debug, Clone)]
 pub struct ResponseHit {
@@ -151,9 +165,11 @@ pub struct ChatCache {
     tool_expand: HashMap<String, ToolExpand>,
     thought_expand: HashMap<String, bool>,
     response_expand: HashMap<String, bool>,
+    citations_expand: HashMap<String, bool>,
     pub(crate) user_hits: Vec<UserMessageHit>,
     pub(crate) tool_hits: Vec<ToolHit>,
     pub(crate) thought_hits: Vec<ThoughtHit>,
+    pub(crate) citations_hits: Vec<CitationsHit>,
     pub(crate) response_hits: Vec<ResponseHit>,
 }
 
@@ -173,6 +189,12 @@ impl ChatCache {
         self.thought_hits
             .iter()
             .find(|hit| hit.contains_header(line) || hit.contains_body(line))
+    }
+
+    pub fn citations_hit_at(&self, line: usize) -> Option<&CitationsHit> {
+        self.citations_hits
+            .iter()
+            .find(|hit| hit.contains_header(line))
     }
 
     pub fn response_hit_at(&self, line: usize) -> Option<&ResponseHit> {
@@ -195,6 +217,7 @@ impl super::App {
             || cache.tool_expand != self.tool_expand
             || cache.thought_expand != self.thought_expand
             || cache.response_expand != self.response_expand
+            || cache.citations_expand != self.citations_expand
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
@@ -203,6 +226,7 @@ impl super::App {
             cache.user_hits.clear();
             cache.tool_hits.clear();
             cache.thought_hits.clear();
+            cache.citations_hits.clear();
             cache.response_hits.clear();
             let turns = &self.view.session.turns;
             let boundaries = std::iter::once(0)
@@ -258,6 +282,8 @@ impl super::App {
                         hits: &mut cache.tool_hits,
                         thought_expand: &self.thought_expand,
                         thought_hits: &mut cache.thought_hits,
+                        citations_expand: &self.citations_expand,
+                        citations_hits: &mut cache.citations_hits,
                         response_hits: &mut cache.response_hits,
                     };
                     if is_summary {
@@ -318,6 +344,7 @@ impl super::App {
             cache.tool_expand.clone_from(&self.tool_expand);
             cache.thought_expand.clone_from(&self.thought_expand);
             cache.response_expand.clone_from(&self.response_expand);
+            cache.citations_expand.clone_from(&self.citations_expand);
         } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
             return;
         }
@@ -331,6 +358,9 @@ impl super::App {
         cache
             .thought_hits
             .retain(|hit| hit.header_start < cache.history_lines);
+        cache
+            .citations_hits
+            .retain(|hit| hit.header_start < cache.history_lines);
         append_chat_tail(
             &mut ChatRender {
                 lines: &mut self.chat.lines,
@@ -342,6 +372,8 @@ impl super::App {
                 hits: &mut cache.tool_hits,
                 thought_expand: &self.thought_expand,
                 thought_hits: &mut cache.thought_hits,
+                citations_expand: &self.citations_expand,
+                citations_hits: &mut cache.citations_hits,
                 response_hits: &mut cache.response_hits,
             },
             &self.view,
