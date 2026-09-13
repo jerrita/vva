@@ -298,9 +298,11 @@ export function Chat({
         return (
           <div key={item.turn.id} className="msg assistant answer">
             <Parts parts={item.parts} />
-            <TurnMeta turn={item.turn} />
-            <div className="turn-actions">
-              <CopyButton text={partsText(item.parts)} />
+            <div className="answer-foot">
+              <TurnMeta turn={item.turn} />
+              <div className="turn-actions">
+                <CopyButton text={partsText(item.parts)} />
+              </div>
             </div>
           </div>
         )

@@ -1068,6 +1068,20 @@ body.resizing .chat-scroll {
   color: var(--faint);
 }
 
+/* 回答尾部：用时行居左，复制操作居右下角 */
+.answer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.answer-foot .turn-meta,
+.answer-foot .turn-actions {
+  margin-top: 0;
+}
+
 .status-chip {
   display: inline-flex;
   align-items: center;
