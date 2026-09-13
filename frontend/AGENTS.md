@@ -51,7 +51,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **按钮体系**：`new-create`/`send-button`（主色实心）、`ghost-button`/`new-cancel`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
 - **浮层**：
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
-  - 统计浮块（`.stats-panel`）：右上角浮动常驻（会话活跃时），**非阻塞**——无遮罩，主界面可操作；字段对齐 TUI 侧栏 `build_sidebar_lines`：Session / Workspace / Turns / Model / Provider / Variant / Context（数值 + 比例条）/ In/Out / TPS / Cache Read / Cache Write / Est. Cost，上下文上限缺省按 200k；
+  - 统计浮块（`.stats-panel`）：右上角浮动常驻（会话活跃时），**非阻塞**——无遮罩，主界面可操作；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；
   - 居中确认弹窗（`.modal-overlay` + `.confirm-modal`）：**仅用于破坏性操作**，带遮罩与模糊。
 - **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。
 - **图标**：内联 SVG（stroke 2、round），不引入图标库；颜色继承 `currentColor`。

@@ -29,13 +29,6 @@ function fmtLimit(value: number): string {
   return `${Math.floor(value / 1000)}k`
 }
 
-/** 模型规格拆分展示，对齐 TUI 侧栏：无 provider 时回退 Default */
-function splitModelSpec(spec: string): { provider: string; model: string } {
-  const slash = spec.indexOf('/')
-  if (slash <= 0) return { provider: 'Default', model: spec || 'Default' }
-  return { provider: spec.slice(0, slash), model: spec.slice(slash + 1) }
-}
-
 export default function App() {
   const [models, setModels] = useState<ModelsResponse | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
@@ -318,7 +311,6 @@ export default function App() {
   const currentVariant = active?.current_variant ?? draftVariant
   const currentSearch = active?.web_search ?? draftSearch
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
-  const modelSpec = active ? splitModelSpec(active.current_model) : null
   const workspaceName =
     active?.workspace_root.split('/').filter(Boolean).pop() ?? active?.workspace_root ?? null
   const contextLimit = stats?.context_limit ?? 200_000
@@ -503,18 +495,6 @@ export default function App() {
               <span className="stat-value">{fmtNum(stats.total_turns)}</span>
             </div>
             <div className="stat-row">
-              <span className="stat-label">Model</span>
-              <span className="stat-value">{modelSpec?.model}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Provider</span>
-              <span className="stat-value">{modelSpec?.provider}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Variant</span>
-              <span className="stat-value">{active.current_variant ?? 'none'}</span>
-            </div>
-            <div className="stat-row">
               <span className="stat-label">Context</span>
               <span className="stat-value">
                 {fmtNum(stats.context_tokens)} / {fmtLimit(contextLimit)}
@@ -527,10 +507,12 @@ export default function App() {
               <span>{contextPercent}%</span>
             </div>
             <div className="stat-row">
-              <span className="stat-label">In/Out</span>
-              <span className="stat-value">
-                {fmtNum(stats.prompt_tokens)} / {fmtNum(stats.completion_tokens)}
-              </span>
+              <span className="stat-label">In</span>
+              <span className="stat-value">{fmtNum(stats.prompt_tokens)}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Out</span>
+              <span className="stat-value">{fmtNum(stats.completion_tokens)}</span>
             </div>
             {stats.tps != null && (
               <div className="stat-row">
