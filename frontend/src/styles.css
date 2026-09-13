@@ -1166,8 +1166,15 @@ body.resizing .chat-scroll {
   overflow-y: auto;
 }
 
+/* 思考块去卡片化：透明底无边框，弱存在感，与工具/搜索卡片区分 */
+.block.reasoning,
+.block.reasoning[open] {
+  background: transparent;
+  border-color: transparent;
+}
+
 .block.reasoning > summary {
-  color: var(--text);
+  color: var(--faint);
 }
 
 .reasoning-body {
