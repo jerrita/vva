@@ -23,6 +23,7 @@ export function Composer({
   const [text, setText] = useState('')
   const [images, setImages] = useState<ImageAttachment[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const resize = () => {
     const el = textareaRef.current
@@ -39,15 +40,10 @@ export function Composer({
     },
   }))
 
-  // 粘贴板中的图片转为 Base64 附件，非图片粘贴保持默认行为
-  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = [...event.clipboardData.items]
-      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
-      .map(item => item.getAsFile())
-      .filter((file): file is File => file !== null)
-    if (files.length === 0) return
-    event.preventDefault()
+  // 图片文件转 Base64 附件（粘贴与点选共用），非图片忽略
+  const addFiles = (files: File[]) => {
     for (const file of files) {
+      if (!file.type.startsWith('image/')) continue
       const reader = new FileReader()
       reader.onload = () => {
         const result = typeof reader.result === 'string' ? reader.result : ''
@@ -56,6 +52,16 @@ export function Composer({
       }
       reader.readAsDataURL(file)
     }
+  }
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...event.clipboardData.items]
+      .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+      .map(item => item.getAsFile())
+      .filter((file): file is File => file !== null)
+    if (files.length === 0) return
+    event.preventDefault()
+    addFiles(files)
   }
 
   const send = () => {
@@ -111,7 +117,7 @@ export function Composer({
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行，可粘贴图片'}
+        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行，可添加图片'}
         onChange={event => {
           setText(event.target.value)
           resize()
@@ -120,7 +126,42 @@ export function Composer({
         onPaste={onPaste}
       />
       <div className="composer-foot">
-        <div className="composer-tools">{controls}</div>
+        <div className="composer-tools">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={event => {
+              addFiles(Array.from(event.target.files ?? []))
+              event.target.value = ''
+            }}
+          />
+          <button
+            className="icon-ghost"
+            onClick={() => fileInputRef.current?.click()}
+            title="添加图片"
+            aria-label="添加图片"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="15"
+              height="15"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <circle cx="8.5" cy="8.5" r="1.5" />
+              <path d="M21 15l-5-5L5 21" />
+            </svg>
+          </button>
+          {controls}
+        </div>
         {running ? (
           <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden>
