@@ -149,6 +149,17 @@ impl ResponseProvider {
                                         "type": "input_image", "image_url": url,
                                     }));
                                 }
+                                ContentPart::File {
+                                    source: crate::model::MediaSource::Base64 { data, mime_type },
+                                    filename,
+                                    ..
+                                } => {
+                                    content_arr.push(serde_json::json!({
+                                        "type": "input_file",
+                                        "filename": filename,
+                                        "file_data": format!("data:{mime_type};base64,{data}"),
+                                    }));
+                                }
                                 _ => {}
                             }
                         }

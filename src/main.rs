@@ -410,6 +410,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         res.is_error, res.content
                                     );
                                 }
+                                ContentPart::File {
+                                    source, filename, ..
+                                } => {
+                                    println!("    📄 [File] {filename}: {:?}", source);
+                                }
                                 ContentPart::Image { source, .. } => {
                                     println!("    🖼️ [Image]: {:?}", source);
                                 }

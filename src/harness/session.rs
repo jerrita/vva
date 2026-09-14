@@ -717,6 +717,18 @@ impl SessionTask {
                         }
                     }
                 }
+            } else if let ContentPart::File {
+                source: MediaSource::Base64 { mime_type, .. },
+                mime_type: declared_mime,
+                ..
+            } = image
+            {
+                if declared_mime != mime_type {
+                    return Err("File MIME type does not match its source".into());
+                }
+                engine
+                    .inputs
+                    .require(crate::model::MediaKind::Pdf, mime_type)?;
             }
         }
         let generate = self.view.session.title.is_none();

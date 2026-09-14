@@ -1,12 +1,14 @@
 //! Web API：以 REST + SSE 暴露 Harness 会话能力，前端作为唯一数据源消费。
 
 use std::convert::Infallible;
+use std::path::Path as StdPath;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 
@@ -187,14 +189,57 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
 #[derive(Deserialize)]
 pub struct SubmitMessageRequest {
     pub prompt: String,
-    /// 随提示词提交的图片附件（Base64 编码）
-    pub images: Option<Vec<SubmitImage>>,
+    /// 随提示词提交的原生文件附件（Base64 编码）
+    #[serde(default)]
+    pub files: Vec<SubmitFile>,
 }
 
 #[derive(Deserialize)]
-pub struct SubmitImage {
+pub struct SubmitFile {
+    pub filename: String,
     pub mime_type: String,
     pub data: String,
+}
+
+#[derive(Deserialize)]
+pub struct UploadFileRequest {
+    pub filename: String,
+    pub data: String,
+}
+
+/// 将浏览器无法原生传给模型的文件保存到当前工作区 scratch。
+pub async fn upload_file(
+    State(state): State<AppState>,
+    Json(request): Json<UploadFileRequest>,
+) -> Response {
+    let filename = StdPath::new(&request.filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("upload");
+    let bytes = match base64::engine::general_purpose::STANDARD.decode(&request.data) {
+        Ok(bytes) => bytes,
+        Err(decode_error) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                format!("Invalid file data: {decode_error}"),
+            );
+        }
+    };
+    let scratch = match state
+        .manager
+        .store()
+        .ensure_scratch(state.manager.workspace())
+        .await
+    {
+        Ok(path) => path,
+        Err(store_error) => return error(StatusCode::INTERNAL_SERVER_ERROR, store_error),
+    };
+    let path = scratch.join(format!("{}_{}", uuid::Uuid::new_v4(), filename));
+    if let Err(io_error) = tokio::fs::write(&path, bytes).await {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, io_error);
+    }
+    Json(serde_json::json!({"path": path})).into_response()
 }
 
 pub async fn submit_message(
@@ -206,19 +251,30 @@ pub async fn submit_message(
         Ok(handle) => handle,
         Err(_) => return not_found(&id),
     };
-    let images = request
-        .images
-        .unwrap_or_default()
+    let files = request
+        .files
         .into_iter()
-        .map(|image| crate::model::ContentPart::Image {
-            source: crate::model::MediaSource::Base64 {
-                data: image.data,
-                mime_type: image.mime_type,
+        .map(|file| match file.mime_type.as_str() {
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
+                crate::model::ContentPart::Image {
+                    source: crate::model::MediaSource::Base64 {
+                        data: file.data,
+                        mime_type: file.mime_type,
+                    },
+                    mime_type: None,
+                }
+            }
+            _ => crate::model::ContentPart::File {
+                source: crate::model::MediaSource::Base64 {
+                    data: file.data,
+                    mime_type: file.mime_type.clone(),
+                },
+                mime_type: file.mime_type,
+                filename: file.filename,
             },
-            mime_type: None,
         })
         .collect();
-    match handle.submit(&request.prompt, images, None).await {
+    match handle.submit(&request.prompt, files, None).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         // 会话正在执行其他请求时拒绝重复提交
         Err(e) => error(StatusCode::CONFLICT, e),

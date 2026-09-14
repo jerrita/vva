@@ -108,6 +108,17 @@ impl GeminiProvider {
                                         }
                                     }));
                                 }
+                                ContentPart::File {
+                                    source: crate::model::MediaSource::Base64 { data, mime_type },
+                                    ..
+                                } => {
+                                    parts_arr.push(serde_json::json!({
+                                        "inline_data": {
+                                            "mime_type": mime_type,
+                                            "data": data
+                                        }
+                                    }));
+                                }
                                 _ => {}
                             }
                         }

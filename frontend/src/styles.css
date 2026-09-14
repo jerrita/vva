@@ -1841,6 +1841,23 @@ body.resizing .chat-scroll {
   border: 1px solid var(--border);
 }
 
+.attachment-file {
+  display: flex;
+  align-items: center;
+  width: 120px;
+  height: 56px;
+  padding: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .attachment-chip button {
   position: absolute;
   top: -6px;
@@ -1859,6 +1876,18 @@ body.resizing .chat-scroll {
 .attachment-chip button:hover {
   background: var(--danger);
   color: #fff;
+}
+
+.bubble-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  color: inherit;
+  background: var(--panel-2);
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .composer-foot {

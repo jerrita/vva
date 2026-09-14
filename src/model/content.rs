@@ -25,6 +25,12 @@ pub enum ContentPart {
         #[serde(skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
     },
+    /// 文件模态（当前原生支持 PDF）
+    File {
+        source: MediaSource,
+        mime_type: String,
+        filename: String,
+    },
     /// 通用工具调用
     ToolCall(ToolCall),
     /// 通用工具执行结果

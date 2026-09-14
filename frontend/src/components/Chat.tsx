@@ -221,7 +221,10 @@ function UserBubble({
                   />
                 )
               }
-              if (part.type === 'text') {
+              if (part.type === 'file') {
+                 return <span key={index} className="bubble-file">📄 {part.filename}</span>
+               }
+               if (part.type === 'text') {
                 return <span key={index}>{part.text}</span>
               }
               return null

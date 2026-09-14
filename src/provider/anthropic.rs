@@ -108,6 +108,19 @@ impl AnthropicProvider {
                                 }
                                 content_blocks.push(block);
                             }
+                            ContentPart::File {
+                                source: crate::model::MediaSource::Base64 { data, mime_type },
+                                ..
+                            } => {
+                                content_blocks.push(serde_json::json!({
+                                    "type": "document",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": data,
+                                    }
+                                }));
+                            }
                             ContentPart::Image { source, .. } => match source {
                                 crate::model::MediaSource::Base64 { data, mime_type } => {
                                     content_blocks.push(serde_json::json!({

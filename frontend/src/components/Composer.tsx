@@ -1,6 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClipboardEvent, KeyboardEvent, ReactNode, Ref } from 'react'
-import type { ImageAttachment } from '../types'
+import { api } from '../api'
+import type { FileAttachment } from '../types'
 
 /** 外部写入输入框内容（回退后还原提示词） */
 export interface ComposerHandle {
@@ -15,13 +16,14 @@ export function Composer({
   ref,
 }: {
   running: boolean
-  onSend: (text: string, images: ImageAttachment[]) => void
+  onSend: (text: string, files: FileAttachment[]) => void
   onStop: () => void
   controls?: ReactNode
   ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
-  const [images, setImages] = useState<ImageAttachment[]>([])
+  const [files, setFiles] = useState<FileAttachment[]>([])
+  const [uploading, setUploading] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -40,36 +42,54 @@ export function Composer({
     },
   }))
 
-  // 图片文件转 Base64 附件（粘贴与点选共用），非图片忽略
-  const addFiles = (files: File[]) => {
-    for (const file of files) {
-      if (!file.type.startsWith('image/')) continue
+  const readData = (file: File) =>
+    new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => {
         const result = typeof reader.result === 'string' ? reader.result : ''
-        const data = result.slice(result.indexOf(',') + 1)
-        if (data) setImages(prev => [...prev, { mime_type: file.type, data }])
+        resolve(result.slice(result.indexOf(',') + 1))
       }
+      reader.onerror = () => reject(reader.error ?? new Error('读取文件失败'))
       reader.readAsDataURL(file)
+    })
+
+  const addFiles = async (selected: File[]) => {
+    for (const file of selected) {
+      const native = file.type === 'application/pdf' || ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)
+      try {
+        const data = await readData(file)
+        if (!data) continue
+        if (native) {
+          setFiles(prev => [...prev, { filename: file.name, mime_type: file.type, data }])
+        } else {
+          setUploading(count => count + 1)
+          const { path } = await api.uploadFile(file.name, data)
+          setText(prev => `${prev}${prev.trim() ? '\n\n' : ''}文件已保存到 scratch：${path}`)
+        }
+      } catch {
+        setText(prev => `${prev}${prev.trim() ? '\n\n' : ''}文件上传失败：${file.name}`)
+      } finally {
+        if (!native) setUploading(count => Math.max(0, count - 1))
+      }
     }
   }
 
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = [...event.clipboardData.items]
+    const pasted = [...event.clipboardData.items]
       .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
       .map(item => item.getAsFile())
       .filter((file): file is File => file !== null)
-    if (files.length === 0) return
+    if (pasted.length === 0) return
     event.preventDefault()
-    addFiles(files)
+    void addFiles(pasted)
   }
 
   const send = () => {
     const trimmed = text.trim()
-    if ((!trimmed && images.length === 0) || running) return
-    onSend(trimmed, images)
+    if ((!trimmed && files.length === 0) || running || uploading > 0) return
+    onSend(trimmed, files)
     setText('')
-    setImages([])
+    setFiles([])
     requestAnimationFrame(resize)
   }
 
@@ -86,26 +106,21 @@ export function Composer({
 
   return (
     <div className="composer">
-      {images.length > 0 && (
+      {files.length > 0 && (
         <div className="composer-attachments">
-          {images.map((image, index) => (
-            <figure key={index} className="attachment-chip">
-              <img src={`data:${image.mime_type};base64,${image.data}`} alt="" />
+          {files.map((file, index) => (
+            <figure key={`${file.filename}-${index}`} className="attachment-chip">
+              {file.mime_type.startsWith('image/') ? (
+                <img src={`data:${file.mime_type};base64,${file.data}`} alt={file.filename} />
+              ) : (
+                <span className="attachment-file">{file.filename}</span>
+              )}
               <button
-                onClick={() => setImages(prev => prev.filter((_, i) => i !== index))}
-                title="移除图片"
-                aria-label="移除图片"
+                onClick={() => setFiles(prev => prev.filter((_, i) => i !== index))}
+                title="移除文件"
+                aria-label="移除文件"
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="11"
-                  height="11"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  aria-hidden
-                >
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
               </button>
@@ -117,7 +132,7 @@ export function Composer({
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行，可添加图片'}
+        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行，可添加文件'}
         onChange={event => {
           setText(event.target.value)
           resize()
@@ -130,65 +145,30 @@ export function Composer({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="*/*"
             multiple
             hidden
             onChange={event => {
-              addFiles(Array.from(event.target.files ?? []))
+              void addFiles(Array.from(event.target.files ?? []))
               event.target.value = ''
             }}
           />
-          <button
-            className="icon-ghost"
-            onClick={() => fileInputRef.current?.click()}
-            title="添加图片"
-            aria-label="添加图片"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <rect x="3" y="3" width="18" height="18" rx="2" />
-              <circle cx="8.5" cy="8.5" r="1.5" />
-              <path d="M21 15l-5-5L5 21" />
+          <button className="icon-ghost" onClick={() => fileInputRef.current?.click()} title="添加文件" aria-label="添加文件">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6M8 13h8M8 17h6" />
             </svg>
           </button>
           {controls}
         </div>
         {running ? (
           <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden>
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
           </button>
         ) : (
-          <button
-            className="send-button"
-            onClick={send}
-            disabled={!text.trim() && images.length === 0}
-            title="发送"
-            aria-label="发送"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="17"
-              height="17"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M12 19V5" />
-              <path d="M5 12l7-7 7 7" />
+          <button className="send-button" onClick={send} disabled={(!text.trim() && files.length === 0) || uploading > 0} title="发送" aria-label="发送">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M12 19V5" /><path d="M5 12l7-7 7 7" />
             </svg>
           </button>
         )}

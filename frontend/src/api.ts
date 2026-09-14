@@ -1,4 +1,4 @@
-import type { ImageAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
+import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -42,8 +42,10 @@ export const api = {
     workspace?: string
   } = {}) => request<SessionSnapshot>('/api/sessions', json('POST', body)),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
-  submit: (id: string, prompt: string, images: ImageAttachment[] = []) =>
-    request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt, images })),
+  submit: (id: string, prompt: string, files: FileAttachment[] = []) =>
+    request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt, files })),
+  uploadFile: (filename: string, data: string) =>
+    request<{ path: string }>('/api/files', json('POST', { filename, data })),
   /** 回退到指定用户轮次：丢弃该轮次及其后的内容 */
   revert: (id: string, turnIndex: number) =>
     request<SessionSnapshot>(`/api/sessions/${id}/revert`, json('POST', { turn_index: turnIndex })),

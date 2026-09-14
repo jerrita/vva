@@ -32,6 +32,7 @@ pub async fn run_server(
         .route("/api/models", get(api::list_models))
         .route("/api/workspace", get(api::default_workspace))
         .route("/api/fs/dirs", get(api::list_dirs))
+        .route("/api/files", post(api::upload_file))
         .route(
             "/api/config",
             get(api::get_global_config).post(api::update_global_config),

@@ -169,6 +169,16 @@ impl InputCapabilities {
                             .require_media(crate::model::MediaKind::Image, mime)?;
                     }
                 }
+                crate::model::ContentPart::File {
+                    source: crate::model::MediaSource::Base64 { mime_type, .. },
+                    mime_type: declared_mime,
+                    ..
+                } => {
+                    if declared_mime != mime_type {
+                        return Err("File MIME type does not match its source".into());
+                    }
+                    self.require(crate::model::MediaKind::Pdf, mime_type)?;
+                }
                 crate::model::ContentPart::ToolResult(result) => {
                     for media in &result.attachments {
                         self.require(media.kind, &media.mime_type)?;

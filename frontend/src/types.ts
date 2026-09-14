@@ -81,8 +81,9 @@ export interface ToolResult {
   is_error: boolean
 }
 
-/** 随消息提交的图片附件（Base64） */
-export interface ImageAttachment {
+/** 随消息提交的原生文件附件（Base64） */
+export interface FileAttachment {
+  filename: string
   mime_type: string
   data: string
 }
@@ -91,6 +92,7 @@ export type ContentPart =
   | { type: 'text'; text: string; annotations?: Annotation[] }
   | { type: 'reasoning'; content: string; signature?: string }
   | { type: 'image'; source: MediaSource; mime_type?: string }
+   | { type: 'file'; source: MediaSource; mime_type: string; filename: string }
   | ({ type: 'tool_call' } & ToolCall)
   | ({ type: 'tool_result' } & ToolResult)
   | ({ type: 'web_search_call' } & WebSearchCall)

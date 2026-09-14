@@ -9,7 +9,7 @@ import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
 import type { ProjectOption } from './components/Sidebar'
-import type { ImageAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
+import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -256,7 +256,7 @@ export default function App() {
   }
 
   const submit = useCallback(
-    async (text: string, images: ImageAttachment[] = []) => {
+    async (text: string, files: FileAttachment[] = []) => {
       setError(null)
       try {
         if (!activeId) {
@@ -267,9 +267,9 @@ export default function App() {
             workspace: draftProject || undefined,
           })
           setActiveId(created.session.id)
-          await api.submit(created.session.id, text, images)
+          await api.submit(created.session.id, text, files)
         } else {
-          await api.submit(activeId, text, images)
+          await api.submit(activeId, text, files)
         }
         setPending(text || null)
       } catch (e) {
