@@ -1,9 +1,5 @@
-import { useState } from 'react'
 import type { Annotation, ContentPart, ToolCall, ToolResult, WebSearchCall } from '../types'
 import { Markdown } from './Markdown'
-
-/** 与 TUI 对齐的结果预览行数上限 */
-const PREVIEW_LIMIT = 10
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
@@ -81,8 +77,9 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
       if (result && !result.is_error) {
         const count = result.content
           .split('\n')
-          .filter(line => line !== '' && line !== '[results truncated]').length
-        return { text: `"${pattern}" (${count} ${count === 1 ? 'match' : 'matches'})` }
+          .filter(line => line.trim() !== '' && line !== '[results truncated]').length
+        const noun = count === 1 ? 'match' : 'matches'
+        return { text: `"${pattern}" (${count} ${noun})` }
       }
       return { text: `"${pattern}"` }
     }
@@ -90,32 +87,33 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
       const pattern = str(args.pattern)
       if (!pattern) return { text: truncate(call.arguments, 88) }
       const include = str(args.include)
-      return { text: include ? `${include}, ${pattern}` : pattern }
+      const path = str(args.path)
+      const loc = include
+        ? path && path !== '.'
+          ? `${path}/${include}`
+          : include
+        : path && path !== '.'
+          ? path
+          : null
+      const target = loc ? `${loc}, "${pattern}"` : `"${pattern}"`
+      if (result && !result.is_error) {
+        const count = result.content
+          .split('\n')
+          .filter(line => line.trim() !== '' && line !== '[results truncated]').length
+        const noun = count === 1 ? 'match' : 'matches'
+        return { text: `${target} (${count} ${noun})` }
+      }
+      return { text: target }
     }
-    case 'Shell':
-      return { text: str(args.intent) ?? truncate(call.arguments, 88) }
-    default:
-      return { text: truncate(call.arguments, 88) }
-  }
-}
-
-/** 主体首行的命令/路径预览，对齐 TUI tool_block_command */
-function toolCommand(call: ToolCall): string | null {
-  const args = parseArgs(call.arguments)
-  if (!args) return null
-  switch (call.name) {
     case 'Shell': {
       const command = str(args.command)
-      return command ? `$ ${command}` : null
+      const intent = str(args.intent)
+      if (intent && command) return { text: `${intent} ($ ${command})` }
+      if (command) return { text: `$ ${command}` }
+      return { text: intent ?? truncate(call.arguments, 88) }
     }
-    case 'Glob': {
-      const pattern = str(args.pattern)
-      return pattern ? `"${pattern}"` : null
-    }
-    case 'Grep':
-      return str(args.pattern)
     default:
-      return null
+      return { text: truncate(call.arguments, 88) }
   }
 }
 
@@ -134,60 +132,61 @@ function ToolGroupView({
   expanded?: boolean
   onPreviewFile?: (path: string) => void
 }) {
-  const [showAll, setShowAll] = useState(false)
   const { call, result } = node
   const detail = toolDetail(call, result)
   const isError = result?.is_error ?? false
   const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
+  const isShell = call.name === 'Shell'
+  const hasShellOutput = isShell && Boolean(result && result.content.trim())
 
-  if (isFileTool) {
+  if (!hasShellOutput) {
     return (
       <div
-        className={`file-tool-row${isError ? ' error' : ''}${
-          detail.filePath && onPreviewFile ? ' clickable' : ''
+        className={`tool-row${isError ? ' error' : ''}${
+          isFileTool && detail.filePath && onPreviewFile ? ' clickable' : ''
         }`}
         onClick={
-          detail.filePath && onPreviewFile
+          isFileTool && detail.filePath && onPreviewFile
             ? () => onPreviewFile(detail.filePath!)
             : undefined
         }
         title={
-          detail.filePath
+          isFileTool && detail.filePath
             ? `在右侧边栏预览 ${detail.filePath}`
             : undefined
         }
       >
         {result ? (
-          <span className={`file-tool-icon status ${isError ? 'error' : 'ok'}`}>
+          <span className={`tool-icon status ${isError ? 'error' : 'ok'}`}>
             {isError ? '✕' : '✓'}
           </span>
         ) : (
-          <span className="file-tool-icon status pending" />
+          <span className="tool-icon status pending" />
         )}
-        <code className="file-tool-name">{call.name}</code>
+        <code className="tool-name">{call.name}</code>
         {detail.editPath ? (
-          <span className="file-tool-intent">
+          <span className="tool-intent">
             <span className="file-name">{detail.editPath}</span>{' '}
             <span className="diff-count ins">(+{detail.plus})</span>
             {', '}
             <span className="diff-count del">(-{detail.minus})</span>
           </span>
         ) : detail.filePath ? (
-          <span className="file-tool-intent">
+          <span className="tool-intent">
             <span className="file-name">{detail.filePath}</span>
             {detail.text.slice(detail.filePath.length)}
           </span>
         ) : (
-          <span className="file-tool-intent">{detail.text}</span>
+          <span className="tool-intent">{detail.text}</span>
         )}
-        <div className="file-tool-right">
+        <div className="tool-right">
           {isError && result && (
-            <span className="file-tool-error-snippet" title={result.content}>
+            <span className="tool-error-snippet" title={result.content}>
               {result.content.split('\n')[0]}
             </span>
           )}
-          {detail.filePath && onPreviewFile && (
-            <span className="file-tool-preview-hint" title="预览文件" aria-hidden>
+          {isFileTool && detail.filePath && onPreviewFile && (
+            <span className="tool-preview-hint" title="预览文件" aria-hidden>
               <svg
                 viewBox="0 0 24 24"
                 width="13"
@@ -208,48 +207,32 @@ function ToolGroupView({
     )
   }
 
-  const command = toolCommand(call)
-  const resultLines = result ? result.content.split('\n') : []
-  const preview = resultLines.slice(0, PREVIEW_LIMIT)
-  const rest = resultLines.length - preview.length
-
   return (
-    <details className="block tool" open={expanded}>
+    <details className={`tool-row${isError ? ' error' : ''}`} open={expanded}>
       <summary>
-        {result ? (
-          <span className={`block-icon status ${isError ? 'error' : 'ok'}`}>
-            {isError ? '✕' : '✓'}
-          </span>
-        ) : (
-          <span className="block-icon status pending" />
-        )}
-        <code>{call.name}</code>
+        <span className={`tool-icon status ${isError ? 'error' : 'ok'}`}>
+          {isError ? '✕' : '✓'}
+        </span>
+        <code className="tool-name">{call.name}</code>
         <span className="tool-intent">{detail.text}</span>
+        {isError && result && (
+          <div className="tool-right">
+            <span className="tool-error-snippet" title={result.content}>
+              {result.content.split('\n')[0]}
+            </span>
+          </div>
+        )}
       </summary>
-      {command && <pre className="tool-cmd">{command}</pre>}
-      {result && !isError && !showAll && (
-        <pre>{preview.join('\n') || ' '}</pre>
-      )}
-      {result && isError && <pre>{result.content}</pre>}
-      {result && !isError && rest > 0 && (
-        <details
-          className="tool-more"
-          open={showAll}
-          onToggle={e => setShowAll(e.currentTarget.open)}
-        >
-          <summary>展开全部（共 {resultLines.length} 行）</summary>
-          <pre>{resultLines.join('\n')}</pre>
-        </details>
-      )}
+      <pre className="tool-output">{result!.content}</pre>
     </details>
   )
 }
 
 function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: boolean }) {
   return (
-    <details className="block search" open={expanded}>
+    <details className="search-row" open={expanded}>
       <summary>
-        <span className="block-icon">⌕</span>
+        <span className="search-icon">⌕</span>
         <span className="search-label">
           {call.action.type === 'open_page'
             ? '打开网页'
@@ -324,24 +307,25 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
       )
     case 'reasoning':
       return (
-        <details className="block reasoning" open={expanded}>
+        <details className="reasoning-row" open={expanded}>
           <summary>
-            <span className="block-icon">✦</span>
-            <span>Thinking</span>
+            <span className="reasoning-icon">✦</span>
+            <span className="reasoning-label">Thinking</span>
           </summary>
           <div className="reasoning-body">{part.content}</div>
         </details>
       )
     case 'tool_result':
       return (
-        <details className="block tool" open={expanded}>
+        <details className="tool-row" open={expanded}>
           <summary>
-            <span className={`block-icon status ${part.is_error ? 'error' : 'ok'}`}>
+            <span className={`tool-icon status ${part.is_error ? 'error' : 'ok'}`}>
               {part.is_error ? '✕' : '✓'}
             </span>
-            <span>执行结果</span>
+            <code className="tool-name">result</code>
+            <span className="tool-intent">{part.is_error ? '执行出错' : '执行结果'}</span>
           </summary>
-          <pre>{part.content}</pre>
+          <pre className="tool-output">{part.content}</pre>
         </details>
       )
     case 'web_search_call':

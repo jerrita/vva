@@ -1131,153 +1131,65 @@ body.resizing .chat-scroll {
   interpolate-size: allow-keywords;
 }
 
-.block {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  border-radius: 10px;
-  border: 1px solid var(--border-soft);
-  margin: 3px 0;
-  font-size: 13px;
-  background: var(--block);
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.block[open] {
-  background: var(--panel-2);
-  border-color: var(--border);
-}
-
-.block.tool:has(> summary .status.error)[open] {
-  background: var(--danger-soft);
-}
-
-.block::details-content,
+.tool-row::details-content,
+.reasoning-row::details-content,
+.search-row::details-content,
 .worked::details-content,
-.tool-more::details-content,
 .citations::details-content {
   block-size: 0;
   overflow: hidden;
   transition: block-size 0.22s ease, content-visibility 0.22s allow-discrete;
 }
 
-.block[open]::details-content,
+.tool-row[open]::details-content,
+.reasoning-row[open]::details-content,
+.search-row[open]::details-content,
 .worked[open]::details-content,
-.tool-more[open]::details-content,
 .citations[open]::details-content {
   block-size: auto;
 }
 
-.block > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  border-radius: 9px;
-  cursor: pointer;
+/* ---- 工具行统一展示（去卡片化：透明底无边框，单行弱存在感） ---- */
+.tool-row {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 1px 0;
+  background: transparent;
+  border: none;
+  font-size: 12.5px;
   color: var(--muted);
   user-select: none;
-  list-style: none;
-  transition: background 0.15s;
 }
 
-.block:not([open]) > summary:hover {
-  background: var(--border-soft);
-}
-
-.block > summary::-webkit-details-marker {
-  display: none;
-}
-
-.block > summary::after {
-  content: '▸';
-  margin-left: auto;
-  transition: transform 0.15s;
-}
-
-.block[open] > summary::after {
-  transform: rotate(90deg);
-}
-
-.block-icon {
-  flex-shrink: 0;
-}
-
-.block > pre {
-  margin: 0;
-  padding: 10px 12px;
-  border-top: 1px solid var(--border-soft);
-  overflow-x: auto;
-  font-size: 12px;
-  line-height: 1.55;
-  color: var(--muted);
-  max-height: 320px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.block > summary code {
-  font-size: 12px;
-}
-
-/* 工具组：状态 + intent */
-.block.tool > summary .status.ok {
-  color: var(--accent);
-}
-
-.block.tool > summary .status.error {
-  color: var(--danger);
-}
-
-.block.tool > summary .status.pending {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--rose);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-.tool-intent {
-  flex: 1 1 auto;
-  min-width: 48px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 工具主体：命令行 / 行号与 diff 行 / 展开全部 */
-.tool-cmd {
-  color: var(--text);
-}
-
-/* 文件工具单行展示（去卡片化：透明底无边框，对齐 Thinking 弱存在感风格） */
-.file-tool-row {
+div.tool-row,
+details.tool-row > summary {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  margin: 1px 0;
-  color: var(--muted);
-  font-size: 12.5px;
-  background: transparent;
-  border: none;
-  user-select: none;
+  list-style: none;
+  cursor: default;
 }
 
-.file-tool-row.clickable {
+details.tool-row > summary {
   cursor: pointer;
 }
 
-.file-tool-row.clickable:hover .file-name {
+details.tool-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-row.clickable {
+  cursor: pointer;
+}
+
+.tool-row.clickable:hover .file-name {
   color: var(--accent);
   text-decoration: underline;
 }
 
-.file-tool-icon {
+.tool-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1286,15 +1198,15 @@ body.resizing .chat-scroll {
   font-size: 11px;
 }
 
-.file-tool-icon.status.ok {
+.tool-icon.status.ok {
   color: var(--accent);
 }
 
-.file-tool-icon.status.error {
+.tool-icon.status.error {
   color: var(--danger);
 }
 
-.file-tool-icon.status.pending {
+.tool-icon.status.pending {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -1302,13 +1214,14 @@ body.resizing .chat-scroll {
   animation: pulse 1.2s ease-in-out infinite;
 }
 
-.file-tool-name {
+.tool-name {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--faint);
+  flex-shrink: 0;
 }
 
-.file-tool-intent {
+.tool-intent {
   flex: 1 1 auto;
   min-width: 0;
   white-space: nowrap;
@@ -1317,25 +1230,25 @@ body.resizing .chat-scroll {
   color: var(--muted);
 }
 
-.file-tool-row .file-name {
+.tool-row .file-name {
   color: var(--text);
   font-family: var(--font-mono);
 }
 
-.file-tool-row .diff-count {
+.tool-row .diff-count {
   font-family: var(--font-mono);
   font-size: 11.5px;
 }
 
-.file-tool-row .diff-count.ins {
+.tool-row .diff-count.ins {
   color: var(--accent);
 }
 
-.file-tool-row .diff-count.del {
+.tool-row .diff-count.del {
   color: var(--danger);
 }
 
-.file-tool-right {
+.tool-right {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -1343,7 +1256,7 @@ body.resizing .chat-scroll {
   flex-shrink: 0;
 }
 
-.file-tool-error-snippet {
+.tool-error-snippet {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--danger);
@@ -1353,7 +1266,7 @@ body.resizing .chat-scroll {
   max-width: 240px;
 }
 
-.file-tool-preview-hint {
+.tool-preview-hint {
   display: flex;
   align-items: center;
   color: var(--faint);
@@ -1361,65 +1274,99 @@ body.resizing .chat-scroll {
   transition: opacity 0.15s, color 0.15s;
 }
 
-.file-tool-row:hover .file-tool-preview-hint {
+.tool-row:hover .tool-preview-hint {
   opacity: 1;
   color: var(--accent);
 }
 
-.tool-more > summary {
-  padding: 6px 12px;
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-  color: var(--accent);
-  font-size: 11.5px;
-}
-
-.tool-more > summary::-webkit-details-marker {
-  display: none;
-}
-
-.tool-more[open] > summary {
-  border-bottom: 1px solid var(--border-soft);
-  color: var(--muted);
-}
-
-.tool-more > pre {
+.tool-output {
   margin: 0;
-  padding: 8px 12px;
+  padding: 4px 12px 10px 32px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: var(--muted);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 420px;
+  max-height: 360px;
   overflow-y: auto;
-}
-
-/* 思考块去卡片化：透明底无边框，弱存在感，与工具/搜索卡片区分 */
-.block.reasoning,
-.block.reasoning[open] {
   background: transparent;
-  border-color: transparent;
+  border: none;
 }
 
-.block.reasoning > summary {
+/* ---- 思考块（去卡片化：透明底无边框，弱存在感） ---- */
+.reasoning-row {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 1px 0;
+  background: transparent;
+  border: none;
+  font-size: 12.5px;
+}
+
+.reasoning-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
   color: var(--faint);
+  list-style: none;
+  user-select: none;
+}
+
+.reasoning-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.reasoning-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .reasoning-body {
-  padding: 4px 12px 10px;
+  padding: 4px 12px 10px 32px;
   color: var(--muted);
   white-space: pre-wrap;
-  font-size: 13px;
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
-.block.tool.result.error > summary {
-  color: var(--danger);
+/* ---- 搜索行（去卡片化：透明底无边框） ---- */
+.search-row {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 1px 0;
+  background: transparent;
+  border: none;
+  font-size: 12.5px;
+  color: var(--muted);
+  user-select: none;
 }
 
-/* ---- 搜索块 ---- */
+.search-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.search-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.search-icon {
+  flex-shrink: 0;
+}
 
 .search-label {
   color: var(--muted);
@@ -1465,8 +1412,7 @@ body.resizing .chat-scroll {
 
 .search-sources {
   margin: 0;
-  padding: 6px 12px 8px;
-  border-top: 1px solid var(--border-soft);
+  padding: 4px 12px 10px 32px;
   list-style: none;
   display: flex;
   flex-direction: column;
