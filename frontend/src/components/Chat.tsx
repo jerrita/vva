@@ -260,7 +260,10 @@ export function Chat({
   const items = buildItems(turns)
   let liveWork = -1
   if (running) {
+    // 仅当前运行段（最后一条用户消息之后）的工作段视为 live，
+    // 避免新请求尚未产出思考/工具时把上一轮工作段展开
     for (let index = items.length - 1; index >= 0; index--) {
+      if (items[index].kind === 'user') break
       if (items[index].kind === 'work') {
         liveWork = index
         break
