@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
+import hljs from 'highlight.js/lib/common'
 import { api } from '../api'
 import type { ContentPart, RelatedFile, Session, SessionFileResponse } from '../types'
 import { CopyButton } from './CopyButton'
 import { Markdown } from './Markdown'
 
-export const FILE_SIDEBAR_MIN = 260
-export const FILE_SIDEBAR_MAX = 640
+export const FILE_SIDEBAR_MIN = 240
+export const FILE_SIDEBAR_MAX = 760
 
 export const clampFileSidebar = (width: number) =>
   Math.min(FILE_SIDEBAR_MAX, Math.max(FILE_SIDEBAR_MIN, width))
@@ -23,6 +24,75 @@ function fmtBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const LANGUAGE_BY_EXTENSION: Record<string, string> = {
+  bash: 'bash',
+  c: 'c',
+  cc: 'cpp',
+  cpp: 'cpp',
+  cs: 'csharp',
+  css: 'css',
+  go: 'go',
+  h: 'c',
+  hpp: 'cpp',
+  html: 'xml',
+  java: 'java',
+  js: 'javascript',
+  json: 'json',
+  jsx: 'javascript',
+  md: 'markdown',
+  mjs: 'javascript',
+  py: 'python',
+  rb: 'ruby',
+  rs: 'rust',
+  scss: 'scss',
+  sh: 'bash',
+  sql: 'sql',
+  swift: 'swift',
+  ts: 'typescript',
+  tsx: 'typescript',
+  toml: 'ini',
+  xml: 'xml',
+  yaml: 'yaml',
+  yml: 'yaml',
+}
+
+function languageForPath(path: string | null): string | null {
+  if (!path) return null
+  const name = path.split('/').pop()?.toLowerCase() ?? ''
+  if (name === 'dockerfile') return 'dockerfile'
+  const extension = name.split('.').pop()
+  return extension ? (LANGUAGE_BY_EXTENSION[extension] ?? null) : null
+}
+
+function splitHighlightedLines(html: string): string[] {
+  const lines = ['']
+  const openTags: string[] = []
+  const tokens = html.match(/<[^>]+>|[^<]+/g) ?? []
+
+  for (const token of tokens) {
+    if (token.startsWith('<span')) {
+      lines[lines.length - 1] += token
+      openTags.push(token)
+      continue
+    }
+    if (token === '</span>') {
+      lines[lines.length - 1] += token
+      openTags.pop()
+      continue
+    }
+
+    const parts = token.split('\n')
+    lines[lines.length - 1] += parts[0]
+    for (const part of parts.slice(1)) {
+      lines[lines.length - 1] += openTags.map(() => '</span>').reverse().join('')
+      lines.push(openTags.join('') + part)
+    }
+  }
+
+  lines[lines.length - 1] += openTags.map(() => '</span>').reverse().join('')
+  return lines
 }
 
 /**
@@ -190,6 +260,13 @@ export function FileSidebar({
     if (!fileData || fileData.is_binary) return []
     return fileData.content.split('\n')
   }, [fileData])
+
+  const highlightedLines = useMemo(() => {
+    if (!fileData || fileData.is_binary) return null
+    const language = languageForPath(activePath)
+    if (!language || !hljs.getLanguage(language)) return null
+    return splitHighlightedLines(hljs.highlight(fileData.content, { language }).value)
+  }, [activePath, fileData])
 
   const isMarkdown = activePath ? /\.md$/i.test(activePath) : false
 
@@ -473,7 +550,15 @@ export function FileSidebar({
                     <div className="file-code-content">
                       {lines.map((line, i) => (
                         <div key={i} className="file-code-line">
-                          {line || ' '}
+                          {highlightedLines ? (
+                            <span
+                              dangerouslySetInnerHTML={{
+                                __html: highlightedLines[i] || ' ',
+                              }}
+                            />
+                          ) : (
+                            line || ' '
+                          )}
                         </div>
                       ))}
                     </div>

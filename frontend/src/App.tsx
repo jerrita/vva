@@ -576,35 +576,6 @@ export default function App() {
             )}
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
-          {active && (
-            <button
-              className={`icon-ghost file-sidebar-toggle${fileSidebarOpen ? ' active' : ''}`}
-              onClick={() => setFileSidebarOpen(value => !value)}
-              title={fileSidebarOpen ? '收起相关文件' : '展开相关文件'}
-              aria-label="相关文件预览"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-                <polyline points="10 9 9 9 8 9" />
-              </svg>
-              {relatedFiles.length > 0 && (
-                <span className="file-sidebar-badge">{relatedFiles.length}</span>
-              )}
-            </button>
-          )}
           {stats && active && (
             <button
               className={`icon-ghost stats-toggle${statsVisible ? ' active' : ''}`}
@@ -634,6 +605,41 @@ export default function App() {
               >
                 <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
               </svg>
+            </button>
+          )}
+          {active && (
+            <button
+              className={`icon-ghost file-sidebar-toggle${fileSidebarOpen ? ' active' : ''}`}
+              onClick={() => setFileSidebarOpen(value => !value)}
+              title={fileSidebarOpen ? '收起相关文件' : '展开相关文件'}
+              aria-label="相关文件预览"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+                <path d="M14.5 4.5v15" />
+                <rect
+                  x="15.8"
+                  y="6.3"
+                  width="3.4"
+                  height="11.4"
+                  rx="1"
+                  fill="currentColor"
+                  stroke="none"
+                />
+              </svg>
+              {relatedFiles.length > 0 && (
+                <span className="file-sidebar-badge">{relatedFiles.length}</span>
+              )}
             </button>
           )}
         </header>

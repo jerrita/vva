@@ -2148,9 +2148,9 @@ details.tool-row > summary::-webkit-details-marker {
 .file-sidebar-resize {
   position: absolute;
   top: 0;
-  left: -3px;
   bottom: 0;
-  width: 6px;
+  width: 14px;
+  left: -7px;
   cursor: col-resize;
   z-index: 6;
 }
@@ -2160,7 +2160,7 @@ details.tool-row > summary::-webkit-details-marker {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 2px;
+  left: 6px;
   width: 2px;
   background: transparent;
   transition: background 0.15s;
