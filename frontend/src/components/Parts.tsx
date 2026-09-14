@@ -63,6 +63,7 @@ interface ToolDetail {
   editPath?: string
   plus?: number
   minus?: number
+  shellCommand?: string
 }
 
 function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
@@ -72,11 +73,12 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
     case 'Read': {
       const rawPath = str(args.path)
       const path = rawPath ?? truncate(call.arguments, 88)
-      const offset = typeof args.offset === 'number' ? args.offset : 1
-      const limit = typeof args.limit === 'number' ? String(args.limit) : 'all'
-      const byteOffset = typeof args.byte_offset === 'number' ? `, byte_offset=${args.byte_offset}` : ''
+      const options: string[] = []
+      if (typeof args.offset === 'number' && args.offset !== 1) options.push(`offset=${args.offset}`)
+      if (typeof args.limit === 'number') options.push(`limit=${args.limit}`)
+      if (typeof args.byte_offset === 'number') options.push(`byte_offset=${args.byte_offset}`)
       return {
-        text: `${path} [offset=${offset}, limit=${limit}${byteOffset}]`,
+        text: options.length > 0 ? `${path} [${options.join(', ')}]` : path,
         filePath: rawPath ?? undefined,
       }
     }
@@ -143,9 +145,10 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
     case 'Shell': {
       const command = str(args.command)
       const intent = str(args.intent)
-      if (intent && command) return { text: `${intent} ($ ${command})` }
-      if (command) return { text: `$ ${command}` }
-      return { text: intent ?? truncate(call.arguments, 88) }
+      return {
+        text: intent ?? '',
+        shellCommand: command ?? undefined,
+      }
     }
     default:
       return { text: truncate(call.arguments, 88) }
@@ -258,7 +261,10 @@ function ToolGroupView({
           </div>
         )}
       </summary>
-      <pre className="tool-output">{result!.content}</pre>
+      <pre className="tool-output">
+        {detail.shellCommand && <span className="tool-command">$ {detail.shellCommand}\n\n</span>}
+        {result!.content}
+      </pre>
     </details>
   )
 }

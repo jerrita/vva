@@ -1217,6 +1217,7 @@ details.tool-row > summary::-webkit-details-marker {
 .tool-name {
   font-family: var(--font-mono);
   font-size: 12px;
+  width: 42px;
   color: var(--faint);
   flex-shrink: 0;
 }
@@ -1292,6 +1293,10 @@ details.tool-row > summary::-webkit-details-marker {
   overflow-y: auto;
   background: transparent;
   border: none;
+}
+
+.tool-command {
+  color: var(--text);
 }
 
 /* ---- 思考块（去卡片化：透明底无边框，弱存在感） ---- */
@@ -1454,6 +1459,26 @@ details.tool-row > summary::-webkit-details-marker {
 
 .worked[open] > summary::after {
   transform: rotate(90deg);
+}
+
+.worked::details-content,
+.worked-body {
+  margin-inline: 0;
+  padding-inline: 0;
+}
+
+.worked-body > .tool-row,
+.worked-body > .reasoning-row,
+.worked-body > .search-row {
+  margin-inline: 0;
+}
+
+.worked-body > .tool-row,
+.worked-body > .tool-row > summary,
+.worked-body > .reasoning-row > summary,
+.worked-body > .search-row > summary {
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .worked > summary:hover {
