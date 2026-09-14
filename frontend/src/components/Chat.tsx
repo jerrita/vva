@@ -260,11 +260,13 @@ export function Chat({
   const items = buildItems(turns)
   let liveWork = -1
   if (running) {
-    // 仅当前运行段（最后一条用户消息之后）的工作段视为 live，
-    // 避免新请求尚未产出思考/工具时把上一轮工作段展开
+    // 仅当前运行段（最后一条用户消息之后、且无最终回答收尾）的工作段视为 live：
+    // 新消息的 pending 气泡尚未进入 turns，此时 items 末尾仍是上一轮的 work + answer，
+    // 遇 user 或 answer（运行段收尾）即停止，避免把上一轮工作段展开
     for (let index = items.length - 1; index >= 0; index--) {
-      if (items[index].kind === 'user') break
-      if (items[index].kind === 'work') {
+      const kind = items[index].kind
+      if (kind === 'user' || kind === 'assistant') break
+      if (kind === 'work') {
         liveWork = index
         break
       }
