@@ -108,10 +108,6 @@ function toolCommand(call: ToolCall): string | null {
       const command = str(args.command)
       return command ? `$ ${command}` : null
     }
-    case 'Read':
-    case 'Write':
-    case 'Edit':
-      return str(args.path)
     case 'Glob': {
       const pattern = str(args.pattern)
       return pattern ? `"${pattern}"` : null
@@ -129,48 +125,6 @@ interface ToolGroupNode {
   result: ToolResult | null
 }
 
-interface BodyRow {
-  marker?: string
-  cls?: string
-  num?: number
-  text: string
-}
-
-function writeBodyRows(args: Record<string, unknown>): BodyRow[] {
-  const content = str(args.content) ?? ''
-  return content.split('\n').map((line, index) => ({
-    num: index + 1,
-    text: line === '' ? ' ' : line,
-  }))
-}
-
-function editBodyRows(args: Record<string, unknown>): BodyRow[] {
-  const rows: BodyRow[] = []
-  const oldString = str(args.old_string) ?? ''
-  const newString = str(args.new_string) ?? ''
-  for (const line of oldString.split('\n')) {
-    rows.push({ marker: '-', cls: 'del', text: line === '' ? ' ' : line })
-  }
-  for (const line of newString.split('\n')) {
-    rows.push({ marker: '+', cls: 'ins', text: line === '' ? ' ' : line })
-  }
-  return rows
-}
-
-function RowsView({ rows }: { rows: BodyRow[] }) {
-  return (
-    <pre className="tool-rows">
-      {rows.map((row, index) => (
-        <div key={index} className={row.cls}>
-          {row.num != null && <span className="row-num">{row.num} </span>}
-          {row.marker != null && <span className="row-marker">{row.marker} </span>}
-          {row.text}
-        </div>
-      ))}
-    </pre>
-  )
-}
-
 function ToolGroupView({
   node,
   expanded = false,
@@ -183,16 +137,78 @@ function ToolGroupView({
   const [showAll, setShowAll] = useState(false)
   const { call, result } = node
   const detail = toolDetail(call, result)
-  const args = parseArgs(call.arguments)
-  const command = toolCommand(call)
   const isError = result?.is_error ?? false
+  const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
 
-  let rows: BodyRow[] | null = null
-  if (result && !isError && args) {
-    if (call.name === 'Write') rows = writeBodyRows(args)
-    else if (call.name === 'Edit' && args.edits === undefined) rows = editBodyRows(args)
+  if (isFileTool) {
+    return (
+      <div
+        className={`block tool file-line${isError ? ' error' : ''}${
+          detail.filePath && onPreviewFile ? ' clickable' : ''
+        }`}
+        onClick={
+          detail.filePath && onPreviewFile
+            ? () => onPreviewFile(detail.filePath!)
+            : undefined
+        }
+        title={
+          detail.filePath
+            ? `在右侧边栏预览 ${detail.filePath}`
+            : undefined
+        }
+      >
+        {result ? (
+          <span className={`block-icon status ${isError ? 'error' : 'ok'}`}>
+            {isError ? '✕' : '✓'}
+          </span>
+        ) : (
+          <span className="block-icon status pending" />
+        )}
+        <code>{call.name}</code>
+        {detail.editPath ? (
+          <span className="tool-intent">
+            <span className="file-name">{detail.editPath}</span>{' '}
+            <span className="diff-count ins">(+{detail.plus})</span>
+            {', '}
+            <span className="diff-count del">(-{detail.minus})</span>
+          </span>
+        ) : detail.filePath ? (
+          <span className="tool-intent">
+            <span className="file-name">{detail.filePath}</span>
+            {detail.text.slice(detail.filePath.length)}
+          </span>
+        ) : (
+          <span className="tool-intent">{detail.text}</span>
+        )}
+        <div className="file-line-right">
+          {isError && result && (
+            <span className="tool-error-snippet" title={result.content}>
+              {result.content.split('\n')[0]}
+            </span>
+          )}
+          {detail.filePath && onPreviewFile && (
+            <span className="file-line-preview-hint" title="预览文件" aria-hidden>
+              <svg
+                viewBox="0 0 24 24"
+                width="13"
+                height="13"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+            </span>
+          )}
+        </div>
+      </div>
+    )
   }
 
+  const command = toolCommand(call)
   const resultLines = result ? result.content.split('\n') : []
   const preview = resultLines.slice(0, PREVIEW_LIMIT)
   const rest = resultLines.length - preview.length
@@ -208,55 +224,14 @@ function ToolGroupView({
           <span className="block-icon status pending" />
         )}
         <code>{call.name}</code>
-        {detail.editPath ? (
-          <span className="tool-intent">
-            {onPreviewFile ? (
-              <button
-                type="button"
-                className="file-link"
-                onClick={e => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  onPreviewFile(detail.editPath!)
-                }}
-                title="在右侧边栏预览文件"
-              >
-                {detail.editPath}
-              </button>
-            ) : (
-              detail.editPath
-            )}{' '}
-            <span className="diff-count ins">(+{detail.plus})</span>
-            {', '}
-            <span className="diff-count del">(-{detail.minus})</span>
-          </span>
-        ) : detail.filePath && onPreviewFile ? (
-          <span className="tool-intent">
-            <button
-              type="button"
-              className="file-link"
-              onClick={e => {
-                e.preventDefault()
-                e.stopPropagation()
-                onPreviewFile(detail.filePath!)
-              }}
-              title="在右侧边栏预览文件"
-            >
-              {detail.filePath}
-            </button>
-            {detail.text.slice(detail.filePath.length)}
-          </span>
-        ) : (
-          <span className="tool-intent">{detail.text}</span>
-        )}
+        <span className="tool-intent">{detail.text}</span>
       </summary>
       {command && <pre className="tool-cmd">{command}</pre>}
-      {rows && <RowsView rows={rows} />}
-      {!rows && result && !isError && !showAll && (
+      {result && !isError && !showAll && (
         <pre>{preview.join('\n') || ' '}</pre>
       )}
       {result && isError && <pre>{result.content}</pre>}
-      {!rows && result && !isError && rest > 0 && (
+      {result && !isError && rest > 0 && (
         <details
           className="tool-more"
           open={showAll}
