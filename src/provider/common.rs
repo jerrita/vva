@@ -54,6 +54,12 @@ impl EventForwarder {
             let _ = tx.send(AgentEvent::WebSearchCall(call)).await;
         }
     }
+
+    pub async fn notice(&self, text: impl Into<String>) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(AgentEvent::Notice(text.into())).await;
+        }
+    }
 }
 
 /// 严格读取必填 u64 字段：缺失或类型不符直接报协议错误

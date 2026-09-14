@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
@@ -334,7 +334,9 @@ impl ResponseProvider {
             match item {
                 ResponseOutputItem::WebSearchCall { id, status, action } => {
                     parts.push(ContentPart::WebSearchCall(project_web_search_call(
-                        id, status, action,
+                        id,
+                        status,
+                        action.as_ref(),
                     )?));
                 }
                 ResponseOutputItem::Reasoning {
@@ -512,6 +514,7 @@ struct ResponseStreamHandler<'a> {
     event_count: u64,
     /// `output_item.done` 投影：领域 WebSearchCall 的条目快照（含当时 sources）
     streamed_searches: HashMap<String, WebSearchCall>,
+    warned_missing_search_actions: HashSet<String>,
 }
 
 impl<'a> ResponseStreamHandler<'a> {
@@ -525,6 +528,17 @@ impl<'a> ResponseStreamHandler<'a> {
             last_sequence_number: None,
             event_count: 0,
             streamed_searches: HashMap::new(),
+            warned_missing_search_actions: HashSet::new(),
+        }
+    }
+
+    async fn warn_missing_search_action(&mut self, id: &str) {
+        if self.warned_missing_search_actions.insert(id.to_string()) {
+            self.forwarder
+                .notice(format!(
+                    "Responses API web_search_call '{id}' omitted action; displaying an empty search."
+                ))
+                .await;
         }
     }
 
@@ -617,9 +631,13 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                             ))
                         })?;
                     if let ResponseOutputItem::WebSearchCall { id, status, action } = item {
-                        let call = project_web_search_call(&id, &status, &action)?;
+                        let missing_action = action.is_none();
+                        let call = project_web_search_call(&id, &status, action.as_ref())?;
                         self.streamed_searches.insert(call.id.clone(), call.clone());
                         self.forwarder.web_search_call(call).await;
+                        if missing_action {
+                            self.warn_missing_search_action(&id).await;
+                        }
                     }
                 }
                 Ok(())
@@ -627,6 +645,21 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             "response.completed" => {
                 let resp_obj = require_value(&json, "response")?;
                 let mut parsed = self.provider.parse_response(resp_obj.clone())?;
+                let missing_action_ids = parsed
+                    .meta
+                    .response
+                    .iter()
+                    .flat_map(|meta| &meta.output_items)
+                    .filter_map(|item| match item {
+                        ResponseOutputItem::WebSearchCall {
+                            id, action: None, ..
+                        } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                for id in missing_action_ids {
+                    self.warn_missing_search_action(&id).await;
+                }
                 self.apply_streamed_searches(&mut parsed);
                 self.completed = Some(parsed);
                 Ok(())
@@ -648,7 +681,7 @@ fn response_text_id(json: &serde_json::Value) -> Result<String, ProviderError> {
 fn project_web_search_call(
     id: &str,
     status: &str,
-    action: &ResponseWebSearchAction,
+    action: Option<&ResponseWebSearchAction>,
 ) -> Result<WebSearchCall, ProviderError> {
     let status = match status {
         "in_progress" | "searching" => SearchStatus::Searching,
@@ -661,11 +694,11 @@ fn project_web_search_call(
         }
     };
     let (action, query, sources) = match action {
-        ResponseWebSearchAction::Search {
+        Some(ResponseWebSearchAction::Search {
             query,
             queries,
             sources,
-        } => (
+        }) => (
             WebSearchAction::Search,
             query.clone().unwrap_or_else(|| queries.join(", ")),
             sources
@@ -673,14 +706,14 @@ fn project_web_search_call(
                 .map(|src| WebSearchSource::new(&src.url, &src.url, None))
                 .collect(),
         ),
-        ResponseWebSearchAction::OpenPage { url } => (
+        Some(ResponseWebSearchAction::OpenPage { url }) => (
             WebSearchAction::OpenPage {
                 url: url.clone().unwrap_or_default(),
             },
             String::new(),
             Vec::new(),
         ),
-        ResponseWebSearchAction::FindInPage { url, pattern } => (
+        Some(ResponseWebSearchAction::FindInPage { url, pattern }) => (
             WebSearchAction::FindInPage {
                 url: url.clone(),
                 pattern: pattern.clone(),
@@ -688,6 +721,7 @@ fn project_web_search_call(
             String::new(),
             Vec::new(),
         ),
+        None => (WebSearchAction::Search, String::new(), Vec::new()),
     };
     Ok(WebSearchCall {
         id: id.to_string(),
@@ -1582,6 +1616,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_missing_web_search_action_projects_empty_search_and_warns() {
+        let provider = ResponseProvider::new("test-key");
+        let item = serde_json::json!({
+            "type": "web_search_call",
+            "id": "ws_missing",
+            "status": "completed"
+        });
+
+        let parsed = provider
+            .parse_response(serde_json::json!({
+                "id": "resp_1",
+                "status": "completed",
+                "output": [item.clone()]
+            }))
+            .unwrap();
+        let ContentPart::WebSearchCall(call) = &parsed.messages[0].parts[0] else {
+            panic!("expected web search call");
+        };
+        assert_eq!(call.action, WebSearchAction::Search);
+        assert!(call.query.is_empty());
+        assert!(call.sources.is_empty());
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut handler = ResponseStreamHandler::new(&provider, Some(tx));
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_item.done",
+                "item": item
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AgentEvent::WebSearchCall(WebSearchCall { query, sources, .. }))
+                if query.is_empty() && sources.is_empty()
+        ));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AgentEvent::Notice(message)) if message.contains("omitted action")
+        ));
+    }
+
+    #[tokio::test]
     async fn test_stream_item_done_sources_survive_completed_aggregation() {
         let provider = ResponseProvider::new("test-key");
         let (tx, mut rx) = mpsc::channel(16);
@@ -1686,7 +1763,7 @@ mod tests {
         assert!(open.sources.is_empty());
 
         let ResponseOutputItem::WebSearchCall {
-            action: ResponseWebSearchAction::Search { sources, .. },
+            action: Some(ResponseWebSearchAction::Search { sources, .. }),
             ..
         } = &parsed.meta.response.as_ref().unwrap().output_items[0]
         else {
