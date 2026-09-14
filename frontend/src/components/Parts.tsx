@@ -194,13 +194,6 @@ function ToolGroupView({
             : undefined
         }
       >
-        {result ? (
-          <span className={`tool-icon status ${isError ? 'error' : 'ok'}`}>
-            {isError ? '✕' : '✓'}
-          </span>
-        ) : (
-          <span className="tool-icon status pending" />
-        )}
         <code className="tool-name">{call.name}</code>
         {detail.editPath ? (
           <span className="tool-intent">
@@ -248,9 +241,6 @@ function ToolGroupView({
   return (
     <details className={`tool-row${isError ? ' error' : ''}`} open={expanded}>
       <summary>
-        <span className={`tool-icon status ${isError ? 'error' : 'ok'}`}>
-          {isError ? '✕' : '✓'}
-        </span>
         <code className="tool-name">{call.name}</code>
         <span className="tool-intent">{detail.text}</span>
         {isError && result && (
@@ -358,11 +348,8 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
       )
     case 'tool_result':
       return (
-        <details className="tool-row" open={expanded}>
+        <details className={`tool-row${part.is_error ? ' error' : ''}`} open={expanded}>
           <summary>
-            <span className={`tool-icon status ${part.is_error ? 'error' : 'ok'}`}>
-              {part.is_error ? '✕' : '✓'}
-            </span>
             <code className="tool-name">result</code>
             <span className="tool-intent">{part.is_error ? '执行出错' : '执行结果'}</span>
           </summary>
@@ -388,9 +375,9 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
 
 /**
  * live 表示流式生成中：末尾块（思考 / 搜索 / 工具）保持展开，出现后续块或响应结束后自动收起；
- * 错误块不例外，仅摘要行保留 ✕ 标识。历史内容默认收起，用户可手动展开。
  * tool_call 与同 tool_call_id 的 tool_result 配对为一个节点；
  * 未配对的 result（如无调用上下文）独立渲染。
+ * 历史内容默认收起，用户可手动展开。
  */
 export function Parts({
   parts,

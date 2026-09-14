@@ -1189,31 +1189,6 @@ details.tool-row > summary::-webkit-details-marker {
   text-decoration: underline;
 }
 
-.tool-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  flex-shrink: 0;
-  font-size: 11px;
-}
-
-.tool-icon.status.ok {
-  color: var(--accent);
-}
-
-.tool-icon.status.error {
-  color: var(--danger);
-}
-
-.tool-icon.status.pending {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--rose);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
 .tool-name {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -1282,7 +1257,7 @@ details.tool-row > summary::-webkit-details-marker {
 
 .tool-output {
   margin: 0;
-  padding: 4px 12px 10px 32px;
+  padding: 4px 12px 10px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;

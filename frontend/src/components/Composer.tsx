@@ -132,7 +132,7 @@ export function Composer({
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行，可添加文件'}
+        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
           resize()
@@ -154,9 +154,8 @@ export function Composer({
             }}
           />
           <button className="icon-ghost" onClick={() => fileInputRef.current?.click()} title="添加文件" aria-label="添加文件">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <path d="M14 2v6h6M8 13h8M8 17h6" />
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+              <path d="M12 5v14M5 12h14" />
             </svg>
           </button>
           {controls}
