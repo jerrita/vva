@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClipboardEvent, KeyboardEvent, ReactNode, Ref } from 'react'
 import { api } from '../api'
-import type { FileAttachment } from '../types'
+import type { FileAttachment, SkillEntry } from '../types'
 
 /** 外部写入输入框内容（回退后还原提示词） */
 export interface ComposerHandle {
@@ -13,19 +13,43 @@ export function Composer({
   onSend,
   onStop,
   controls,
+  skills,
   ref,
 }: {
   running: boolean
   onSend: (text: string, files: FileAttachment[]) => void
   onStop: () => void
   controls?: ReactNode
+  skills: SkillEntry[]
   ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
   const [files, setFiles] = useState<FileAttachment[]>([])
   const [uploading, setUploading] = useState(0)
+  const [skillIndex, setSkillIndex] = useState(0)
+  const [paletteClosed, setPaletteClosed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const selectedOptionRef = useRef<HTMLButtonElement>(null)
+
+  // /<skill_name> 快速选择：输入以 / 开头且不含空白时按名前缀过滤
+  const query = text.trimStart()
+  const skillMatches =
+    query.startsWith('/') && !/\s/.test(query)
+      ? skills.filter(skill => skill.name.toLowerCase().startsWith(query.slice(1).toLowerCase()))
+      : []
+  const paletteOpen = skillMatches.length > 0 && !paletteClosed
+  const activeSkill = Math.min(skillIndex, Math.max(0, skillMatches.length - 1))
+
+  useEffect(() => {
+    selectedOptionRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [skillIndex])
+
+  const applySkill = (skill: SkillEntry) => {
+    setText(`/${skill.name} `)
+    setSkillIndex(0)
+    requestAnimationFrame(resize)
+  }
 
   const resize = () => {
     const el = textareaRef.current
@@ -37,6 +61,8 @@ export function Composer({
   useImperativeHandle(ref, () => ({
     set: (value: string) => {
       setText(value)
+      setSkillIndex(0)
+      setPaletteClosed(false)
       requestAnimationFrame(resize)
       textareaRef.current?.focus()
     },
@@ -90,10 +116,35 @@ export function Composer({
     onSend(trimmed, files)
     setText('')
     setFiles([])
+    setSkillIndex(0)
+    setPaletteClosed(false)
     requestAnimationFrame(resize)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (paletteOpen && !event.nativeEvent.isComposing) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setSkillIndex(index => (index + 1) % skillMatches.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setSkillIndex(index => (index - 1 + skillMatches.length) % skillMatches.length)
+        return
+      }
+      // Tab/Enter 仅补全技能名，任务描述待用户继续输入后发送
+      if (event.key === 'Tab' || event.key === 'Enter') {
+        event.preventDefault()
+        applySkill(skillMatches[activeSkill])
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setPaletteClosed(true)
+        return
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
       send()
@@ -128,13 +179,38 @@ export function Composer({
           ))}
         </div>
       )}
+      {paletteOpen && (
+        <div className="composer-menu" role="listbox" aria-label="技能候选">
+          {skillMatches.map((skill, index) => (
+            <button
+              key={skill.name}
+              type="button"
+              role="option"
+              aria-selected={index === activeSkill}
+              ref={index === activeSkill ? selectedOptionRef : undefined}
+              className={`composer-option${index === activeSkill ? ' selected' : ''}`}
+              title={`${skill.description}\n${skill.path}`}
+              onMouseDown={event => {
+                event.preventDefault()
+                applySkill(skill)
+              }}
+              onMouseEnter={() => setSkillIndex(index)}
+            >
+              <span className="composer-option-name">/{skill.name}</span>
+              <span className="composer-option-desc">{skill.description}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，Enter 发送，Shift+Enter 换行'}
+        placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
+          setSkillIndex(0)
+          setPaletteClosed(false)
           resize()
         }}
         onKeyDown={onKeyDown}

@@ -107,7 +107,7 @@ pub fn render_input_area(
         }
     }
 
-    if !app.matched_commands.is_empty() {
+    if !app.matched_candidates.is_empty() {
         render_command_palette(app, frame, chunks[0]);
     }
 
@@ -219,9 +219,9 @@ fn line_selection_spans(
     spans
 }
 
-/// 渲染命令建议浮层（置于输入框上方，支持上下键高亮、Tab 快速补全）
+/// 渲染命令/技能建议浮层（置于输入框上方，支持上下键高亮、Tab 快速补全）
 fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
-    let count = app.matched_commands.len().min(8);
+    let count = app.matched_candidates.len().min(8);
     let popup_height = (count as u16) + 2;
     let popup_width = 64.min(input_rect.width);
 
@@ -245,14 +245,22 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
-            " Commands (↑/↓ to select, Tab to complete, Enter to execute) ",
+            " Commands & Skills (↑/↓ to select, Tab to complete, Enter to execute) ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ));
 
+    let name_width = app
+        .matched_candidates
+        .iter()
+        .map(|candidate| candidate.token().width())
+        .max()
+        .unwrap_or(12)
+        .max(12);
+
     let mut lines = Vec::new();
-    for (i, cmd) in app.matched_commands.iter().take(count).enumerate() {
+    for (i, candidate) in app.matched_candidates.iter().take(count).enumerate() {
         let is_selected = i == app.selected_command_index;
         let prefix = if is_selected { "> " } else { "  " };
 
@@ -269,10 +277,10 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
         };
 
         lines.push(command_row(
-            cmd.name,
-            cmd.description,
+            &candidate.token(),
+            candidate.description(),
             prefix,
-            12,
+            name_width,
             style,
             desc_style,
         ));

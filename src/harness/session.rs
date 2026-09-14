@@ -829,6 +829,12 @@ impl SessionTask {
         let mut parts = images;
         parts.push(ContentPart::text(prompt));
         self.append(Turn::user_turn(Message::new(parts))).await?;
+        // /<skill_name> 斜杠调用：user turn 保留原文，技能正文以独立 reminder 轮次注入
+        if let Some(skill) = crate::skills::match_invocation(prompt, &skills) {
+            let reminder = crate::system::format_skill_load_reminder(skill);
+            self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
+                .await?;
+        }
         self.view.state = RunState::Thinking;
         self.publish();
         if generate {

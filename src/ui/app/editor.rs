@@ -1,6 +1,6 @@
 use super::App;
 use super::selection::get_clipboard_text;
-use crate::ui::command::match_commands;
+use crate::ui::command::match_candidates;
 
 impl App {
     pub fn insert_char(&mut self, c: char) {
@@ -87,26 +87,26 @@ impl App {
     pub fn clear_input(&mut self) {
         self.clear_input_selection();
         self.input.clear();
-        self.matched_commands.clear();
+        self.matched_candidates.clear();
         self.selected_command_index = 0;
     }
 
     pub fn update_command_matches(&mut self) {
         if self.input.trim_start().starts_with('/') {
-            self.matched_commands = match_commands(&self.input);
-            if self.selected_command_index >= self.matched_commands.len() {
+            self.matched_candidates = match_candidates(&self.input, &self.skills);
+            if self.selected_command_index >= self.matched_candidates.len() {
                 self.selected_command_index = 0;
             }
         } else {
-            self.matched_commands.clear();
+            self.matched_candidates.clear();
             self.selected_command_index = 0;
         }
     }
 
     pub fn command_select_previous(&mut self) {
-        if !self.matched_commands.is_empty() {
+        if !self.matched_candidates.is_empty() {
             self.selected_command_index = if self.selected_command_index == 0 {
-                self.matched_commands.len() - 1
+                self.matched_candidates.len() - 1
             } else {
                 self.selected_command_index - 1
             };
@@ -114,15 +114,15 @@ impl App {
     }
 
     pub fn command_select_next(&mut self) {
-        if !self.matched_commands.is_empty() {
+        if !self.matched_candidates.is_empty() {
             self.selected_command_index =
-                (self.selected_command_index + 1) % self.matched_commands.len();
+                (self.selected_command_index + 1) % self.matched_candidates.len();
         }
     }
 
     pub fn complete_selected_command(&mut self) {
-        if let Some(cmd) = self.matched_commands.get(self.selected_command_index) {
-            self.input.set(&format!("{} ", cmd.name));
+        if let Some(candidate) = self.matched_candidates.get(self.selected_command_index) {
+            self.input.set(&format!("{} ", candidate.token()));
             self.update_command_matches();
         }
     }

@@ -62,6 +62,16 @@ pub fn format_skills_reminder(skills: &[Skill]) -> String {
     reminder
 }
 
+/// 格式化 /<skill_name> 直接加载的技能正文为 <system-reminder> User Message 文本
+/// （user turn 保留原始输入，技能正文以独立轮次随行注入）
+pub fn format_skill_load_reminder(skill: &Skill) -> String {
+    format!(
+        "<system-reminder type=\"skill-loaded\" name=\"{}\">\n{}\n</system-reminder>",
+        skill.name,
+        crate::skills::format_skill_content(skill)
+    )
+}
+
 fn get_current_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
@@ -206,6 +216,8 @@ pub enum AgentsReminderKind {
     Global,
     Project,
     Directory,
+    /// /<skill_name> 直接加载的技能正文
+    SkillLoaded,
 }
 
 /// 解析出的 AGENTS.md 系统提示提醒
@@ -213,6 +225,8 @@ pub enum AgentsReminderKind {
 pub struct AgentsReminder {
     pub kind: AgentsReminderKind,
     pub path: String,
+    /// skill-loaded 时的技能名，其余类别为空
+    pub name: String,
     pub content: String,
 }
 
@@ -286,6 +300,8 @@ pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
         AgentsReminderKind::Project
     } else if open_tag.contains("type=\"directory\"") {
         AgentsReminderKind::Directory
+    } else if open_tag.contains("type=\"skill-loaded\"") {
+        AgentsReminderKind::SkillLoaded
     } else {
         return None;
     };
@@ -298,9 +314,18 @@ pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
         String::new()
     };
 
+    let name = if let Some(n_idx) = open_tag.find("name=\"") {
+        let rest = &open_tag[n_idx + 6..];
+        let end_n = rest.find('"')?;
+        rest[..end_n].to_string()
+    } else {
+        String::new()
+    };
+
     Some(AgentsReminder {
         kind,
         path,
+        name,
         content: body.to_string(),
     })
 }
@@ -439,6 +464,40 @@ mod tests {
         assert_eq!(parsed_dir.kind, AgentsReminderKind::Directory);
         assert_eq!(parsed_dir.path, "src/ui/AGENTS.md");
         assert!(parsed_dir.content.contains("ui rules"));
+    }
+
+    #[test]
+    fn format_and_parse_skill_load_reminder() {
+        let skill = crate::skills::Skill {
+            name: "pdf-processing".into(),
+            description: "Extract PDF text.".into(),
+            license: None,
+            compatibility: None,
+            metadata: Default::default(),
+            allowed_tools: None,
+            path: PathBuf::from("/skills/pdf-processing"),
+            source: crate::skills::SkillSource::Global,
+            body: "1. Open the file.".into(),
+        };
+        let reminder = format_skill_load_reminder(&skill);
+        assert!(
+            reminder.starts_with("<system-reminder type=\"skill-loaded\" name=\"pdf-processing\">")
+        );
+        assert!(reminder.ends_with("</system-reminder>"));
+        assert!(
+            reminder.contains("<skill name=\"pdf-processing\" path=\"/skills/pdf-processing\">")
+        );
+        assert!(reminder.contains("1. Open the file."));
+
+        let parsed = parse_agents_reminder(&reminder).unwrap();
+        assert_eq!(parsed.kind, AgentsReminderKind::SkillLoaded);
+        assert_eq!(parsed.name, "pdf-processing");
+        assert!(parsed.content.contains("<skill name=\"pdf-processing\""));
+
+        // 普通消息与 skills 清单 reminder 不被误判为 skill-loaded
+        assert_eq!(parse_agents_reminder("plain prompt"), None);
+        let list_reminder = format_skills_reminder(&[skill]);
+        assert_eq!(parse_agents_reminder(&list_reminder), None);
     }
 
     #[test]

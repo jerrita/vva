@@ -1268,8 +1268,14 @@ pub(crate) fn append_part(
                     | crate::system::AgentsReminderKind::Project => {
                         // 全局与项目不展示
                     }
-                    crate::system::AgentsReminderKind::Directory => {
-                        // 按需自动加载的展示 Load xxx/AGENTS.md
+                    crate::system::AgentsReminderKind::Directory
+                    | crate::system::AgentsReminderKind::SkillLoaded => {
+                        // 按需自动加载的展示 Load xxx/AGENTS.md 与 Load <skill_name>
+                        let loaded = if reminder.name.is_empty() {
+                            reminder.path
+                        } else {
+                            reminder.name
+                        };
                         let needs_separator = state.prev_reasoning || state.prev_text;
                         state.prev_reasoning = false;
                         state.prev_text = true;
@@ -1277,7 +1283,7 @@ pub(crate) fn append_part(
                             render.lines.push(Line::from(""));
                         }
                         let spans = vec![Span::styled(
-                            format!("Load {}", reminder.path),
+                            format!("Load {loaded}"),
                             Style::default().fg(Color::Rgb(150, 150, 150)),
                         )];
                         render
@@ -3378,5 +3384,41 @@ def stream_test():
 
         assert!(full_output.contains("Load src/ui/AGENTS.md"));
         assert!(!full_output.contains("ui instructions"));
+
+        // 3. /<skill_name> 直接加载的技能：仅展示 "Load <name>"，正文不外显
+        let skill = crate::skills::Skill {
+            name: "pdf-processing".into(),
+            description: "Extract PDF text.".into(),
+            license: None,
+            compatibility: None,
+            metadata: Default::default(),
+            allowed_tools: None,
+            path: std::path::PathBuf::from("/skills/pdf-processing"),
+            source: crate::skills::SkillSource::Global,
+            body: "1. Open the file.".into(),
+        };
+        let part_skill = ContentPart::text(crate::system::format_skill_load_reminder(&skill));
+        append_parts(
+            &mut render,
+            Role::User,
+            std::slice::from_ref(&part_skill).iter(),
+            &mut state,
+        );
+
+        let full_output = render
+            .lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(full_output.contains("Load pdf-processing"));
+        assert!(!full_output.contains("Open the file"));
+        assert!(!full_output.contains("system-reminder"));
     }
 }

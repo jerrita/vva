@@ -5,7 +5,8 @@ use tokio::sync::watch;
 
 use crate::harness::SessionView;
 use crate::harness::{ManagedSession, SessionManager};
-use crate::ui::command::SlashCommand;
+use crate::skills::Skill;
+use crate::ui::command::CompletionCandidate;
 
 // 重新导出子模块内容以保持 100% 外部向后兼容
 pub use super::history::{SidebarStats, compute_stats};
@@ -56,7 +57,10 @@ pub struct App {
     pub modal: ActiveModal,
     /// 当前弹窗列表区的渲染几何（每帧由弹窗视图回写，供鼠标命中测试）
     pub modal_list_area: Rect,
-    pub matched_commands: Vec<&'static SlashCommand>,
+    /// 已发现的 Agent Skills（启动时加载，供 /<skill_name> 补全与直接加载）
+    pub skills: Vec<Skill>,
+    /// 当前输入匹配的补全候选（内置命令 + 技能）
+    pub matched_candidates: Vec<CompletionCandidate>,
     pub selected_command_index: usize,
     pub stats: SidebarStats,
     pub thinking_concise: bool,
@@ -84,6 +88,7 @@ impl App {
         let view_rx = initial_session.subscribe();
         let view = initial_session.snapshot();
         let stats = compute_stats(&view.session, &session_mgr.app_config());
+        let skills = crate::skills::discover_skills(&view.session.workspace_root);
         Self {
             session_mgr,
             active_session: initial_session,
@@ -105,7 +110,8 @@ impl App {
             should_quit: false,
             modal: ActiveModal::None,
             modal_list_area: Rect::default(),
-            matched_commands: Vec::new(),
+            skills,
+            matched_candidates: Vec::new(),
             selected_command_index: 0,
             stats,
             thinking_concise: true,

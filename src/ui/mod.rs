@@ -375,8 +375,8 @@ async fn handle_crossterm_event(
         }
 
         // 常规输入交互
-        // 1. 命令建议选单交互 (Claude Code / OpenCode 风格)
-        if !app.matched_commands.is_empty() {
+        // 1. 命令/技能建议选单交互 (Claude Code / OpenCode 风格)
+        if !app.matched_candidates.is_empty() {
             match key.code {
                 KeyCode::Up => {
                     app.command_select_previous();
@@ -403,21 +403,30 @@ async fn handle_crossterm_event(
                         || key.modifiers.contains(KeyModifiers::ALT)
                         || key.modifiers.contains(KeyModifiers::CONTROL)
                     {
-                        app.matched_commands.clear();
+                        app.matched_candidates.clear();
                         app.selected_command_index = 0;
                         app.insert_char('\n');
                         return;
                     }
-                    if let Some(cmd) = app.matched_commands.get(app.selected_command_index) {
-                        app.set_input(cmd.name);
+                    if let Some(candidate) = app.matched_candidates.get(app.selected_command_index)
+                    {
+                        match candidate {
+                            crate::ui::command::CompletionCandidate::Command(cmd) => {
+                                app.set_input(cmd.name);
+                                app.matched_candidates.clear();
+                                app.selected_command_index = 0;
+                                app.submit_input().await;
+                            }
+                            crate::ui::command::CompletionCandidate::Skill { name, .. } => {
+                                // 技能候选仅补全，任务描述待用户继续输入
+                                app.set_input(&format!("/{name} "));
+                            }
+                        }
                     }
-                    app.matched_commands.clear();
-                    app.selected_command_index = 0;
-                    app.submit_input().await;
                     return;
                 }
                 KeyCode::Esc => {
-                    app.matched_commands.clear();
+                    app.matched_candidates.clear();
                     app.selected_command_index = 0;
                     return;
                 }
@@ -489,7 +498,7 @@ async fn handle_crossterm_event(
             KeyCode::Tab => {
                 if app.input.trim_start().starts_with('/') {
                     app.update_command_matches();
-                    if !app.matched_commands.is_empty() {
+                    if !app.matched_candidates.is_empty() {
                         app.complete_selected_command();
                     }
                 }

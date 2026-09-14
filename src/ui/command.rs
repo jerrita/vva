@@ -6,6 +6,30 @@ pub struct SlashCommand {
     pub example: &'static str,
 }
 
+/// 命令补全候选：内置斜杠命令或已发现的 Agent Skill（/<skill_name> 直接加载）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompletionCandidate {
+    Command(&'static SlashCommand),
+    Skill { name: String, description: String },
+}
+
+impl CompletionCandidate {
+    /// 补全输入框的斜杠 token（含前导 /）
+    pub fn token(&self) -> String {
+        match self {
+            Self::Command(cmd) => cmd.name.to_string(),
+            Self::Skill { name, .. } => format!("/{name}"),
+        }
+    }
+
+    pub fn description(&self) -> &str {
+        match self {
+            Self::Command(cmd) => cmd.description,
+            Self::Skill { description, .. } => description,
+        }
+    }
+}
+
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -78,27 +102,41 @@ pub static COMMANDS: &[SlashCommand] = &[
     },
 ];
 
-/// 匹配当前输入前缀的可用斜杠命令（仅在输入命令名且尚未输入参数空格时触发）
-pub fn match_commands(input: &str) -> Vec<&'static SlashCommand> {
+/// 匹配当前输入前缀的可用补全候选（内置命令在前、技能在后；仅在输入命令名且尚未输入参数空格时触发）
+pub fn match_candidates(input: &str, skills: &[crate::skills::Skill]) -> Vec<CompletionCandidate> {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') {
         return Vec::new();
     }
 
-    // 若已经输入了空格或换行，说明正在输入参数或多行内容，不再显示命令选单
+    // 若已经输入了空格或换行，说明正在输入参数或多行内容，不再显示候选选单
     if trimmed.contains(' ') || trimmed.contains('\n') {
         return Vec::new();
     }
 
     let lower_token = trimmed.to_lowercase();
 
-    COMMANDS
+    let mut candidates: Vec<CompletionCandidate> = COMMANDS
         .iter()
         .filter(|cmd| {
             cmd.name.starts_with(&lower_token)
                 || cmd.aliases.iter().any(|a| a.starts_with(&lower_token))
         })
-        .collect()
+        .map(CompletionCandidate::Command)
+        .collect();
+
+    candidates.extend(skills.iter().filter_map(|skill| {
+        let slash_name = format!("/{}", skill.name);
+        slash_name
+            .to_lowercase()
+            .starts_with(&lower_token)
+            .then(|| CompletionCandidate::Skill {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+            })
+    }));
+
+    candidates
 }
 
 /// 命令列表行：`prefix + 名称(定宽) + 描述`，帮助弹窗与命令浮层共用
@@ -119,44 +157,83 @@ pub fn command_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::{Skill, SkillSource};
+    use std::path::PathBuf;
+
+    fn skill(name: &str, description: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: description.to_string(),
+            license: None,
+            compatibility: None,
+            metadata: Default::default(),
+            allowed_tools: None,
+            path: PathBuf::from(format!("/tmp/skills/{name}")),
+            source: SkillSource::Global,
+            body: String::new(),
+        }
+    }
+
+    fn names(candidates: &[CompletionCandidate]) -> Vec<String> {
+        candidates.iter().map(|c| c.token()).collect()
+    }
 
     #[test]
-    fn test_match_commands() {
-        assert_eq!(match_commands("hello").len(), 0);
-        let s_matches = match_commands("/s");
-        assert!(s_matches.iter().any(|c| c.name == "/sessions"));
-        assert!(s_matches.iter().any(|c| c.name == "/search"));
+    fn test_match_candidates() {
+        let skills = vec![
+            skill("search-docs", "Search docs"),
+            skill("pdf", "Pdf tools"),
+        ];
+        assert_eq!(match_candidates("hello", &skills).len(), 0);
 
-        let sess_matches = match_commands("/session");
+        let s_matches = match_candidates("/s", &skills);
+        assert!(names(&s_matches).contains(&"/sessions".to_string()));
+        assert!(names(&s_matches).contains(&"/search".to_string()));
+        assert!(names(&s_matches).contains(&"/search-docs".to_string()));
+
+        // 内置命令在前，技能在后
+        let all_matches = match_candidates("/", &skills);
+        assert!(matches!(
+            all_matches.first(),
+            Some(CompletionCandidate::Command(_))
+        ));
+        assert!(names(&all_matches).contains(&"/pdf".to_string()));
+
+        let sess_matches = match_candidates("/session", &skills);
         assert_eq!(sess_matches.len(), 1);
-        assert_eq!(sess_matches[0].name, "/sessions");
+        assert_eq!(sess_matches[0].token(), "/sessions");
 
-        let new_matches = match_commands("/new");
+        let new_matches = match_candidates("/new", &skills);
         assert_eq!(new_matches.len(), 1);
-        assert_eq!(new_matches[0].name, "/new");
+        assert_eq!(new_matches[0].token(), "/new");
 
-        let q_matches = match_commands("/q");
+        let q_matches = match_candidates("/q", &skills);
         assert_eq!(q_matches.len(), 1);
-        assert_eq!(q_matches[0].name, "/quit");
+        assert_eq!(q_matches[0].token(), "/quit");
 
-        let v_matches = match_commands("/v");
+        let v_matches = match_candidates("/v", &skills);
         assert_eq!(v_matches.len(), 1);
-        assert_eq!(v_matches[0].name, "/variant");
+        assert_eq!(v_matches[0].token(), "/variant");
 
-        let cfg_matches = match_commands("/conf");
+        let cfg_matches = match_candidates("/conf", &skills);
         assert_eq!(cfg_matches.len(), 1);
-        assert_eq!(cfg_matches[0].name, "/config");
+        assert_eq!(cfg_matches[0].token(), "/config");
 
-        let think_matches = match_commands("/think");
+        let think_matches = match_candidates("/think", &skills);
         assert_eq!(think_matches.len(), 1);
-        assert_eq!(think_matches[0].name, "/thinking");
+        assert_eq!(think_matches[0].token(), "/thinking");
 
-        // 带空格或参数时不显示命令选单
-        assert_eq!(match_commands("/model ").len(), 0);
-        assert_eq!(match_commands("/model gpt-5").len(), 0);
+        let pdf_matches = match_candidates("/pdf", &skills);
+        assert_eq!(pdf_matches.len(), 1);
+        assert_eq!(pdf_matches[0].token(), "/pdf");
+        assert_eq!(pdf_matches[0].description(), "Pdf tools");
 
-        // 多行输入（如粘贴脚本或以 / 开头的多行文本）不触发命令选单
-        assert_eq!(match_commands("/bin/bash\necho 1").len(), 0);
-        assert_eq!(match_commands("/model\ngpt-5").len(), 0);
+        // 带空格或参数时不显示候选选单
+        assert_eq!(match_candidates("/model ", &skills).len(), 0);
+        assert_eq!(match_candidates("/model gpt-5", &skills).len(), 0);
+
+        // 多行输入（如粘贴脚本或以 / 开头的多行文本）不触发候选选单
+        assert_eq!(match_candidates("/bin/bash\necho 1", &skills).len(), 0);
+        assert_eq!(match_candidates("/model\ngpt-5", &skills).len(), 0);
     }
 }

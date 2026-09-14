@@ -74,14 +74,7 @@ impl crate::tools::Tool for SkillTool {
                     )
                 }
             })?;
-        Ok(format!(
-            "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>\n\n\
-             Files referenced by this skill (scripts/, references/, assets/) are relative to the \
-             skill root directory above. Load them with Read or Shell only when needed.",
-            skill.name,
-            skill.path.display(),
-            skill.body
-        ))
+        Ok(crate::skills::format_skill_content(skill))
     }
 }
 

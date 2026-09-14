@@ -821,3 +821,70 @@ async fn test_fork_user_turn_creates_titled_session() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn test_slash_skill_completion_and_invocation() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    let app = &mut ta.app;
+    // 写入真实技能目录：TUI 补全清单与会话任务的发现结果需一致
+    let skill_dir = ta.temp_dir.join(".vva/skills/doc-review");
+    std::fs::create_dir_all(&skill_dir).unwrap();
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: doc-review\ndescription: Review docs.\n---\n1. Read the doc.",
+    )
+    .unwrap();
+    app.skills = crate::skills::discover_skills(&ta.temp_dir);
+    assert!(app.skills.iter().any(|s| s.name == "doc-review"));
+
+    // 1. 前缀匹配出技能候选
+    app.set_input("/doc");
+    assert!(
+        app.matched_candidates
+            .iter()
+            .any(|c| c.token() == "/doc-review")
+    );
+
+    // 2. 高亮技能候选后 Tab 补全为可继续输入任务描述的形态
+    let index = app
+        .matched_candidates
+        .iter()
+        .position(|c| c.token() == "/doc-review")
+        .unwrap();
+    app.selected_command_index = index;
+    app.complete_selected_command();
+    assert_eq!(app.input.as_str(), "/doc-review ");
+    assert!(app.matched_candidates.is_empty());
+
+    // 3. /<skill_name> 提交：user turn 保留原文，技能正文以 reminder turn 注入
+    app.set_input("/doc-review check the guide");
+    app.submit_input().await;
+    // 提交经会话任务异步落盘，轮询等待本条 user turn 出现
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let turns = &app.active_session.snapshot().session.turns;
+        if turns.len() >= 2
+            && turns[turns.len() - 2].text_content() == "/doc-review check the guide"
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout waiting for skill invocation turns, notices={:?}",
+            app.notices
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let turns = &app.active_session.snapshot().session.turns;
+    let last = turns.len() - 1;
+    assert_eq!(
+        turns[last - 1].text_content(),
+        "/doc-review check the guide"
+    );
+    let parsed = crate::system::parse_agents_reminder(&turns[last].text_content()).unwrap();
+    assert_eq!(parsed.kind, crate::system::AgentsReminderKind::SkillLoaded);
+    assert_eq!(parsed.name, "doc-review");
+    assert!(parsed.content.contains("1. Read the doc."));
+
+    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+}

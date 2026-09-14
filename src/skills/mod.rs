@@ -44,6 +44,29 @@ impl Skill {
     }
 }
 
+/// 技能激活文本（渐进披露第二层）：SKILL.md 正文包裹于 <skill> 标签。
+/// Skill 工具返回与 /<skill_name> 直接加载共用此格式，对模型呈现一致。
+pub fn format_skill_content(skill: &Skill) -> String {
+    format!(
+        "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>\n\n\
+         Files referenced by this skill (scripts/, references/, assets/) are relative to the \
+         skill root directory above. Load them with Read or Shell only when needed.",
+        skill.name,
+        skill.path.display(),
+        skill.body
+    )
+}
+
+/// 解析 /<skill_name> 斜杠调用：prompt 首个空白分隔 token 为 "/name" 且精确匹配已发现技能时返回该技能
+pub fn match_invocation<'a>(prompt: &str, skills: &'a [Skill]) -> Option<&'a Skill> {
+    let token = prompt.split_whitespace().next()?;
+    let name = token.strip_prefix('/')?;
+    if name.is_empty() {
+        return None;
+    }
+    skills.iter().find(|skill| skill.name == name)
+}
+
 /// SKILL.md frontmatter 强类型字段集（规范固定字段，未知字段拒绝）
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -405,5 +428,47 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(global);
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    fn skill_named(name: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: format!("{name} description"),
+            license: None,
+            compatibility: None,
+            metadata: Default::default(),
+            allowed_tools: None,
+            path: PathBuf::from(format!("/tmp/skills/{name}")),
+            source: SkillSource::Global,
+            body: "body".into(),
+        }
+    }
+
+    #[test]
+    fn matches_slash_invocation_exactly() {
+        let skills = vec![skill_named("pdf-tools"), skill_named("web")];
+        assert_eq!(
+            match_invocation("/pdf-tools extract text", &skills)
+                .unwrap()
+                .name,
+            "pdf-tools"
+        );
+        assert_eq!(match_invocation("/web", &skills).unwrap().name, "web");
+
+        // 首个 token 非精确技能名、未知技能、非斜杠开头均不命中
+        assert!(match_invocation("/pdf-tools, please", &skills).is_none());
+        assert!(match_invocation("/unknown task", &skills).is_none());
+        assert!(match_invocation("plain prompt", &skills).is_none());
+        assert!(match_invocation("/", &skills).is_none());
+        assert!(match_invocation("", &skills).is_none());
+    }
+
+    #[test]
+    fn formats_skill_content_wrapper() {
+        let skill = skill_named("pdf-tools");
+        let content = format_skill_content(&skill);
+        assert!(content.starts_with("<skill name=\"pdf-tools\" path=\"/tmp/skills/pdf-tools\">"));
+        assert!(content.contains("body"));
+        assert!(content.ends_with("Load them with Read or Shell only when needed."));
     }
 }

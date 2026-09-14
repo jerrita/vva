@@ -25,13 +25,18 @@ impl App {
         }
 
         // 普通用户 Prompt
+        self.submit_prompt(&input_text).await;
+    }
+
+    /// 提交普通用户 Prompt 到当前会话
+    async fn submit_prompt(&mut self, prompt: &str) {
         self.auto_scroll = true;
         self.notices.clear();
         self.consumed_notices = 0;
 
         if let Err(e) = self
             .session_mgr
-            .submit_prompt(self.active_session.clone(), &input_text)
+            .submit_prompt(self.active_session.clone(), prompt)
             .await
         {
             self.notices.push(format!("Error: {e}"));
@@ -147,9 +152,14 @@ impl App {
                 self.should_quit = true;
             }
             _ => {
-                self.notices.push(format!(
-                    "Unknown command '{cmd}'. Type /help for available commands."
-                ));
+                // /<skill_name> 直接加载：原文提交，技能正文由会话任务注入
+                if crate::skills::match_invocation(cmd_line, &self.skills).is_some() {
+                    self.submit_prompt(cmd_line).await;
+                } else {
+                    self.notices.push(format!(
+                        "Unknown command '{cmd}'. Type /help for available commands."
+                    ));
+                }
             }
         }
     }

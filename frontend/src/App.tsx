@@ -17,7 +17,7 @@ import {
   extractRelatedFiles,
 } from './components/FileSidebar'
 import type { ProjectOption } from './components/Sidebar'
-import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, UserAnswer } from './types'
+import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillEntry, UserAnswer } from './types'
 
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -59,6 +59,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [stats, setStats] = useState<SidebarStats | null>(null)
   const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
+  const [skills, setSkills] = useState<SkillEntry[]>([])
   const [sidebarHidden, setSidebarHidden] = useState(
     () => localStorage.getItem('vva.sidebar-hidden') === '1',
   )
@@ -188,6 +189,7 @@ export default function App() {
     api.models().then(setModels).catch(e => setError(toError(e)))
     api.workspace().then(workspace => setDefaultRoot(workspace.root)).catch(() => {})
     api.sessions().then(setSessions).catch(e => setError(toError(e)))
+    api.skills().then(response => setSkills(response.skills)).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -842,7 +844,7 @@ export default function App() {
                   onChange={setDraftProject}
                 />
               </div>
-              <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
+              <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} skills={skills} />
             </div>
           </div>
         ) : (
@@ -876,6 +878,7 @@ export default function App() {
                 onSend={submit}
                 onStop={abort}
                 controls={composerControls}
+                skills={skills}
               />
             </div>
           </>
