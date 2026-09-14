@@ -122,6 +122,25 @@ fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(serde_json::Value::as_str)
 }
 
+fn edit_counts(args: &serde_json::Value) -> Option<(usize, usize)> {
+    if let Some(edits) = args.get("edits") {
+        edits
+            .as_array()?
+            .iter()
+            .try_fold((0, 0), |(added, removed), edit| {
+                Some((
+                    added + line_count(json_str(edit, "new_string")?),
+                    removed + line_count(json_str(edit, "old_string")?),
+                ))
+            })
+    } else {
+        Some((
+            line_count(json_str(args, "new_string")?),
+            line_count(json_str(args, "old_string")?),
+        ))
+    }
+}
+
 fn line_count(text: &str) -> usize {
     if text.is_empty() {
         0
@@ -193,21 +212,18 @@ fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) ->
                 .and_then(serde_json::Value::as_u64)
                 .map(|limit| limit.to_string())
                 .unwrap_or_else(|| "all".into());
-            format!("{path} [offset={offset}, limit={limit}]")
+            let byte_offset = args
+                .get("byte_offset")
+                .and_then(serde_json::Value::as_u64)
+                .map(|offset| format!(", byte_offset={offset}"))
+                .unwrap_or_default();
+            format!("{path} [offset={offset}, limit={limit}{byte_offset}]")
         }
         "Write" => json_str(&args, "path")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
-        "Edit" => match (
-            json_str(&args, "path"),
-            json_str(&args, "old_string"),
-            json_str(&args, "new_string"),
-        ) {
-            (Some(path), Some(old_string), Some(new_string)) => format!(
-                "{path} (+{}, -{})",
-                line_count(new_string),
-                line_count(old_string)
-            ),
+        "Edit" => match (json_str(&args, "path"), edit_counts(&args)) {
+            (Some(path), Some((added, removed))) => format!("{path} (+{added}, -{removed})"),
             _ => arguments.to_string(),
         },
         "Glob" => {
@@ -485,11 +501,8 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
         .ok()
         .filter(|_| call.name == "Edit")
         .and_then(|args| {
-            Some((
-                json_str(&args, "path")?.to_string(),
-                line_count(json_str(&args, "new_string")?),
-                line_count(json_str(&args, "old_string")?),
-            ))
+            let (added, removed) = edit_counts(&args)?;
+            Some((json_str(&args, "path")?.to_string(), added, removed))
         });
     if let Some((path, inserted, deleted)) = edit_detail {
         spans.extend([
@@ -840,6 +853,40 @@ fn push_edit_detail(
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return;
     };
+    if args.get("edits").is_some() {
+        if let Some(result) = result {
+            for text in result.lines().take(cap) {
+                let style = match text.as_bytes().first() {
+                    Some(b'+') => EDIT_INSERT,
+                    Some(b'-') => EDIT_DELETE,
+                    _ => Style::default(),
+                };
+                push_filled_text(lines, text, style, max_width);
+            }
+            if result.lines().count() > cap {
+                push_filled_text(
+                    lines,
+                    "...",
+                    Style::default().fg(Color::DarkGray),
+                    max_width,
+                );
+            }
+        } else if let Some(edits) = args.get("edits").and_then(serde_json::Value::as_array) {
+            for edit in edits {
+                for (field, marker, style) in [
+                    ("old_string", "-", EDIT_DELETE),
+                    ("new_string", "+", EDIT_INSERT),
+                ] {
+                    if let Some(text) = json_str(edit, field) {
+                        for line in text.lines() {
+                            push_filled_text(lines, &format!("{marker}{line}"), style, max_width);
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     let Some(old) = json_str(&args, "old_string") else {
         return;
     };

@@ -5,10 +5,13 @@ use base64::Engine;
 use glob::{MatchOptions, Pattern};
 use regex::Regex;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use super::Tool;
 
@@ -205,9 +208,15 @@ fn matches_any(patterns: &[Pattern], path: &Path) -> bool {
         .any(|pattern| pattern.matches_path_with(path, GLOB_OPTIONS))
 }
 
-fn unified_diff(path: &Path, original: &str, updated: &str) -> String {
-    let original_lines: Vec<_> = original.lines().collect();
-    let updated_lines: Vec<_> = updated.lines().collect();
+fn unified_diff(
+    path: &Path,
+    original: &str,
+    updated: &str,
+    old_offset: usize,
+    new_offset: usize,
+) -> String {
+    let original_lines: Vec<_> = original.split_inclusive('\n').collect();
+    let updated_lines: Vec<_> = updated.split_inclusive('\n').collect();
 
     let prefix = original_lines
         .iter()
@@ -238,20 +247,29 @@ fn unified_diff(path: &Path, original: &str, updated: &str) -> String {
         "--- {}\n+++ {}\n@@ -{} +{} @@",
         path.display(),
         path.display(),
-        format_range(context_start, original_count),
-        format_range(context_start, updated_count),
+        format_range(old_offset + context_start, original_count),
+        format_range(new_offset + context_start, updated_count),
     );
+    let mut push_line = |marker: char, line: &str| {
+        diff.push_str(&format!(
+            "\n{marker}{}",
+            line.strip_suffix('\n').unwrap_or(line)
+        ));
+        if !line.ends_with('\n') {
+            diff.push_str("\n\\ No newline at end of file");
+        }
+    };
     for line in &original_lines[context_start..prefix] {
-        diff.push_str(&format!("\n {line}"));
+        push_line(' ', line);
     }
     for line in &original_lines[prefix..original_changed_end] {
-        diff.push_str(&format!("\n-{line}"));
+        push_line('-', line);
     }
     for line in &updated_lines[prefix..updated_changed_end] {
-        diff.push_str(&format!("\n+{line}"));
+        push_line('+', line);
     }
     for line in &original_lines[original_changed_end..original_end] {
-        diff.push_str(&format!("\n {line}"));
+        push_line(' ', line);
     }
     diff
 }
@@ -283,8 +301,8 @@ impl ReadTool {
             .map_err(|error| format!("Failed to read file {}: {error}", path.display()))?;
         if let Some((kind, mime_type)) = media_type(&path, &bytes) {
             self.inputs.require(kind, mime_type)?;
-            if args.offset.is_some() || args.limit.is_some() {
-                return Err("offset and limit apply only to text files".into());
+            if args.offset.is_some() || args.limit.is_some() || args.byte_offset.is_some() {
+                return Err("offset, limit and byte_offset apply only to text files".into());
             }
             let media = MediaContent {
                 kind,
@@ -310,7 +328,7 @@ impl ReadTool {
         if content.contains('\0') {
             return Err(format!("Unsupported binary file: {}", path.display()));
         }
-        Ok((read_text(content, &args), Vec::new()))
+        Ok((read_text(content, &args)?, Vec::new()))
     }
 }
 
@@ -356,49 +374,74 @@ fn media_type(path: &Path, bytes: &[u8]) -> Option<(MediaKind, &'static str)> {
     })
 }
 
-fn read_text(content: &str, args: &ReadArgs) -> String {
-    let lines: Vec<_> = content.lines().collect();
-    let start = args.offset.unwrap_or(1).saturating_sub(1);
-    let end = args
-        .limit
-        .map(|limit| start.saturating_add(limit))
-        .unwrap_or(lines.len())
-        .min(lines.len());
-    if start >= lines.len() {
-        return format!("[End of file: {} lines]", lines.len());
+fn content_version(content: &str) -> String {
+    format!("{:x}", Sha256::digest(content.as_bytes()))
+}
+
+fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
+    let offset = args.offset.unwrap_or(1);
+    if offset == 0 {
+        return Err("offset must be a positive, 1-indexed line number".into());
     }
-    let mut output = String::new();
-    let mut next = start;
-    for (index, line) in lines.iter().enumerate().take(end).skip(start) {
-        let numbered = format!(
-            "{}{}: {line}",
-            if output.is_empty() { "" } else { "\n" },
-            index + 1
-        );
-        let remaining = super::MAX_INLINE_OUTPUT_BYTES - output.len();
-        if numbered.len() > remaining {
-            // Keep the whole prefix within the byte budget, including a partial line.
-            let mut cut = remaining;
-            while !numbered.is_char_boundary(cut) {
+    if args.byte_offset.is_some() && args.limit != Some(1) {
+        return Err("byte_offset requires limit=1".into());
+    }
+    // Reserve space for the version and continuation notice as well as the text.
+    let budget = super::MAX_INLINE_OUTPUT_BYTES - 256;
+    let mut output = format!("[version: {}]\n", content_version(content));
+    let mut lines = content.lines().enumerate().skip(offset - 1).peekable();
+    let mut shown = 0;
+    while shown < args.limit.unwrap_or(usize::MAX) {
+        let Some((index, line)) = lines.next() else {
+            if args.byte_offset.is_some() {
+                return Err("byte_offset refers to a line past EOF".into());
+            }
+            output.push_str("[End of file]");
+            return Ok(output);
+        };
+        let byte_offset = args.byte_offset.unwrap_or(0);
+        if byte_offset > line.len() || !line.is_char_boundary(byte_offset) {
+            return Err(format!(
+                "byte_offset must be a UTF-8 boundary within line {} ({} bytes)",
+                index + 1,
+                line.len()
+            ));
+        }
+        let prefix = if byte_offset == 0 {
+            format!("{}: ", index + 1)
+        } else {
+            format!("{}@{byte_offset}: ", index + 1)
+        };
+        let text = &line[byte_offset..];
+        let remaining = budget.saturating_sub(output.len());
+        if prefix.len() + text.len() + 1 > remaining {
+            if shown > 0 {
+                output.push_str(&format!("[Continue with Read offset={}.]", index + 1));
+                return Ok(output);
+            }
+            let mut cut = remaining.saturating_sub(prefix.len() + 1).min(text.len());
+            while !text.is_char_boundary(cut) {
                 cut -= 1;
             }
-            output.push_str(&numbered[..cut]);
-            output.push_str(&format!("\n[32 KiB limit: {} total lines; continue with Read offset={} to reread the truncated line.{}]", lines.len(), index + 1, if line.len() > super::MAX_INLINE_OUTPUT_BYTES { " This line exceeds the byte limit; use another tool for its remainder." } else { "" }));
-            return output;
+            output.push_str(&prefix);
+            output.push_str(&text[..cut]);
+            output.push_str(&format!(
+                "\n[Partial line; continue with Read offset={}, byte_offset={}, limit=1.]",
+                index + 1,
+                byte_offset + cut
+            ));
+            return Ok(output);
         }
-        output.push_str(&numbered);
-        next = index + 1;
+        output.push_str(&prefix);
+        output.push_str(text);
+        output.push('\n');
+        shown += 1;
     }
-    if next < lines.len() {
-        output.push_str(&format!(
-            "\n[{} total lines; continue with Read offset={}.]",
-            lines.len(),
-            next + 1
-        ));
-    } else {
-        output.push_str(&format!("\n[End of file: {} lines]", lines.len()));
+    match lines.peek() {
+        Some((index, _)) => output.push_str(&format!("[Continue with Read offset={}.]", index + 1)),
+        None => output.push_str("[End of file]"),
     }
-    output
+    Ok(output)
 }
 
 #[derive(Deserialize)]
@@ -406,6 +449,7 @@ struct ReadArgs {
     path: String,
     offset: Option<usize>,
     limit: Option<usize>,
+    byte_offset: Option<usize>,
 }
 
 #[async_trait]
@@ -415,8 +459,8 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        r#"Read an existing file; use Glob to locate files and Grep to search their contents. UTF-8 text is returned with 1-indexed line numbers. Use offset and limit for a range. Text is capped at 32 KiB; only the excess is truncated, with a pagination hint appended at the end. A line cut by the byte limit is marked; use another tool to inspect its remainder. Binary images, PDFs, audio and video are returned as multimodal content when the current model's configured input modalities and native protocol support them; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel when reading multiple files.
-Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/main.rs","offset":1,"limit":200}."#
+        r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text has 1-indexed line numbers and a content version; copy that version into Edit's expected_version to detect changes since this read. Use offset and limit for a range. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Copy code without line-number prefixes or notices. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
+Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/main.rs","offset":1,"limit":200}."#
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -425,7 +469,8 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
             "properties": {
                 "path": { "type": "string", "format": "path", "description": "Existing file path, absolute or workspace-relative." },
                 "offset": { "type": "integer", "description": "First line to read, 1-indexed. Omit to start at line 1; use a positive integer." },
-                "limit": { "type": "integer", "description": "Maximum number of lines to return. Omit to read through EOF or the byte limit; 0 returns only the pagination hint." }
+                "limit": { "type": "integer", "description": "Maximum lines to return. Omit to read through EOF or the byte limit; 0 returns metadata only." },
+                "byte_offset": { "type": "integer", "description": "0-indexed UTF-8 byte position within the selected line; requires limit=1. Copy from a Partial line continuation notice." }
             },
             "required": ["path"]
         })
@@ -520,11 +565,343 @@ impl EditTool {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EditArgs {
     path: String,
+    expected_version: Option<String>,
+    edits: Option<Vec<Replacement>>,
+    old_string: Option<String>,
+    new_string: Option<String>,
+    replace_all: Option<bool>,
+    expected_matches: Option<usize>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Replacement {
     old_string: String,
     new_string: String,
     replace_all: Option<bool>,
+    expected_matches: Option<usize>,
+}
+
+impl EditArgs {
+    fn replacements(self) -> Result<Vec<Replacement>, String> {
+        if let Some(edits) = self.edits {
+            if self.old_string.is_some()
+                || self.new_string.is_some()
+                || self.replace_all.is_some()
+                || self.expected_matches.is_some()
+            {
+                return Err(
+                    "invalid_arguments: use either edits[] or top-level replacement fields".into(),
+                );
+            }
+            if edits.is_empty() {
+                return Err(
+                    "invalid_arguments: edits[] must contain at least one replacement".into(),
+                );
+            }
+            return Ok(edits);
+        }
+        Ok(vec![Replacement {
+            old_string: self
+                .old_string
+                .ok_or("invalid_arguments: old_string is required for a single replacement")?,
+            new_string: self
+                .new_string
+                .ok_or("invalid_arguments: new_string is required for a single replacement")?,
+            replace_all: self.replace_all,
+            expected_matches: self.expected_matches,
+        }])
+    }
+}
+
+// Weak entries share locks across registry/session instances without retaining files forever.
+fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
+    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| "File mutation lock poisoned".to_string())?;
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = locks.get(path).and_then(Weak::upgrade).unwrap_or_default();
+    locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
+    Ok(lock)
+}
+
+struct NormalizedText {
+    text: String,
+    crlf_offsets: Vec<usize>,
+}
+
+impl NormalizedText {
+    fn new(raw: &str) -> Self {
+        let crlf_offsets = raw
+            .match_indices("\r\n")
+            .enumerate()
+            .map(|(removed, (offset, _))| offset - removed)
+            .collect();
+        Self {
+            text: raw.replace("\r\n", "\n"),
+            crlf_offsets,
+        }
+    }
+
+    fn raw_offset(&self, offset: usize) -> usize {
+        offset + self.crlf_offsets.partition_point(|&crlf| crlf < offset)
+    }
+}
+
+struct MatchedReplacement {
+    start: usize,
+    end: usize,
+    text: String,
+    edit_index: usize,
+}
+
+#[derive(Debug)]
+struct ChangedRange {
+    old: std::ops::Range<usize>,
+    new: std::ops::Range<usize>,
+}
+
+#[derive(Debug)]
+struct EditPlan {
+    updated: String,
+    changes: Vec<ChangedRange>,
+}
+
+fn edit_diff(path: &Path, original: &str, plan: &EditPlan) -> String {
+    fn line_offsets(text: &str) -> Vec<usize> {
+        let mut offsets = vec![0];
+        for line in text.split_inclusive('\n') {
+            offsets.push(offsets.last().unwrap() + line.len());
+        }
+        offsets
+    }
+    fn window(offsets: &[usize], range: &std::ops::Range<usize>) -> std::ops::Range<usize> {
+        let start = offsets
+            .partition_point(|&offset| offset <= range.start)
+            .saturating_sub(1);
+        let end = offsets.partition_point(|&offset| offset < range.end);
+        start.saturating_sub(3)..(end + 3).min(offsets.len() - 1)
+    }
+    let old_offsets = line_offsets(original);
+    let new_offsets = line_offsets(&plan.updated);
+    let mut groups: Vec<ChangedRange> = Vec::new();
+    for change in &plan.changes {
+        let old = window(&old_offsets, &change.old);
+        let new = window(&new_offsets, &change.new);
+        if let Some(last) = groups.last_mut()
+            && (old.start <= last.old.end || new.start <= last.new.end)
+        {
+            last.old.end = last.old.end.max(old.end);
+            last.new.end = last.new.end.max(new.end);
+        } else {
+            groups.push(ChangedRange { old, new });
+        }
+    }
+    let mut output = String::new();
+    for group in groups {
+        let diff = unified_diff(
+            path,
+            &original[old_offsets[group.old.start]..old_offsets[group.old.end]],
+            &plan.updated[new_offsets[group.new.start]..new_offsets[group.new.end]],
+            group.old.start,
+            group.new.start,
+        );
+        if output.is_empty() {
+            output = diff;
+        } else {
+            output.push('\n');
+            output.push_str(diff.splitn(3, '\n').nth(2).unwrap());
+        }
+    }
+    output
+}
+
+fn local_line_ending(raw: &str, start: usize) -> &'static str {
+    let newline = raw[start..]
+        .find('\n')
+        .map(|offset| start + offset)
+        .or_else(|| raw[..start].rfind('\n'));
+    if newline.is_some_and(|offset| offset > 0 && raw.as_bytes()[offset - 1] == b'\r') {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn match_feedback(content: &str, needle: &str) -> String {
+    let anchor = needle
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(str::trim);
+    let mut candidates = Vec::new();
+    if let Some(anchor) = anchor {
+        for (index, line) in content.lines().enumerate() {
+            if line.trim() == anchor {
+                candidates.push(index + 1);
+                if candidates.len() == 5 {
+                    break;
+                }
+            }
+        }
+    }
+    if candidates.is_empty() {
+        "Use Grep to locate the target, then Read its current text.".into()
+    } else {
+        format!(
+            "First-line candidates at lines {candidates:?}; Read around these lines and copy exact text."
+        )
+    }
+}
+
+fn apply_replacements(raw: &str, edits: &[Replacement]) -> Result<EditPlan, String> {
+    let normalized = NormalizedText::new(raw);
+    let content = &normalized.text;
+    let mut matched = Vec::new();
+    for (edit_index, edit) in edits.iter().enumerate() {
+        let old = edit.old_string.replace("\r\n", "\n");
+        let new = edit.new_string.replace("\r\n", "\n");
+        if old.is_empty() {
+            if edits.len() != 1
+                || edit.replace_all.unwrap_or(false)
+                || edit.expected_matches.is_some()
+            {
+                return Err("invalid_arguments: full-file replacement must be a single edit without match options".into());
+            }
+            // Explicit full-file content is used verbatim.
+            return Ok(EditPlan {
+                updated: edit.new_string.clone(),
+                changes: vec![ChangedRange {
+                    old: 0..raw.len(),
+                    new: 0..edit.new_string.len(),
+                }],
+            });
+        }
+        if old == new {
+            return Err(format!(
+                "unchanged: edit {} has identical old_string and new_string",
+                edit_index + 1
+            ));
+        }
+        // Include overlapping occurrences in ambiguity detection.
+        let mut positions = Vec::new();
+        let mut search_from = 0;
+        while let Some(found) = content[search_from..].find(&old) {
+            let position = search_from + found;
+            positions.push(position);
+            search_from = position + old.chars().next().unwrap().len_utf8();
+        }
+        if positions.is_empty() {
+            return Err(format!(
+                "not_found: edit {} old_string was not found. {}",
+                edit_index + 1,
+                match_feedback(content, &old)
+            ));
+        }
+        if edit
+            .expected_matches
+            .is_some_and(|expected| expected != positions.len())
+        {
+            return Err(format!(
+                "match_count: edit {} expected {} matches, found {}",
+                edit_index + 1,
+                edit.expected_matches.unwrap(),
+                positions.len()
+            ));
+        }
+        if !edit.replace_all.unwrap_or(false) && positions.len() != 1 {
+            let lines: Vec<_> = positions
+                .iter()
+                .take(5)
+                .map(|&index| {
+                    content[..index]
+                        .bytes()
+                        .filter(|&byte| byte == b'\n')
+                        .count()
+                        + 1
+                })
+                .collect();
+            return Err(format!(
+                "ambiguous: edit {} found {} matches at lines {lines:?}. Read around these lines and include unique context; use replace_all only when every occurrence is intended.",
+                edit_index + 1,
+                positions.len()
+            ));
+        }
+        for position in positions {
+            let start = normalized.raw_offset(position);
+            let end = normalized.raw_offset(position + old.len());
+            let ending = local_line_ending(raw, start);
+            matched.push(MatchedReplacement {
+                start,
+                end,
+                text: new.replace('\n', ending),
+                edit_index,
+            });
+        }
+    }
+    matched.sort_by_key(|edit| edit.start);
+    for pair in matched.windows(2) {
+        if pair[0].end > pair[1].start {
+            return Err(format!(
+                "overlap: edits {} and {} touch overlapping original text; merge them into one replacement",
+                pair[0].edit_index + 1,
+                pair[1].edit_index + 1
+            ));
+        }
+    }
+    let mut updated = String::with_capacity(raw.len());
+    let mut changes = Vec::with_capacity(matched.len());
+    let mut cursor = 0;
+    for edit in matched {
+        updated.push_str(&raw[cursor..edit.start]);
+        let new_start = updated.len();
+        updated.push_str(&edit.text);
+        changes.push(ChangedRange {
+            old: edit.start..edit.end,
+            new: new_start..updated.len(),
+        });
+        cursor = edit.end;
+    }
+    updated.push_str(&raw[cursor..]);
+    Ok(EditPlan { updated, changes })
+}
+
+fn persist_edit(path: &Path, original: &str, updated: &str) -> Result<(), String> {
+    let permissions = fs::metadata(path)
+        .map_err(|e| format!("Failed to inspect {}: {e}", path.display()))?
+        .permissions();
+    if permissions.readonly() {
+        return Err(format!("File is read-only: {}", path.display()));
+    }
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("File has no parent directory")?)
+            .map_err(|e| format!("Failed to stage edit: {e}"))?;
+    temporary
+        .write_all(updated.as_bytes())
+        .map_err(|e| format!("Failed to stage edit: {e}"))?;
+    temporary
+        .as_file()
+        .set_permissions(permissions)
+        .map_err(|e| format!("Failed to preserve file permissions: {e}"))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Failed to sync edit: {e}"))?;
+    let live = fs::read(path).map_err(|e| format!("Failed to verify file before writing: {e}"))?;
+    if live != original.as_bytes() {
+        return Err(
+            "stale: file changed while preparing the edit; Read the current file and retry".into(),
+        );
+    }
+    // Atomic replacement prevents partial files; external writers still need coordination.
+    temporary
+        .persist(path)
+        .map_err(|e| format!("Failed to replace file: {}", e.error))?;
+    Ok(())
 }
 
 #[async_trait]
@@ -534,59 +911,65 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        r#"Replace exact text in an existing UTF-8 file. Read the file first and copy the target text without the displayed line-number prefixes. Matching is literal, including whitespace and newlines; regular expressions are not supported. By default old_string must occur exactly once; include enough context to make it unique, or set replace_all to true to replace every occurrence. An empty old_string overwrites the entire file with new_string. CRLF is normalized to LF in file contents and both strings. Fails if nonempty old_string is absent or identical to new_string. Returns a unified diff after writing the change.
-Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","old_string":"let count = 1;","new_string":"let count = 2;"}."#
+        r#"Replace exact text in an existing UTF-8 file. Read first; copy code without line-number prefixes. Use edits[] for multiple disjoint replacements in one file; every entry matches the ORIGINAL file. All entries are validated before any write, and overlapping matches fail. Each old_string must match once unless replace_all is true; expected_matches optionally checks the occurrence count. Matching preserves whitespace and Unicode; CRLF and LF match equivalently, while untouched bytes and existing line endings are preserved. Copy Read's version into expected_version to reject stale edits. A single empty old_string explicitly replaces the entire file with verbatim new_string and requires expected_version. Returns the actual diff and new version. Errors identify the failing edit and recovery action.
+Use either edits[] or top-level old_string/new_string/replace_all/expected_matches. Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/example.rs","edits":[{"old_string":"let count = 1;","new_string":"let count = 2;"}]}."#
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "format": "path", "description": "Existing text file path, absolute or workspace-relative." },
-                "old_string": { "type": "string", "description": "Literal text to replace; empty overwrites the entire file. CRLF is normalized to LF. Must match once unless replace_all is true. Exclude Read's line-number prefixes." },
-                "new_string": { "type": "string", "description": "Literal replacement text, different from old_string. Use an empty string to delete the matched text." },
-                "replace_all": { "type": "boolean", "description": "Defaults to false, requiring exactly one match. Set true only when every occurrence should be replaced." }
-            },
-            "required": ["path", "old_string", "new_string"]
-        })
+        let replacement = serde_json::json!({
+            "old_string": { "type": "string", "description": "Exact original text, unique unless replace_all is true. A single empty string replaces the whole file and requires expected_version." },
+            "new_string": { "type": "string", "description": "Replacement text; empty deletes the match." },
+            "replace_all": { "type": "boolean", "description": "Replace every exact occurrence; defaults to false." },
+            "expected_matches": { "type": "integer", "description": "Expected number of occurrences; mismatch rejects the edit." }
+        });
+        let mut properties = replacement.as_object().unwrap().clone();
+        properties.insert("path".into(), serde_json::json!({"type":"string", "format":"path", "description":"Existing UTF-8 file path."}));
+        properties.insert("expected_version".into(), serde_json::json!({"type":"string", "description":"Content version from Read or Edit; rejects changes since that version. Required for full-file replacement."}));
+        properties.insert("edits".into(), serde_json::json!({
+            "type":"array", "minItems":1,
+            "description":"Disjoint replacements against the original file. Use instead of top-level replacement fields.",
+            "items":{"type":"object", "properties":replacement, "required":["old_string","new_string"], "additionalProperties":false}
+        }));
+        serde_json::json!({"type":"object", "properties":properties, "required":["path"], "additionalProperties":false})
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         let args: EditArgs = serde_json::from_str(arguments)
             .map_err(|error| format!("Invalid arguments for Edit: {error}"))?;
-        let old_string = args.old_string.replace("\r\n", "\n");
-        let new_string = args.new_string.replace("\r\n", "\n");
-        if !old_string.is_empty() && old_string == new_string {
-            return Err("old_string and new_string must differ".to_string());
-        }
-
         let path = resolve_path(&self.working_dir, &args.path);
-        let content = fs::read_to_string(&path)
-            .map_err(|error| format!("Failed to read file {}: {error}", path.display()))?;
-        let content = content.replace("\r\n", "\n");
-        if old_string.is_empty() {
-            fs::write(&path, &new_string)
-                .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
-            return Ok(unified_diff(&path, &content, &new_string));
+        let expected_version = args.expected_version.clone();
+        let edits = args.replacements()?;
+        if edits.iter().any(|edit| edit.old_string.is_empty()) && expected_version.is_none() {
+            return Err(
+                "invalid_arguments: full-file replacement requires expected_version from Read"
+                    .into(),
+            );
         }
-        let matches = content.match_indices(&old_string).count();
-        if matches == 0 {
-            return Err("old_string was not found".to_string());
-        }
-        if !args.replace_all.unwrap_or(false) && matches != 1 {
-            return Err(format!(
-                "old_string must occur exactly once, found {matches}; use replace_all to replace every occurrence"
-            ));
-        }
-
-        let updated = if args.replace_all.unwrap_or(false) {
-            content.replace(&old_string, &new_string)
-        } else {
-            content.replacen(&old_string, &new_string, 1)
-        };
-        fs::write(&path, &updated)
-            .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
-        Ok(unified_diff(&path, &content, &updated))
+        tokio::task::spawn_blocking(move || {
+            let path = fs::canonicalize(&path).map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
+            let lock = edit_lock(&path)?;
+            let _guard = lock.lock().map_err(|_| "File mutation lock poisoned".to_string())?;
+            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+            if content.contains('\0') { return Err("Unsupported binary file".into()); }
+            let version = content_version(&content);
+            if expected_version.as_ref().is_some_and(|expected| expected != &version) {
+                return Err(format!("stale: expected_version does not match current version {version}; Read the target range and retry"));
+            }
+            let plan = apply_replacements(&content, &edits)
+                .map_err(|error| format!("{error}\n[version: {version}]"))?;
+            let updated = &plan.updated;
+            if *updated == content { return Err("unchanged: edits produce no file changes".into()); }
+            persist_edit(&path, &content, updated)?;
+            let mut diff = edit_diff(&path, &content, &plan);
+            let budget = super::MAX_INLINE_OUTPUT_BYTES - 256;
+            if diff.len() > budget {
+                let mut end = budget;
+                while !diff.is_char_boundary(end) { end -= 1; }
+                diff.truncate(end);
+                diff.push_str("\n[Diff preview truncated; use Read for changed ranges.]");
+            }
+            Ok(format!("{diff}\n[version: {}]", content_version(updated)))
+        }).await.map_err(|e| format!("Edit task failed: {e}"))?
     }
 }
 
@@ -750,25 +1133,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_preserves_prefix_and_reports_pagination() {
+    fn read_paginates_whole_lines_and_long_utf8_lines() {
         let args = ReadArgs {
             path: "sample".into(),
             offset: None,
             limit: Some(1),
+            byte_offset: None,
         };
-        assert_eq!(
-            read_text("alpha\nbeta", &args),
-            "1: alpha\n[2 total lines; continue with Read offset=2.]"
+        let output = read_text("alpha\nbeta", &args).unwrap();
+        assert!(output.contains("1: alpha\n[Continue with Read offset=2.]"));
+        assert!(output.contains(&content_version("alpha\nbeta")));
+        let text = "界".repeat(super::super::MAX_INLINE_OUTPUT_BYTES);
+        let mut restored = String::new();
+        let mut byte_offset = 0;
+        loop {
+            let page = read_text(
+                &text,
+                &ReadArgs {
+                    byte_offset: Some(byte_offset),
+                    path: args.path.clone(),
+                    ..args
+                },
+            )
+            .unwrap();
+            assert!(page.len() <= super::super::MAX_INLINE_OUTPUT_BYTES);
+            let (_, code) = page.lines().nth(1).unwrap().split_once(": ").unwrap();
+            restored.push_str(code);
+            byte_offset += code.len();
+            if byte_offset == text.len() {
+                assert!(page.contains("[End of file]"));
+                break;
+            }
+            assert!(page.contains(&format!("byte_offset={byte_offset}, limit=1")));
+        }
+        assert_eq!(restored, text);
+        assert!(
+            read_text(
+                &text,
+                &ReadArgs {
+                    byte_offset: Some(1),
+                    path: args.path.clone(),
+                    ..args
+                }
+            )
+            .is_err()
         );
-        let args = ReadArgs {
-            limit: None,
-            ..args
-        };
-        let output = read_text(&"界".repeat(super::super::MAX_INLINE_OUTPUT_BYTES), &args);
-        let prefix = output.split("\n[").next().unwrap();
-        assert_eq!(prefix.len(), super::super::MAX_INLINE_OUTPUT_BYTES - 2);
-        assert!(prefix.starts_with("1: 界"));
-        assert!(output.contains("line exceeds the byte limit"));
+        let content = format!("{}\n{}", "a".repeat(20000), "b".repeat(20000));
+        let page = read_text(
+            &content,
+            &ReadArgs {
+                limit: None,
+                path: args.path.clone(),
+                ..args
+            },
+        )
+        .unwrap();
+        assert!(page.contains("offset=2"));
+        assert!(!page.contains("2: b"));
+        assert!(read_text("", &args).unwrap().ends_with("[End of file]"));
+        assert!(
+            read_text(
+                "a",
+                &ReadArgs {
+                    offset: Some(0),
+                    path: args.path.clone(),
+                    ..args
+                }
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -805,7 +1238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn edit_overwrites_and_normalizes_crlf() {
+    async fn edit_preserves_crlf_and_requires_version_for_overwrite() {
         let root = std::env::temp_dir().join(format!("vva-edit-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("sample"), "alpha\r\nbeta\r\n").unwrap();
@@ -817,16 +1250,22 @@ mod tests {
         .unwrap();
         assert_eq!(
             fs::read_to_string(root.join("sample")).unwrap(),
-            "gamma\ndelta\n"
+            "gamma\r\ndelta\r\n"
         );
-        tool.execute(r#"{"path":"sample","old_string":"","new_string":"reset\r\n"}"#)
-            .await
-            .unwrap();
-        assert_eq!(fs::read_to_string(root.join("sample")).unwrap(), "reset\n");
-        tool.execute(r#"{"path":"sample","old_string":"","new_string":""}"#)
-            .await
-            .unwrap();
-        assert_eq!(fs::read_to_string(root.join("sample")).unwrap(), "");
+        assert!(
+            tool.execute(r#"{"path":"sample","old_string":"","new_string":"reset"}"#)
+                .await
+                .unwrap_err()
+                .contains("expected_version")
+        );
+        for replacement in ["reset\r\n", ""] {
+            let version = content_version(&fs::read_to_string(root.join("sample")).unwrap());
+            tool.execute(&serde_json::json!({"path":"sample", "old_string":"", "new_string":replacement, "expected_version":version}).to_string()).await.unwrap();
+            assert_eq!(
+                fs::read_to_string(root.join("sample")).unwrap(),
+                replacement
+            );
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -898,7 +1337,7 @@ mod tests {
 
         let tool = ReadTool::new(&root);
         let result = tool.execute(r#"{"path":"\"src/lib.rs\""}"#).await.unwrap();
-        assert_eq!(result, "1: hello\n[End of file: 1 lines]");
+        assert!(result.ends_with("1: hello\n[End of file]"));
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -975,8 +1414,9 @@ mod tests {
         assert_eq!(
             result,
             format!(
-                "--- {0}\n+++ {0}\n@@ -1,3 +1,3 @@\n one\n-before\n+after\n three",
-                root.join("file.txt").display()
+                "--- {0}\n+++ {0}\n@@ -1,3 +1,3 @@\n one\n-before\n+after\n three\n[version: {1}]",
+                root.join("file.txt").display(),
+                content_version("one\nafter\nthree\n")
             )
         );
 
@@ -1058,8 +1498,233 @@ mod tests {
             .execute(r#"{"path":"file.txt","old_string":"before","new_string":"before"}"#)
             .await
             .unwrap_err();
-        assert_eq!(error, "old_string and new_string must differ");
+        assert!(error.starts_with("unchanged:"));
 
         fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn batch_edits_use_original_and_fail_without_writing() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sample");
+        let original = "\u{feff}first\r\nsecond\r\nkeep\nlast";
+        fs::write(&path, original).unwrap();
+        let registry = crate::tools::ToolRegistry::with_workspace_defaults(root.path(), None);
+        let execute = |edits: serde_json::Value| {
+            ToolCall::new(
+                "batch",
+                "Edit",
+                serde_json::json!({"path":"sample", "edits":edits}).to_string(),
+            )
+        };
+        let result = registry
+            .execute_call(&execute(serde_json::json!([
+                {"old_string":"first", "new_string":"second"},
+                {"old_string":"second", "new_string":"third\nfourth"}
+            ])))
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "\u{feff}second\r\nthird\r\nfourth\r\nkeep\nlast"
+        );
+        for (edits, error) in [
+            (
+                serde_json::json!([{"old_string":"second", "new_string":"ok"},{"old_string":"missing", "new_string":"no"}]),
+                "not_found",
+            ),
+            (
+                serde_json::json!([{"old_string":"third\nfourth", "new_string":"x"},{"old_string":"fourth", "new_string":"y"}]),
+                "overlap",
+            ),
+            (
+                serde_json::json!([{"old_string":"keep", "new_string":"x", "extra":true}]),
+                "Unexpected parameter",
+            ),
+        ] {
+            let before = fs::read(&path).unwrap();
+            let result = registry.execute_call(&execute(edits)).await;
+            assert!(
+                result.is_error && result.content.contains(error),
+                "{}",
+                result.content
+            );
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_version_rejects_edit_and_fresh_version_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sample");
+        fs::write(&path, "value = 1;\n").unwrap();
+        let read = ReadTool::new(root.path())
+            .execute(r#"{"path":"sample"}"#)
+            .await
+            .unwrap();
+        let version = read
+            .lines()
+            .next()
+            .unwrap()
+            .strip_prefix("[version: ")
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
+        fs::write(&path, "value = 1;\nexternal\n").unwrap();
+        let edit = EditTool::new(root.path());
+        let arguments = |version: &str| {
+            serde_json::json!({"path":"sample", "expected_version":version, "old_string":"value = 1", "new_string":"value = 2"}).to_string()
+        };
+        assert!(
+            edit.execute(&arguments(version))
+                .await
+                .unwrap_err()
+                .starts_with("stale:")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "value = 1;\nexternal\n");
+        let version = content_version(&fs::read_to_string(&path).unwrap());
+        edit.execute(&arguments(&version)).await.unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), "value = 2;\nexternal\n");
+    }
+
+    #[test]
+    fn repeated_and_overlapping_matches_are_explicit() {
+        let edit = |old: &str, all, count| Replacement {
+            old_string: old.into(),
+            new_string: "z".into(),
+            replace_all: Some(all),
+            expected_matches: count,
+        };
+        assert!(
+            apply_replacements("x\nx", &[edit("x", false, None)])
+                .unwrap_err()
+                .contains("lines [1, 2]")
+        );
+        assert!(
+            apply_replacements("aaa", &[edit("aa", false, None)])
+                .unwrap_err()
+                .starts_with("ambiguous:")
+        );
+        assert!(
+            apply_replacements("aaa", &[edit("aa", true, None)])
+                .unwrap_err()
+                .starts_with("overlap:")
+        );
+        assert!(
+            apply_replacements("x x", &[edit("x", true, Some(1))])
+                .unwrap_err()
+                .starts_with("match_count:")
+        );
+        assert_eq!(
+            apply_replacements("x x", &[edit("x", true, Some(2))])
+                .unwrap()
+                .updated,
+            "z z"
+        );
+    }
+
+    #[test]
+    fn staged_write_rechecks_content_and_cleans_up() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sample");
+        fs::write(&path, "external").unwrap();
+        assert!(
+            persist_edit(&path, "old", "new")
+                .unwrap_err()
+                .starts_with("stale:")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "external");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn edit_preserves_symlink_target_and_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o751)).unwrap();
+        symlink(&target, root.path().join("link")).unwrap();
+        EditTool::new(root.path())
+            .execute(r#"{"path":"link","old_string":"old","new_string":"new"}"#)
+            .await
+            .unwrap();
+        assert!(
+            fs::symlink_metadata(root.path().join("link"))
+                .unwrap()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(
+            fs::metadata(target).unwrap().permissions().mode() & 0o777,
+            0o751
+        );
+    }
+    #[test]
+    fn diff_keeps_distant_edits_compact_and_reports_final_newline() {
+        let original: String = (1..=1000).map(|line| format!("line {line}\n")).collect();
+        let edits = [
+            Replacement {
+                old_string: "line 1\n".into(),
+                new_string: "first\nextra\n".into(),
+                replace_all: None,
+                expected_matches: None,
+            },
+            Replacement {
+                old_string: "line 1000\n".into(),
+                new_string: "last\n".into(),
+                replace_all: None,
+                expected_matches: None,
+            },
+        ];
+        let plan = apply_replacements(&original, &edits).unwrap();
+        let diff = edit_diff(Path::new("sample"), &original, &plan);
+        assert_eq!(
+            diff.lines().filter(|line| line.starts_with("@@")).count(),
+            2
+        );
+        assert!(diff.contains("@@ -1,4 +1,5 @@"), "{diff}");
+        assert!(diff.contains("@@ -997,4 +998,4 @@"), "{diff}");
+        assert!(diff.len() < 500);
+        assert!(!diff.contains("line 500"));
+        let diff = unified_diff(Path::new("sample"), "value", "value\n", 0, 0);
+        assert!(
+            diff.contains("-value\n\\ No newline at end of file\n+value"),
+            "{diff}"
+        );
+    }
+
+    #[test]
+    fn inserted_lines_follow_local_line_endings() {
+        let original = "head\r\ntarget\ntail\r\n";
+        let edit = Replacement {
+            old_string: "target".into(),
+            new_string: "new\nline".into(),
+            replace_all: None,
+            expected_matches: None,
+        };
+        assert_eq!(
+            apply_replacements(original, &[edit]).unwrap().updated,
+            "head\r\nnew\nline\ntail\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_edits_with_same_version_apply_once() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("sample");
+        fs::write(&path, "original").unwrap();
+        let arguments = serde_json::json!({"path":"sample", "expected_version":content_version("original"), "old_string":"original", "new_string":"updated"}).to_string();
+        let first = EditTool::new(root.path());
+        let second = EditTool::new(root.path());
+        let (a, b) = tokio::join!(first.execute(&arguments), second.execute(&arguments));
+        assert_ne!(a.is_ok(), b.is_ok());
+        let error = if let Err(error) = a {
+            error
+        } else {
+            b.unwrap_err()
+        };
+        assert!(error.starts_with("stale:"));
+        assert_eq!(fs::read_to_string(path).unwrap(), "updated");
     }
 }

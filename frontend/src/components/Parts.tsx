@@ -25,6 +25,13 @@ function lineCount(text: string): number {
   return text === '' ? 0 : text.split('\n').length
 }
 
+function editEntries(args: Record<string, unknown>): Record<string, unknown>[] {
+  if (args.edits === undefined) return [args]
+  if (!Array.isArray(args.edits)) return []
+  return args.edits.filter((edit): edit is Record<string, unknown> =>
+    edit !== null && typeof edit === 'object' && !Array.isArray(edit))
+}
+
 /** 摘要行的按工具类型 detail，对齐 TUI tool_call_detail */
 interface ToolDetail {
   text: string
@@ -42,16 +49,20 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
       const path = str(args.path) ?? truncate(call.arguments, 88)
       const offset = typeof args.offset === 'number' ? args.offset : 1
       const limit = typeof args.limit === 'number' ? String(args.limit) : 'all'
-      return { text: `${path} [offset=${offset}, limit=${limit}]` }
+      const byteOffset = typeof args.byte_offset === 'number' ? `, byte_offset=${args.byte_offset}` : ''
+      return { text: `${path} [offset=${offset}, limit=${limit}${byteOffset}]` }
     }
     case 'Write':
       return { text: str(args.path) ?? truncate(call.arguments, 88) }
     case 'Edit': {
       const path = str(args.path)
-      const oldString = str(args.old_string)
-      const newString = str(args.new_string)
-      if (path && oldString !== null && newString !== null) {
-        return { text: path, editPath: path, plus: lineCount(newString), minus: lineCount(oldString) }
+      const edits = editEntries(args)
+      if (path && edits.length > 0 && edits.every(edit => str(edit.old_string) !== null && str(edit.new_string) !== null)) {
+        return {
+          text: path, editPath: path,
+          plus: edits.reduce((count, edit) => count + lineCount(str(edit.new_string)!), 0),
+          minus: edits.reduce((count, edit) => count + lineCount(str(edit.old_string)!), 0),
+        }
       }
       return { text: truncate(call.arguments, 88) }
     }
@@ -160,7 +171,7 @@ function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expand
   let rows: BodyRow[] | null = null
   if (result && !isError && args) {
     if (call.name === 'Write') rows = writeBodyRows(args)
-    else if (call.name === 'Edit') rows = editBodyRows(args)
+    else if (call.name === 'Edit' && args.edits === undefined) rows = editBodyRows(args)
   }
 
   const resultLines = result ? result.content.split('\n') : []

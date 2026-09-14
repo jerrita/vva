@@ -172,6 +172,10 @@ fn inline_or_spill(
 fn validate_arguments(arguments: &str, schema: &Value) -> Result<(), String> {
     let arguments: Value = serde_json::from_str(arguments)
         .map_err(|error| format!("Invalid tool arguments JSON: {error}"))?;
+    validate_object(&arguments, schema)
+}
+
+fn validate_object(arguments: &Value, schema: &Value) -> Result<(), String> {
     let object = arguments
         .as_object()
         .ok_or_else(|| "Tool arguments must be a JSON object".to_string())?;
@@ -208,10 +212,27 @@ fn validate_arguments(arguments: &str, schema: &Value) -> Result<(), String> {
             "string" => value.is_string(),
             "boolean" => value.is_boolean(),
             "integer" => value.is_i64() || value.is_u64(),
+            "array" => value.is_array(),
             _ => return Err(format!("Unsupported parameter type {expected} for {name}")),
         };
         if !valid_type {
             return Err(format!("Parameter {name} must be a {expected}"));
+        }
+        if let Some(items) = value.as_array() {
+            let item_schema = definition
+                .get("items")
+                .ok_or_else(|| format!("Tool parameter schema has no items for {name}"))?;
+            if definition
+                .get("minItems")
+                .and_then(Value::as_u64)
+                .is_some_and(|minimum| items.len() < minimum as usize)
+            {
+                return Err(format!("Parameter {name} has too few items"));
+            }
+            for (index, item) in items.iter().enumerate() {
+                validate_object(item, item_schema)
+                    .map_err(|error| format!("{name}[{index}]: {error}"))?;
+            }
         }
         if definition.get("format").and_then(Value::as_str) == Some("path") {
             let path = value.as_str().expect("validated string");
