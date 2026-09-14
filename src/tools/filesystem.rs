@@ -728,14 +728,14 @@ struct MatchedReplacement {
 
 #[derive(Debug)]
 pub(crate) struct ChangedRange {
-    old: std::ops::Range<usize>,
-    new: std::ops::Range<usize>,
+    pub old: std::ops::Range<usize>,
+    pub new: std::ops::Range<usize>,
 }
 
 #[derive(Debug)]
 pub(crate) struct EditPlan {
     pub updated: String,
-    changes: Vec<ChangedRange>,
+    pub changes: Vec<ChangedRange>,
 }
 
 impl EditPlan {

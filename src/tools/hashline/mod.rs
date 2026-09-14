@@ -4,7 +4,9 @@ mod block;
 mod parse;
 
 use super::Tool;
-use super::filesystem::{EditPlan, edit_lock, format_edit_result, persist_edit, resolve_path};
+use super::filesystem::{
+    ChangedRange, EditPlan, edit_lock, format_edit_result, persist_edit, resolve_path,
+};
 use crate::tools::MAX_INLINE_OUTPUT_BYTES;
 use async_trait::async_trait;
 use parse::{FileOp, Op, Section, parse_patch};
@@ -76,7 +78,7 @@ impl HashlineSession {
             .cloned()
             .ok_or_else(|| {
                 format!(
-                    "not_found: unknown snapshot [{}#{}]; Read or Grep the file and copy the header",
+                    "not_found: snapshot [{}#{}] is not registered in this active session (including after session reload); this does not indicate a disk change. Read or Grep the file and copy the header",
                     canonical.display(),
                     tag
                 )
@@ -250,16 +252,17 @@ impl Tool for HashlineEditTool {
     }
 
     fn description(&self) -> &str {
-        r#"Line-anchored patch. Copy [PATH#TAG] from the latest Read or Grep; numbers are original snapshot lines, not shifted by earlier hunks. New files use Write.
+        r#"Line-anchored patch. Copy [PATH#TAG] from Read, Grep, or the latest Edit preview; numbers are original snapshot lines, not shifted by earlier hunks. New files use Write.
 
 {"input":"[src/example.rs#1A2B]\nPUT 4.=4:\n+const value = 2;\n"}
 
-PUT N.=M: replace inclusive N–M with + body. PUT N*: replace the syntactic block starting at N.
+PUT N.=M: replace inclusive N–M with + body; every line in the range is removed, so include any retained lines in the body. Prefer <N or >N for insertion.
+PUT N*: replace a heuristically detected block (bracket counting, indentation, or Markdown heading; no language parser). Use explicit ranges when strings, comments, or JSX affect boundaries.
 PUT <N: insert before N (`PUT <1:` = file head). PUT >N: after N. PUT >$: append. PUT >N*: after block N.
 CUT N.=M / CUT N* deletes and optionally captures @name. PUT <N @name / PUT >N @name / PUT N.=M @name pastes (range/block paste needs a named register; gap paste may be anonymous).
 REM deletes the section file. MV DEST moves after prior edits in that section.
 Body rows start with +; + alone writes a blank line. Literal leading - or +: +-text / ++text. Never send -old or context rows.
-Re-Read after every edit (tag and numbers change). Touch displayed lines only; elided ranges are unseen."#
+After Edit, use its new [PATH#TAG] and numbered preview lines; Read any other target ranges. All hunks in one request use the original snapshot's numbers. Read/Grep and numbered Edit previews accumulate displayed lines for the same TAG. Elided and partial lines are unseen. Active-session snapshots survive submissions; after session reload, Read/Grep again."#
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -344,12 +347,10 @@ fn apply_sections(
     let mut batch_named: HashMap<String, Vec<String>> = HashMap::new();
     let mut anonymous: Option<Vec<String>> = None;
     for group in grouped {
-        prepared.push(prepare_group(
-            session,
-            group,
-            &mut batch_named,
-            &mut anonymous,
-        )?);
+        prepared.push(
+            prepare_group(session, group, &mut batch_named, &mut anonymous)
+                .map_err(|error| format!("{error}; preflight failed, no files were changed"))?,
+        );
     }
     let mut reports = Vec::new();
     for prepared in prepared {
@@ -404,6 +405,7 @@ struct Prepared {
     canonical: PathBuf,
     original: String,
     updated: String,
+    changes: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
     file_op: Option<FileOp>,
 }
 
@@ -451,7 +453,15 @@ fn prepare_group(
                 anonymous,
             },
             op_index,
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "[{}#{}] op {}: {error}",
+                group.label,
+                group.tag,
+                op_index + 1
+            )
+        })?;
         if let Some(span) = span {
             spans.push(span);
         }
@@ -467,10 +477,13 @@ fn prepare_group(
         }
     }
     let mut updated_lines = Vec::new();
+    let mut changes = Vec::new();
     let mut cursor = 0;
     for span in spans {
         updated_lines.extend(file.lines[cursor..span.start].iter().cloned());
+        let new_start = updated_lines.len();
         updated_lines.extend(span.replacement);
+        changes.push((span.start..span.end, new_start..updated_lines.len()));
         cursor = span.end;
     }
     updated_lines.extend(file.lines[cursor..].iter().cloned());
@@ -484,6 +497,7 @@ fn prepare_group(
         canonical: group.canonical,
         original,
         updated: updated.render(),
+        changes,
         file_op: group.file_op,
     })
 }
@@ -780,20 +794,30 @@ fn op_span(
 }
 
 fn require_seen(seen: &HashSet<u32>, line: u32) -> Result<(), String> {
-    if seen.contains(&line) {
-        Ok(())
-    } else {
-        Err(format!(
-            "unseen: line {line} was not in the latest Read/Grep window; Read that range first"
-        ))
-    }
+    require_range(seen, line, line)
 }
 
 fn require_range(seen: &HashSet<u32>, start: u32, end: u32) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let mut range_start = None;
     for line in start..=end {
-        require_seen(seen, line)?;
+        if !seen.contains(&line) {
+            range_start.get_or_insert(line);
+        } else if let Some(first) = range_start.take() {
+            missing.push(format!("{first}..={}", line - 1));
+        }
     }
-    Ok(())
+    if let Some(first) = range_start {
+        missing.push(format!("{first}..={end}"));
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "unseen: missing displayed lines {}; Read these ranges first. Displayed ranges accumulate for the same snapshot TAG",
+            missing.join(", ")
+        ))
+    }
 }
 
 fn inclusive_range(start: u32, end: u32, len: usize) -> Result<(usize, usize), String> {
@@ -865,6 +889,7 @@ fn commit_group(
                 dest_canonical,
                 &prepared.original,
                 &prepared.updated,
+                prepared.changes,
             )
         }
         None => {
@@ -882,6 +907,7 @@ fn commit_group(
                 prepared.canonical,
                 &prepared.original,
                 &prepared.updated,
+                prepared.changes,
             )
         }
     }
@@ -904,39 +930,74 @@ fn report_update(
     canonical: PathBuf,
     original: &str,
     updated: &str,
+    changes: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
 ) -> Result<String, String> {
     let label = label.into();
-    let plan = EditPlan::from_replacement(original, updated.to_string());
+    let old_offsets = line_offsets(original);
+    let new_offsets = line_offsets(updated);
+    let preview = numbered_preview(updated, &changes);
+    let plan = EditPlan {
+        updated: updated.to_string(),
+        changes: changes
+            .into_iter()
+            .map(|(old, new)| ChangedRange {
+                old: old_offsets[old.start]..old_offsets[old.end],
+                new: new_offsets[new.start.min(new_offsets.len() - 1)]
+                    ..new_offsets[new.end.min(new_offsets.len() - 1)],
+            })
+            .collect(),
+    };
     let diff = format_edit_result(&canonical, original, &plan, false);
-    let preview = numbered_preview(updated);
     let seen: Vec<u32> = preview.iter().map(|(n, _)| *n).collect();
     let tag = session.record(canonical, updated, seen)?;
     let mut out = format!("[{label}#{tag}]\n{diff}");
     if !preview.is_empty() {
-        out.push('\n');
+        out.push_str("\nCurrent snapshot preview (only numbered lines are registered):\n");
+        let mut previous = 0;
         for (number, line) in preview {
+            if number > previous + 1 {
+                out.push_str("[Unshown lines; Read before editing]\n");
+            }
             out.push_str(&format!("{number}:{line}\n"));
+            previous = number;
+        }
+        if (previous as usize) < new_offsets.len() - 1 {
+            out.push_str("[Unshown lines; Read before editing]\n");
         }
         out.pop();
     }
     Ok(out)
 }
 
-fn numbered_preview(text: &str) -> Vec<(u32, String)> {
+fn line_offsets(text: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    for line in text.split_inclusive('\n') {
+        offsets.push(offsets.last().unwrap() + line.len());
+    }
+    offsets
+}
+
+fn numbered_preview(
+    text: &str,
+    changes: &[(std::ops::Range<usize>, std::ops::Range<usize>)],
+) -> Vec<(u32, String)> {
     let file = LineFile::parse(text);
     let total = file.lines.len();
-    if total <= 80 {
-        return file
-            .lines
-            .into_iter()
-            .enumerate()
-            .map(|(index, line)| ((index + 1) as u32, line))
-            .collect();
+    let mut shown = std::collections::BTreeSet::new();
+    for (_, range) in changes {
+        let start = range.start.saturating_sub(3);
+        let end = range.end.saturating_add(3).min(total);
+        if end - start <= 16 {
+            shown.extend(start..end);
+        } else {
+            shown.extend(start..start + 8);
+            shown.extend(end - 8..end);
+        }
     }
     file.lines
         .into_iter()
         .enumerate()
-        .take(40)
+        .filter(|(index, _)| shown.contains(index))
         .map(|(index, line)| ((index + 1) as u32, line))
         .collect()
 }
@@ -950,6 +1011,107 @@ mod tests {
 
     fn input(body: &str) -> String {
         serde_json::json!({ "input": body }).to_string()
+    }
+
+    #[tokio::test]
+    async fn rebuilt_registry_retains_reads_and_reports_missing_ranges() {
+        use crate::tools::ToolRegistry;
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("sample"), "a\nb\nc\nd\ne\n").unwrap();
+        let session = HashlineSession::new();
+        let registry = ToolRegistry::with_editor_session(
+            root.path(),
+            None,
+            EditorKind::Hashline,
+            session.clone(),
+        );
+        registry
+            .get("Read")
+            .unwrap()
+            .execute(r#"{"path":"sample","offset":1,"limit":1}"#)
+            .await
+            .unwrap();
+        drop(registry);
+        let registry =
+            ToolRegistry::with_editor_session(root.path(), None, EditorKind::Hashline, session);
+        let shown = registry
+            .get("Read")
+            .unwrap()
+            .execute(r#"{"path":"sample","offset":3,"limit":1}"#)
+            .await
+            .unwrap();
+        let header = shown.lines().next().unwrap();
+        let edit = registry.get("Edit").unwrap();
+        let error = edit
+            .execute(&input(&format!("{header}\nPUT 1.=5:\n+x\n")))
+            .await
+            .unwrap_err();
+        assert!(error.contains("op 1"), "{error}");
+        assert!(error.contains("2..=2, 4..=5"), "{error}");
+        assert!(error.contains("no files were changed"), "{error}");
+        assert_eq!(
+            fs::read_to_string(root.path().join("sample")).unwrap(),
+            "a\nb\nc\nd\ne\n"
+        );
+        edit.execute(&input(&format!("{header}\nPUT 1.=1:\n+A\nPUT 3.=3:\n+C\n")))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn distant_hunks_have_local_diff_and_reusable_shifted_preview() {
+        let root = tempfile::tempdir().unwrap();
+        let text: String = (1..=160).map(|n| format!("row {n}\n")).collect();
+        let path = root.path().join("sample");
+        fs::write(&path, &text).unwrap();
+        let session = HashlineSession::new();
+        let tag = session
+            .record(fs::canonicalize(&path).unwrap(), &text, 1..=160)
+            .unwrap();
+        let edit = HashlineEditTool::new(root.path()).with_session(session.clone());
+        let output = edit
+            .execute(&input(&format!(
+                "[sample#{tag}]\nPUT 12.=12:\n+first\n+extra\nPUT 140.=140:\n+second\n"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(output.matches("@@ -").count(), 2, "{output}");
+        assert!(!output.contains("row 80"), "{output}");
+        assert!(output.contains("141:second"), "{output}");
+        let current = fs::read_to_string(&path).unwrap();
+        let snap = session
+            .lookup(&fs::canonicalize(&path).unwrap(), &file_tag(&current))
+            .unwrap();
+        assert!(snap.seen.contains(&141));
+        assert!(!snap.seen.contains(&80));
+        let header = output.lines().next().unwrap();
+        edit.execute(&input(&format!("{header}\nPUT 141.=141:\n+final\n")))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn previews_cover_deletions_and_elide_large_replacements() {
+        let text: String = (1..=100).map(|n| format!("row {n}\n")).collect();
+        let preview = numbered_preview(&text, &[(10..90, 10..90)]);
+        assert_eq!(preview.len(), 16);
+        assert!(!preview.iter().any(|(n, _)| *n == 50));
+        let preview = numbered_preview(&text, &[(100..110, 100..100)]);
+        assert_eq!(
+            preview.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec![98, 99, 100]
+        );
+        let session = HashlineSession::new();
+        let report = report_update(
+            &session,
+            "sample",
+            PathBuf::from("sample"),
+            "last",
+            "",
+            vec![(0..1, 0..1)],
+        )
+        .unwrap();
+        assert!(report.contains("-last"));
     }
 
     #[test]

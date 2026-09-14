@@ -41,14 +41,19 @@ impl AgentEngine {
         config: &AppConfig,
         session: &Session,
         tool_outputs: PathBuf,
+        hashline: Arc<crate::tools::hashline::HashlineSession>,
     ) -> Result<Self, String> {
         let resolved = config
             .resolve_model(&session.current_model, session.current_variant.as_deref())
             .map_err(|e| e.to_string())?;
         let inputs = resolved.input_capabilities();
         inputs.validate_session(session)?;
-        let mut tools =
-            ToolRegistry::with_editor(&session.workspace_root, Some(tool_outputs), session.editor);
+        let mut tools = ToolRegistry::with_editor_session(
+            &session.workspace_root,
+            Some(tool_outputs),
+            session.editor,
+            hashline,
+        );
         let mut read = crate::tools::filesystem::ReadTool::new(&session.workspace_root)
             .with_inputs(inputs.clone())
             .with_editor(session.editor);

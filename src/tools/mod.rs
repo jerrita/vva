@@ -70,9 +70,23 @@ impl ToolRegistry {
         tool_outputs: Option<PathBuf>,
         editor: EditorKind,
     ) -> Self {
+        Self::with_editor_session(
+            workspace,
+            tool_outputs,
+            editor,
+            hashline::HashlineSession::new(),
+        )
+    }
+
+    pub(crate) fn with_editor_session(
+        workspace: &Path,
+        tool_outputs: Option<PathBuf>,
+        editor: EditorKind,
+        session: Arc<hashline::HashlineSession>,
+    ) -> Self {
         let mut registry = Self::new();
         registry.tool_outputs = tool_outputs;
-        let hashline = (editor == EditorKind::Hashline).then(hashline::HashlineSession::new);
+        let hashline = (editor == EditorKind::Hashline).then_some(session);
         registry.hashline = hashline.clone();
         let mut read = crate::tools::filesystem::ReadTool::new(workspace).with_editor(editor);
         let mut grep = crate::tools::filesystem::GrepTool::new(workspace).with_editor(editor);

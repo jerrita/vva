@@ -228,6 +228,7 @@ impl SessionManager {
             view_tx,
             store: self.store.clone(),
             config: self.app_config(),
+            hashline: crate::tools::hashline::HashlineSession::new(),
             state_path: self.state_path.clone(),
             commands: commands.downgrade(),
             dirty: false,
@@ -452,6 +453,7 @@ impl SessionManager {
 }
 
 struct SessionTask {
+    hashline: Arc<crate::tools::hashline::HashlineSession>,
     view: SessionView,
     view_tx: watch::Sender<Arc<SessionView>>,
     store: Arc<dyn SessionStore>,
@@ -693,7 +695,12 @@ impl SessionTask {
             .ensure_tool_outputs(&self.view.session.workspace_root)
             .await
             .map_err(|e| e.to_string())?;
-        let engine = AgentEngine::new(&self.config, &self.view.session, tool_outputs)?;
+        let engine = AgentEngine::new(
+            &self.config,
+            &self.view.session,
+            tool_outputs,
+            self.hashline.clone(),
+        )?;
         // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
         for image in &images {
             if let ContentPart::Image { source, mime_type } = image {
@@ -1109,6 +1116,7 @@ mod tests {
             view_tx,
             store,
             config: Arc::new(AppConfig::default()),
+            hashline: crate::tools::hashline::HashlineSession::new(),
             state_path: workspace.join("state.json"),
             commands: commands.downgrade(),
             dirty: false,
