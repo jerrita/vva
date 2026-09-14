@@ -1067,6 +1067,12 @@ body.resizing .chat-scroll {
   border-top: 1px solid var(--border);
 }
 
+/* 前方无收折内容时不绘制分隔线 */
+.msg.answer.no-work {
+  padding-top: 0;
+  border-top: none;
+}
+
 .turn-meta {
   margin-top: 6px;
   font-family: var(--font-mono);

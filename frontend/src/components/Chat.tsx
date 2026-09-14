@@ -298,8 +298,13 @@ export function Chat({
             />
           )
         }
+        // 仅有收折的工作段在前时才绘制分隔线
+        const hasWorkBefore = index > 0 && items[index - 1].kind === 'work'
         return (
-          <div key={item.turn.id} className="msg assistant answer">
+          <div
+            key={item.turn.id}
+            className={`msg assistant answer${hasWorkBefore ? '' : ' no-work'}`}
+          >
             <Parts parts={item.parts} />
             <div className="answer-foot">
               <TurnMeta turn={item.turn} />
