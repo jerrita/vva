@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { Annotation, ContentPart, ToolCall, ToolResult, WebSearchCall } from '../types'
 import { Markdown } from './Markdown'
 
@@ -162,6 +163,7 @@ function RowsView({ rows }: { rows: BodyRow[] }) {
 }
 
 function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expanded?: boolean }) {
+  const [showAll, setShowAll] = useState(false)
   const { call, result } = node
   const detail = toolDetail(call, result)
   const args = parseArgs(call.arguments)
@@ -201,12 +203,16 @@ function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expand
       </summary>
       {command && <pre className="tool-cmd">{command}</pre>}
       {rows && <RowsView rows={rows} />}
-      {!rows && result && !isError && (
+      {!rows && result && !isError && !showAll && (
         <pre>{preview.join('\n') || ' '}</pre>
       )}
       {result && isError && <pre>{result.content}</pre>}
       {!rows && result && !isError && rest > 0 && (
-        <details className="tool-more">
+        <details
+          className="tool-more"
+          open={showAll}
+          onToggle={e => setShowAll(e.currentTarget.open)}
+        >
           <summary>展开全部（共 {resultLines.length} 行）</summary>
           <pre>{resultLines.join('\n')}</pre>
         </details>
