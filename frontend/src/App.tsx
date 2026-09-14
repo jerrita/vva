@@ -181,6 +181,9 @@ export default function App() {
   const mobileRef = useRef(false)
   const lastScrollTop = useRef(0)
   const touchStartY = useRef<number | null>(null)
+  const composerTouchStartY = useRef<number | null>(null)
+  // 下滑隐藏后的抑制窗口：隐藏引发的 clamp 滚动会被判定为"在底部"而立即回显
+  const suppressRevealUntil = useRef(0)
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
@@ -275,7 +278,7 @@ export default function App() {
     const el = scrollRef.current
     if (el && nearBottom.current) {
       el.scrollTop = el.scrollHeight
-      setComposerHidden(false)
+      if (Date.now() >= suppressRevealUntil.current) setComposerHidden(false)
     }
   }, [snap])
 
@@ -353,7 +356,7 @@ export default function App() {
     }
     if (atBottom) {
       lastScrollTop.current = el.scrollTop
-      setComposerHidden(false)
+      if (Date.now() >= suppressRevealUntil.current) setComposerHidden(false)
       return
     }
     const prev = lastScrollTop.current
@@ -392,6 +395,25 @@ export default function App() {
     if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
       composerFocused.current = false
     }
+  }
+
+  // 移动端：输入框上下滑隐藏
+  const onComposerTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    composerTouchStartY.current = event.touches[0]?.clientY ?? null
+  }
+
+  const onComposerTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    if (!mobileRef.current) return
+    const start = composerTouchStartY.current
+    const y = event.touches[0]?.clientY
+    if (start == null || y == null) return
+    if (y - start < COMPOSER_SWIPE) return
+    composerTouchStartY.current = null
+    // 文本框内容滚动中不触发
+    const target = event.target
+    if (target instanceof HTMLTextAreaElement && target.scrollTop > 0) return
+    suppressRevealUntil.current = Date.now() + 400
+    setComposerHidden(true)
   }
 
   // 侧栏拖拽调宽
@@ -775,6 +797,8 @@ export default function App() {
               ref={composerAreaRef}
               onFocus={onComposerFocus}
               onBlur={onComposerBlur}
+              onTouchStart={onComposerTouchStart}
+              onTouchMove={onComposerTouchMove}
               aria-hidden={composerHidden}
               inert={composerHidden}
             >
