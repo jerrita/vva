@@ -173,6 +173,7 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
   const [composerHidden, setComposerHidden] = useState(false)
+  const [topbarHidden, setTopbarHidden] = useState(false)
 
   const composerHiddenRef = useRef(false)
   composerHiddenRef.current = composerHidden
@@ -206,6 +207,7 @@ export default function App() {
   // 切换会话时输入框复位为展示
   useEffect(() => {
     setComposerHidden(false)
+    setTopbarHidden(false)
     nearBottom.current = true
     lastScrollTop.current = 0
   }, [activeId])
@@ -357,12 +359,21 @@ export default function App() {
     if (atBottom) {
       lastScrollTop.current = el.scrollTop
       if (Date.now() >= suppressRevealUntil.current) setComposerHidden(false)
+      setTopbarHidden(false)
       return
     }
     const prev = lastScrollTop.current
     lastScrollTop.current = el.scrollTop
+    const delta = el.scrollTop - prev
+    // 下滑回看历史：隐藏标题栏；上滑恢复
+    if (delta < -COMPOSER_HIDE_DELTA) {
+      setTopbarHidden(true)
+    } else if (delta > COMPOSER_HIDE_DELTA) {
+      setTopbarHidden(false)
+    }
+    // 输入中不隐藏输入框
     if (composerFocused.current) return
-    if (el.scrollTop - prev < -COMPOSER_HIDE_DELTA) setComposerHidden(true)
+    if (delta < -COMPOSER_HIDE_DELTA) setComposerHidden(true)
   }
 
   const onChatTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
@@ -660,7 +671,7 @@ export default function App() {
         onOpenSettings={() => setSettingsOpen(true)}
       />
       {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)} />}
-      <main className="main">
+      <main className={`main${topbarHidden ? ' topbar-hidden' : ''}`}>
         <header className="topbar">
           <button
             className="icon-ghost menu"

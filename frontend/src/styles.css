@@ -2773,6 +2773,27 @@ body.resizing .file-sidebar-resize::after {
     visibility: hidden;
   }
 
+  /* 下滑回看历史时隐藏标题栏，内容顶格 */
+  .main .topbar {
+    transition: transform 0.2s ease;
+  }
+
+  .main.topbar-hidden .topbar {
+    transform: translateY(-100%);
+  }
+
+  .main .chat-scroll {
+    transition: padding-top 0.2s ease;
+  }
+
+  .main.topbar-hidden .chat-scroll {
+    padding-top: 0;
+  }
+
+  .main.topbar-hidden .banner {
+    margin-top: 0;
+  }
+
   .chat,
   .composer-area {
     padding-left: 14px;
