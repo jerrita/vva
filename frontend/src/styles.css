@@ -2666,6 +2666,16 @@ body.resizing .file-sidebar-resize::after {
     background: rgba(0, 0, 0, 0.4);
   }
 
+  .composer-area {
+    transition: margin-bottom 0.15s ease, visibility 0.15s;
+  }
+
+  .composer-area.composer-hidden {
+    margin-bottom: calc(-1 * var(--composer-h, 0px));
+    pointer-events: none;
+    visibility: hidden;
+  }
+
   .menu {
     display: inline-flex;
   }

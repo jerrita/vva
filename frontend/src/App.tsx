@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
+import type { FocusEvent as ReactFocusEvent, PointerEvent as ReactPointerEvent, TouchEvent as ReactTouchEvent } from 'react'
 import { api } from './api'
 import { subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
@@ -27,6 +27,16 @@ const SIDEBAR_MAX = 420
 
 const clampSidebar = (width: number) =>
   Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width))
+
+const MOBILE_MQ = '(max-width: 820px)'
+const COMPOSER_HIDE_DELTA = 16
+const COMPOSER_EDGE = 72
+const COMPOSER_SWIPE = 24
+
+function viewportBottom(): number {
+  const viewport = window.visualViewport
+  return viewport ? viewport.offsetTop + viewport.height : window.innerHeight
+}
 
 function fmtNum(value: number): string {
   return value.toLocaleString()
@@ -163,12 +173,52 @@ export default function App() {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const nearBottom = useRef(true)
+  const [composerHidden, setComposerHidden] = useState(false)
+
+  const composerHiddenRef = useRef(false)
+  composerHiddenRef.current = composerHidden
+  const composerAreaRef = useRef<HTMLDivElement>(null)
+  const composerFocused = useRef(false)
+  const mobileRef = useRef(false)
+  const lastScrollTop = useRef(0)
+  const touchStartY = useRef<number | null>(null)
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
     api.workspace().then(workspace => setDefaultRoot(workspace.root)).catch(() => {})
     api.sessions().then(setSessions).catch(e => setError(toError(e)))
   }, [])
+
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_MQ)
+    const sync = () => {
+      mobileRef.current = mq.matches
+      if (!mq.matches) setComposerHidden(false)
+    }
+    sync()
+    mq.addEventListener('change', sync)
+    return () => mq.removeEventListener('change', sync)
+  }, [])
+
+  // 切换会话时输入框复位为展示
+  useEffect(() => {
+    setComposerHidden(false)
+    nearBottom.current = true
+    lastScrollTop.current = 0
+  }, [activeId])
+
+  // 窄屏隐藏用负 margin 回收高度，跟踪输入区实测高度
+  useEffect(() => {
+    const area = composerAreaRef.current
+    if (!area) return
+    const apply = () => {
+      area.style.setProperty('--composer-h', `${area.offsetHeight}px`)
+    }
+    apply()
+    const observer = new ResizeObserver(apply)
+    observer.observe(area)
+    return () => observer.disconnect()
+  }, [activeId])
 
   // 切换会话时建立 SSE 订阅，连接建立即收到当前快照
   useEffect(() => {
@@ -223,7 +273,10 @@ export default function App() {
   // 用户位于底部时跟随滚动
   useEffect(() => {
     const el = scrollRef.current
-    if (el && nearBottom.current) el.scrollTop = el.scrollHeight
+    if (el && nearBottom.current) {
+      el.scrollTop = el.scrollHeight
+      setComposerHidden(false)
+    }
   }, [snap])
 
   // 顶栏用量数据：切换会话与轮次变化时刷新
@@ -291,8 +344,54 @@ export default function App() {
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
-    nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    nearBottom.current = atBottom
     refreshStatsOverlap()
+    if (!mobileRef.current) {
+      lastScrollTop.current = el.scrollTop
+      return
+    }
+    if (atBottom) {
+      lastScrollTop.current = el.scrollTop
+      setComposerHidden(false)
+      return
+    }
+    const prev = lastScrollTop.current
+    lastScrollTop.current = el.scrollTop
+    if (composerFocused.current) return
+    if (el.scrollTop - prev < -COMPOSER_HIDE_DELTA) setComposerHidden(true)
+  }
+
+  const onChatTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    if (!mobileRef.current || !composerHiddenRef.current) {
+      touchStartY.current = null
+      return
+    }
+    const y = event.touches[0]?.clientY
+    if (y == null) return
+    touchStartY.current = viewportBottom() - y <= COMPOSER_EDGE ? y : null
+  }
+
+  const onChatTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = touchStartY.current
+    const y = event.touches[0]?.clientY
+    if (start == null || y == null) return
+    if (start - y >= COMPOSER_SWIPE) {
+      setComposerHidden(false)
+      touchStartY.current = null
+    }
+  }
+
+  const onComposerFocus = () => {
+    composerFocused.current = true
+    setComposerHidden(false)
+  }
+
+  const onComposerBlur = (event: ReactFocusEvent<HTMLDivElement>) => {
+    const next = event.relatedTarget
+    if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+      composerFocused.current = false
+    }
   }
 
   // 侧栏拖拽调宽
@@ -352,6 +451,7 @@ export default function App() {
   const revertTurn = useCallback(
     async (turnIndex: number, prompt: string) => {
       if (!activeId) return
+      setComposerHidden(false)
       try {
         await api.revert(activeId, turnIndex)
         setPending(null)
@@ -734,7 +834,13 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
+            <div
+              className="chat-scroll"
+              ref={scrollRef}
+              onScroll={onScroll}
+              onTouchStart={onChatTouchStart}
+              onTouchMove={onChatTouchMove}
+            >
               <Chat
                 snap={snap}
                 pending={pending}
@@ -743,7 +849,14 @@ export default function App() {
                 onPreviewFile={onPreviewFile}
               />
             </div>
-            <div className="composer-area">
+            <div
+              className={`composer-area${composerHidden ? ' composer-hidden' : ''}`}
+              ref={composerAreaRef}
+              onFocus={onComposerFocus}
+              onBlur={onComposerBlur}
+              aria-hidden={composerHidden}
+              inert={composerHidden}
+            >
               <Composer
                 ref={composerRef}
                 running={running}
