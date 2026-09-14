@@ -424,6 +424,7 @@ export default function App() {
   const currentModel = active?.current_model ?? draftModel ?? models?.default ?? ''
   const currentVariant = active?.current_variant ?? draftVariant
   const currentSearch = active?.web_search ?? draftSearch
+  const currentEditor = active?.editor ?? 'replace'
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
   const workspaceName =
     active?.workspace_root.split('/').filter(Boolean).pop() ?? active?.workspace_root ?? null
@@ -667,6 +668,10 @@ export default function App() {
             <div className="stat-row">
               <span className="stat-label">Workspace</span>
               <span className="stat-value">{workspaceName}</span>
+            </div>
+            <div className="stat-row">
+              <span className="stat-label">Editor</span>
+              <span className="stat-value">{currentEditor}</span>
             </div>
             <div className="stat-row">
               <span className="stat-label">Turns</span>

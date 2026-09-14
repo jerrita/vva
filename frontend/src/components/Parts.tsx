@@ -22,6 +22,32 @@ function lineCount(text: string): number {
   return text === '' ? 0 : text.split('\n').length
 }
 
+function fileName(path: string): string {
+  const filePath = path.split('#', 1)[0]
+  return filePath.slice(filePath.lastIndexOf('/') + 1)
+}
+
+function patchFilePath(input: string): string | null {
+  for (const line of input.split('\n')) {
+    for (const prefix of ['*** Update File: ', '*** Add File: ', '*** Delete File: ']) {
+      if (line.startsWith(prefix)) return line.slice(prefix.length).trim()
+    }
+  }
+  return null
+}
+
+function patchCounts(input: string): { plus: number; minus: number } {
+  let plus = 0
+  let minus = 0
+  for (const line of input.split('\n')) {
+    const trimmed = line.replace(/\s+$/, '')
+    if (trimmed.startsWith('***') || trimmed.startsWith('@@')) continue
+    if (trimmed.startsWith('+')) plus += 1
+    else if (trimmed.startsWith('-')) minus += 1
+  }
+  return { plus, minus }
+}
+
 function editEntries(args: Record<string, unknown>): Record<string, unknown>[] {
   if (args.edits === undefined) return [args]
   if (!Array.isArray(args.edits)) return []
@@ -59,18 +85,27 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
       return { text: rawPath ?? truncate(call.arguments, 88), filePath: rawPath ?? undefined }
     }
     case 'Edit': {
+      const input = str(args.input)
+      if (input) {
+        const path = patchFilePath(input)
+        const { plus, minus } = patchCounts(input)
+        if (path) {
+          return { text: fileName(path), filePath: path, editPath: path, plus, minus }
+        }
+        return { text: truncate(input, 88) }
+      }
       const path = str(args.path)
       const edits = editEntries(args)
       if (path && edits.length > 0 && edits.every(edit => str(edit.old_string) !== null && str(edit.new_string) !== null)) {
         return {
-          text: path,
+          text: fileName(path),
           filePath: path,
           editPath: path,
           plus: edits.reduce((count, edit) => count + lineCount(str(edit.new_string)!), 0),
           minus: edits.reduce((count, edit) => count + lineCount(str(edit.old_string)!), 0),
         }
       }
-      return { text: truncate(call.arguments, 88), filePath: path ?? undefined }
+      return { text: path ?? truncate(call.arguments, 88), filePath: path ?? undefined }
     }
     case 'Glob': {
       const pattern = str(args.pattern) ?? truncate(call.arguments, 88)

@@ -10,6 +10,35 @@ fn default_web_search() -> bool {
     true
 }
 
+/// 会话绑定的文件编辑协议；创建时从模型 `annotation.editor` 写入，之后不随换模改变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorKind {
+    Replace,
+    Patch,
+    #[default]
+    Hashline,
+}
+
+fn missing_editor() -> EditorKind {
+    // JSONL 缺省字段是早期 replace 会话；新会话默认 hashline，会显式写入。
+    EditorKind::Replace
+}
+
+impl EditorKind {
+    pub fn is_replace(&self) -> bool {
+        matches!(self, Self::Replace)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Replace => "replace",
+            Self::Patch => "patch",
+            Self::Hashline => "hashline",
+        }
+    }
+}
+
 /// 由用户首条 Prompt 派生的占位标题（正式标题由后台小模型异步生成后覆盖）
 pub fn provisional_title(prompt: &str) -> String {
     prompt.chars().take(40).collect()
@@ -32,6 +61,12 @@ pub struct Session {
     /// 是否开启原生网络搜索 / 实时 Grounding (保持工具挂载与 prompt cache 一致)
     #[serde(default = "default_web_search")]
     pub web_search: bool,
+    /// 本会话文件编辑协议（replace / patch / hashline），创建后固定
+    #[serde(
+        default = "missing_editor",
+        skip_serializing_if = "EditorKind::is_replace"
+    )]
+    pub editor: EditorKind,
     pub turns: Vec<Turn>,
 }
 
@@ -65,6 +100,7 @@ impl Session {
             current_model: current_model.into(),
             current_variant,
             web_search,
+            editor: EditorKind::default(),
             turns: Vec::new(),
         }
     }
@@ -134,6 +170,11 @@ pub struct SessionHeader {
     pub current_variant: Option<String>,
     #[serde(default = "default_web_search")]
     pub web_search: bool,
+    #[serde(
+        default = "missing_editor",
+        skip_serializing_if = "EditorKind::is_replace"
+    )]
+    pub editor: EditorKind,
 }
 
 impl From<&Session> for SessionHeader {
@@ -146,6 +187,7 @@ impl From<&Session> for SessionHeader {
             current_model: s.current_model.clone(),
             current_variant: s.current_variant.clone(),
             web_search: s.web_search,
+            editor: s.editor,
         }
     }
 }
@@ -162,6 +204,7 @@ impl SessionHeader {
             current_model: self.current_model,
             current_variant: self.current_variant,
             web_search: self.web_search,
+            editor: self.editor,
             turns,
         }
     }

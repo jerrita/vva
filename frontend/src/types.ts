@@ -119,6 +119,7 @@ export interface Session {
   current_model: string
   current_variant?: string | null
   web_search: boolean
+  editor?: 'replace' | 'patch' | 'hashline'
   turns: Turn[]
 }
 

@@ -48,11 +48,14 @@ impl AgentEngine {
         let inputs = resolved.input_capabilities();
         inputs.validate_session(session)?;
         let mut tools =
-            ToolRegistry::with_workspace_defaults(&session.workspace_root, Some(tool_outputs));
-        tools.register(Arc::new(
-            crate::tools::filesystem::ReadTool::new(&session.workspace_root)
-                .with_inputs(inputs.clone()),
-        ));
+            ToolRegistry::with_editor(&session.workspace_root, Some(tool_outputs), session.editor);
+        let mut read = crate::tools::filesystem::ReadTool::new(&session.workspace_root)
+            .with_inputs(inputs.clone())
+            .with_editor(session.editor);
+        if let Some(hashline) = tools.hashline_session() {
+            read = read.with_hashline(hashline);
+        }
+        tools.register(Arc::new(read));
         let provider = resolved.create_provider();
         let max_tokens = resolved
             .model_config

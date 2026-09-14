@@ -149,6 +149,46 @@ fn line_count(text: &str) -> usize {
     }
 }
 
+fn mutation_counts(name: &str, args: &serde_json::Value) -> Option<(String, usize, usize)> {
+    if name != "Edit" {
+        return None;
+    }
+    if let Some(input) = json_str(args, "input") {
+        let (added, removed) = patch_counts(input);
+        return Some((patch_file_path(input)?.to_string(), added, removed));
+    }
+    let (added, removed) = edit_counts(args)?;
+    Some((json_str(args, "path")?.to_string(), added, removed))
+}
+
+fn patch_file_path(input: &str) -> Option<&str> {
+    for line in input.lines() {
+        for prefix in ["*** Update File: ", "*** Add File: ", "*** Delete File: "] {
+            if let Some(path) = line.strip_prefix(prefix) {
+                return Some(path.trim());
+            }
+        }
+    }
+    None
+}
+
+fn patch_counts(input: &str) -> (usize, usize) {
+    let mut added = 0;
+    let mut removed = 0;
+    for line in input.lines() {
+        let trimmed = line.trim_end();
+        if trimmed.starts_with("***") || trimmed.starts_with("@@") {
+            continue;
+        }
+        if trimmed.starts_with('+') {
+            added += 1;
+        } else if trimmed.starts_with('-') {
+            removed += 1;
+        }
+    }
+    (added, removed)
+}
+
 fn worked_duration(elapsed_ms: u64) -> String {
     if elapsed_ms.is_multiple_of(1_000) {
         format!("{}s", elapsed_ms / 1_000)
@@ -222,10 +262,25 @@ fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) ->
         "Write" => json_str(&args, "path")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
-        "Edit" => match (json_str(&args, "path"), edit_counts(&args)) {
-            (Some(path), Some((added, removed))) => format!("{path} (+{added}, -{removed})"),
-            _ => arguments.to_string(),
-        },
+        "Edit" => {
+            if let Some(input) = json_str(&args, "input") {
+                match patch_file_path(input) {
+                    Some(path) => {
+                        let (added, removed) = patch_counts(input);
+                        format!("{path} (+{added}, -{removed})")
+                    }
+                    None => arguments.to_string(),
+                }
+            } else {
+                match (json_str(&args, "path"), edit_counts(&args)) {
+                    (Some(path), Some((added, removed))) => {
+                        format!("{path} (+{added}, -{removed})")
+                    }
+                    (Some(path), None) => path.to_string(),
+                    _ => arguments.to_string(),
+                }
+            }
+        }
         "Glob" => {
             let pattern = json_str(&args, "pattern")
                 .map(|pattern| format!("\"{pattern}\""))
@@ -262,7 +317,9 @@ fn tool_block_command(name: &str, arguments: &str) -> String {
         "Shell" => json_str(&args, "command")
             .map(|command| format!("$ {command}"))
             .unwrap_or_else(|| arguments.to_string()),
-        "Read" | "Write" | "Edit" => json_str(&args, "path")
+        "Read" | "Write" | "Edit" => json_str(&args, "input")
+            .and_then(patch_file_path)
+            .or_else(|| json_str(&args, "path"))
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
         "Glob" => json_str(&args, "pattern")
@@ -392,7 +449,7 @@ fn push_tool_block(
     let hint_style = Style::default().fg(Color::Rgb(110, 110, 110));
     lines.push(tool_block_frame("╭", "╮", max_width));
     push_filled_blank(lines, max_width);
-    if !matches!(call.name.as_str(), "Edit" | "Write") {
+    if !is_mutation_tool(&call.name) {
         push_filled_text(
             lines,
             &tool_block_command(&call.name, &call.arguments),
@@ -403,9 +460,7 @@ fn push_tool_block(
     }
 
     let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };
-    if matches!(call.name.as_str(), "Edit" | "Write")
-        && !result.is_some_and(|result| result.is_error)
-    {
+    if is_mutation_tool(&call.name) && !result.is_some_and(|result| result.is_error) {
         let mut body = Vec::new();
         let inner_width = max_width.saturating_sub(TOOL_BLOCK_CHROME);
         if call.name == "Write" {
@@ -420,6 +475,14 @@ fn push_tool_block(
                     );
                 }
             }
+        } else if edit_uses_patch_body(&call.arguments) {
+            push_patch_detail(
+                &mut body,
+                &call.arguments,
+                result.map(|result| result.content.as_str()),
+                inner_width,
+                usize::MAX,
+            );
         } else {
             push_edit_detail(
                 &mut body,
@@ -457,6 +520,15 @@ fn push_tool_block(
     }
     lines.push(tool_block_frame("╰", "╯", max_width));
     truncated
+}
+
+fn is_mutation_tool(name: &str) -> bool {
+    matches!(name, "Edit" | "Write")
+}
+
+fn edit_uses_patch_body(arguments: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .is_ok_and(|args| args.get("input").is_some() || args.get("ops").is_some())
 }
 
 fn default_tool_expand(name: &str) -> Option<ToolExpand> {
@@ -499,11 +571,7 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     ];
     let edit_detail = serde_json::from_str::<serde_json::Value>(&call.arguments)
         .ok()
-        .filter(|_| call.name == "Edit")
-        .and_then(|args| {
-            let (added, removed) = edit_counts(&args)?;
-            Some((json_str(&args, "path")?.to_string(), added, removed))
-        });
+        .and_then(|args| mutation_counts(&call.name, &args));
     if let Some((path, inserted, deleted)) = edit_detail {
         spans.extend([
             Span::styled(path, detail_style),
@@ -544,7 +612,7 @@ fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
             block_start,
             block_end,
             truncated,
-            full_only: matches!(call.name.as_str(), "Edit" | "Write"),
+            full_only: is_mutation_tool(&call.name),
         });
     }
 }
@@ -841,6 +909,37 @@ fn edit_hunk_starts(diff: Option<&str>) -> Option<(usize, usize)> {
             .parse()
             .ok()?,
     ))
+}
+
+fn push_patch_detail(
+    lines: &mut Vec<Line<'static>>,
+    arguments: &str,
+    result: Option<&str>,
+    max_width: usize,
+    cap: usize,
+) {
+    let parsed = serde_json::from_str::<serde_json::Value>(arguments).ok();
+    let fallback = parsed
+        .as_ref()
+        .and_then(|args| json_str(args, "input"))
+        .unwrap_or(arguments);
+    let text = result.unwrap_or(fallback);
+    for line in text.lines().take(cap) {
+        let style = match line.as_bytes().first() {
+            Some(b'+') => EDIT_INSERT,
+            Some(b'-') => EDIT_DELETE,
+            _ => Style::default(),
+        };
+        push_filled_text(lines, line, style, max_width);
+    }
+    if text.lines().count() > cap {
+        push_filled_text(
+            lines,
+            "...",
+            Style::default().fg(Color::DarkGray),
+            max_width,
+        );
+    }
 }
 
 fn push_edit_detail(

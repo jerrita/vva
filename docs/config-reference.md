@@ -128,7 +128,7 @@
       "cache_read": 0.2, "cache_write": 2.5,
       "context_over_200k": { "input": 4, "output": 18, "cache_read": 0.4 }
     },
-    "annotation": { "web_fetch": false }
+    "annotation": { "web_fetch": false, "editor": "replace" }
   }
 }
 ```
@@ -160,6 +160,7 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `annotation.web_fetch` | `true` | 设为 `false` 时不向端点声明 `web_fetch` 服务端工具。用于未接线特定 server tool 的中转端点——工具声明组中出现端点未识别的条目时，端点会整组丢弃声明；仅声明 `web_search` 可保住原生搜索 |
+| `annotation.editor` | `hashline` | 文件编辑协议，工具名均为 `Edit`，仅参数与 description 不同。会话创建时写入 Header 并固定，之后换模不改变：`hashline` 为 `[PATH#TAG]` 快照 + `PUT`/`CUT`/`REM`/`MV` 行号补丁；`replace` 为 `old_string`/`new_string`；`patch` 为 Codex V4A `input` |
 
 ---
 

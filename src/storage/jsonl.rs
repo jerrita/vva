@@ -369,6 +369,7 @@ mod tests {
         assert_eq!(loaded.title, Some("Bugfix task".into()));
         assert_eq!(loaded.current_model, "a/gpt-5.6-terra");
         assert_eq!(loaded.current_variant.as_deref(), Some("high"));
+        assert_eq!(loaded.editor, crate::model::EditorKind::Hashline);
         assert!(loaded.web_search);
         assert_eq!(loaded.turns.len(), 2);
         assert_eq!(loaded.latest_openai_response_id(), Some("resp_001xyz"));

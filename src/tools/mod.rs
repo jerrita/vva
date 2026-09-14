@@ -1,7 +1,9 @@
+pub mod apply_patch;
 pub mod filesystem;
+pub mod hashline;
 pub mod shell;
 
-use crate::model::{ToolCall, ToolDefinition, ToolResult};
+use crate::model::{EditorKind, ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -40,6 +42,7 @@ pub struct ToolRegistry {
     /// 原生服务端工具名（web_search / web_fetch 等）：声明给 API 端点由其代执行，
     /// 本注册表不可执行；模型误发起同名客户端调用时用于产出显式诊断
     server_tools: HashSet<String>,
+    hashline: Option<Arc<hashline::HashlineSession>>,
 }
 
 impl ToolRegistry {
@@ -48,20 +51,58 @@ impl ToolRegistry {
             tools: BTreeMap::new(),
             tool_outputs: None,
             server_tools: HashSet::new(),
+            hashline: None,
         }
     }
 
-    /// 注册工作空间默认工具集。
+    pub fn hashline_session(&self) -> Option<Arc<hashline::HashlineSession>> {
+        self.hashline.clone()
+    }
+
+    /// 注册工作空间默认工具集（hashline 编辑协议）。
     pub fn with_workspace_defaults(workspace: &Path, tool_outputs: Option<PathBuf>) -> Self {
+        Self::with_editor(workspace, tool_outputs, EditorKind::Hashline)
+    }
+
+    /// 按会话绑定的编辑协议注册 Read / Write 与对应编辑工具。
+    pub fn with_editor(
+        workspace: &Path,
+        tool_outputs: Option<PathBuf>,
+        editor: EditorKind,
+    ) -> Self {
         let mut registry = Self::new();
         registry.tool_outputs = tool_outputs;
-        registry.register(Arc::new(crate::tools::filesystem::ReadTool::new(workspace)));
+        let hashline = (editor == EditorKind::Hashline).then(hashline::HashlineSession::new);
+        registry.hashline = hashline.clone();
+        let mut read = crate::tools::filesystem::ReadTool::new(workspace).with_editor(editor);
+        let mut grep = crate::tools::filesystem::GrepTool::new(workspace).with_editor(editor);
+        if let Some(session) = hashline.clone() {
+            read = read.with_hashline(session.clone());
+            grep = grep.with_hashline(session);
+        }
+        registry.register(Arc::new(read));
         registry.register(Arc::new(crate::tools::filesystem::WriteTool::new(
             workspace,
         )));
-        registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
+        match editor {
+            EditorKind::Replace => {
+                registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
+            }
+            EditorKind::Patch => {
+                registry.register(Arc::new(crate::tools::apply_patch::ApplyPatchTool::new(
+                    workspace,
+                )));
+            }
+            EditorKind::Hashline => {
+                let mut edit = crate::tools::hashline::HashlineEditTool::new(workspace);
+                if let Some(session) = hashline {
+                    edit = edit.with_session(session);
+                }
+                registry.register(Arc::new(edit));
+            }
+        }
         registry.register(Arc::new(crate::tools::filesystem::GlobTool::new(workspace)));
-        registry.register(Arc::new(crate::tools::filesystem::GrepTool::new(workspace)));
+        registry.register(Arc::new(grep));
         registry.register(Arc::new(crate::tools::shell::ShellTool::new(workspace)));
         registry
     }
@@ -292,6 +333,35 @@ mod tests {
         assert_eq!(names, ["Edit", "Read", "Shell"]);
     }
 
+    #[test]
+    fn with_editor_registers_matching_edit_tool() {
+        let dir = std::path::Path::new("/tmp");
+        let names = |editor| {
+            ToolRegistry::with_editor(dir, None, editor)
+                .definitions()
+                .into_iter()
+                .map(|definition| definition.name)
+                .collect::<Vec<_>>()
+        };
+        for editor in [EditorKind::Replace, EditorKind::Patch, EditorKind::Hashline] {
+            assert!(names(editor).contains(&"Edit".into()), "{editor:?}");
+        }
+        let keys = |editor| {
+            ToolRegistry::with_editor(dir, None, editor)
+                .get("Edit")
+                .unwrap()
+                .parameters()["properties"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert!(keys(EditorKind::Replace).contains(&"old_string".into()));
+        assert!(keys(EditorKind::Patch).contains(&"input".into()));
+        assert!(keys(EditorKind::Hashline).contains(&"input".into()));
+    }
+
     #[tokio::test]
     async fn execute_call_rejects_invalid_parameters_before_execution() {
         let mut registry = ToolRegistry::new();
@@ -338,7 +408,8 @@ mod tests {
 
     #[test]
     fn validate_call_rejects_malformed_edit_path() {
-        let registry = ToolRegistry::with_workspace_defaults(std::path::Path::new("/tmp"), None);
+        let registry =
+            ToolRegistry::with_editor(std::path::Path::new("/tmp"), None, EditorKind::Replace);
         let call = ToolCall::new(
             "call_1",
             "Edit",

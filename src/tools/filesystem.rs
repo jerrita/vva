@@ -1,5 +1,5 @@
 use crate::config::resolver::InputCapabilities;
-use crate::model::{MediaContent, MediaKind, ToolCall, ToolResult};
+use crate::model::{EditorKind, MediaContent, MediaKind, ToolCall, ToolResult};
 use async_trait::async_trait;
 use base64::Engine;
 use glob::{MatchOptions, Pattern};
@@ -277,6 +277,8 @@ fn unified_diff(
 pub struct ReadTool {
     working_dir: PathBuf,
     inputs: InputCapabilities,
+    editor: EditorKind,
+    hashline: Option<std::sync::Arc<super::hashline::HashlineSession>>,
 }
 
 impl ReadTool {
@@ -284,11 +286,26 @@ impl ReadTool {
         Self {
             working_dir: working_dir.into(),
             inputs: InputCapabilities::default(),
+            editor: EditorKind::Replace,
+            hashline: None,
         }
     }
 
     pub fn with_inputs(mut self, inputs: InputCapabilities) -> Self {
         self.inputs = inputs;
+        self
+    }
+
+    pub fn with_editor(mut self, editor: EditorKind) -> Self {
+        self.editor = editor;
+        self
+    }
+
+    pub fn with_hashline(
+        mut self,
+        session: std::sync::Arc<super::hashline::HashlineSession>,
+    ) -> Self {
+        self.hashline = Some(session);
         self
     }
 
@@ -328,7 +345,24 @@ impl ReadTool {
         if content.contains('\0') {
             return Err(format!("Unsupported binary file: {}", path.display()));
         }
-        Ok((read_text(content, &args)?, Vec::new()))
+        if self.editor == EditorKind::Hashline {
+            let canonical = tokio::fs::canonicalize(&path)
+                .await
+                .unwrap_or_else(|_| path.clone());
+            return Ok((
+                super::hashline::format_read(
+                    &args.path,
+                    content,
+                    args.offset,
+                    args.limit,
+                    args.byte_offset,
+                    self.hashline.as_deref(),
+                    &canonical,
+                )?,
+                Vec::new(),
+            ));
+        }
+        Ok((format_read_text(content, &args, self.editor)?, Vec::new()))
     }
 }
 
@@ -374,12 +408,12 @@ fn media_type(path: &Path, bytes: &[u8]) -> Option<(MediaKind, &'static str)> {
     })
 }
 
-fn content_version(content: &str) -> String {
+pub(crate) fn content_version(content: &str) -> String {
     // 64-bit truncation suffices for optimistic stale detection within a session.
     format!("{:x}", Sha256::digest(content.as_bytes()))[..16].to_string()
 }
 
-fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
+fn format_read_text(content: &str, args: &ReadArgs, editor: EditorKind) -> Result<String, String> {
     let offset = args.offset.unwrap_or(1);
     if offset == 0 {
         return Err("offset must be a positive, 1-indexed line number".into());
@@ -389,8 +423,18 @@ fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
     }
     // Reserve space for the version and continuation notice as well as the text.
     let budget = super::MAX_INLINE_OUTPUT_BYTES - 256;
-    let mut output = format!("[version: {}]\n", content_version(content));
-    let mut lines = content.lines().enumerate().skip(offset - 1).peekable();
+    let mut output = if editor == EditorKind::Replace {
+        format!("[version: {}]\n", content_version(content))
+    } else {
+        String::new()
+    };
+    let all_lines: Vec<&str> = content.lines().collect();
+    let mut lines = all_lines
+        .iter()
+        .copied()
+        .enumerate()
+        .skip(offset - 1)
+        .peekable();
     let mut shown = 0;
     while shown < args.limit.unwrap_or(usize::MAX) {
         let Some((index, line)) = lines.next() else {
@@ -408,11 +452,7 @@ fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
                 line.len()
             ));
         }
-        let prefix = if byte_offset == 0 {
-            format!("{}: ", index + 1)
-        } else {
-            format!("{}@{byte_offset}: ", index + 1)
-        };
+        let prefix = line_prefix(index, byte_offset);
         let text = &line[byte_offset..];
         let remaining = budget.saturating_sub(output.len());
         if prefix.len() + text.len() + 1 > remaining {
@@ -445,6 +485,19 @@ fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
     Ok(output)
 }
 
+fn line_prefix(index: usize, byte_offset: usize) -> String {
+    if byte_offset == 0 {
+        format!("{}: ", index + 1)
+    } else {
+        format!("{}@{byte_offset}: ", index + 1)
+    }
+}
+
+#[cfg(test)]
+fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
+    format_read_text(content, args, EditorKind::Replace)
+}
+
 #[derive(Deserialize)]
 struct ReadArgs {
     path: String,
@@ -460,8 +513,20 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text has 1-indexed line numbers and a content version; copy that version into Edit's expected_version to detect changes since this read. Use offset and limit for a range. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Copy code without line-number prefixes or notices. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
+        match self.editor {
+            EditorKind::Hashline => {
+                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text starts with [PATH#TAG] then N:line (1-indexed, no space after the colon). Copy the header into Edit; numbers are that snapshot. Grep uses the same headers. offset and limit are 1-indexed line counts. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Partial and elided lines are unseen to Edit. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
 Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/main.rs","offset":1,"limit":200}."#
+            }
+            EditorKind::Patch => {
+                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text has 1-indexed line numbers. Use offset and limit for a range. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Copy code without line-number prefixes or notices into Edit hunks. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
+Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/main.rs","offset":1,"limit":200}."#
+            }
+            EditorKind::Replace => {
+                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text has 1-indexed line numbers and a content version; copy that version into Edit's expected_version to detect changes since this read. Use offset and limit for a range. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Copy code without line-number prefixes or notices. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
+Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/main.rs","offset":1,"limit":200}."#
+            }
+        }
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -619,7 +684,7 @@ impl EditArgs {
 }
 
 // Weak entries share locks across registry/session instances without retaining files forever.
-fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
+pub(crate) fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
     let mut locks = LOCKS
         .get_or_init(Mutex::default)
@@ -662,15 +727,28 @@ struct MatchedReplacement {
 }
 
 #[derive(Debug)]
-struct ChangedRange {
+pub(crate) struct ChangedRange {
     old: std::ops::Range<usize>,
     new: std::ops::Range<usize>,
 }
 
 #[derive(Debug)]
-struct EditPlan {
-    updated: String,
+pub(crate) struct EditPlan {
+    pub updated: String,
     changes: Vec<ChangedRange>,
+}
+
+impl EditPlan {
+    pub(crate) fn from_replacement(original: &str, updated: String) -> Self {
+        let new_len = updated.len();
+        Self {
+            updated,
+            changes: vec![ChangedRange {
+                old: 0..original.len(),
+                new: 0..new_len,
+            }],
+        }
+    }
 }
 
 fn edit_diff(path: &Path, original: &str, plan: &EditPlan) -> String {
@@ -871,7 +949,7 @@ fn apply_replacements(raw: &str, edits: &[Replacement]) -> Result<EditPlan, Stri
     Ok(EditPlan { updated, changes })
 }
 
-fn persist_edit(path: &Path, original: &str, updated: &str) -> Result<(), String> {
+pub(crate) fn persist_edit(path: &Path, original: &str, updated: &str) -> Result<(), String> {
     let permissions = fs::metadata(path)
         .map_err(|e| format!("Failed to inspect {}: {e}", path.display()))?
         .permissions();
@@ -947,30 +1025,72 @@ Use either edits[] or top-level old_string/new_string/replace_all/expected_match
             );
         }
         tokio::task::spawn_blocking(move || {
-            let path = fs::canonicalize(&path).map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
-            let lock = edit_lock(&path)?;
-            let _guard = lock.lock().map_err(|_| "File mutation lock poisoned".to_string())?;
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-            if content.contains('\0') { return Err("Unsupported binary file".into()); }
-            let version = content_version(&content);
-            if expected_version.as_ref().is_some_and(|expected| expected != &version) {
-                return Err(format!("stale: expected_version does not match current version {version}; Read the target range and retry"));
-            }
-            let plan = apply_replacements(&content, &edits)
-                .map_err(|error| format!("{error}\n[version: {version}]"))?;
-            let updated = &plan.updated;
-            if *updated == content { return Err("unchanged: edits produce no file changes".into()); }
-            persist_edit(&path, &content, updated)?;
-            let mut diff = edit_diff(&path, &content, &plan);
-            let budget = super::MAX_INLINE_OUTPUT_BYTES - 256;
-            if diff.len() > budget {
-                let mut end = budget;
-                while !diff.is_char_boundary(end) { end -= 1; }
-                diff.truncate(end);
-                diff.push_str("\n[Diff preview truncated; use Read for changed ranges.]");
-            }
-            Ok(format!("{diff}\n[version: {}]", content_version(updated)))
-        }).await.map_err(|e| format!("Edit task failed: {e}"))?
+            commit_text_edit(&path, expected_version.as_deref(), true, |content| {
+                apply_replacements(content, &edits)
+            })
+        })
+        .await
+        .map_err(|e| format!("Edit task failed: {e}"))?
+    }
+}
+
+pub(crate) fn commit_text_edit(
+    path: &Path,
+    expected_version: Option<&str>,
+    emit_version: bool,
+    apply: impl FnOnce(&str) -> Result<EditPlan, String>,
+) -> Result<String, String> {
+    let path =
+        fs::canonicalize(path).map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
+    let lock = edit_lock(&path)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| "File mutation lock poisoned".to_string())?;
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    if content.contains('\0') {
+        return Err("Unsupported binary file".into());
+    }
+    let version = content_version(&content);
+    if expected_version.is_some_and(|expected| expected != version) {
+        return Err(format!(
+            "stale: expected_version does not match current version {version}; Read the target range and retry"
+        ));
+    }
+    let plan = apply(&content).map_err(|error| {
+        if emit_version {
+            format!("{error}\n[version: {version}]")
+        } else {
+            error
+        }
+    })?;
+    if plan.updated == content {
+        return Err("unchanged: edits produce no file changes".into());
+    }
+    persist_edit(&path, &content, &plan.updated)?;
+    Ok(format_edit_result(&path, &content, &plan, emit_version))
+}
+
+pub(crate) fn format_edit_result(
+    path: &Path,
+    original: &str,
+    plan: &EditPlan,
+    emit_version: bool,
+) -> String {
+    let mut diff = edit_diff(path, original, plan);
+    let budget = super::MAX_INLINE_OUTPUT_BYTES - 256;
+    if diff.len() > budget {
+        let mut end = budget;
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        diff.truncate(end);
+        diff.push_str("\n[Diff preview truncated; use Read for changed ranges.]");
+    }
+    if emit_version {
+        format!("{diff}\n[version: {}]", content_version(&plan.updated))
+    } else {
+        diff
     }
 }
 
@@ -1046,13 +1166,30 @@ Returns file paths sorted by modification time (newest first), at most 100, with
 
 pub struct GrepTool {
     working_dir: PathBuf,
+    editor: EditorKind,
+    hashline: Option<std::sync::Arc<super::hashline::HashlineSession>>,
 }
 
 impl GrepTool {
     pub fn new(working_dir: impl Into<PathBuf>) -> Self {
         Self {
             working_dir: working_dir.into(),
+            editor: EditorKind::Replace,
+            hashline: None,
         }
+    }
+
+    pub fn with_editor(mut self, editor: EditorKind) -> Self {
+        self.editor = editor;
+        self
+    }
+
+    pub fn with_hashline(
+        mut self,
+        session: std::sync::Arc<super::hashline::HashlineSession>,
+    ) -> Self {
+        self.hashline = Some(session);
+        self
     }
 }
 
@@ -1070,9 +1207,18 @@ impl Tool for GrepTool {
     }
 
     fn description(&self) -> &str {
-        r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
+        match self.editor {
+            EditorKind::Hashline => {
+                r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
+Optionally restrict files with include, a glob relative to the search root. Glob syntax supports *, ?, character classes, recursive **, and brace expansion such as **/*.{rs,md,toml}. Extglobs are unsupported. Hidden and gitignored files are included; directory symlinks are not traversed during recursion.
+Returns [PATH#TAG] then N:text for each match (same header as Read). Copy the header and line numbers into Edit. Sorted by file modification time (newest first), capped at 100 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
+            }
+            EditorKind::Patch | EditorKind::Replace => {
+                r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
 Optionally restrict files with include, a glob relative to the search root. Glob syntax supports *, ?, character classes, recursive **, and brace expansion such as **/*.{rs,md,toml}. Extglobs are unsupported. Hidden and gitignored files are included; directory symlinks are not traversed during recursion.
 Returns path:line: text with 1-indexed line numbers, sorted by file modification time (newest first), capped at 100 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
+            }
+        }
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -1105,6 +1251,7 @@ Returns path:line: text with 1-indexed line numbers, sorted by file modification
         sort_by_mtime(&mut files)?;
 
         let mut results = Vec::new();
+        let mut match_count = 0usize;
         for path in files {
             let relative = relative_to(&root, &path, root_is_file);
             if include
@@ -1116,12 +1263,48 @@ Returns path:line: text with 1-indexed line numbers, sorted by file modification
             let Ok(content) = fs::read_to_string(&path) else {
                 continue;
             };
-            for (index, line) in content.lines().enumerate() {
+            let all_lines: Vec<&str> = content.lines().collect();
+            if self.editor == EditorKind::Hashline {
+                let mut clipped = Vec::new();
+                let mut truncated = false;
+                for (index, line) in all_lines.iter().copied().enumerate() {
+                    if !regex.is_match(line) {
+                        continue;
+                    }
+                    if match_count == MAX_RESULTS {
+                        truncated = true;
+                        break;
+                    }
+                    clipped.push((index, line));
+                    match_count += 1;
+                }
+                if !clipped.is_empty() {
+                    let label = path
+                        .strip_prefix(&self.working_dir)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string();
+                    let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+                    results.push(super::hashline::format_grep_file(
+                        &label,
+                        &content,
+                        &clipped,
+                        self.hashline.as_deref(),
+                        &canonical,
+                    )?);
+                }
+                if truncated {
+                    return Ok(format!("{}\n[results truncated]", results.join("\n")));
+                }
+                continue;
+            }
+            for (index, line) in all_lines.iter().copied().enumerate() {
                 if regex.is_match(line) {
-                    if results.len() == MAX_RESULTS {
+                    if match_count == MAX_RESULTS {
                         return Ok(format!("{}\n[results truncated]", results.join("\n")));
                     }
                     results.push(format!("{}:{}: {line}", path.display(), index + 1));
+                    match_count += 1;
                 }
             }
         }
@@ -1343,6 +1526,43 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[tokio::test]
+    async fn read_hashline_emits_snapshot_header_and_line_numbers() {
+        let root = std::env::temp_dir().join(format!("vva-hash-read-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("sample"), "alpha\nbeta\nalpha\n").unwrap();
+        let tool = ReadTool::new(&root).with_editor(crate::model::EditorKind::Hashline);
+        let result = tool.execute(r#"{"path":"sample"}"#).await.unwrap();
+        let header = result.lines().next().unwrap();
+        assert!(header.starts_with("[sample#"), "{header}");
+        assert_eq!(header.len(), "[sample#ABCD]".len(), "{header}");
+        assert!(result.contains("1:alpha"));
+        assert!(result.contains("2:beta"));
+        assert!(result.contains("3:alpha"));
+        assert!(!result.contains("1: "));
+        assert!(!result.contains("[version:"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn grep_hashline_emits_snapshot_header_and_line_numbers() {
+        let root = std::env::temp_dir().join(format!("vva-hash-grep-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("sample"), "alpha\nbeta\nalpha\n").unwrap();
+        let tool = GrepTool::new(&root).with_editor(crate::model::EditorKind::Hashline);
+        let result = tool.execute(r#"{"pattern":"alpha"}"#).await.unwrap();
+        let lines: Vec<&str> = result.lines().collect();
+        assert!(lines[0].starts_with("[sample#"), "{}", lines[0]);
+        assert_eq!(lines[1], "1:alpha");
+        assert_eq!(lines[2], "3:alpha");
+        let numbered = GrepTool::new(&root)
+            .execute(r#"{"pattern":"alpha"}"#)
+            .await
+            .unwrap();
+        assert!(numbered.contains(":1: alpha"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn expand_braces_splits_comma_groups() {
         assert_eq!(
@@ -1509,7 +1729,11 @@ mod tests {
         let path = root.path().join("sample");
         let original = "\u{feff}first\r\nsecond\r\nkeep\nlast";
         fs::write(&path, original).unwrap();
-        let registry = crate::tools::ToolRegistry::with_workspace_defaults(root.path(), None);
+        let registry = crate::tools::ToolRegistry::with_editor(
+            root.path(),
+            None,
+            crate::model::EditorKind::Replace,
+        );
         let execute = |edits: serde_json::Value| {
             ToolCall::new(
                 "batch",

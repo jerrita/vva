@@ -297,6 +297,7 @@ impl SessionManager {
             .map_err(|e| e.to_string())?;
         let mut session =
             Session::with_model(&workspace, title, resolved.full_spec, variant, search);
+        session.editor = resolved.model_config.editor();
         for _ in 0..8 {
             if self
                 .store
@@ -421,6 +422,7 @@ impl SessionManager {
             origin.current_variant.clone(),
             origin.web_search,
         );
+        session.editor = origin.editor;
         for _ in 0..8 {
             if self
                 .store
@@ -1561,10 +1563,74 @@ mod tests {
         assert_eq!(branch.session.title.as_deref(), Some("Branched"));
         assert_eq!(branch.session.current_model, "openai/default_model");
         assert_eq!(branch.session.current_variant.as_deref(), Some("high"));
+        assert_eq!(branch.session.editor, origin.session.editor);
         assert_ne!(forked.id, id);
         let loaded = mgr.store().load_session(&forked.id).await.unwrap().unwrap();
         assert_eq!(loaded.turns.len(), 3);
         assert_eq!(loaded.title.as_deref(), Some("Branched"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_editor_frozen_at_create() {
+        let dir = std::env::temp_dir().join(format!("vva-editor-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+        let mut config = AppConfig::default();
+        config.settings.default = "p/plain".into();
+        let mut models = std::collections::HashMap::new();
+        models.insert(
+            "plain".into(),
+            crate::config::ModelConfig {
+                name: "Plain".into(),
+                ..Default::default()
+            },
+        );
+        models.insert(
+            "hashed".into(),
+            crate::config::ModelConfig {
+                name: "Hashed".into(),
+                annotation: Some(crate::config::model::ModelAnnotation {
+                    editor: Some(crate::model::EditorKind::Hashline),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        models.insert(
+            "patched".into(),
+            crate::config::ModelConfig {
+                name: "Patched".into(),
+                annotation: Some(crate::config::model::ModelAnnotation {
+                    editor: Some(crate::model::EditorKind::Patch),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        config.providers.insert(
+            "p".into(),
+            crate::config::ProviderConfig {
+                api_key: "test".into(),
+                models,
+                ..Default::default()
+            },
+        );
+        let mgr = SessionManager::new(store, config, &dir, dir.join("state.json"));
+        let handle = mgr
+            .create_session("p/hashed".into(), None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            handle.snapshot().session.editor,
+            crate::model::EditorKind::Hashline
+        );
+        handle
+            .configure(Some("p/patched".into()), None, None)
+            .await
+            .unwrap();
+        let snap = handle.snapshot();
+        assert_eq!(snap.session.current_model, "p/patched");
+        assert_eq!(snap.session.editor, crate::model::EditorKind::Hashline);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

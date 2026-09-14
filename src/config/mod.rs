@@ -185,6 +185,30 @@ mod tests {
     }
 
     #[test]
+    fn test_model_annotation_editor_defaults_to_hashline() {
+        let json = r#"{
+            "providers": {
+                "prov": {
+                    "type": "response",
+                    "models": {
+                        "plain": { "name": "Plain" },
+                        "codex": { "name": "Codex", "annotation": { "editor": "patch" } },
+                        "hashed": { "name": "Hashed", "annotation": { "editor": "hashline" } }
+                    }
+                }
+            }
+        }"#;
+        let config = parse_config_str(json).expect("parse config");
+        let models = &config.providers["prov"].models;
+        assert_eq!(models["plain"].editor(), crate::model::EditorKind::Hashline);
+        assert_eq!(models["codex"].editor(), crate::model::EditorKind::Patch);
+        assert_eq!(
+            models["hashed"].editor(),
+            crate::model::EditorKind::Hashline
+        );
+    }
+
+    #[test]
     fn test_config_merge_project_over_global() {
         let global_json = r#"{
             "settings": {

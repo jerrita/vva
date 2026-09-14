@@ -225,15 +225,26 @@ impl ModelConfig {
             .and_then(|a| a.web_fetch)
             .unwrap_or(true)
     }
+
+    /// 该模型的文件编辑协议；缺省为 `hashline`
+    pub fn editor(&self) -> crate::model::EditorKind {
+        self.annotation
+            .as_ref()
+            .and_then(|a| a.editor)
+            .unwrap_or_default()
+    }
 }
 
-/// 模型级注记：细粒度关闭个别原生服务端工具的声明。
+/// 模型级注记：细粒度关闭个别原生服务端工具的声明，以及文件编辑协议。
 /// 用于未接线特定 server tool 的中转端点——带未识别条目时端点会整组丢弃工具声明，
 /// 例如 `annotation: { "web_fetch": false }` 仅声明 web_search 以保住原生搜索
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelAnnotation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_fetch: Option<bool>,
+    /// 文件编辑协议：`hashline`（默认，`[PATH#TAG]` 行号补丁）、`replace`（old_string/new_string）、`patch`（Codex V4A）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor: Option<crate::model::EditorKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

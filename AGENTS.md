@@ -94,7 +94,9 @@ src/
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
 │   ├── shell.rs            # Shell 执行 (超时/输出上限/退出码检查)
-│   └── filesystem.rs       # Read、Edit、Glob、Grep
+│   ├── filesystem.rs       # Read、Write、Edit、Glob、Grep
+│   ├── apply_patch.rs      # Edit（patch）：Codex V4A
+│   └── hashline/           # Edit（hashline）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
 │   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions) 与 capability_notices 能力协商
