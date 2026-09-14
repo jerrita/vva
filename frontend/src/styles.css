@@ -1446,14 +1446,14 @@ details.tool-row > summary::-webkit-details-marker {
 .worked-body > .reasoning-row,
 .worked-body > .search-row {
   margin-inline: 0;
+  padding-inline: 0;
 }
 
 .worked-body > .tool-row,
 .worked-body > .tool-row > summary,
 .worked-body > .reasoning-row > summary,
 .worked-body > .search-row > summary {
-  padding-left: 0;
-  padding-right: 0;
+  padding-inline: 0;
 }
 
 .worked > summary:hover {
