@@ -1,7 +1,9 @@
 pub mod apply_patch;
+pub mod ask_user;
 pub mod filesystem;
 pub mod hashline;
 pub mod shell;
+pub mod skill;
 
 use crate::model::{EditorKind, ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;
@@ -19,8 +21,12 @@ pub trait Tool: Send + Sync {
     fn parameters(&self) -> serde_json::Value;
     async fn execute(&self, arguments: &str) -> Result<String, String>;
 
+    async fn execute_call(&self, call: &ToolCall) -> Result<String, String> {
+        self.execute(&call.arguments).await
+    }
+
     async fn execute_result(&self, call: &ToolCall) -> ToolResult {
-        match self.execute(&call.arguments).await {
+        match self.execute_call(call).await {
             Ok(content) => ToolResult::success(&call.id, content),
             Err(error) => ToolResult::error(&call.id, error),
         }

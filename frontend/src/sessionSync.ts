@@ -50,6 +50,10 @@ export function applySessionDelta(previous: SessionSnapshot, delta: SessionDelta
     notices: delta.notices ?? previous.notices,
     session,
     draft,
+    pending_user_question:
+      delta.pending_user_question === undefined
+        ? previous.pending_user_question
+        : delta.pending_user_question,
   }
 }
 

@@ -36,6 +36,7 @@ use crate::harness::SessionManager;
 use crate::storage::SessionStore;
 use app::{ActiveModal, App};
 use modals::{ModalAction, ModalInput, classify_modal_key};
+use views::ask_user_modal::render_ask_user_modal;
 use views::chat::render_chat;
 use views::config_modal::render_config_modal;
 use views::help_modal::render_help_modal;
@@ -45,6 +46,7 @@ use views::modal_shell::modal_list_hit_index;
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
 use views::sidebar::{SidebarInfo, render_sidebar};
+use views::skills_modal::render_skills_modal;
 use views::variants_modal::render_variants_modal;
 
 /// 启动 Ratatui 交互式终端 UI
@@ -194,11 +196,16 @@ async fn run_app_loop(
                 }
                 ActiveModal::Variants(state) => render_variants_modal(state, frame, size),
                 ActiveModal::Config(state) => render_config_modal(state, frame, size),
+                ActiveModal::Skills(state) => render_skills_modal(state, frame, size),
                 ActiveModal::MessageAction(state) => {
                     render_message_action_modal(state, frame, size)
                 }
                 ActiveModal::ForkTitle(state) => {
                     render_fork_title_modal(state, frame, size);
+                    Rect::default()
+                }
+                ActiveModal::AskUser(state) => {
+                    render_ask_user_modal(state, frame, size);
                     Rect::default()
                 }
                 ActiveModal::Help => {
@@ -623,6 +630,33 @@ async fn handle_modal_key(app: &mut App, code: KeyCode) {
             }
             return;
         }
+        ActiveModal::AskUser(state) => match code {
+            KeyCode::Esc => {
+                let request_id = state.request.id.clone();
+                app.answer_user(request_id, Vec::new()).await;
+                return;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.previous_option();
+                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.next_option();
+                return;
+            }
+            KeyCode::Char(' ') if state.current_question().multi_select => {
+                state.toggle_option();
+                return;
+            }
+            KeyCode::Enter => {
+                if state.advance() {
+                    let action = app.modal.activate();
+                    apply_modal_action(app, action).await;
+                }
+                return;
+            }
+            _ => return,
+        },
         ActiveModal::Sessions(state) if state.pending_delete().is_some() => match code {
             KeyCode::Esc => {
                 state.cancel_delete();
@@ -718,6 +752,12 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
         }
         ModalAction::ConfirmFork { turn_index, title } => {
             app.fork_user_turn(turn_index, title).await;
+        }
+        ModalAction::AnswerUser {
+            request_id,
+            answers,
+        } => {
+            app.answer_user(request_id, answers).await;
         }
         ModalAction::None => {}
     }

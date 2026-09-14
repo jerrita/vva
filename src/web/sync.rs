@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::harness::SessionView;
-use crate::model::{ContentPart, Message, Role, Session, SessionHeader, TokenUsage, Turn};
+use crate::model::{
+    ContentPart, Message, Role, Session, SessionHeader, TokenUsage, Turn, UserQuestionRequest,
+};
 
 /// 浏览器只接收展示字段；供应商回传元数据保留在领域存储中。
 #[derive(Serialize)]
@@ -66,6 +68,7 @@ pub(super) struct SessionSnapshot<'a> {
     notices: &'a [String],
     session: SessionData<'a>,
     draft: Vec<&'a ContentPart>,
+    pending_user_question: &'a Option<UserQuestionRequest>,
 }
 
 impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
@@ -80,6 +83,7 @@ impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
                 turns: view.session.turns.iter().map(TurnView::from).collect(),
             },
             draft: view.draft.iter().map(|part| &**part).collect(),
+            pending_user_question: &view.pending_user_question,
         }
     }
 }
@@ -119,6 +123,8 @@ pub(super) struct SessionDelta<'a> {
     turns: Option<TurnsPatch<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     draft: Option<DraftPatch<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_user_question: Option<&'a Option<UserQuestionRequest>>,
 }
 
 impl<'a> SessionDelta<'a> {
@@ -201,6 +207,9 @@ impl<'a> SessionDelta<'a> {
             session,
             turns,
             draft,
+            pending_user_question: (previous.pending_user_question
+                != current.pending_user_question)
+                .then_some(&current.pending_user_question),
         }
     }
 }
@@ -220,6 +229,7 @@ mod tests {
             notices: Vec::new(),
             state: RunState::Responding,
             persisted: true,
+            pending_user_question: None,
         }
     }
 

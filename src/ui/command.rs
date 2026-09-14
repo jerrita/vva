@@ -17,6 +17,12 @@ pub static COMMANDS: &[SlashCommand] = &[
         example: "/sessions",
     },
     SlashCommand {
+        name: "/skills",
+        aliases: &["/skill"],
+        description: "Browse discovered Agent Skills (SKILL.md)",
+        example: "/skills",
+    },
+    SlashCommand {
         name: "/new",
         aliases: &[],
         description: "Start a new session with the current configuration",

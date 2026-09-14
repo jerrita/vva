@@ -15,6 +15,14 @@ impl App {
             self.consumed_notices = view.notices.len();
         }
         self.view = view;
+        if let Some(request) = &self.view.pending_user_question {
+            let same = matches!(&self.modal, ActiveModal::AskUser(state) if state.request.id == request.id);
+            if !same {
+                self.modal = ActiveModal::AskUser(AskUserModalState::new(request.clone()));
+            }
+        } else if matches!(self.modal, ActiveModal::AskUser(_)) {
+            self.modal = ActiveModal::None;
+        }
     }
 
     /// 接管一个会话句柄：重置界面局部状态并订阅其视图（切换、新建共用）
@@ -65,6 +73,16 @@ impl App {
             }
             Err(error) => self.notices.push(error.to_string()),
         }
+    }
+
+    /// 扫描全局与项目技能目录并打开 /skills 只读弹窗
+    pub async fn open_skills_modal(&mut self) {
+        let workspace = self.session_mgr.workspace().to_path_buf();
+        let skills =
+            tokio::task::spawn_blocking(move || crate::skills::discover_skills(&workspace))
+                .await
+                .unwrap_or_default();
+        self.modal = ActiveModal::Skills(SkillsModalState::new(skills));
     }
 
     pub fn current_session_model(&self) -> String {
@@ -195,6 +213,18 @@ impl App {
             session.web_search,
             self.thinking_concise,
         ));
+    }
+
+    pub async fn answer_user(
+        &mut self,
+        request_id: String,
+        answers: Vec<crate::model::UserAnswer>,
+    ) {
+        self.modal = ActiveModal::None;
+        if let Err(error) = self.active_session.answer_user(request_id, answers).await {
+            self.notices.push(error);
+        }
+        self.refresh_view();
     }
 
     /// 单击工具标题行隐藏内容块；隐藏后再次单击恢复默认展示。Shell 预览块单击可展开全文。

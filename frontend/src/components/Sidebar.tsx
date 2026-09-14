@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { api } from '../api'
-import type { SessionSummary } from '../types'
+import type { SessionSummary, SkillEntry } from '../types'
 export interface SessionGroup {
   project: string
   /** 项目 workspace 路径，用于分组内直接新建会话 */
@@ -256,6 +256,70 @@ function NewChatPanel({
   )
 }
 
+function SkillsIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="14"
+      height="14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8Z" />
+    </svg>
+  )
+}
+
+/** 侧栏底部只读 Skills 分组：浏览后端发现的 Agent Skills，悬停显示描述与路径 */
+function SkillsSection() {
+  const [skills, setSkills] = useState<SkillEntry[]>([])
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .skills()
+      .then(response => {
+        if (!cancelled) setSkills(response.skills)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (skills.length === 0) return null
+
+  return (
+    <div className="skills-group">
+      <div
+        className={`group-label${open ? '' : ' closed'}`}
+        onClick={() => setOpen(!open)}
+        title={`${skills.length} 个技能（~/.vva/skills 与项目 .vva/skills、.agent/skills）`}
+      >
+        <SkillsIcon />
+        <span className="group-name">Skills</span>
+        <span className="group-count">{skills.length}</span>
+      </div>
+      {open &&
+        skills.map(skill => (
+          <div
+            key={skill.name}
+            className="skill-item"
+            title={`${skill.description}\n${skill.path}`}
+          >
+            <span className="skill-name">{skill.name}</span>
+            <span className="skill-source">{skill.source}</span>
+          </div>
+        ))}
+    </div>
+  )
+}
+
 export function Sidebar({
   groups,
   projects,
@@ -471,6 +535,7 @@ export function Sidebar({
               ))}
           </div>
         ))}
+        <SkillsSection />
       </nav>
       <button className="sidebar-foot" onClick={onOpenSettings} title="全局设置">
         Settings

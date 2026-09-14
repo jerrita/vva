@@ -3,6 +3,7 @@ pub mod event;
 pub mod harness;
 pub mod model;
 pub mod provider;
+pub mod skills;
 pub mod storage;
 pub mod system;
 pub mod tools;

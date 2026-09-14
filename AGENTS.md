@@ -91,11 +91,14 @@ src/
 │   ├── anthropic.rs        # Anthropic Messages API (Prompt Caching + Thinking 签名，流式/非流式统一解析)
 │   ├── gemini.rs           # Google Gemini API (Grounding 多 chunk 合并投影 + 代码沙盒 + 共享累积器)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
+├── skills/                 # Agent Skills (agentskills.io 规范：SKILL.md 技能包解析与发现)
+│   └── mod.rs              # SkillFrontmatter 强类型解析与校验、discover_skills (全局 ~/.vva/skills、~/.agents/skills + 项目 .vva/skills、.agents/skills，优先级 项目 .vva > 项目 .agents > 全局 .vva > 全局 .agents，同名后者覆盖前者)
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
 │   ├── shell.rs            # Shell 执行 (超时/输出上限/退出码检查)
 │   ├── filesystem.rs       # Read、Write、Edit、Glob、Grep
 │   ├── apply_patch.rs      # Edit（patch）：Codex V4A
+│   ├── skill.rs            # Skill 工具：按 name 加载 SKILL.md 全文指令 (渐进披露第二层)
 │   └── hashline/           # Edit（hashline）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs

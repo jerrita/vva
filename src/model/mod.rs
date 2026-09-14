@@ -23,7 +23,10 @@ pub use session::{
     EditorKind, JsonlRecord, Session, SessionHeader, SessionSummary, generate_session_id,
     provisional_title,
 };
-pub use tool::{MediaContent, MediaKind, ToolCall, ToolDefinition, ToolResult};
+pub use tool::{
+    MediaContent, MediaKind, ToolCall, ToolDefinition, ToolResult, UserAnswer, UserQuestion,
+    UserQuestionOption, UserQuestionRequest,
+};
 pub use turn::{TokenUsage, Turn};
 
 #[cfg(test)]

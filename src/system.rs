@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::skills::Skill;
+
 /// 系统静态环境信息
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemInfo {
@@ -41,6 +43,23 @@ impl SystemInfo {
 /// 生成当前工作空间下的固定 System Prompt
 pub fn build_system_prompt(workspace: &Path, scratch: &Path) -> String {
     SystemInfo::collect().to_system_prompt(workspace, scratch)
+}
+
+/// 格式化已发现技能清单为带有 <system-reminder> 标签的 User Message 文本
+/// （对齐 AGENTS.md 注入机制：技能清单不进入 System Prompt）
+pub fn format_skills_reminder(skills: &[Skill]) -> String {
+    let mut reminder = String::from(
+        "<system-reminder type=\"skills\">\n\
+         The following skills provide specialized workflows and knowledge for this \
+         environment. When a task matches a skill's purpose, load its full instructions \
+         with the Skill tool before proceeding.\n\n",
+    );
+    for skill in skills {
+        reminder.push_str(&skill.prompt_line());
+        reminder.push('\n');
+    }
+    reminder.push_str("</system-reminder>");
+    reminder
 }
 
 fn get_current_date() -> String {
@@ -370,6 +389,29 @@ mod tests {
         let prompt = info.to_system_prompt(Path::new("/ws"), Path::new("/data/scratch"));
         assert!(prompt.contains("Workspace Root: /ws"));
         assert!(prompt.contains("Scratch Pad: /data/scratch"));
+    }
+
+    #[test]
+    fn skills_reminder_lists_skills_as_user_message() {
+        let skill = crate::skills::Skill {
+            name: "pdf-processing".into(),
+            description: "Extract PDF text and fill forms.".into(),
+            license: None,
+            compatibility: None,
+            metadata: Default::default(),
+            allowed_tools: None,
+            path: PathBuf::from("/skills/pdf-processing"),
+            source: crate::skills::SkillSource::Global,
+            body: String::new(),
+        };
+        let reminder = format_skills_reminder(&[skill]);
+        assert!(reminder.starts_with("<system-reminder type=\"skills\">"));
+        assert!(reminder.ends_with("</system-reminder>"));
+        assert!(reminder.contains("- pdf-processing: Extract PDF text and fill forms."));
+
+        // 系统提示不含技能清单
+        let prompt = build_system_prompt(Path::new("/ws"), Path::new("/scratch"));
+        assert!(!prompt.contains("Skills"));
     }
 
     #[test]

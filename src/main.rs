@@ -235,6 +235,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let status_sym = if is_error { "❌" } else { "✅" };
                         println!("{} [{}] output:\n{}", status_sym, name, result.trim());
                     }
+                    AgentEvent::AskUser(request) => {
+                        println!("\n❓ [AskUser] {} question(s)", request.questions.len());
+                    }
                     AgentEvent::Finished => {
                         in_thought = false;
                         in_text = false;

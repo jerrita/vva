@@ -30,6 +30,7 @@ pub async fn run_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/api/models", get(api::list_models))
+        .route("/api/skills", get(api::list_skills))
         .route("/api/workspace", get(api::default_workspace))
         .route("/api/fs/dirs", get(api::list_dirs))
         .route("/api/files", post(api::upload_file))
@@ -50,6 +51,7 @@ pub async fn run_server(
         .route("/api/sessions/{id}/revert", post(api::revert_session))
         .route("/api/sessions/{id}/fork", post(api::fork_session))
         .route("/api/sessions/{id}/abort", post(api::abort_session))
+        .route("/api/sessions/{id}/answer", post(api::answer_user))
         .route("/api/sessions/{id}/config", post(api::configure_session))
         .route("/api/sessions/{id}/events", get(api::stream_events))
         .route("/api/sessions/{id}/stats", get(api::session_stats))

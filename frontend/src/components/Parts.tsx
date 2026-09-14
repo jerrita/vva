@@ -70,6 +70,16 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
   const args = parseArgs(call.arguments)
   if (!args) return { text: truncate(call.arguments, 88) }
   switch (call.name) {
+    case 'AskUser': {
+      const questions = Array.isArray(args.questions) ? args.questions : []
+      if (questions.length !== 1) return { text: `${questions.length} questions` }
+      const question = questions[0]
+      if (!question || typeof question !== 'object') return { text: 'user input' }
+      const item = question as Record<string, unknown>
+      const header = str(item.header)
+      const mode = item.multi_select === true ? '多选' : '单选'
+      return { text: header ? `${header} · ${mode}` : mode }
+    }
     case 'Read': {
       const rawPath = str(args.path)
       const path = rawPath ?? truncate(call.arguments, 88)

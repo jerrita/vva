@@ -1,3 +1,4 @@
+pub mod ask_user_modal;
 pub mod chat;
 pub mod config_modal;
 pub mod header;
@@ -8,6 +9,7 @@ pub mod modal_shell;
 pub mod models_modal;
 pub mod sessions_modal;
 pub mod sidebar;
+pub mod skills_modal;
 pub mod variants_modal;
 
 use ratatui::style::{Color, Style};

@@ -81,6 +81,28 @@ export interface ToolResult {
   is_error: boolean
 }
 
+export interface UserQuestionOption {
+  label: string
+  description: string
+}
+
+export interface UserQuestion {
+  header: string
+  question: string
+  options: UserQuestionOption[]
+  multi_select: boolean
+}
+
+export interface UserQuestionRequest {
+  id: string
+  questions: UserQuestion[]
+}
+
+export interface UserAnswer {
+  question: string
+  answers: string[]
+}
+
 /** 随消息提交的原生文件附件（Base64） */
 export interface FileAttachment {
   filename: string
@@ -141,6 +163,7 @@ export interface SessionSnapshot {
   notices: string[]
   session: Session
   draft: ContentPart[]
+  pending_user_question?: UserQuestionRequest | null
 }
 
 /** Web 传输增量；session 元信息整体替换，缺席的可选字段随之清空。 */
@@ -159,6 +182,7 @@ export interface SessionDelta {
       | { type: 'text' | 'reasoning'; index: number; delta: string }
     )[]
   }
+  pending_user_question?: UserQuestionRequest | null
 }
 
 export interface ModelEntry {
@@ -171,6 +195,17 @@ export interface ModelEntry {
 export interface ModelsResponse {
   default: string
   models: ModelEntry[]
+}
+
+export interface SkillEntry {
+  name: string
+  description: string
+  source: 'global' | 'project'
+  path: string
+}
+
+export interface SkillsResponse {
+  skills: SkillEntry[]
 }
 
 export interface SidebarStats {

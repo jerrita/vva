@@ -1,15 +1,19 @@
+pub mod ask_user;
 pub mod config;
 pub mod message;
 pub mod models;
 pub mod sessions;
+pub mod skills;
 pub mod variants;
 
 use crossterm::event::KeyCode;
 
+pub use ask_user::AskUserModalState;
 pub use config::{ConfigItemKind, ConfigModalState, ConfigSettingItem};
 pub use message::{ForkTitleState, MESSAGE_ACTIONS, MessageActionState};
 pub use models::{ModelItem, ModelsModalState};
 pub use sessions::{ProjectScope, SessionsModalState};
+pub use skills::SkillsModalState;
 pub use variants::{VariantItem, VariantsModalState, active_variant_index};
 
 pub(crate) fn fuzzy_matches(query: &str, candidate: &str) -> bool {
@@ -112,8 +116,10 @@ pub enum ActiveModal {
     Models(ModelsModalState),
     Variants(VariantsModalState),
     Config(ConfigModalState),
+    Skills(SkillsModalState),
     MessageAction(MessageActionState),
     ForkTitle(ForkTitleState),
+    AskUser(AskUserModalState),
     Help,
 }
 
@@ -129,9 +135,22 @@ pub(crate) enum ModalAction {
     OpenVariants,
     ToggleWebSearch,
     ToggleThinkingDisplay,
-    RevertTurn { turn_index: usize, prompt: String },
-    OpenForkTitle { turn_index: usize, prompt: String },
-    ConfirmFork { turn_index: usize, title: String },
+    RevertTurn {
+        turn_index: usize,
+        prompt: String,
+    },
+    OpenForkTitle {
+        turn_index: usize,
+        prompt: String,
+    },
+    ConfirmFork {
+        turn_index: usize,
+        title: String,
+    },
+    AnswerUser {
+        request_id: String,
+        answers: Vec<crate::model::UserAnswer>,
+    },
 }
 
 impl ActiveModal {
@@ -146,8 +165,9 @@ impl ActiveModal {
             Self::Models(state) => Some(state),
             Self::Variants(state) => Some(state),
             Self::Config(state) => Some(state),
+            Self::Skills(state) => Some(state),
             Self::MessageAction(state) => Some(state),
-            Self::None | Self::Help | Self::ForkTitle(_) => None,
+            Self::None | Self::Help | Self::ForkTitle(_) | Self::AskUser(_) => None,
         }
     }
 
@@ -190,7 +210,14 @@ impl ActiveModal {
                 turn_index: state.turn_index,
                 title: state.title.text.clone(),
             },
-            Self::None | Self::Help => ModalAction::None,
+            Self::AskUser(state) => state
+                .answers()
+                .map(|answers| ModalAction::AnswerUser {
+                    request_id: state.request.id.clone(),
+                    answers,
+                })
+                .unwrap_or(ModalAction::None),
+            Self::None | Self::Help | Self::Skills(_) => ModalAction::None,
         }
     }
 
@@ -204,9 +231,11 @@ impl ActiveModal {
             | Self::Models(_)
             | Self::Variants(_)
             | Self::Config(_)
+            | Self::Skills(_)
             | Self::Help
             | Self::MessageAction(_)
-            | Self::ForkTitle(_) => ModalAction::None,
+            | Self::ForkTitle(_)
+            | Self::AskUser(_) => ModalAction::None,
         }
     }
 
@@ -217,8 +246,9 @@ impl ActiveModal {
             Self::Models(state) => input.apply(state),
             Self::Variants(state) => input.apply(state),
             Self::Config(state) => input.apply(state),
+            Self::Skills(state) => input.apply(state),
             Self::MessageAction(state) => input.apply(state),
-            Self::None | Self::Help | Self::ForkTitle(_) => {}
+            Self::None | Self::Help | Self::ForkTitle(_) | Self::AskUser(_) => {}
         }
     }
 }

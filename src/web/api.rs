@@ -65,6 +65,42 @@ pub async fn list_models(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
+#[derive(Serialize)]
+struct SkillEntry {
+    name: String,
+    description: String,
+    source: &'static str,
+    path: String,
+}
+
+#[derive(Serialize)]
+struct SkillsResponse {
+    skills: Vec<SkillEntry>,
+}
+
+/// 列出已发现的 Agent Skills（全局 + 项目，项目覆盖同名），供前端只读展示
+pub async fn list_skills(State(state): State<AppState>) -> Response {
+    let workspace = state.manager.workspace().to_path_buf();
+    let skills = tokio::task::spawn_blocking(move || crate::skills::discover_skills(&workspace))
+        .await
+        .unwrap_or_default();
+    Json(SkillsResponse {
+        skills: skills
+            .into_iter()
+            .map(|skill| SkillEntry {
+                name: skill.name,
+                description: skill.description,
+                source: match skill.source {
+                    crate::skills::SkillSource::Global => "global",
+                    crate::skills::SkillSource::Project => "project",
+                },
+                path: skill.path.to_string_lossy().into_owned(),
+            })
+            .collect(),
+    })
+    .into_response()
+}
+
 pub async fn list_sessions(State(state): State<AppState>) -> Response {
     match state.manager.store().list_sessions().await {
         Ok(sessions) => Json(sessions).into_response(),
@@ -449,6 +485,30 @@ pub async fn abort_session(State(state): State<AppState>, Path(id): Path<String>
     match handle.abort_current().await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => error(StatusCode::CONFLICT, e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AnswerUserRequest {
+    pub request_id: String,
+    pub answers: Vec<crate::model::UserAnswer>,
+}
+
+pub async fn answer_user(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<AnswerUserRequest>,
+) -> Response {
+    let handle = match state.manager.get_or_load(&id).await {
+        Ok(handle) => handle,
+        Err(_) => return not_found(&id),
+    };
+    match handle
+        .answer_user(request.request_id, request.answers)
+        .await
+    {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(message) => error(StatusCode::BAD_REQUEST, message),
     }
 }
 

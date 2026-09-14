@@ -239,6 +239,7 @@ fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) ->
         return arguments.to_string();
     };
     match name {
+        "AskUser" => ask_user_detail(&args),
         "Read" => {
             let path = json_str(&args, "path")
                 .map(ToOwned::to_owned)
@@ -309,11 +310,36 @@ fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) ->
     }
 }
 
+fn ask_user_detail(args: &serde_json::Value) -> String {
+    let Some(questions) = args.get("questions").and_then(serde_json::Value::as_array) else {
+        return "user input".into();
+    };
+    if questions.len() != 1 {
+        return format!("{} questions", questions.len());
+    }
+    let question = &questions[0];
+    let header = json_str(question, "header").filter(|header| !header.is_empty());
+    let mode = if question
+        .get("multi_select")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        "多选"
+    } else {
+        "单选"
+    };
+    match header {
+        Some(header) => format!("{header} · {mode}"),
+        None => mode.to_string(),
+    }
+}
+
 fn tool_block_command(name: &str, arguments: &str) -> String {
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return arguments.to_string();
     };
     match name {
+        "AskUser" => ask_user_detail(&args),
         "Shell" => json_str(&args, "command")
             .map(|command| format!("$ {command}"))
             .unwrap_or_else(|| arguments.to_string()),

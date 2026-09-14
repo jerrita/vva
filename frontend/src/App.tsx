@@ -4,6 +4,7 @@ import { api } from './api'
 import { subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
+import { AskUserModal } from './components/AskUserModal'
 import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
@@ -16,7 +17,7 @@ import {
   extractRelatedFiles,
 } from './components/FileSidebar'
 import type { ProjectOption } from './components/Sidebar'
-import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
+import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, UserAnswer } from './types'
 
 function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -446,6 +447,18 @@ export default function App() {
       setError(toError(e))
     }
   }, [activeId])
+
+  const answerUser = useCallback(
+    async (answers: UserAnswer[]) => {
+      if (!activeId || !snap?.pending_user_question) return
+      try {
+        await api.answerUser(activeId, snap.pending_user_question.id, answers)
+      } catch (e) {
+        setError(toError(e))
+      }
+    },
+    [activeId, snap?.pending_user_question],
+  )
 
   // 回退：丢弃该用户轮次及之后的内容，提示词放回输入框重新编辑
   const revertTurn = useCallback(
@@ -887,6 +900,13 @@ export default function App() {
             <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />
           )}
         </>
+      )}
+      {activeId && snap?.pending_user_question && (
+        <AskUserModal
+          request={snap.pending_user_question}
+          onSubmit={answers => void answerUser(answers)}
+          onCancel={() => void answerUser([])}
+        />
       )}
       {settingsOpen && (
         <SettingsModal

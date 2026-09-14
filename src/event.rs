@@ -4,7 +4,7 @@
 //! Harness 调度层在此之上补充工具执行与生命周期事件，
 //! UI 与 CLI 均由该单一事件流驱动渲染。
 
-use crate::model::{Annotation, WebSearchCall};
+use crate::model::{Annotation, UserQuestionRequest, WebSearchCall};
 
 /// 单个 Agent 事件的增量语义
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub enum AgentEvent {
         result: String,
         is_error: bool,
     },
+    AskUser(UserQuestionRequest),
     Text {
         /// Provider 分配的响应内文本部件标识，与引用共用。
         text_id: String,

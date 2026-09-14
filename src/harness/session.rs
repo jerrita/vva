@@ -8,7 +8,9 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use super::agent::{AgentEngine, capability_notices, generate_title};
 use crate::config::{AppConfig, AppState};
 use crate::event::AgentEvent;
-use crate::model::{ContentPart, MediaSource, Message, Role, Session, Turn};
+use crate::model::{
+    ContentPart, MediaSource, Message, Role, Session, Turn, UserAnswer, UserQuestionRequest,
+};
 use crate::storage::SessionStore;
 
 type Reply = oneshot::Sender<Result<(), String>>;
@@ -51,6 +53,7 @@ pub struct SessionView {
     pub notices: Vec<String>,
     pub state: RunState,
     pub persisted: bool,
+    pub pending_user_question: Option<UserQuestionRequest>,
 }
 
 enum Command {
@@ -69,6 +72,11 @@ enum Command {
     },
     Stop {
         delete: bool,
+        reply: Reply,
+    },
+    AnswerUser {
+        request_id: String,
+        answers: Vec<UserAnswer>,
         reply: Reply,
     },
     Revert {
@@ -148,6 +156,19 @@ impl ManagedSession {
         .await
     }
 
+    pub async fn answer_user(
+        &self,
+        request_id: impl Into<String>,
+        answers: Vec<UserAnswer>,
+    ) -> Result<(), String> {
+        self.request(|reply| Command::AnswerUser {
+            request_id: request_id.into(),
+            answers,
+            reply,
+        })
+        .await
+    }
+
     pub async fn revert(&self, turn_index: usize) -> Result<(), String> {
         self.request(|reply| Command::Revert { turn_index, reply })
             .await
@@ -220,9 +241,11 @@ impl SessionManager {
             notices: Vec::new(),
             state: RunState::Idle,
             persisted,
+            pending_user_question: None,
         };
         let (view_tx, view_rx) = watch::channel(Arc::new(view.clone()));
         let (commands, rx) = mpsc::channel(16);
+        let (ask_user_tx, ask_user_rx) = mpsc::channel(4);
         let task = SessionTask {
             view,
             view_tx,
@@ -237,6 +260,9 @@ impl SessionManager {
             notified: HashSet::new(),
             title_task: None,
             text_parts: HashMap::new(),
+            ask_user_tx,
+            ask_user_rx,
+            pending_user_question: None,
         };
         tokio::spawn(task.run(rx));
         Arc::new(ManagedSession {
@@ -468,6 +494,9 @@ struct SessionTask {
     title_task: Option<tokio::task::JoinHandle<()>>,
     /// 响应内文本标识到草稿部件的映射，供增量与引用共同定位。
     text_parts: HashMap<String, usize>,
+    ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
+    ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
+    pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
 }
 
 impl SessionTask {
@@ -576,6 +605,7 @@ impl SessionTask {
                 }
             }
             AgentEvent::ToolFinished { .. } => {}
+            AgentEvent::AskUser(_) => {}
             AgentEvent::Notice(text) | AgentEvent::Error(text) => {
                 self.view.notices.push(text.clone())
             }
@@ -695,11 +725,14 @@ impl SessionTask {
             .ensure_tool_outputs(&self.view.session.workspace_root)
             .await
             .map_err(|e| e.to_string())?;
+        let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
         let engine = AgentEngine::new(
             &self.config,
             &self.view.session,
             tool_outputs,
             self.hashline.clone(),
+            self.ask_user_tx.clone(),
+            skills.clone(),
         )?;
         // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
         for image in &images {
@@ -778,6 +811,10 @@ impl SessionTask {
                     session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
                 }
             }
+            if !skills.is_empty() {
+                let reminder = crate::system::format_skills_reminder(&skills);
+                session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
+            }
             if generate {
                 session.title = Some(crate::model::provisional_title(prompt));
             }
@@ -831,12 +868,21 @@ impl SessionTask {
                     return Some(result);
                 }
                 Some(event) = events.recv() => self.event(event).await,
+                Some(request) = self.ask_user_rx.recv() => self.receive_user_question(request).await,
                 _ = publish_tick.tick() => self.publish_throttled(),
                 command = commands.recv() => match command {
                     Some(Command::Configure { model, variant, search, reply }) => { let _ = reply.send(self.configure(model, variant, search).await); }
                     Some(Command::Title(title)) => if let Err(error) = self.title(title).await { self.event(AgentEvent::Notice(error)).await; },
                     Some(Command::Submit { reply, .. }) | Some(Command::Revert { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
-                    Some(Command::Stop { delete, reply }) => { self.stop = Some((delete, reply)); self.publish_throttled(); return None; }
+                    Some(Command::AnswerUser { request_id, answers, reply }) => {
+                        let _ = reply.send(self.answer_user(request_id, answers).await);
+                    }
+                    Some(Command::Stop { delete, reply }) => {
+                        self.cancel_pending_user_question();
+                        self.stop = Some((delete, reply));
+                        self.publish_throttled();
+                        return None;
+                    }
                     None => { self.publish_throttled(); return None; }
                 }
             }
@@ -1014,6 +1060,68 @@ impl SessionTask {
         }
     }
 
+    async fn receive_user_question(&mut self, request: crate::tools::ask_user::AskUserRequest) {
+        if self.pending_user_question.is_some() {
+            let _ = request.response.send(Err(
+                "Only one AskUser request can be active at a time".into()
+            ));
+            return;
+        }
+        self.view.pending_user_question = Some(request.prompt.clone());
+        self.pending_user_question = Some(request);
+        self.event(AgentEvent::AskUser(
+            self.view
+                .pending_user_question
+                .as_ref()
+                .expect("pending question set")
+                .clone(),
+        ))
+        .await;
+    }
+
+    async fn answer_user(
+        &mut self,
+        request_id: String,
+        answers: Vec<UserAnswer>,
+    ) -> Result<(), String> {
+        let Some(request) = self.pending_user_question.take() else {
+            return Err("No user question is waiting for an answer".into());
+        };
+        if request.prompt.id != request_id {
+            self.pending_user_question = Some(request);
+            return Err("User question ID does not match the pending request".into());
+        }
+        if answers.is_empty() {
+            self.view.pending_user_question = None;
+            self.publish();
+            let _ = request
+                .response
+                .send(Err("User canceled the question".into()));
+            return Ok(());
+        }
+        let result = crate::tools::ask_user::encode_answers(&request.prompt, &answers);
+        if result.is_err() {
+            self.pending_user_question = Some(request);
+            return result.map(|_| ());
+        }
+        self.view.pending_user_question = None;
+        self.publish();
+        request
+            .response
+            .send(result)
+            .map_err(|_| "AskUser tool stopped before receiving the answer".to_string())
+    }
+
+    fn cancel_pending_user_question(&mut self) {
+        if let Some(request) = self.pending_user_question.take() {
+            let _ = request
+                .response
+                .send(Err("User canceled the question".into()));
+            self.view.pending_user_question = None;
+            self.publish();
+        }
+    }
+
     async fn stop(&mut self, delete: bool, reply: Reply) -> bool {
         let result = if delete && self.view.persisted {
             self.store
@@ -1078,6 +1186,9 @@ impl SessionTask {
                 Command::Revert { turn_index, reply } => {
                     let _ = reply.send(self.revert(turn_index).await);
                 }
+                Command::AnswerUser { reply, .. } => {
+                    let _ = reply.send(Err("No user question is waiting for an answer".into()));
+                }
                 Command::Stop { delete, reply } => {
                     if self.stop(delete, reply).await {
                         break;
@@ -1108,6 +1219,7 @@ mod tests {
             notices: Vec::new(),
             state: RunState::Idle,
             persisted: false,
+            pending_user_question: None,
         };
         let (view_tx, view_rx) = watch::channel(Arc::new(view.clone()));
         let (commands, _rx) = mpsc::channel(1);
@@ -1125,6 +1237,9 @@ mod tests {
             notified: HashSet::new(),
             title_task: None,
             text_parts: HashMap::new(),
+            ask_user_tx: mpsc::channel(1).0,
+            ask_user_rx: mpsc::channel(1).1,
+            pending_user_question: None,
         };
         (task, view_rx)
     }

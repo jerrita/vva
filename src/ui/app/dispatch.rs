@@ -93,6 +93,9 @@ impl App {
             "/sessions" | "/session" => {
                 self.open_sessions_modal().await;
             }
+            "/skills" | "/skill" => {
+                self.open_skills_modal().await;
+            }
             "/new" => {
                 if let Err(error) = self.new_session().await {
                     self.notices.push(error);

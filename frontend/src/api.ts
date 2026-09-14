@@ -1,4 +1,4 @@
-import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
+import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillsResponse, UserAnswer } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -29,6 +29,7 @@ export interface ConfigureBody {
 
 export const api = {
   models: () => request<ModelsResponse>('/api/models'),
+  skills: () => request<SkillsResponse>('/api/skills'),
   workspace: () => request<{ root: string }>('/api/workspace'),
   dirs: (path: string) =>
     request<{ root: string; parent: string | null; dirs: string[] }>(
@@ -53,6 +54,8 @@ export const api = {
   fork: (id: string, turnIndex: number) =>
     request<SessionSnapshot>(`/api/sessions/${id}/fork`, json('POST', { turn_index: turnIndex })),
   abort: (id: string) => request<void>(`/api/sessions/${id}/abort`, { method: 'POST' }),
+  answerUser: (id: string, requestId: string, answers: UserAnswer[]) =>
+    request<void>(`/api/sessions/${id}/answer`, json('POST', { request_id: requestId, answers })),
   configure: (id: string, body: ConfigureBody) =>
     request<SessionSnapshot>(`/api/sessions/${id}/config`, json('POST', body)),
   stats: (id: string) => request<SidebarStats>(`/api/sessions/${id}/stats`),

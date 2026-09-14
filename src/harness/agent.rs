@@ -5,6 +5,7 @@ use crate::config::AppConfig;
 use crate::model::{Message, Session, Turn};
 use crate::provider::{CompletionOptions, Provider};
 use crate::tools::ToolRegistry;
+use tokio::sync::mpsc;
 
 /// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）
 pub fn capability_notices(provider: &dyn Provider, options: &CompletionOptions) -> Vec<String> {
@@ -42,6 +43,8 @@ impl AgentEngine {
         session: &Session,
         tool_outputs: PathBuf,
         hashline: Arc<crate::tools::hashline::HashlineSession>,
+        ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
+        skills: Vec<crate::skills::Skill>,
     ) -> Result<Self, String> {
         let resolved = config
             .resolve_model(&session.current_model, session.current_variant.as_deref())
@@ -61,6 +64,12 @@ impl AgentEngine {
             read = read.with_hashline(hashline);
         }
         tools.register(Arc::new(read));
+        tools.register(Arc::new(crate::tools::ask_user::AskUserTool::new(
+            ask_user_requests,
+        )));
+        tools.register(Arc::new(crate::tools::skill::SkillTool::new(Arc::new(
+            skills,
+        ))));
         let provider = resolved.create_provider();
         let max_tokens = resolved
             .model_config
