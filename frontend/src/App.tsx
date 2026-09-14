@@ -377,24 +377,13 @@ export default function App() {
     [activeId],
   )
 
-  const newChat = useCallback(
-    async (workspace?: string) => {
-      setError(null)
-      try {
-        const created = await api.createSession({
-          model: draftModel ?? undefined,
-          variant: draftVariant,
-          search: draftSearch,
-          workspace: workspace?.trim() ? workspace : undefined,
-        })
-        setActiveId(created.session.id)
-        setSidebarOpen(false)
-      } catch (e) {
-        setError(toError(e))
-      }
-    },
-    [draftModel, draftVariant, draftSearch],
-  )
+  // 新建：仅预选项目并回到空态，会话延迟到首条消息发送时创建
+  const newChat = useCallback((workspace?: string) => {
+    setError(null)
+    setDraftProject(workspace?.trim() ? workspace : '')
+    setActiveId(null)
+    setSidebarOpen(false)
+  }, [])
 
   const removeSession = useCallback(
     async (id: string) => {
@@ -480,14 +469,6 @@ export default function App() {
 
   const composerControls = (
     <>
-      {!activeId && (
-        <ChipSelect
-          title="项目"
-          value={draftProject || defaultRoot || ''}
-          options={projects.map(project => ({ value: project.root, label: project.name }))}
-          onChange={setDraftProject}
-        />
-      )}
       <ChipSelect
         title="模型"
         value={currentModel}
@@ -733,7 +714,17 @@ export default function App() {
           <div className="empty-stage">
             <div className="empty-brand">vva</div>
             <div className="empty-hint">选择项目，输入任务开始 · Enter 发送</div>
-            <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
+            <div className="empty-composer">
+              <div className="empty-project">
+                <ChipSelect
+                  title="项目"
+                  value={draftProject || defaultRoot || ''}
+                  options={projects.map(project => ({ value: project.root, label: project.name }))}
+                  onChange={setDraftProject}
+                />
+              </div>
+              <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} />
+            </div>
           </div>
         ) : (
           <>

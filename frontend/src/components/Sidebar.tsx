@@ -248,7 +248,7 @@ function NewChatPanel({
             disabled={mode === 'existing' ? !workspace : loadingDirs || !currentPath}
             onClick={() => onCreate(mode === 'new' ? currentPath : workspace)}
           >
-            创建会话
+            开始对话
           </button>
         </div>
       </div>
