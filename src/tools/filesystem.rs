@@ -375,7 +375,8 @@ fn media_type(path: &Path, bytes: &[u8]) -> Option<(MediaKind, &'static str)> {
 }
 
 fn content_version(content: &str) -> String {
-    format!("{:x}", Sha256::digest(content.as_bytes()))
+    // 64-bit truncation suffices for optimistic stale detection within a session.
+    format!("{:x}", Sha256::digest(content.as_bytes()))[..16].to_string()
 }
 
 fn read_text(content: &str, args: &ReadArgs) -> Result<String, String> {
