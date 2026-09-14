@@ -1,9 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api'
-
-function toError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
+import { api, toError } from '../api'
 
 /** 全局配置不存在时的起步模板 */
 const EMPTY_TEMPLATE = `{
@@ -61,9 +57,9 @@ export function SettingsModal({
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="settings-modal" onClick={event => event.stopPropagation()}>
+      <div className="modal settings-modal" onClick={event => event.stopPropagation()}>
         <div className="settings-head">
-          <div className="confirm-title">Settings</div>
+          <div className="modal-title">Settings</div>
           <span className="settings-path" title={path}>
             {path}
           </span>
@@ -80,11 +76,11 @@ export function SettingsModal({
             autoFocus
           />
         )}
-        <div className="confirm-actions">
+        <div className="modal-actions">
           <button className="ghost-button" onClick={onClose}>
             取消
           </button>
-          <button className="new-create" disabled={saving || loading} onClick={save}>
+          <button className="primary-button" disabled={saving || loading} onClick={save}>
             {saving ? '保存中…' : '保存'}
           </button>
         </div>

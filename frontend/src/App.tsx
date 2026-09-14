@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FocusEvent as ReactFocusEvent, PointerEvent as ReactPointerEvent, TouchEvent as ReactTouchEvent } from 'react'
-import { api } from './api'
+import { api, toError } from './api'
 import { subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
@@ -9,6 +9,7 @@ import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
+import { IconActivity, IconPanelLeft, IconPanelRight } from './components/icons'
 import {
   FileSidebar,
   FILE_SIDEBAR_MIN,
@@ -18,10 +19,6 @@ import {
 } from './components/FileSidebar'
 import type { ProjectOption } from './components/Sidebar'
 import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillEntry, UserAnswer } from './types'
-
-function toError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 
 const SIDEBAR_MIN = 200
 const SIDEBAR_MAX = 420
@@ -564,8 +561,8 @@ export default function App() {
   }
 
   const modelOptions =
-    models?.models.length && models.models.length > 0
-      ? models.models
+    (models?.models.length ?? 0) > 0
+      ? models!.models
       : [{ spec: currentModel, name: currentModel, provider: '', variants: [] }]
 
   // 新建会话的项目候选：服务器默认目录优先，其余来自既有会话
@@ -624,6 +621,7 @@ export default function App() {
         projects={projects}
         activeId={activeId}
         width={sidebarWidth}
+        skills={skills}
         hiddenProjects={hiddenProjects}
         onHideProject={project =>
           setHiddenProjects(prev => new Set([...prev, project]))
@@ -654,41 +652,7 @@ export default function App() {
             aria-label="会话列表"
             title="收起 / 展开会话列表"
           >
-            {sidebarHidden ? (
-              // 收起态：空面板 + 指向内容的箭头
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
-                <path d="M9.5 4.5v15" />
-                <path d="M6 9.5l2.5 2.5L6 14.5" />
-              </svg>
-            ) : (
-              // 展开态：左侧面板填充
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
-                <path d="M9.5 4.5v15" />
-                <rect x="4.8" y="6.3" width="3.4" height="11.4" rx="1" fill="currentColor" stroke="none" />
-              </svg>
-            )}
+            <IconPanelLeft collapsed={sidebarHidden} size={18} />
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
           {stats && active && (
@@ -707,19 +671,7 @@ export default function App() {
               title={statsVisible ? '收起用量面板' : '展开用量面板'}
               aria-label="用量面板"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-              </svg>
+              <IconActivity size={18} />
             </button>
           )}
           {active && (
@@ -729,29 +681,7 @@ export default function App() {
               title={fileSidebarOpen ? '收起相关文件' : '展开相关文件'}
               aria-label="相关文件预览"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="18"
-                height="18"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
-                <path d="M14.5 4.5v15" />
-                <rect
-                  x="15.8"
-                  y="6.3"
-                  width="3.4"
-                  height="11.4"
-                  rx="1"
-                  fill="currentColor"
-                  stroke="none"
-                />
-              </svg>
+              <IconPanelRight size={18} />
               {relatedFiles.length > 0 && (
                 <span className="file-sidebar-badge">{relatedFiles.length}</span>
               )}
@@ -763,60 +693,36 @@ export default function App() {
             className={`stats-panel${statsVisible ? '' : ' hidden'}`}
             ref={statsPanelRef}
           >
-            <div className="stat-row">
-              <span className="stat-label">Session</span>
-              <span className="stat-value">{active.id}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Workspace</span>
-              <span className="stat-value">{workspaceName}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Editor</span>
-              <span className="stat-value">{currentEditor}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Turns</span>
-              <span className="stat-value">{fmtNum(stats.total_turns)}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Context</span>
-              <span className="stat-value">
-                {fmtNum(stats.context_tokens)} / {fmtLimit(contextLimit)}
-              </span>
-            </div>
-            <div className="ctx-gauge">
-              <span className="ctx-gauge-track">
-                <span className="ctx-gauge-fill" style={{ width: `${contextPercent}%` }} />
-              </span>
-              <span>{contextPercent}%</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">In</span>
-              <span className="stat-value">{fmtNum(stats.prompt_tokens)}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Out</span>
-              <span className="stat-value">{fmtNum(stats.completion_tokens)}</span>
-            </div>
-            {stats.tps != null && (
-              <div className="stat-row">
-                <span className="stat-label">TPS</span>
-                <span className="stat-value">{stats.tps.toFixed(1)}</span>
-              </div>
-            )}
-            <div className="stat-row">
-              <span className="stat-label">Cache Read</span>
-              <span className="stat-value">{fmtNum(stats.cache_read_tokens)}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Cache Write</span>
-              <span className="stat-value">{fmtNum(stats.cache_write_tokens)}</span>
-            </div>
-            <div className="stat-row">
-              <span className="stat-label">Est. Cost</span>
-              <span className="stat-value">${stats.estimated_cost_usd.toFixed(4)}</span>
-            </div>
+            {(
+              [
+                ['Session', active.id],
+                ['Workspace', workspaceName],
+                ['Editor', currentEditor],
+                ['Turns', fmtNum(stats.total_turns)],
+                ['Context', `${fmtNum(stats.context_tokens)} / ${fmtLimit(contextLimit)}`],
+                ['In', fmtNum(stats.prompt_tokens)],
+                ['Out', fmtNum(stats.completion_tokens)],
+                ...(stats.tps != null ? ([['TPS', stats.tps.toFixed(1)]] as const) : []),
+                ['Cache Read', fmtNum(stats.cache_read_tokens)],
+                ['Cache Write', fmtNum(stats.cache_write_tokens)],
+                ['Est. Cost', `$${stats.estimated_cost_usd.toFixed(4)}`],
+              ] as [string, string][]
+            ).map(([label, value]) => (
+              <Fragment key={label}>
+                <div className="stat-row">
+                  <span className="stat-label">{label}</span>
+                  <span className="stat-value">{value}</span>
+                </div>
+                {label === 'Context' && (
+                  <div className="ctx-gauge">
+                    <span className="ctx-gauge-track">
+                      <span className="ctx-gauge-fill" style={{ width: `${contextPercent}%` }} />
+                    </span>
+                    <span>{contextPercent}%</span>
+                  </div>
+                )}
+              </Fragment>
+            ))}
           </div>
         )}
         {error && (
@@ -888,8 +794,7 @@ export default function App() {
         <>
           <FileSidebar
             sessionId={activeId}
-            session={active}
-            draft={snap?.draft}
+            files={relatedFiles}
             activePath={previewFilePath}
             open={fileSidebarOpen}
             width={fileSidebarWidth}

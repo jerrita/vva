@@ -7,7 +7,6 @@
   --bg: #f1edf9;
   --panel: #fbfaff;
   --panel-2: #f3effa;
-  --block: #f3effa;
   --border: #e2dcf0;
   --border-soft: #ebe6f5;
   --text: #241d38;
@@ -55,7 +54,6 @@
     --bg: #131020;
     --panel: #1b1728;
     --panel-2: #241f33;
-    --block: #1b1728;
     --border: #322b45;
     --border-soft: #2a2439;
     --text: #ece7f8;
@@ -148,6 +146,28 @@ button {
   border: none;
   padding: 0;
   cursor: pointer;
+}
+
+/* 全部折叠行使用自绘指示符，隐藏原生 marker */
+summary {
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 输入类聚焦环：accent 描边 + 柔光 */
+.composer:focus-within,
+.ask-user-other input:focus,
+.settings-textarea:focus,
+.file-sidebar-filter:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+select:focus-visible {
+  border-color: var(--accent);
 }
 
 select {
@@ -347,11 +367,6 @@ body.resizing .chat-scroll {
 .group-hide:hover {
   color: var(--danger);
   background: var(--border-soft);
-}
-
-.group-label .group-icon {
-  flex-shrink: 0;
-  transition: transform 0.15s;
 }
 
 .group-name {
@@ -660,37 +675,7 @@ body.resizing .chat-scroll {
   margin-top: 12px;
 }
 
-.new-cancel {
-  padding: 5px 12px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  color: var(--muted);
-  border: 1px solid var(--border);
-}
-
-.new-cancel:hover {
-  color: var(--text);
-  background: var(--panel-2);
-}
-
-.new-create {
-  padding: 5px 12px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.new-create:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-.new-create:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-/* ---- 确认弹窗 ---- */
+/* ---- 弹窗与按钮体系 ---- */
 
 .modal-overlay {
   position: fixed;
@@ -710,7 +695,8 @@ body.resizing .chat-scroll {
   }
 }
 
-.confirm-modal {
+/* 居中小弹窗（确认类）；大弹窗（设置 / AskUser）叠加自身尺寸 */
+.modal {
   width: 340px;
   max-width: calc(100vw - 40px);
   background: var(--panel);
@@ -721,24 +707,66 @@ body.resizing .chat-scroll {
   animation: rise 0.16s ease;
 }
 
-.confirm-title {
+.modal-title {
   font-family: var(--font-display);
   font-weight: 700;
   font-size: 15px;
 }
 
-.confirm-message {
+.modal-message {
   margin-top: 8px;
   font-size: 13px;
   color: var(--muted);
   word-break: break-word;
 }
 
-.confirm-actions {
+.modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 18px;
+}
+
+.ghost-button {
+  padding: 5px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.ghost-button:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.primary-button {
+  padding: 5px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.primary-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.danger-button {
+  padding: 5px 14px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  background: var(--danger);
+  color: #fff;
+}
+
+.danger-button:hover {
+  opacity: 0.9;
 }
 
 /* ---- AskUser 交互弹窗 ---- */
@@ -752,11 +780,6 @@ body.resizing .chat-scroll {
   max-height: min(720px, calc(100dvh - 32px));
   overflow: auto;
   padding: 22px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
-  animation: rise 0.16s ease;
 }
 
 .ask-user-head,
@@ -855,11 +878,6 @@ body.resizing .chat-scroll {
   outline: none;
 }
 
-.ask-user-other input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
 .ask-user-foot {
   justify-content: flex-end;
   margin-top: 20px;
@@ -872,12 +890,7 @@ body.resizing .chat-scroll {
   height: min(560px, calc(100dvh - 80px));
   display: flex;
   flex-direction: column;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow);
   padding: 18px;
-  animation: rise 0.16s ease;
 }
 
 .settings-head {
@@ -932,36 +945,6 @@ body.resizing .chat-scroll {
   line-height: 1.6;
   padding: 10px 12px;
   outline: none;
-}
-
-.settings-textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.ghost-button {
-  padding: 5px 14px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  color: var(--muted);
-  border: 1px solid var(--border);
-}
-
-.ghost-button:hover {
-  color: var(--text);
-  background: var(--panel-2);
-}
-
-.danger-button {
-  padding: 5px 14px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  background: var(--danger);
-  color: #fff;
-}
-
-.danger-button:hover {
-  opacity: 0.9;
 }
 
 /* ---- 顶栏 ---- */
@@ -1141,17 +1124,7 @@ body.resizing .chat-scroll {
   justify-content: flex-end;
 }
 
-.msg.user .bubble {
-  max-width: 85%;
-  background: var(--bubble-user);
-  color: var(--bubble-user-text);
-  border-radius: 14px 14px 4px 14px;
-  padding: 9px 14px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* 气泡 + 操作行的右对齐列；85% 宽度约束上移到列 */
+/* 气泡 + 操作行的右对齐列 */
 .msg.user .user-col {
   display: flex;
   flex-direction: column;
@@ -1159,8 +1132,13 @@ body.resizing .chat-scroll {
   max-width: 85%;
 }
 
-.msg.user .user-col .bubble {
-  max-width: 100%;
+.msg.user .bubble {
+  background: var(--bubble-user);
+  color: var(--bubble-user-text);
+  border-radius: 14px 14px 4px 14px;
+  padding: 9px 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* 用户消息内的图片附件缩略图 */
@@ -1201,9 +1179,7 @@ body.resizing .chat-scroll {
   align-items: center;
   gap: 5px;
   padding: 3px 7px;
-  border: none;
   border-radius: 6px;
-  background: none;
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: 0.03em;
@@ -1291,7 +1267,7 @@ body.resizing .chat-scroll {
 }
 
 /* ---- 内容块 (思考 / 工具 / 搜索 / Worked) ----
-   收起为 --panel 弱卡片行（hover 加深），展开整块着 --panel-2；
+   去卡片化：透明底无边框，收起为单行弱存在感；
    高度过渡依赖 ::details-content + interpolate-size（Chromium 131+，不支持则直接切换） */
 
 :root {
@@ -1316,11 +1292,11 @@ body.resizing .chat-scroll {
   block-size: auto;
 }
 
-/* ---- 工具行统一展示（去卡片化：透明底无边框，单行弱存在感） ---- */
-.tool-row {
+.tool-row,
+.reasoning-row,
+.search-row {
   display: block;
   width: 100%;
-  box-sizing: border-box;
   margin: 1px 0;
   background: transparent;
   border: none;
@@ -1329,22 +1305,25 @@ body.resizing .chat-scroll {
   user-select: none;
 }
 
-div.tool-row,
-details.tool-row > summary {
+.tool-row > summary,
+.reasoning-row > summary,
+.search-row > summary,
+div.tool-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  list-style: none;
-  cursor: default;
 }
 
-details.tool-row > summary {
+.tool-row > summary,
+.reasoning-row > summary,
+.search-row > summary {
   cursor: pointer;
 }
 
-details.tool-row > summary::-webkit-details-marker {
-  display: none;
+/* 无展开内容的文件类工具行 */
+div.tool-row {
+  cursor: default;
 }
 
 .tool-row.clickable {
@@ -1359,9 +1338,13 @@ details.tool-row > summary::-webkit-details-marker {
 .tool-name {
   font-family: var(--font-mono);
   font-size: 12px;
-  width: 42px;
   color: var(--faint);
   flex-shrink: 0;
+}
+
+/* 出错工具行：名称标红预示 */
+.tool-row.error .tool-name {
+  color: var(--danger);
 }
 
 .tool-intent {
@@ -1370,17 +1353,9 @@ details.tool-row > summary::-webkit-details-marker {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 12px;
   color: var(--muted);
-}
-
-.tool-row .file-name {
-  color: var(--text);
-  font-family: var(--font-mono);
-}
-
-.tool-row .diff-count {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
 }
 
 .tool-row .diff-count.ins {
@@ -1391,25 +1366,8 @@ details.tool-row > summary::-webkit-details-marker {
   color: var(--danger);
 }
 
-.tool-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.tool-error-snippet {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--danger);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 240px;
-}
-
 .tool-preview-hint {
+  margin-left: auto;
   display: flex;
   align-items: center;
   color: var(--faint);
@@ -1437,34 +1395,22 @@ details.tool-row > summary::-webkit-details-marker {
   border: none;
 }
 
+/* 展开输出的命令行：独立块，弱化提示符 */
 .tool-command {
+  display: block;
+  margin-bottom: 6px;
   color: var(--text);
 }
 
-/* ---- 思考块（去卡片化：透明底无边框，弱存在感） ---- */
-.reasoning-row {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  margin: 1px 0;
-  background: transparent;
-  border: none;
-  font-size: 12.5px;
+.tool-command::before {
+  content: '$ ';
+  color: var(--faint);
 }
+
+/* ---- 思考块 ---- */
 
 .reasoning-row > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  cursor: pointer;
   color: var(--faint);
-  list-style: none;
-  user-select: none;
-}
-
-.reasoning-row > summary::-webkit-details-marker {
-  display: none;
 }
 
 .reasoning-icon {
@@ -1485,31 +1431,7 @@ details.tool-row > summary::-webkit-details-marker {
   line-height: 1.55;
 }
 
-/* ---- 搜索行（去卡片化：透明底无边框） ---- */
-.search-row {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  margin: 1px 0;
-  background: transparent;
-  border: none;
-  font-size: 12.5px;
-  color: var(--muted);
-  user-select: none;
-}
-
-.search-row > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  cursor: pointer;
-  list-style: none;
-}
-
-.search-row > summary::-webkit-details-marker {
-  display: none;
-}
+/* ---- 搜索行 ---- */
 
 .search-icon {
   flex-shrink: 0;
@@ -1581,15 +1503,10 @@ details.tool-row > summary::-webkit-details-marker {
   align-items: center;
   gap: 5px;
   cursor: pointer;
-  list-style: none;
   user-select: none;
   font-family: var(--font-mono);
   font-size: 12.5px;
   color: var(--muted);
-}
-
-.worked > summary::-webkit-details-marker {
-  display: none;
 }
 
 .worked > summary::after {
@@ -1603,19 +1520,7 @@ details.tool-row > summary::-webkit-details-marker {
   transform: rotate(90deg);
 }
 
-.worked::details-content,
-.worked-body {
-  margin-inline: 0;
-  padding-inline: 0;
-}
-
-.worked-body > .tool-row,
-.worked-body > .reasoning-row,
-.worked-body > .search-row {
-  margin-inline: 0;
-  padding-inline: 0;
-}
-
+/* 展开后内部块与外部内容同宽同层级：去除行内边距 */
 .worked-body > .tool-row,
 .worked-body > .tool-row > summary,
 .worked-body > .reasoning-row > summary,
@@ -1639,15 +1544,10 @@ details.tool-row > summary::-webkit-details-marker {
   align-items: center;
   gap: 5px;
   cursor: pointer;
-  list-style: none;
   user-select: none;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--faint);
-}
-
-.citations > summary::-webkit-details-marker {
-  display: none;
 }
 
 .citations > summary::after {
@@ -1902,23 +1802,6 @@ details.tool-row > summary::-webkit-details-marker {
   color: var(--muted);
 }
 
-.chat-empty-brand {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 56px;
-  letter-spacing: 0.01em;
-  color: var(--text);
-  display: inline-flex;
-  align-items: baseline;
-  line-height: 1;
-}
-
-.chat-empty-hint {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  letter-spacing: 0.04em;
-}
-
 /* 无会话：品牌 + 项目选择 + 输入框（与会话内一致） */
 
 .empty-stage {
@@ -1990,11 +1873,6 @@ details.tool-row > summary::-webkit-details-marker {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
 /* /<skill_name> 候选浮层：锚定输入框上方 */
 .composer-menu {
   position: absolute;
@@ -2059,7 +1937,7 @@ details.tool-row > summary::-webkit-details-marker {
   font: inherit;
   line-height: 1.55;
   min-height: 64px;
-  max-height: 260px;
+  max-height: 200px;
   padding: 0 0 10px;
 }
 
@@ -2474,10 +2352,6 @@ body.resizing .file-sidebar-resize::after {
   font-size: 12px;
   outline: none;
   transition: border-color 0.15s;
-}
-
-.file-sidebar-filter:focus {
-  border-color: var(--accent);
 }
 
 .file-sidebar-list {
@@ -2896,10 +2770,6 @@ body.resizing .file-sidebar-resize::after {
     margin-bottom: calc(-1 * var(--composer-h, 0px));
     pointer-events: none;
     visibility: hidden;
-  }
-
-  .menu {
-    display: inline-flex;
   }
 
   .chat,

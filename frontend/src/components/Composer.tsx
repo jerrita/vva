@@ -2,6 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClipboardEvent, KeyboardEvent, ReactNode, Ref } from 'react'
 import { api } from '../api'
 import type { FileAttachment, SkillEntry } from '../types'
+import { IconArrowUp, IconPlus, IconStop, IconX } from './icons'
 
 /** 外部写入输入框内容（回退后还原提示词） */
 export interface ComposerHandle {
@@ -171,9 +172,7 @@ export function Composer({
                 title="移除文件"
                 aria-label="移除文件"
               >
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden>
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
+                <IconX size={11} strokeWidth={2.2} />
               </button>
             </figure>
           ))}
@@ -230,21 +229,17 @@ export function Composer({
             }}
           />
           <button className="icon-ghost" onClick={() => fileInputRef.current?.click()} title="添加文件" aria-label="添加文件">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-              <path d="M12 5v14M5 12h14" />
-            </svg>
+            <IconPlus size={17} />
           </button>
           {controls}
         </div>
         {running ? (
           <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+            <IconStop size={15} />
           </button>
         ) : (
           <button className="send-button" onClick={send} disabled={(!text.trim() && files.length === 0) || uploading > 0} title="发送" aria-label="发送">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M12 19V5" /><path d="M5 12l7-7 7 7" />
-            </svg>
+            <IconArrowUp size={17} />
           </button>
         )}
       </div>

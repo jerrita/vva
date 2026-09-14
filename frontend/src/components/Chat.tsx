@@ -1,24 +1,18 @@
 import type { ContentPart, Session, Turn } from '../types'
 import { CopyButton } from './CopyButton'
+import { IconFork, IconRevert } from './icons'
 import { Parts } from './Parts'
 
-export function turnText(turn: Turn): string {
-  return turn.messages
-    .map(message =>
-      message.parts
-        .filter(part => part.type === 'text')
-        .map(part => part.text)
-        .join(''),
-    )
-    .join('')
-}
-
-/** 部件列表中的纯文本（复制回答原文用） */
-function partsText(parts: ContentPart[]): string {
+/** 部件列表中的纯文本（消息原文与复制回答用） */
+export function partsText(parts: ContentPart[]): string {
   return parts
     .filter(part => part.type === 'text')
     .map(part => part.text)
     .join('')
+}
+
+export function turnText(turn: Turn): string {
+  return partsText(turn.messages.flatMap(message => message.parts))
 }
 
 /** AGENTS.md 等系统注入的提醒轮次不在聊天界面展示 */
@@ -162,20 +156,7 @@ function UserBubble({
             title="回退：丢弃此消息及之后的内容，放回输入框重新编辑"
             aria-label="回退"
           >
-            <svg
-              viewBox="0 0 24 24"
-              width="12"
-              height="12"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <path d="M9 14 4 9l5-5" />
-              <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
-            </svg>
+            <IconRevert size={12} />
           </button>
           <button
             disabled={disabled}
@@ -183,22 +164,7 @@ function UserBubble({
             title="分叉：保留此消息之前的历史，创建新会话"
             aria-label="分叉"
           >
-            <svg
-              viewBox="0 0 24 24"
-              width="12"
-              height="12"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <line x1="6" x2="6" y1="3" y2="15" />
-              <circle cx="18" cy="6" r="3" />
-              <circle cx="6" cy="18" r="3" />
-              <path d="M18 9a9 9 0 0 1-9 9" />
-            </svg>
+            <IconFork size={12} />
           </button>
         </>
       )}
@@ -270,8 +236,8 @@ export function Chat({
   if (!snap) {
     return (
       <div className="chat-empty">
-      <div className="chat-empty-brand">vva</div>
-        <div className="chat-empty-hint">点击左侧「新对话」开始</div>
+        <div className="empty-brand">vva</div>
+        <div className="empty-hint">点击左侧「新对话」开始</div>
       </div>
     )
   }

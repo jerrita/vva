@@ -58,7 +58,7 @@ export function AskUserModal({
 
   return (
     <div className="modal-overlay ask-user-overlay">
-      <section className="ask-user-modal" role="dialog" aria-modal="true" aria-labelledby="ask-user-title">
+      <section className="modal ask-user-modal" role="dialog" aria-modal="true" aria-labelledby="ask-user-title">
         <div className="ask-user-head">
           <div>
             <div className="modal-kicker">
@@ -111,7 +111,7 @@ export function AskUserModal({
           <button type="button" className="ghost-button" onClick={onCancel}>取消</button>
           <button
             type="button"
-            className="new-create"
+            className="primary-button"
             disabled={currentSelected.length === 0 && !other[questionIndex]?.trim()}
             onClick={advance}
           >

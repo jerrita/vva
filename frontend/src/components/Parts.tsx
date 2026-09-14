@@ -1,4 +1,5 @@
 import type { Annotation, ContentPart, ToolCall, ToolResult, WebSearchCall } from '../types'
+import { IconFile } from './icons'
 import { Markdown } from './Markdown'
 
 function truncate(text: string, max: number): string {
@@ -185,9 +186,10 @@ function ToolGroupView({
   const isError = result?.is_error ?? false
   const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
   const isShell = call.name === 'Shell'
-  const hasShellOutput = isShell && Boolean(result && result.content.trim())
+  // 可展开 = 有输出可看（Shell 输出 / 错误详情）
+  const hasOutput = Boolean(isShell && result && result.content.trim()) || Boolean(isError && result)
 
-  if (!hasShellOutput) {
+  if (!hasOutput) {
     return (
       <div
         className={`tool-row${isError ? ' error' : ''}${
@@ -220,30 +222,11 @@ function ToolGroupView({
         ) : (
           <span className="tool-intent">{detail.text}</span>
         )}
-        <div className="tool-right">
-          {isError && result && (
-            <span className="tool-error-snippet" title={result.content}>
-              {result.content.split('\n')[0]}
-            </span>
-          )}
-          {isFileTool && detail.filePath && onPreviewFile && (
-            <span className="tool-preview-hint" title="预览文件" aria-hidden>
-              <svg
-                viewBox="0 0 24 24"
-                width="13"
-                height="13"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-            </span>
-          )}
-        </div>
+        {isFileTool && detail.filePath && onPreviewFile && (
+          <span className="tool-preview-hint" title="预览文件" aria-hidden>
+            <IconFile size={13} strokeWidth={1.8} />
+          </span>
+        )}
       </div>
     )
   }
@@ -253,16 +236,9 @@ function ToolGroupView({
       <summary>
         <code className="tool-name">{call.name}</code>
         <span className="tool-intent">{detail.text}</span>
-        {isError && result && (
-          <div className="tool-right">
-            <span className="tool-error-snippet" title={result.content}>
-              {result.content.split('\n')[0]}
-            </span>
-          </div>
-        )}
       </summary>
       <pre className="tool-output">
-        {detail.shellCommand && <span className="tool-command">$ {detail.shellCommand}\n\n</span>}
+        {detail.shellCommand && <span className="tool-command">{detail.shellCommand}</span>}
         {result!.content}
       </pre>
     </details>

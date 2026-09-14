@@ -234,7 +234,6 @@ export interface RelatedFile {
   path: string
   name: string
   actions: ('read' | 'write' | 'edit' | 'attachment')[]
-  lastAction: 'read' | 'write' | 'edit' | 'attachment'
   turnIndex: number
 }
 

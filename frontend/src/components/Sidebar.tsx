@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { api } from '../api'
 import type { SessionSummary, SkillEntry } from '../types'
+import {
+  IconArrowUp,
+  IconFolderClosed,
+  IconFolderOpen,
+  IconPlus,
+  IconX,
+  IconZap,
+} from './icons'
 export interface SessionGroup {
   project: string
   /** 项目 workspace 路径，用于分组内直接新建会话 */
@@ -56,24 +64,10 @@ function projectColor(name: string): string {
 }
 
 function FolderIcon({ open, color }: { open: boolean; color: string }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      {open ? (
-        <path d="M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2" />
-      ) : (
-        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-      )}
-    </svg>
+  return open ? (
+    <span style={{ color }}><IconFolderOpen size={14} /></span>
+  ) : (
+    <span style={{ color }}><IconFolderClosed size={14} /></span>
   )
 }
 
@@ -94,13 +88,11 @@ function NewChatPanel({
   const [dirs, setDirs] = useState<string[]>([])
   const [loadingDirs, setLoadingDirs] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
-  const anchorRef = useRef<HTMLButtonElement>(null)
 
   // 弹层为瞬态表单，点击外部关闭
   useEffect(() => {
     const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node
-      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return
+      if (panelRef.current?.contains(event.target as Node)) return
       onClose()
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -141,167 +133,89 @@ function NewChatPanel({
   }
 
   return (
-    <>
-      <button
-        ref={anchorRef}
-        className="new-chat"
-        onClick={onClose}
-        title="新对话"
-        aria-label="新对话"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          width="15"
-          height="15"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          aria-hidden
+    <div className="new-panel" ref={panelRef}>
+      <div className="new-panel-title">新对话</div>
+      <div className="segmented">
+        <button
+          className={mode === 'existing' ? 'active' : ''}
+          onClick={() => setMode('existing')}
         >
-          <path d="M12 5v14M5 12h14" />
-        </svg>
-      </button>
-      <div className="new-panel" ref={panelRef}>
-        <div className="new-panel-title">新对话</div>
-        <div className="segmented">
-          <button
-            className={mode === 'existing' ? 'active' : ''}
-            onClick={() => setMode('existing')}
-          >
-            已有项目
-          </button>
-          <button className={mode === 'new' ? 'active' : ''} onClick={() => setMode('new')}>
-            新建项目
-          </button>
-        </div>
-        {mode === 'existing' ? (
-          <label className="new-panel-field">
-            <span>项目</span>
-            <select value={workspace} onChange={event => setWorkspace(event.target.value)}>
-              {projects.map(project => (
-                <option key={project.root} value={project.root} title={project.root}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <div className="new-panel-field">
-            <span>项目目录（点击逐级选择）</span>
-            <div className="dir-crumb">
-              <button
-                className="dir-up"
-                disabled={!parentPath || loadingDirs}
-                onClick={() => parentPath && setRequestedPath(parentPath)}
-                title="上一级"
-                aria-label="上一级"
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="13"
-                  height="13"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M12 19V5M5 12l7-7 7 7" />
-                </svg>
-              </button>
-              <span className="dir-path" title={currentPath}>
-                {currentPath}
-              </span>
-            </div>
-            <div className="dir-list">
-              {loadingDirs && <div className="dir-empty">加载中…</div>}
-              {!loadingDirs && dirs.length === 0 && <div className="dir-empty">无子目录</div>}
-              {dirs.map(dir => (
-                <button key={dir} className="dir-item" onClick={() => enterDir(dir)}>
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="13"
-                    height="13"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden
-                  >
-                    <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-                  </svg>
-                  {dir}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="new-panel-actions">
-          <button className="new-cancel" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="new-create"
-            disabled={mode === 'existing' ? !workspace : loadingDirs || !currentPath}
-            onClick={() => onCreate(mode === 'new' ? currentPath : workspace)}
-          >
-            开始对话
-          </button>
-        </div>
+          已有项目
+        </button>
+        <button className={mode === 'new' ? 'active' : ''} onClick={() => setMode('new')}>
+          新建项目
+        </button>
       </div>
-    </>
-  )
-}
-
-function SkillsIcon() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      width="14"
-      height="14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8Z" />
-    </svg>
+      {mode === 'existing' ? (
+        <label className="new-panel-field">
+          <span>项目</span>
+          <select value={workspace} onChange={event => setWorkspace(event.target.value)}>
+            {projects.map(project => (
+              <option key={project.root} value={project.root} title={project.root}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <div className="new-panel-field">
+          <span>项目目录（点击逐级选择）</span>
+          <div className="dir-crumb">
+            <button
+              className="dir-up"
+              disabled={!parentPath || loadingDirs}
+              onClick={() => parentPath && setRequestedPath(parentPath)}
+              title="上一级"
+              aria-label="上一级"
+            >
+              <IconArrowUp size={13} />
+            </button>
+            <span className="dir-path" title={currentPath}>
+              {currentPath}
+            </span>
+          </div>
+          <div className="dir-list">
+            {loadingDirs && <div className="dir-empty">加载中…</div>}
+            {!loadingDirs && dirs.length === 0 && <div className="dir-empty">无子目录</div>}
+            {dirs.map(dir => (
+              <button key={dir} className="dir-item" onClick={() => enterDir(dir)}>
+                <IconFolderClosed size={13} />
+                {dir}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="new-panel-actions">
+        <button className="ghost-button" onClick={onClose}>
+          取消
+        </button>
+        <button
+          className="primary-button"
+          disabled={mode === 'existing' ? !workspace : loadingDirs || !currentPath}
+          onClick={() => onCreate(mode === 'new' ? currentPath : workspace)}
+        >
+          开始对话
+        </button>
+      </div>
+    </div>
   )
 }
 
 /** 侧栏底部只读 Skills 分组：浏览后端发现的 Agent Skills，悬停显示描述与路径 */
-function SkillsSection() {
-  const [skills, setSkills] = useState<SkillEntry[]>([])
+function SkillsSection({ skills }: { skills: SkillEntry[] }) {
   const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    api
-      .skills()
-      .then(response => {
-        if (!cancelled) setSkills(response.skills)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   if (skills.length === 0) return null
 
   return (
     <div className="skills-group">
       <div
-        className={`group-label${open ? '' : ' closed'}`}
+        className="group-label"
         onClick={() => setOpen(!open)}
         title={`${skills.length} 个技能（~/.vva/skills 与项目 .vva/skills、.agent/skills）`}
       >
-        <SkillsIcon />
+        <IconZap size={14} />
         <span className="group-name">Skills</span>
         <span className="group-count">{skills.length}</span>
       </div>
@@ -325,6 +239,7 @@ export function Sidebar({
   projects,
   activeId,
   width,
+  skills,
   hiddenProjects,
   onHideProject,
   onResizeStart,
@@ -339,6 +254,7 @@ export function Sidebar({
   projects: ProjectOption[]
   activeId: string | null
   width: number
+  skills: SkillEntry[]
   hiddenProjects: Set<string>
   onHideProject: (project: string) => void
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void
@@ -397,41 +313,27 @@ export function Sidebar({
         aria-hidden
       />
       <div className="sidebar-top">
-        <span className="brand">
-          vva
-        </span>
-        {newOpen && projects.length > 0 ? (
-          <NewChatPanel
-            projects={projects}
-            onCreate={workspace => {
-              setNewOpen(false)
-              onCreate(workspace)
-            }}
-            onClose={() => setNewOpen(false)}
-          />
-        ) : (
-          <button
-            className="new-chat"
-            onClick={() => setNewOpen(true)}
-            disabled={projects.length === 0}
-            title="新对话"
-            aria-label="新对话"
-          >
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              aria-hidden
-            >
-              <path d="M12 5v14M5 12h14" />
-            </svg>
-          </button>
-        )}
+        <span className="brand">vva</span>
+        <button
+          className="new-chat"
+          onClick={() => setNewOpen(value => !value)}
+          disabled={projects.length === 0}
+          title="新对话"
+          aria-label="新对话"
+        >
+          <IconPlus size={15} />
+        </button>
       </div>
+      {newOpen && projects.length > 0 && (
+        <NewChatPanel
+          projects={projects}
+          onCreate={workspace => {
+            setNewOpen(false)
+            onCreate(workspace)
+          }}
+          onClose={() => setNewOpen(false)}
+        />
+      )}
       <nav className="session-list">
         {groups.filter(group => !hiddenProjects.has(group.project)).length === 0 && (
           <div className="session-empty">暂无会话</div>
@@ -445,7 +347,7 @@ export function Sidebar({
             style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
           >
             <div
-              className={`group-label${collapsed.has(group.project) ? ' closed' : ''}`}
+              className="group-label"
               onClick={() => toggle(group.project)}
               title={group.project}
             >
@@ -464,18 +366,7 @@ export function Sidebar({
                   onCreate(group.root)
                 }}
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="12"
-                  height="12"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  aria-hidden
-                >
-                  <path d="M12 5v14M5 12h14" />
-                </svg>
+                <IconPlus size={12} />
               </button>
               <button
                 className="group-hide"
@@ -486,18 +377,7 @@ export function Sidebar({
                   onHideProject(group.project)
                 }}
               >
-                <svg
-                  viewBox="0 0 24 24"
-                  width="12"
-                  height="12"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  aria-hidden
-                >
-                  <path d="M18 6L6 18M6 6l12 12" />
-                </svg>
+                <IconX size={12} />
               </button>
             </div>
             {!collapsed.has(group.project) &&
@@ -518,36 +398,25 @@ export function Sidebar({
                       setPendingDelete(session)
                     }}
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      width="13"
-                      height="13"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      aria-hidden
-                    >
-                      <path d="M18 6L6 18M6 6l12 12" />
-                    </svg>
+                    <IconX size={13} />
                   </button>
                 </div>
               ))}
           </div>
         ))}
-        <SkillsSection />
+        <SkillsSection skills={skills} />
       </nav>
       <button className="sidebar-foot" onClick={onOpenSettings} title="全局设置">
         Settings
       </button>
       {pendingDelete && (
         <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
-          <div className="confirm-modal" onClick={event => event.stopPropagation()}>
-            <div className="confirm-title">删除会话</div>
-            <div className="confirm-message">
+          <div className="modal" onClick={event => event.stopPropagation()}>
+            <div className="modal-title">删除会话</div>
+            <div className="modal-message">
               确定删除「{pendingDelete.title || '新对话'}」？删除后无法恢复。
             </div>
-            <div className="confirm-actions">
+            <div className="modal-actions">
               <button className="ghost-button" onClick={() => setPendingDelete(null)}>
                 取消
               </button>

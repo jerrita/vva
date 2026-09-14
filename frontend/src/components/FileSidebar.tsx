@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import hljs from 'highlight.js/lib/common'
-import { api } from '../api'
+import { api, toError } from '../api'
 import type { ContentPart, RelatedFile, Session, SessionFileResponse } from '../types'
 import { CopyButton } from './CopyButton'
 import { Markdown } from './Markdown'
+import { IconArrowLeft, IconFile, IconX } from './icons'
 
 export const FILE_SIDEBAR_MIN = 240
 export const FILE_SIDEBAR_MAX = 760
@@ -109,7 +110,6 @@ export function extractRelatedFiles(
       path: string
       name: string
       actions: Set<'read' | 'write' | 'edit' | 'attachment'>
-      lastAction: 'read' | 'write' | 'edit' | 'attachment'
       turnIndex: number
     }
   >()
@@ -125,14 +125,12 @@ export function extractRelatedFiles(
     const existing = map.get(cleaned)
     if (existing) {
       existing.actions.add(action)
-      existing.lastAction = action
       existing.turnIndex = Math.max(existing.turnIndex, turnIndex)
     } else {
       map.set(cleaned, {
         path: cleaned,
         name,
         actions: new Set([action]),
-        lastAction: action,
         turnIndex,
       })
     }
@@ -175,7 +173,6 @@ export function extractRelatedFiles(
     path: item.path,
     name: item.name,
     actions: [...item.actions],
-    lastAction: item.lastAction,
     turnIndex: item.turnIndex,
   }))
 
@@ -185,8 +182,7 @@ export function extractRelatedFiles(
 
 interface FileSidebarProps {
   sessionId: string | null
-  session: Session | null
-  draft?: ContentPart[]
+  files: RelatedFile[]
   activePath: string | null
   open: boolean
   width: number
@@ -199,8 +195,7 @@ interface FileSidebarProps {
 
 export function FileSidebar({
   sessionId,
-  session,
-  draft,
+  files,
   activePath,
   open,
   width,
@@ -215,8 +210,6 @@ export function FileSidebar({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'render' | 'source'>('render')
-
-  const files = useMemo(() => extractRelatedFiles(session, draft), [session, draft])
 
   const filteredFiles = useMemo(() => {
     if (!filter.trim()) return files
@@ -247,7 +240,7 @@ export function FileSidebar({
       })
       .catch(err => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err))
+          setError(toError(err))
           setLoading(false)
         }
       })
@@ -288,7 +281,7 @@ export function FileSidebar({
   return (
     <aside
       className="file-sidebar"
-      style={{ width: `${clampFileSidebar(width)}px` }}
+      style={{ width: `${width}px` }}
       aria-label="相关文件预览"
     >
       <div
@@ -309,20 +302,7 @@ export function FileSidebar({
               title="返回文件列表"
               aria-label="返回文件列表"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="16"
-                height="16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden
-              >
-                <path d="M19 12H5" />
-                <path d="M12 19l-7-7 7-7" />
-              </svg>
+              <IconArrowLeft size={16} />
             </button>
             <div className="file-nav-title" title={activePath}>
               <span className="file-nav-name">{activeFileInfo?.name || activePath}</span>
@@ -345,20 +325,7 @@ export function FileSidebar({
             title="关闭侧边栏"
             aria-label="关闭侧边栏"
           >
-            <svg
-              viewBox="0 0 24 24"
-              width="16"
-              height="16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+            <IconX size={16} />
           </button>
         </div>
       </div>
@@ -380,20 +347,7 @@ export function FileSidebar({
           <div className="file-sidebar-list">
             {filteredFiles.length === 0 ? (
               <div className="file-empty-state">
-                <svg
-                  viewBox="0 0 24 24"
-                  width="36"
-                  height="36"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-                  <polyline points="13 2 13 9 20 9" />
-                </svg>
+                <IconFile size={36} strokeWidth={1.4} />
                 <div className="file-empty-title">
                   {filter ? '未找到匹配文件' : '暂无涉及文件'}
                 </div>
@@ -415,23 +369,7 @@ export function FileSidebar({
                     title={file.path}
                   >
                     <div className="file-item-icon">
-                      <svg
-                        viewBox="0 0 24 24"
-                        width="16"
-                        height="16"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden
-                      >
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                        <line x1="16" y1="13" x2="8" y2="13" />
-                        <line x1="16" y1="17" x2="8" y2="17" />
-                        <line x1="10" y1="9" x2="8" y2="9" />
-                      </svg>
+                      <IconFile size={16} />
                     </div>
                     <div className="file-item-text">
                       <span className="file-item-name">{file.name}</span>
@@ -513,23 +451,7 @@ export function FileSidebar({
                     </div>
                   ) : (
                     <div className="file-preview-status binary">
-                      <svg
-                        viewBox="0 0 24 24"
-                        width="32"
-                        height="32"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden
-                      >
-                        <rect x="2" y="2" width="20" height="20" rx="2" />
-                        <path d="M12 18h.01" />
-                        <path d="M8 6h8" />
-                        <path d="M8 10h8" />
-                        <path d="M8 14h8" />
-                      </svg>
+                      <IconFile size={32} strokeWidth={1.8} />
                       <span>二进制文件 ({fileData.mime_type || '未知类型'})</span>
                       <span className="file-status-sub">不支持在线文本预览</span>
                     </div>

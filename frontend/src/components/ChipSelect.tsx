@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { IconCheck, IconChevronDown } from './icons'
 
 export interface ChipOption {
   value: string
@@ -89,19 +90,7 @@ export function ChipSelect({
         onClick={() => (open ? setOpen(false) : openMenu())}
       >
         <span className="chip-label">{current?.label ?? value}</span>
-        <svg
-          viewBox="0 0 24 24"
-          width="10"
-          height="10"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M6 9l6 6 6-6" />
-        </svg>
+        <IconChevronDown size={10} strokeWidth={2.5} />
       </button>
       {open && (
         <div className="chip-menu" role="listbox" aria-label={title}>
@@ -117,21 +106,7 @@ export function ChipSelect({
               title={option.label}
             >
               <span className="chip-option-label">{option.label}</span>
-              {option.value === value && (
-                <svg
-                  viewBox="0 0 24 24"
-                  width="13"
-                  height="13"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden
-                >
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-              )}
+              {option.value === value && <IconCheck size={13} />}
             </button>
           ))}
         </div>
