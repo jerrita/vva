@@ -143,7 +143,7 @@ function ToolGroupView({
   if (isFileTool) {
     return (
       <div
-        className={`block tool file-line${isError ? ' error' : ''}${
+        className={`file-tool-row${isError ? ' error' : ''}${
           detail.filePath && onPreviewFile ? ' clickable' : ''
         }`}
         onClick={
@@ -158,36 +158,36 @@ function ToolGroupView({
         }
       >
         {result ? (
-          <span className={`block-icon status ${isError ? 'error' : 'ok'}`}>
+          <span className={`file-tool-icon status ${isError ? 'error' : 'ok'}`}>
             {isError ? '✕' : '✓'}
           </span>
         ) : (
-          <span className="block-icon status pending" />
+          <span className="file-tool-icon status pending" />
         )}
-        <code>{call.name}</code>
+        <code className="file-tool-name">{call.name}</code>
         {detail.editPath ? (
-          <span className="tool-intent">
+          <span className="file-tool-intent">
             <span className="file-name">{detail.editPath}</span>{' '}
             <span className="diff-count ins">(+{detail.plus})</span>
             {', '}
             <span className="diff-count del">(-{detail.minus})</span>
           </span>
         ) : detail.filePath ? (
-          <span className="tool-intent">
+          <span className="file-tool-intent">
             <span className="file-name">{detail.filePath}</span>
             {detail.text.slice(detail.filePath.length)}
           </span>
         ) : (
-          <span className="tool-intent">{detail.text}</span>
+          <span className="file-tool-intent">{detail.text}</span>
         )}
-        <div className="file-line-right">
+        <div className="file-tool-right">
           {isError && result && (
-            <span className="tool-error-snippet" title={result.content}>
+            <span className="file-tool-error-snippet" title={result.content}>
               {result.content.split('\n')[0]}
             </span>
           )}
           {detail.filePath && onPreviewFile && (
-            <span className="file-line-preview-hint" title="预览文件" aria-hidden>
+            <span className="file-tool-preview-hint" title="预览文件" aria-hidden>
               <svg
                 viewBox="0 0 24 24"
                 width="13"

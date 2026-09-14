@@ -1254,46 +1254,88 @@ body.resizing .chat-scroll {
   color: var(--text);
 }
 
-/* 文件工具单行展示 */
-.block.tool.file-line {
+/* 文件工具单行展示（去卡片化：透明底无边框，对齐 Thinking 弱存在感风格） */
+.file-tool-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
-  border-radius: 9px;
+  padding: 4px 10px;
+  margin: 1px 0;
   color: var(--muted);
-  font-size: 13px;
-  background: var(--block);
-  border: 1px solid var(--border-soft);
-  margin: 3px 0;
-  transition: background 0.15s, border-color 0.15s;
+  font-size: 12.5px;
+  background: transparent;
+  border: none;
   user-select: none;
 }
 
-.block.tool.file-line.clickable {
+.file-tool-row.clickable {
   cursor: pointer;
 }
 
-.block.tool.file-line.clickable:hover {
-  background: var(--panel-2);
-  border-color: var(--border);
-  color: var(--text);
-}
-
-.block.tool.file-line.clickable:hover .file-name {
+.file-tool-row.clickable:hover .file-name {
   color: var(--accent);
   text-decoration: underline;
 }
 
-.block.tool.file-line.error {
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+.file-tool-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  font-size: 11px;
 }
 
-.block.tool.file-line.error:hover {
-  background: var(--danger-soft);
+.file-tool-icon.status.ok {
+  color: var(--accent);
 }
 
-.block.tool.file-line .file-line-right {
+.file-tool-icon.status.error {
+  color: var(--danger);
+}
+
+.file-tool-icon.status.pending {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--rose);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.file-tool-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.file-tool-intent {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.file-tool-row .file-name {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
+.file-tool-row .diff-count {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.file-tool-row .diff-count.ins {
+  color: var(--accent);
+}
+
+.file-tool-row .diff-count.del {
+  color: var(--danger);
+}
+
+.file-tool-right {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -1301,7 +1343,7 @@ body.resizing .chat-scroll {
   flex-shrink: 0;
 }
 
-.block.tool.file-line .tool-error-snippet {
+.file-tool-error-snippet {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--danger);
@@ -1311,7 +1353,7 @@ body.resizing .chat-scroll {
   max-width: 240px;
 }
 
-.block.tool.file-line .file-line-preview-hint {
+.file-tool-preview-hint {
   display: flex;
   align-items: center;
   color: var(--faint);
@@ -1319,7 +1361,7 @@ body.resizing .chat-scroll {
   transition: opacity 0.15s, color 0.15s;
 }
 
-.block.tool.file-line:hover .file-line-preview-hint {
+.file-tool-row:hover .file-tool-preview-hint {
   opacity: 1;
   color: var(--accent);
 }
