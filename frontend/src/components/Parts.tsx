@@ -28,6 +28,15 @@ function fileName(path: string): string {
   return filePath.slice(filePath.lastIndexOf('/') + 1)
 }
 
+/** 项目内文件的展示路径相对化；项目外保持原样 */
+function relativePath(path: string, workspace?: string): string {
+  if (!workspace) return path
+  const root = workspace.replace(/\/+$/, '')
+  if (path === root) return '.'
+  if (path.startsWith(`${root}/`)) return path.slice(root.length + 1)
+  return path
+}
+
 function patchFilePath(input: string): string | null {
   for (const line of input.split('\n')) {
     for (const prefix of ['*** Update File: ', '*** Add File: ', '*** Delete File: ']) {
@@ -59,7 +68,10 @@ function editEntries(args: Record<string, unknown>): Record<string, unknown>[] {
 /** 摘要行的按工具类型 detail，对齐 TUI tool_call_detail */
 interface ToolDetail {
   text: string
+  /** 原始路径：预览跳转用 */
   filePath?: string
+  /** 展示路径：项目内文件相对化 */
+  displayPath?: string
   /** Edit 专用：增删行数着色展示 */
   editPath?: string
   plus?: number
@@ -67,7 +79,8 @@ interface ToolDetail {
   shellCommand?: string
 }
 
-function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
+function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: string): ToolDetail {
+  const rel = (path: string) => relativePath(path, workspace)
   const args = parseArgs(call.arguments)
   if (!args) return { text: truncate(call.arguments, 88) }
   switch (call.name) {
@@ -83,19 +96,22 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
     }
     case 'Read': {
       const rawPath = str(args.path)
-      const path = rawPath ?? truncate(call.arguments, 88)
+      if (!rawPath) return { text: truncate(call.arguments, 88) }
       const options: string[] = []
       if (typeof args.offset === 'number' && args.offset !== 1) options.push(`offset=${args.offset}`)
       if (typeof args.limit === 'number') options.push(`limit=${args.limit}`)
       if (typeof args.byte_offset === 'number') options.push(`byte_offset=${args.byte_offset}`)
+      const shown = rel(rawPath)
       return {
-        text: options.length > 0 ? `${path} [${options.join(', ')}]` : path,
-        filePath: rawPath ?? undefined,
+        text: options.length > 0 ? `${shown} [${options.join(', ')}]` : shown,
+        filePath: rawPath,
+        displayPath: shown,
       }
     }
     case 'Write': {
       const rawPath = str(args.path)
-      return { text: rawPath ?? truncate(call.arguments, 88), filePath: rawPath ?? undefined }
+      if (!rawPath) return { text: truncate(call.arguments, 88) }
+      return { text: rel(rawPath), filePath: rawPath, displayPath: rel(rawPath) }
     }
     case 'Edit': {
       const input = str(args.input)
@@ -103,7 +119,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
         const path = patchFilePath(input)
         const { plus, minus } = patchCounts(input)
         if (path) {
-          return { text: fileName(path), filePath: path, editPath: path, plus, minus }
+          return { text: fileName(path), filePath: path, editPath: rel(path), plus, minus }
         }
         return { text: truncate(input, 88) }
       }
@@ -113,12 +129,12 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
         return {
           text: fileName(path),
           filePath: path,
-          editPath: path,
+          editPath: rel(path),
           plus: edits.reduce((count, edit) => count + lineCount(str(edit.new_string)!), 0),
           minus: edits.reduce((count, edit) => count + lineCount(str(edit.old_string)!), 0),
         }
       }
-      return { text: path ?? truncate(call.arguments, 88), filePath: path ?? undefined }
+      return { text: rel(path ?? call.arguments), filePath: path ?? undefined, displayPath: path ? rel(path) : undefined }
     }
     case 'Glob': {
       const pattern = str(args.pattern) ?? truncate(call.arguments, 88)
@@ -136,12 +152,13 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
       if (!pattern) return { text: truncate(call.arguments, 88) }
       const include = str(args.include)
       const path = str(args.path)
+      const shown = path ? rel(path) : null
       const loc = include
-        ? path && path !== '.'
-          ? `${path}/${include}`
+        ? shown && shown !== '.'
+          ? `${shown}/${include}`
           : include
-        : path && path !== '.'
-          ? path
+        : shown && shown !== '.'
+          ? shown
           : null
       const target = loc ? `${loc}, "${pattern}"` : `"${pattern}"`
       if (result && !result.is_error) {
@@ -175,19 +192,22 @@ interface ToolGroupNode {
 function ToolGroupView({
   node,
   expanded = false,
+  workspace,
   onPreviewFile,
 }: {
   node: ToolGroupNode
   expanded?: boolean
+  workspace?: string
   onPreviewFile?: (path: string) => void
 }) {
   const { call, result } = node
-  const detail = toolDetail(call, result)
+  const detail = toolDetail(call, result, workspace)
   const isError = result?.is_error ?? false
   const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
   const isShell = call.name === 'Shell'
   // 可展开 = 有输出可看（Shell 输出 / 错误详情）
   const hasOutput = Boolean(isShell && result && result.content.trim()) || Boolean(isError && result)
+  const shownPath = detail.displayPath ?? detail.filePath
 
   if (!hasOutput) {
     return (
@@ -214,10 +234,10 @@ function ToolGroupView({
             {', '}
             <span className="diff-count del">(-{detail.minus})</span>
           </span>
-        ) : detail.filePath ? (
+        ) : shownPath ? (
           <span className="tool-intent">
-            <span className="file-name">{detail.filePath}</span>
-            {detail.text.slice(detail.filePath.length)}
+            <span className="file-name">{shownPath}</span>
+            {detail.text.slice(shownPath.length)}
           </span>
         ) : (
           <span className="tool-intent">{detail.text}</span>
@@ -368,10 +388,13 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
 export function Parts({
   parts,
   live = false,
+  workspace,
   onPreviewFile,
 }: {
   parts: ContentPart[]
   live?: boolean
+  /** 会话 workspace：项目内文件展示为相对路径 */
+  workspace?: string
   onPreviewFile?: (path: string) => void
 }) {
   type Node =
@@ -406,6 +429,7 @@ export function Parts({
             key={`tool-${index}`}
             node={node.group}
             expanded={expanded}
+            workspace={workspace}
             onPreviewFile={onPreviewFile}
           />
         ) : (

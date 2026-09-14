@@ -96,12 +96,14 @@ function WorkedBlock({
   group,
   live = false,
   autoExpand = false,
+  workspace,
   onPreviewFile,
 }: {
   group: WorkGroup
   live?: boolean
   /** 草稿为空的间隙（如工具执行中）当前块仍在工作段内：末尾块保持展开 */
   autoExpand?: boolean
+  workspace?: string
   onPreviewFile?: (path: string) => void
 }) {
   const ms = group.workedMs ?? group.elapsedMs
@@ -109,7 +111,7 @@ function WorkedBlock({
     <details className="worked" open={live}>
       <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
       <div className="worked-body">
-        <Parts parts={group.parts} live={autoExpand} onPreviewFile={onPreviewFile} />
+        <Parts parts={group.parts} live={autoExpand} workspace={workspace} onPreviewFile={onPreviewFile} />
       </div>
     </details>
   )
@@ -244,6 +246,7 @@ export function Chat({
 
   const running = snap.state !== ''
   const turns = snap.session.turns
+  const workspace = snap.session.workspace_root
   const showDraft = snap.draft.length > 0 || running
   // 运行中最后一个工作段即当前响应段：容器保持展开，结束后随 live 翻转自动收起
   const items = buildItems(turns)
@@ -287,6 +290,7 @@ export function Chat({
               group={item.group}
               live={index === liveWork}
               autoExpand={index === liveWork && !draftActive}
+              workspace={workspace}
               onPreviewFile={onPreviewFile}
             />
           )
@@ -298,7 +302,7 @@ export function Chat({
             key={item.turn.id}
             className={`msg assistant answer${hasWorkBefore ? '' : ' no-work'}`}
           >
-            <Parts parts={item.parts} onPreviewFile={onPreviewFile} />
+            <Parts parts={item.parts} workspace={workspace} onPreviewFile={onPreviewFile} />
             <div className="answer-foot">
               <TurnMeta turn={item.turn} />
               <div className="turn-actions">
@@ -311,7 +315,7 @@ export function Chat({
       {pending && <UserBubble turn={{ id: 'pending', role: 'user', messages: [{ parts: [{ type: 'text', text: pending }] }] }} onPreviewFile={onPreviewFile} />}
       {showDraft && (
         <div className="msg assistant">
-          <Parts parts={snap.draft} live={running} onPreviewFile={onPreviewFile} />
+          <Parts parts={snap.draft} live={running} workspace={workspace} onPreviewFile={onPreviewFile} />
           {running && (
             <div className="status-chip">
               <span className="dot" />
