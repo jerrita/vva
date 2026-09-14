@@ -1338,6 +1338,7 @@ div.tool-row {
 .tool-name {
   font-family: var(--font-mono);
   font-size: 12px;
+  min-width: 5ch;
   color: var(--faint);
   flex-shrink: 0;
 }
