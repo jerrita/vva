@@ -45,6 +45,7 @@ pub async fn run_server(
             "/api/sessions/{id}",
             get(api::get_session).delete(api::delete_session),
         )
+        .route("/api/sessions/{id}/file", get(api::get_session_file))
         .route("/api/sessions/{id}/messages", post(api::submit_message))
         .route("/api/sessions/{id}/revert", post(api::revert_session))
         .route("/api/sessions/{id}/fork", post(api::fork_session))

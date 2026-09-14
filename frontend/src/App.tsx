@@ -8,6 +8,13 @@ import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
+import {
+  FileSidebar,
+  FILE_SIDEBAR_MIN,
+  FILE_SIDEBAR_MAX,
+  clampFileSidebar,
+  extractRelatedFiles,
+} from './components/FileSidebar'
 import type { ProjectOption } from './components/Sidebar'
 import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats } from './types'
 
@@ -68,6 +75,18 @@ export default function App() {
   const resizeStartW = useRef(0)
   const composerRef = useRef<ComposerHandle>(null)
 
+  const [fileSidebarOpen, setFileSidebarOpen] = useState(
+    () => localStorage.getItem('vva.file-sidebar-open') === '1',
+  )
+  const [fileSidebarWidth, setFileSidebarWidth] = useState(() => {
+    const stored = Number(localStorage.getItem('vva.file-sidebar-width'))
+    return stored >= FILE_SIDEBAR_MIN && stored <= FILE_SIDEBAR_MAX ? stored : 360
+  })
+  const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
+  const fileResizing = useRef(false)
+  const fileResizeStartX = useRef(0)
+  const fileResizeStartW = useRef(0)
+
   useEffect(() => {
     localStorage.setItem('vva.sidebar-hidden', sidebarHidden ? '1' : '0')
   }, [sidebarHidden])
@@ -83,6 +102,40 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('vva.stats-collapsed', statsCollapsed ? '1' : '0')
   }, [statsCollapsed])
+
+  useEffect(() => {
+    localStorage.setItem('vva.file-sidebar-open', fileSidebarOpen ? '1' : '0')
+  }, [fileSidebarOpen])
+
+  useEffect(() => {
+    localStorage.setItem('vva.file-sidebar-width', String(fileSidebarWidth))
+  }, [fileSidebarWidth])
+
+  const onFileResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    fileResizing.current = true
+    fileResizeStartX.current = event.clientX
+    fileResizeStartW.current = fileSidebarWidth
+    document.body.classList.add('resizing')
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+  const onFileResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!fileResizing.current) return
+    setFileSidebarWidth(
+      clampFileSidebar(fileResizeStartW.current + (fileResizeStartX.current - event.clientX)),
+    )
+  }
+  const onFileResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!fileResizing.current) return
+    fileResizing.current = false
+    document.body.classList.remove('resizing')
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  const onPreviewFile = useCallback((path: string) => {
+    setPreviewFilePath(path)
+    setFileSidebarOpen(true)
+  }, [])
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)
@@ -122,13 +175,20 @@ export default function App() {
     if (!activeId) {
       setSnap(null)
       setPending(null)
+      setPreviewFilePath(null)
       return
     }
     setSnap(null)
     setPending(null)
     setStats(null)
+    setPreviewFilePath(null)
     return subscribeSession(activeId, setSnap, e => setError(toError(e)))
   }, [activeId])
+
+  const relatedFiles = useMemo(
+    () => (active ? extractRelatedFiles(active, snap?.draft) : []),
+    [active, snap?.draft],
+  )
 
   // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次变化时）
   const listKey = useRef('')
@@ -460,7 +520,7 @@ export default function App() {
     <div
       className={`app${sidebarOpen ? ' sidebar-open' : ''}${
         sidebarHidden ? ' sidebar-hidden' : ''
-      }`}
+      }${fileSidebarOpen ? ' file-sidebar-open' : ''}`}
     >
       <Sidebar
         groups={groupByProject(sessions)}
@@ -534,6 +594,35 @@ export default function App() {
             )}
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
+          {active && (
+            <button
+              className={`icon-ghost file-sidebar-toggle${fileSidebarOpen ? ' active' : ''}`}
+              onClick={() => setFileSidebarOpen(value => !value)}
+              title={fileSidebarOpen ? '收起相关文件' : '展开相关文件'}
+              aria-label="相关文件预览"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden
+              >
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+                <polyline points="10 9 9 9 8 9" />
+              </svg>
+              {relatedFiles.length > 0 && (
+                <span className="file-sidebar-badge">{relatedFiles.length}</span>
+              )}
+            </button>
+          )}
           {stats && active && (
             <button
               className={`icon-ghost stats-toggle${statsVisible ? ' active' : ''}`}
@@ -644,7 +733,13 @@ export default function App() {
         ) : (
           <>
             <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
-              <Chat snap={snap} pending={pending} onRevert={revertTurn} onFork={forkTurn} />
+              <Chat
+                snap={snap}
+                pending={pending}
+                onRevert={revertTurn}
+                onFork={forkTurn}
+                onPreviewFile={onPreviewFile}
+              />
             </div>
             <div className="composer-area">
               <Composer
@@ -658,6 +753,26 @@ export default function App() {
           </>
         )}
       </main>
+      {active && (
+        <>
+          <FileSidebar
+            sessionId={activeId}
+            session={active}
+            draft={snap?.draft}
+            activePath={previewFilePath}
+            open={fileSidebarOpen}
+            width={fileSidebarWidth}
+            onSelectPath={setPreviewFilePath}
+            onClose={() => setFileSidebarOpen(false)}
+            onResizeStart={onFileResizeStart}
+            onResizeMove={onFileResizeMove}
+            onResizeEnd={onFileResizeEnd}
+          />
+          {fileSidebarOpen && (
+            <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />
+          )}
+        </>
+      )}
       {settingsOpen && (
         <SettingsModal
           onClose={() => setSettingsOpen(false)}

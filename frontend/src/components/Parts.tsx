@@ -36,6 +36,7 @@ function editEntries(args: Record<string, unknown>): Record<string, unknown>[] {
 /** 摘要行的按工具类型 detail，对齐 TUI tool_call_detail */
 interface ToolDetail {
   text: string
+  filePath?: string
   /** Edit 专用：增删行数着色展示 */
   editPath?: string
   plus?: number
@@ -47,25 +48,33 @@ function toolDetail(call: ToolCall, result: ToolResult | null): ToolDetail {
   if (!args) return { text: truncate(call.arguments, 88) }
   switch (call.name) {
     case 'Read': {
-      const path = str(args.path) ?? truncate(call.arguments, 88)
+      const rawPath = str(args.path)
+      const path = rawPath ?? truncate(call.arguments, 88)
       const offset = typeof args.offset === 'number' ? args.offset : 1
       const limit = typeof args.limit === 'number' ? String(args.limit) : 'all'
       const byteOffset = typeof args.byte_offset === 'number' ? `, byte_offset=${args.byte_offset}` : ''
-      return { text: `${path} [offset=${offset}, limit=${limit}${byteOffset}]` }
+      return {
+        text: `${path} [offset=${offset}, limit=${limit}${byteOffset}]`,
+        filePath: rawPath ?? undefined,
+      }
     }
-    case 'Write':
-      return { text: str(args.path) ?? truncate(call.arguments, 88) }
+    case 'Write': {
+      const rawPath = str(args.path)
+      return { text: rawPath ?? truncate(call.arguments, 88), filePath: rawPath ?? undefined }
+    }
     case 'Edit': {
       const path = str(args.path)
       const edits = editEntries(args)
       if (path && edits.length > 0 && edits.every(edit => str(edit.old_string) !== null && str(edit.new_string) !== null)) {
         return {
-          text: path, editPath: path,
+          text: path,
+          filePath: path,
+          editPath: path,
           plus: edits.reduce((count, edit) => count + lineCount(str(edit.new_string)!), 0),
           minus: edits.reduce((count, edit) => count + lineCount(str(edit.old_string)!), 0),
         }
       }
-      return { text: truncate(call.arguments, 88) }
+      return { text: truncate(call.arguments, 88), filePath: path ?? undefined }
     }
     case 'Glob': {
       const pattern = str(args.pattern) ?? truncate(call.arguments, 88)
@@ -162,7 +171,15 @@ function RowsView({ rows }: { rows: BodyRow[] }) {
   )
 }
 
-function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expanded?: boolean }) {
+function ToolGroupView({
+  node,
+  expanded = false,
+  onPreviewFile,
+}: {
+  node: ToolGroupNode
+  expanded?: boolean
+  onPreviewFile?: (path: string) => void
+}) {
   const [showAll, setShowAll] = useState(false)
   const { call, result } = node
   const detail = toolDetail(call, result)
@@ -193,9 +210,41 @@ function ToolGroupView({ node, expanded = false }: { node: ToolGroupNode; expand
         <code>{call.name}</code>
         {detail.editPath ? (
           <span className="tool-intent">
-            {detail.editPath} <span className="diff-count ins">(+{detail.plus})</span>
+            {onPreviewFile ? (
+              <button
+                type="button"
+                className="file-link"
+                onClick={e => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onPreviewFile(detail.editPath!)
+                }}
+                title="在右侧边栏预览文件"
+              >
+                {detail.editPath}
+              </button>
+            ) : (
+              detail.editPath
+            )}{' '}
+            <span className="diff-count ins">(+{detail.plus})</span>
             {', '}
             <span className="diff-count del">(-{detail.minus})</span>
+          </span>
+        ) : detail.filePath && onPreviewFile ? (
+          <span className="tool-intent">
+            <button
+              type="button"
+              className="file-link"
+              onClick={e => {
+                e.preventDefault()
+                e.stopPropagation()
+                onPreviewFile(detail.filePath!)
+              }}
+              title="在右侧边栏预览文件"
+            >
+              {detail.filePath}
+            </button>
+            {detail.text.slice(detail.filePath.length)}
           </span>
         ) : (
           <span className="tool-intent">{detail.text}</span>
@@ -343,7 +392,15 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
  * tool_call 与同 tool_call_id 的 tool_result 配对为一个节点；
  * 未配对的 result（如无调用上下文）独立渲染。
  */
-export function Parts({ parts, live = false }: { parts: ContentPart[]; live?: boolean }) {
+export function Parts({
+  parts,
+  live = false,
+  onPreviewFile,
+}: {
+  parts: ContentPart[]
+  live?: boolean
+  onPreviewFile?: (path: string) => void
+}) {
   type Node =
     | { kind: 'part'; part: ContentPart }
     | { kind: 'tool'; group: ToolGroupNode }
@@ -372,7 +429,12 @@ export function Parts({ parts, live = false }: { parts: ContentPart[]; live?: bo
       {nodes.map((node, index) => {
         const expanded = live && index === nodes.length - 1
         return node.kind === 'tool' ? (
-          <ToolGroupView key={`tool-${index}`} node={node.group} expanded={expanded} />
+          <ToolGroupView
+            key={`tool-${index}`}
+            node={node.group}
+            expanded={expanded}
+            onPreviewFile={onPreviewFile}
+          />
         ) : (
           <Part key={`part-${index}`} part={node.part} expanded={expanded} />
         )

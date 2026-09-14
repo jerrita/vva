@@ -187,6 +187,114 @@ pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String
 }
 
 #[derive(Deserialize)]
+pub struct SessionFileQuery {
+    pub path: String,
+}
+
+#[derive(Serialize)]
+pub struct SessionFileResponse {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+    pub is_binary: bool,
+    pub content: String,
+    pub mime_type: Option<String>,
+}
+
+/// 读取会话相关文件的实时内容，供前端侧栏预览
+pub async fn get_session_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<SessionFileQuery>,
+) -> Response {
+    let handle = match state.manager.get_or_load(&id).await {
+        Ok(handle) => handle,
+        Err(_) => return not_found(&id),
+    };
+    let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
+    let path = crate::tools::filesystem::resolve_path(&workspace, &query.path);
+
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(meta) => meta,
+        Err(e) => return error(StatusCode::NOT_FOUND, format!("文件不存在: {e}")),
+    };
+
+    if metadata.is_dir() {
+        return error(StatusCode::BAD_REQUEST, "目标是目录而非文件");
+    }
+
+    let size = metadata.len();
+    if size > 10 * 1024 * 1024 {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "文件过大，不支持在线预览 (超过 10MB)",
+        );
+    }
+
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取文件失败: {e}"),
+            );
+        }
+    };
+
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into());
+    let path_str = path.to_string_lossy().into_owned();
+
+    // 检查是否为有效 UTF-8 文本
+    if let Ok(text) = std::str::from_utf8(&bytes)
+        && !text.contains('\0')
+    {
+        let mime_type = mime_guess::from_path(&path).first().map(|m| m.to_string());
+        return Json(SessionFileResponse {
+            path: path_str,
+            name,
+            size,
+            is_binary: false,
+            content: text.to_string(),
+            mime_type,
+        })
+        .into_response();
+    }
+
+    // 二进制媒体检测（图片等）
+    let mime_type = mime_guess::from_path(&path).first().map(|m| m.to_string());
+    let is_image = mime_type
+        .as_deref()
+        .map(|m| m.starts_with("image/"))
+        .unwrap_or(false);
+
+    if is_image {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Json(SessionFileResponse {
+            path: path_str,
+            name,
+            size,
+            is_binary: true,
+            content: b64,
+            mime_type,
+        })
+        .into_response();
+    }
+
+    Json(SessionFileResponse {
+        path: path_str,
+        name,
+        size,
+        is_binary: true,
+        content: String::new(),
+        mime_type,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
 pub struct SubmitMessageRequest {
     pub prompt: String,
     /// 随提示词提交的原生文件附件（Base64 编码）

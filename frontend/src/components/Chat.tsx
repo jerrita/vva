@@ -102,18 +102,20 @@ function WorkedBlock({
   group,
   live = false,
   autoExpand = false,
+  onPreviewFile,
 }: {
   group: WorkGroup
   live?: boolean
   /** 草稿为空的间隙（如工具执行中）当前块仍在工作段内：末尾块保持展开 */
   autoExpand?: boolean
+  onPreviewFile?: (path: string) => void
 }) {
   const ms = group.workedMs ?? group.elapsedMs
   return (
     <details className="worked" open={live}>
       <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
       <div className="worked-body">
-        <Parts parts={group.parts} live={autoExpand} />
+        <Parts parts={group.parts} live={autoExpand} onPreviewFile={onPreviewFile} />
       </div>
     </details>
   )
@@ -139,6 +141,7 @@ function UserBubble({
   disabled,
   onRevert,
   onFork,
+  onPreviewFile,
 }: {
   turn: Turn
   /** 轮次在 session.turns 中的原始下标；乐观展示的 pending 消息无下标、无操作 */
@@ -146,6 +149,7 @@ function UserBubble({
   disabled?: boolean
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
+  onPreviewFile?: (path: string) => void
 }) {
   const actions = (
     <div className="turn-actions">
@@ -222,9 +226,23 @@ function UserBubble({
                 )
               }
               if (part.type === 'file') {
-                 return <span key={index} className="bubble-file">📄 {part.filename}</span>
-               }
-               if (part.type === 'text') {
+                return onPreviewFile ? (
+                  <button
+                    key={index}
+                    type="button"
+                    className="bubble-file clickable"
+                    onClick={() => onPreviewFile(part.filename)}
+                    title="在右侧边栏预览文件"
+                  >
+                    📄 {part.filename}
+                  </button>
+                ) : (
+                  <span key={index} className="bubble-file">
+                    📄 {part.filename}
+                  </span>
+                )
+              }
+              if (part.type === 'text') {
                 return <span key={index}>{part.text}</span>
               }
               return null
@@ -241,11 +259,13 @@ export function Chat({
   pending,
   onRevert,
   onFork,
+  onPreviewFile,
 }: {
   snap: { state: string; draft: ContentPart[]; session: Session } | null
   pending: string | null
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
+  onPreviewFile?: (path: string) => void
 }) {
   if (!snap) {
     return (
@@ -290,6 +310,7 @@ export function Chat({
               disabled={running}
               onRevert={onRevert}
               onFork={onFork}
+              onPreviewFile={onPreviewFile}
             />
           )
         }
@@ -300,6 +321,7 @@ export function Chat({
               group={item.group}
               live={index === liveWork}
               autoExpand={index === liveWork && !draftActive}
+              onPreviewFile={onPreviewFile}
             />
           )
         }
@@ -310,7 +332,7 @@ export function Chat({
             key={item.turn.id}
             className={`msg assistant answer${hasWorkBefore ? '' : ' no-work'}`}
           >
-            <Parts parts={item.parts} />
+            <Parts parts={item.parts} onPreviewFile={onPreviewFile} />
             <div className="answer-foot">
               <TurnMeta turn={item.turn} />
               <div className="turn-actions">
@@ -320,10 +342,10 @@ export function Chat({
           </div>
         )
       })}
-      {pending && <UserBubble turn={{ id: 'pending', role: 'user', messages: [{ parts: [{ type: 'text', text: pending }] }] }} />}
+      {pending && <UserBubble turn={{ id: 'pending', role: 'user', messages: [{ parts: [{ type: 'text', text: pending }] }] }} onPreviewFile={onPreviewFile} />}
       {showDraft && (
         <div className="msg assistant">
-          <Parts parts={snap.draft} live={running} />
+          <Parts parts={snap.draft} live={running} onPreviewFile={onPreviewFile} />
           {running && (
             <div className="status-chip">
               <span className="dot" />

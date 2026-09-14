@@ -184,3 +184,21 @@ export interface SidebarStats {
   estimated_cost_usd: number
   total_turns: number
 }
+
+export interface SessionFileResponse {
+  path: string
+  name: string
+  size: number
+  is_binary: boolean
+  content: string
+  mime_type?: string | null
+}
+
+export interface RelatedFile {
+  path: string
+  name: string
+  actions: ('read' | 'write' | 'edit' | 'attachment')[]
+  lastAction: 'read' | 'write' | 'edit' | 'attachment'
+  turnIndex: number
+}
+
