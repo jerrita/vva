@@ -60,6 +60,8 @@ pub struct CompletionOptions {
     /// 是否向 API 声明 web_fetch 服务端工具（模型级 `annotation.web_fetch: false` 时关闭）
     pub enable_web_fetch: bool,
     pub reasoning_effort: Option<String>,
+    /// 请求服务档位（Responses API 的 `service_tier` 参数；模型级 `annotation.fast: true` 时为 `fast`）
+    pub service_tier: Option<String>,
 }
 
 impl Default for CompletionOptions {
@@ -71,6 +73,7 @@ impl Default for CompletionOptions {
             enable_web_search: true,
             enable_web_fetch: true,
             reasoning_effort: None,
+            service_tier: None,
         }
     }
 }

@@ -267,6 +267,10 @@ impl ResponseProvider {
             body["max_output_tokens"] = serde_json::json!(max_tokens);
         }
 
+        if let Some(tier) = &options.service_tier {
+            body["service_tier"] = serde_json::Value::String(tier.clone());
+        }
+
         if let Some(effort) = &options.reasoning_effort
             && !effort.is_empty()
         {
@@ -1043,6 +1047,34 @@ mod tests {
 
         assert_eq!(input[4]["type"], "function_call_output");
         assert_eq!(input[4]["call_id"], "c1");
+    }
+
+    #[test]
+    fn test_response_provider_service_tier_injection() {
+        let provider = ResponseProvider::new("test-key");
+        let mut session = Session::new(PathBuf::from("/tmp"), None);
+        session.append_turn(Turn::user_turn(Message::text("Hello")));
+
+        // annotation.fast: true 时请求体携带 service_tier
+        let tiered = CompletionOptions {
+            model: "gpt-5.6-luna".into(),
+            service_tier: Some("fast".into()),
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &tiered)
+            .expect("build body");
+        assert_eq!(body["service_tier"], "fast");
+
+        // 缺省时不携带该字段
+        let plain = CompletionOptions {
+            model: "gpt-5.6-luna".into(),
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &plain)
+            .expect("build body");
+        assert!(body.get("service_tier").is_none());
     }
 
     #[test]

@@ -86,6 +86,7 @@ impl AgentEngine {
             reasoning_effort: resolved.selected_variant,
             enable_web_search: session.web_search,
             enable_web_fetch: resolved.model_config.declare_web_fetch(),
+            service_tier: resolved.model_config.service_tier().map(str::to_string),
             ..Default::default()
         };
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
@@ -128,6 +129,7 @@ pub(super) async fn generate_title(
         enable_web_search: false,
         enable_web_fetch: false,
         reasoning_effort: None,
+        service_tier: resolved.model_config.service_tier().map(str::to_string),
     };
     let response = resolved
         .create_provider()

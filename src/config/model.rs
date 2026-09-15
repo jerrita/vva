@@ -233,6 +233,14 @@ impl ModelConfig {
             .and_then(|a| a.editor)
             .unwrap_or_default()
     }
+
+    /// 该模型的请求服务档位；`annotation.fast: true` 时以 `service_tier: "fast"` 发起请求
+    pub fn service_tier(&self) -> Option<&'static str> {
+        match self.annotation.as_ref().and_then(|a| a.fast) {
+            Some(true) => Some("fast"),
+            _ => None,
+        }
+    }
 }
 
 /// 模型级注记：细粒度关闭个别原生服务端工具的声明，以及文件编辑协议。
@@ -245,6 +253,9 @@ pub struct ModelAnnotation {
     /// 文件编辑协议：`hashline`（默认，`[PATH#TAG]` 行号补丁）、`replace`（old_string/new_string）、`patch`（Codex V4A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<crate::model::EditorKind>,
+    /// 以 `"service_tier": "fast"` 发起请求（快速档位端点）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
