@@ -72,14 +72,38 @@ function buildItems(turns: Turn[]): Item[] {
       pushTurn(turn, parts)
       continue
     }
-    // 末段连续文本 = 最终回答；其余部分（思考/搜索/工具及其前导过渡文本）
-    // 按原位顺序并入折叠组，保持与模型输出一致的块序
-    let answerStart = parts.length
-    while (answerStart > 0 && parts[answerStart - 1].type === 'text') answerStart--
-    if (answerStart > 0) pushTurn(turn, parts.slice(0, answerStart))
-    if (answerStart < parts.length) {
-      flush()
-      items.push({ kind: 'assistant', turn, parts: parts.slice(answerStart) })
+    // 末段文本 = 最终回答；思考/搜索/工具及其前导过渡文本并入折叠组
+    let lastTextIndex = -1
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if (parts[i].type === 'text') {
+        lastTextIndex = i
+        break
+      }
+    }
+
+    if (lastTextIndex === -1) {
+      pushTurn(turn, parts)
+    } else {
+      let answerStart = lastTextIndex
+      while (answerStart > 0 && parts[answerStart - 1].type === 'text') {
+        answerStart--
+      }
+      const workParts: ContentPart[] = []
+      const answerParts: ContentPart[] = []
+      for (let i = 0; i < parts.length; i++) {
+        if (i >= answerStart && i <= lastTextIndex) {
+          answerParts.push(parts[i])
+        } else {
+          workParts.push(parts[i])
+        }
+      }
+      if (workParts.length > 0) {
+        pushTurn(turn, workParts)
+      }
+      if (answerParts.length > 0) {
+        flush()
+        items.push({ kind: 'assistant', turn, parts: answerParts })
+      }
     }
   }
   flush()
