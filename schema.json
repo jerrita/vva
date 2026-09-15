@@ -20,6 +20,11 @@
         "small_model": {
           "type": "string",
           "description": "会话标题生成用的小模型规格，缺省时沿用主模型"
+        },
+        "editor": {
+          "enum": ["replace", "patch", "hashline"],
+          "default": "hashline",
+          "description": "模型未声明 annotation.editor 时的缺省文件编辑协议"
         }
       }
     },

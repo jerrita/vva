@@ -68,6 +68,9 @@ impl AppConfig {
         if project.settings.small_model.is_some() {
             self.settings.small_model = project.settings.small_model;
         }
+        if project.settings.editor.is_some() {
+            self.settings.editor = project.settings.editor;
+        }
 
         for (p_id, p_cfg) in project.providers {
             if let Some(base_prov) = self.providers.get_mut(&p_id) {
@@ -176,6 +179,9 @@ pub struct GlobalSettings {
     pub default: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub small_model: Option<String>,
+    /// 模型未声明 `annotation.editor` 时的缺省文件编辑协议；缺省 `hashline`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor: Option<crate::model::EditorKind>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -226,12 +232,9 @@ impl ModelConfig {
             .unwrap_or(true)
     }
 
-    /// 该模型的文件编辑协议；缺省为 `hashline`
-    pub fn editor(&self) -> crate::model::EditorKind {
-        self.annotation
-            .as_ref()
-            .and_then(|a| a.editor)
-            .unwrap_or_default()
+    /// 该模型显式声明的文件编辑协议；未声明时为 `None`
+    pub fn editor(&self) -> Option<crate::model::EditorKind> {
+        self.annotation.as_ref().and_then(|a| a.editor)
     }
 
     /// 该模型的请求服务档位；`annotation.fast: true` 时以 `service_tier: "fast"` 发起请求

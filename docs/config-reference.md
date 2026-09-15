@@ -26,6 +26,7 @@
 |---|---|
 | `settings.default` | 项目声明非空才覆写 |
 | `settings.small_model` | 项目声明才覆写 |
+| `settings.editor` | 项目声明才覆写 |
 | 已有 provider 的 `base_url` / `api_key` | 项目声明非空才覆写 |
 | 已有 provider 的 `type` | 仅项目**显式声明**才覆写（防止省略时被默认值翻转协议） |
 | `models` | 按 `model_id` 逐个合并：项目覆盖同名模型、新增新模型 |
@@ -56,8 +57,9 @@
 ```jsonc
 {
   "settings": {
-    "default": "a/gpt-5.6-terra",   // 缺省模型规格 {provider_id}/{model_id}
-    "small_model": "a/gpt-5.6-luna" // 会话标题生成用的小模型，缺省时用主模型
+    "default": "a/gpt-5.6-terra",     // 缺省模型规格 {provider_id}/{model_id}
+    "small_model": "a/gpt-5.6-luna",  // 会话标题生成用的小模型，缺省时用主模型
+    "editor": "hashline"              // 缺省文件编辑协议：replace | patch | hashline
   },
   "providers": {
     "<provider_id>": { /* ... */ }
@@ -71,6 +73,7 @@
 |---|---|---|---|
 | `default` | string | 是 | 缺省模型规格；未传 `--model` 且 `state.json` 不可用时使用 |
 | `small_model` | string | 否 | 会话标题生成所用的模型规格；缺省时沿用主模型 |
+| `editor` | string | 否 | 模型未声明 `annotation.editor` 时新会话采用的编辑协议：`replace` / `patch` / `hashline`；缺省 `hashline` |
 
 ---
 
@@ -160,7 +163,7 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `annotation.web_fetch` | `true` | 设为 `false` 时不向端点声明 `web_fetch` 服务端工具。用于未接线特定 server tool 的中转端点——工具声明组中出现端点未识别的条目时，端点会整组丢弃声明；仅声明 `web_search` 可保住原生搜索 |
-| `annotation.editor` | `hashline` | 文件编辑协议，工具名均为 `Edit`，仅参数与 description 不同。会话创建时写入 Header 并固定，之后换模不改变：`hashline` 为 `[PATH#TAG]` 快照 + `PUT`/`CUT`/`REM`/`MV` 行号补丁；`replace` 为 `old_string`/`new_string`；`patch` 为 Codex V4A `input` |
+| `annotation.editor` | `settings.editor` | 文件编辑协议，工具名均为 `Edit`，仅参数与 description 不同。会话创建时写入 Header 并固定，之后换模不改变：`hashline` 为 `[PATH#TAG]` 快照 + `PUT`/`CUT`/`REM`/`MV` 行号补丁；`replace` 为 `old_string`/`new_string`；`patch` 为 Codex V4A `input` |
 | `annotation.fast` | `false` | 设为 `true` 时请求体携带 `"service_tier": "fast"`（Responses API），走端点快速档位 |
 
 ---

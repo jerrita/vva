@@ -34,7 +34,7 @@ Line 4..N:   {"type":"turn",...}
 
 - **第 1 行 (`JsonlRecord::Header`)**：
   - 存储全局会话头信息 [`SessionHeader`](../src/model/session.rs)；
-  - 绑定当前会话的 `current_model`、`current_variant`、`web_search`、`editor` 与 `workspace_root`（新会话默认 `hashline`；JSONL 省略该字段时按早期 `replace` 读取）；
+  - 绑定当前会话的 `current_model`、`current_variant`、`web_search`、`editor` 与 `workspace_root`（新会话取模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；JSONL 省略该字段时按早期 `replace` 读取）；
   - 会话创建或发生模型/标题/网络搜索配置变更时调用 `save_header`，按“首行 Header + 全部已有轮次”写入同目录临时文件，`fsync` 后 `rename` 原子替换；重写中途失败时原文件与历史保持完整。其余时间文件只被追加。
 - **第 2..N 行 (`JsonlRecord::Turn`)**：
   - 每完成一轮交互（用户提问、模型响应或工具执行返回），直接向文件尾部执行标准 `O_APPEND` 追加写；

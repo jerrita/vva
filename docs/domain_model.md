@@ -53,7 +53,7 @@ classDiagram
     - `current_model: String`（如 `"openai/gpt-5-terra"` 或 `"anthropic/claude-3-7-sonnet"`）；
     - `current_variant: Option<String>`（如 `Some("high")` 或 `None`）；
     - `web_search: bool`（保持工具/函数挂载与 prompt cache 一致）；
-    - `editor: EditorKind`（`hashline` / `replace` / `patch`，创建时取当时模型 `annotation.editor`，缺省 `hashline`；会话内换模不改写，以保证 Read/Edit 协议与历史工具结果一致。`hashline` 为 `[PATH#TAG]` 快照与行号补丁）；
+    - `editor: EditorKind`（`hashline` / `replace` / `patch`，创建时取当时模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；会话内换模不改写，以保证 Read/Edit 协议与历史工具结果一致。`hashline` 为 `[PATH#TAG]` 快照与行号补丁）；
   - 恢复或切换会话时，继承历史记录中保存的模型、推理强度、网络搜索状态与编辑协议；
   - 新建会话未显式指定模型时，沿用 `~/.vva/state.json` 中上次选用的模型与推理档位，无法解析时回落到 `settings.default`；
   - 携带工作空间路径 `workspace_root: PathBuf`，支持基于工程的工作空间会话过滤。

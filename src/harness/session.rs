@@ -324,7 +324,11 @@ impl SessionManager {
             .map_err(|e| e.to_string())?;
         let mut session =
             Session::with_model(&workspace, title, resolved.full_spec, variant, search);
-        session.editor = resolved.model_config.editor();
+        session.editor = resolved
+            .model_config
+            .editor()
+            .or(config.settings.editor)
+            .unwrap_or_default();
         for _ in 0..8 {
             if self
                 .store
@@ -1760,6 +1764,63 @@ mod tests {
         let snap = handle.snapshot();
         assert_eq!(snap.session.current_model, "p/patched");
         assert_eq!(snap.session.editor, crate::model::EditorKind::Hashline);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn session_editor_falls_back_to_settings_editor() {
+        let dir = std::env::temp_dir().join(format!("vva-editor-default-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+        let mut config = AppConfig::default();
+        config.settings.default = "p/plain".into();
+        config.settings.editor = Some(crate::model::EditorKind::Patch);
+        let mut models = std::collections::HashMap::new();
+        models.insert(
+            "plain".into(),
+            crate::config::ModelConfig {
+                name: "Plain".into(),
+                ..Default::default()
+            },
+        );
+        models.insert(
+            "hashed".into(),
+            crate::config::ModelConfig {
+                name: "Hashed".into(),
+                annotation: Some(crate::config::model::ModelAnnotation {
+                    editor: Some(crate::model::EditorKind::Hashline),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        config.providers.insert(
+            "p".into(),
+            crate::config::ProviderConfig {
+                api_key: "test".into(),
+                models,
+                ..Default::default()
+            },
+        );
+        let mgr = SessionManager::new(store, config, &dir, dir.join("state.json"));
+
+        let plain = mgr
+            .create_session("p/plain".into(), None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            plain.snapshot().session.editor,
+            crate::model::EditorKind::Patch
+        );
+
+        // 模型级 annotation.editor 优先于 settings.editor
+        let hashed = mgr
+            .create_session("p/hashed".into(), None, None, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            hashed.snapshot().session.editor,
+            crate::model::EditorKind::Hashline
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

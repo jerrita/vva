@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_model_annotation_editor_defaults_to_hashline() {
+    fn test_model_annotation_editor_override() {
         let json = r#"{
             "providers": {
                 "prov": {
@@ -200,11 +200,42 @@ mod tests {
         }"#;
         let config = parse_config_str(json).expect("parse config");
         let models = &config.providers["prov"].models;
-        assert_eq!(models["plain"].editor(), crate::model::EditorKind::Hashline);
-        assert_eq!(models["codex"].editor(), crate::model::EditorKind::Patch);
+        assert_eq!(models["plain"].editor(), None);
+        assert_eq!(
+            models["codex"].editor(),
+            Some(crate::model::EditorKind::Patch)
+        );
         assert_eq!(
             models["hashed"].editor(),
-            crate::model::EditorKind::Hashline
+            Some(crate::model::EditorKind::Hashline)
+        );
+    }
+
+    #[test]
+    fn test_settings_editor_merge() {
+        let global =
+            parse_config_str(r#"{ "settings": { "editor": "patch" } }"#).expect("parse global");
+        assert_eq!(
+            global.settings.editor,
+            Some(crate::model::EditorKind::Patch)
+        );
+
+        // 项目未声明时保留全局值
+        let merged = global
+            .clone()
+            .merge(parse_config_str(r#"{ "settings": {} }"#).expect("parse project"));
+        assert_eq!(
+            merged.settings.editor,
+            Some(crate::model::EditorKind::Patch)
+        );
+
+        // 项目显式声明时覆写
+        let merged = global.merge(
+            parse_config_str(r#"{ "settings": { "editor": "replace" } }"#).expect("parse project"),
+        );
+        assert_eq!(
+            merged.settings.editor,
+            Some(crate::model::EditorKind::Replace)
         );
     }
 
