@@ -252,7 +252,7 @@ impl Tool for HashlineEditTool {
     }
 
     fn description(&self) -> &str {
-        r#"Line-anchored patch. Copy [PATH#TAG] from Read, Grep, or the latest Edit preview; numbers are original snapshot lines, not shifted by earlier hunks. New files use Write.
+        r#"Line-anchored patch. Copy [PATH#TAG] from Read, Grep, Write, or the latest Edit preview; numbers are original snapshot lines, not shifted by earlier hunks. New files use Write.
 
 {"input":"[src/example.rs#1A2B]\nPUT 4.=4:\n+const value = 2;\n"}
 
@@ -262,7 +262,7 @@ PUT <N: insert before N (`PUT <1:` = file head). PUT >N: after N. PUT >$: append
 CUT N.=M / CUT N* deletes and optionally captures @name. PUT <N @name / PUT >N @name / PUT N.=M @name pastes (range/block paste needs a named register; gap paste may be anonymous).
 REM deletes the section file. MV DEST moves after prior edits in that section.
 Body rows start with +; + alone writes a blank line. Literal leading - or +: +-text / ++text. Never send -old or context rows.
-After Edit, use its new [PATH#TAG] and numbered preview lines; Read any other target ranges. All hunks in one request use the original snapshot's numbers. Read/Grep and numbered Edit previews accumulate displayed lines for the same TAG. Elided and partial lines are unseen. Active-session snapshots survive submissions; after session reload, Read/Grep again."#
+After Edit, use its new [PATH#TAG]; displayed lines outside changed ranges carry over with shifted numbers, so only genuinely unseen ranges need a Read. All hunks in one request use the original snapshot's numbers. Read/Grep, Write, and numbered Edit previews accumulate displayed lines for the same TAG. Elided and partial lines are unseen. Active-session snapshots survive submissions; after session reload, Read/Grep again."#
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -407,6 +407,7 @@ struct Prepared {
     updated: String,
     changes: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
     file_op: Option<FileOp>,
+    base_seen: HashSet<u32>,
 }
 
 fn prepare_group(
@@ -499,6 +500,7 @@ fn prepare_group(
         updated: updated.render(),
         changes,
         file_op: group.file_op,
+        base_seen: snap.seen,
     })
 }
 
@@ -853,25 +855,34 @@ fn commit_group(
     session: &HashlineSession,
     prepared: Prepared,
 ) -> Result<String, String> {
-    match prepared.file_op {
+    let Prepared {
+        label,
+        canonical,
+        original,
+        updated,
+        changes,
+        file_op,
+        base_seen,
+    } = prepared;
+    match file_op {
         Some(FileOp::Rem) => {
-            let lock = edit_lock(&prepared.canonical)?;
+            let lock = edit_lock(&canonical)?;
             let _guard = lock
                 .lock()
                 .map_err(|_| "File mutation lock poisoned".to_string())?;
-            fs::remove_file(&prepared.canonical)
-                .map_err(|e| format!("Failed to delete {}: {e}", prepared.canonical.display()))?;
-            Ok(format!("Deleted file {}", prepared.label))
+            fs::remove_file(&canonical)
+                .map_err(|e| format!("Failed to delete {}: {e}", canonical.display()))?;
+            Ok(format!("Deleted file {}", label))
         }
         Some(FileOp::Move { dest }) => {
             let dest_path = resolve_path(working_dir, &dest);
             if dest_path.exists() {
                 return Err(format!(
                     "Failed to move {} -> {}: destination exists",
-                    prepared.label, dest
+                    label, dest
                 ));
             }
-            let src_lock = edit_lock(&prepared.canonical)?;
+            let src_lock = edit_lock(&canonical)?;
             let dest_lock = edit_lock(&dest_path)?;
             let _g1 = src_lock
                 .lock()
@@ -879,35 +890,31 @@ fn commit_group(
             let _g2 = dest_lock
                 .lock()
                 .map_err(|_| "File mutation lock poisoned".to_string())?;
-            write_new_file(&dest_path, &prepared.updated)?;
-            fs::remove_file(&prepared.canonical)
-                .map_err(|e| format!("Failed to remove {}: {e}", prepared.canonical.display()))?;
+            write_new_file(&dest_path, &updated)?;
+            fs::remove_file(&canonical)
+                .map_err(|e| format!("Failed to remove {}: {e}", canonical.display()))?;
             let dest_canonical = fs::canonicalize(&dest_path).unwrap_or(dest_path.clone());
             report_update(
                 session,
                 dest,
                 dest_canonical,
-                &prepared.original,
-                &prepared.updated,
-                prepared.changes,
+                &original,
+                &updated,
+                changes,
+                &base_seen,
             )
         }
         None => {
-            if prepared.updated == prepared.original {
+            if updated == original {
                 return Err("unchanged: edits produce no file changes".into());
             }
-            let lock = edit_lock(&prepared.canonical)?;
+            let lock = edit_lock(&canonical)?;
             let _guard = lock
                 .lock()
                 .map_err(|_| "File mutation lock poisoned".to_string())?;
-            persist_edit(&prepared.canonical, &prepared.original, &prepared.updated)?;
+            persist_edit(&canonical, &original, &updated)?;
             report_update(
-                session,
-                prepared.label,
-                prepared.canonical,
-                &prepared.original,
-                &prepared.updated,
-                prepared.changes,
+                session, label, canonical, &original, &updated, changes, &base_seen,
             )
         }
     }
@@ -924,6 +931,33 @@ fn write_new_file(path: &Path, contents: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 变更 span 之外的行在新旧快照逐字节相同，已展示状态按行号映射结转：
+/// span 之前保持原号，span 之后平移 new-old，span 之内的行随替换丢弃。
+fn carried_seen(
+    base_seen: &HashSet<u32>,
+    changes: &[(std::ops::Range<usize>, std::ops::Range<usize>)],
+) -> HashSet<u32> {
+    let mut carried = HashSet::new();
+    'line: for line in base_seen {
+        let position = (*line as usize).saturating_sub(1);
+        let mut shift: i64 = 0;
+        for (old, new) in changes {
+            if position < old.start {
+                break;
+            }
+            if position < old.end {
+                continue 'line;
+            }
+            shift += new.len() as i64 - old.len() as i64;
+        }
+        let mapped = position as i64 + shift;
+        if mapped >= 0 {
+            carried.insert((mapped + 1) as u32);
+        }
+    }
+    carried
+}
+
 fn report_update(
     session: &HashlineSession,
     label: impl Into<String>,
@@ -931,8 +965,10 @@ fn report_update(
     original: &str,
     updated: &str,
     changes: Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>,
+    base_seen: &HashSet<u32>,
 ) -> Result<String, String> {
     let label = label.into();
+    let carried = carried_seen(base_seen, &changes);
     let old_offsets = line_offsets(original);
     let new_offsets = line_offsets(updated);
     let preview = numbered_preview(updated, &changes);
@@ -948,7 +984,8 @@ fn report_update(
             .collect(),
     };
     let diff = format_edit_result(&canonical, original, &plan, false);
-    let seen: Vec<u32> = preview.iter().map(|(n, _)| *n).collect();
+    let mut seen: Vec<u32> = carried.into_iter().collect();
+    seen.extend(preview.iter().map(|(n, _)| *n));
     let tag = session.record(canonical, updated, seen)?;
     let mut out = format!("[{label}#{tag}]\n{diff}");
     if !preview.is_empty() {
@@ -1007,10 +1044,73 @@ mod tests {
     use super::*;
     use crate::model::EditorKind;
     use crate::tools::Tool;
-    use crate::tools::filesystem::ReadTool;
+    use crate::tools::filesystem::{ReadTool, WriteTool};
 
     fn input(body: &str) -> String {
         serde_json::json!({ "input": body }).to_string()
+    }
+
+    #[tokio::test]
+    async fn unchanged_lines_carry_seen_status_across_edits() {
+        let root = std::env::temp_dir().join(format!("vva-hl-carry-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let text: String = (1..=200).map(|n| format!("row {n}\n")).collect();
+        fs::write(root.join("sample"), &text).unwrap();
+        let session = HashlineSession::new();
+        let canonical = fs::canonicalize(root.join("sample")).unwrap();
+        let tag = session
+            .record(canonical, &text, (10..=10).chain(140..=160))
+            .unwrap();
+        let edit = HashlineEditTool::new(&root).with_session(session.clone());
+        let output = edit
+            .execute(&input(&format!(
+                "[sample#{tag}]\nPUT 10.=10:\n+a\n+b\n+c\n"
+            )))
+            .await
+            .unwrap();
+        let header = output.lines().next().unwrap();
+        // 旧 140 行结转为新 142 行，无需 Read 可直接编辑；预览只覆盖 7..=15
+        let output2 = edit
+            .execute(&input(&format!("{header}\nPUT 142.=142:\n+edited\n")))
+            .await
+            .unwrap();
+        let lines: Vec<String> = fs::read_to_string(root.join("sample"))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(lines[141], "edited");
+        assert_eq!(lines[142], "row 141");
+        let header2 = output2.lines().next().unwrap();
+        let unseen = edit
+            .execute(&input(&format!("{header2}\nPUT 20.=20:\n+x\n")))
+            .await
+            .unwrap_err();
+        assert!(unseen.contains("20..=20"), "{unseen}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn write_registers_created_lines_for_edit() {
+        let root = std::env::temp_dir().join(format!("vva-hl-write-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let session = HashlineSession::new();
+        let write = WriteTool::new(&root).with_hashline(session.clone());
+        let out = write
+            .execute(r#"{"path":"sample","content":"a\nb\nc\n"}"#)
+            .await
+            .unwrap();
+        let header = out.lines().nth(1).unwrap();
+        assert!(header.starts_with("[sample#"), "{out}");
+        let edit = HashlineEditTool::new(&root).with_session(session);
+        edit.execute(&input(&format!("{header}\nPUT 2.=2:\n+B\n")))
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("sample")).unwrap(),
+            "a\nB\nc\n"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]
@@ -1083,7 +1183,8 @@ mod tests {
             .lookup(&fs::canonicalize(&path).unwrap(), &file_tag(&current))
             .unwrap();
         assert!(snap.seen.contains(&141));
-        assert!(!snap.seen.contains(&80));
+        // 变更 span 之外的行结转：旧 79 行平移为新 80 行
+        assert!(snap.seen.contains(&80));
         let header = output.lines().next().unwrap();
         edit.execute(&input(&format!("{header}\nPUT 141.=141:\n+final\n")))
             .await
@@ -1109,6 +1210,7 @@ mod tests {
             "last",
             "",
             vec![(0..1, 0..1)],
+            &HashSet::new(),
         )
         .unwrap();
         assert!(report.contains("-last"));

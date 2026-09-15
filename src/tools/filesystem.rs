@@ -565,13 +565,23 @@ Paths are absolute or workspace-relative; shell variables and ~ are not expanded
 
 pub struct WriteTool {
     working_dir: PathBuf,
+    hashline: Option<std::sync::Arc<super::hashline::HashlineSession>>,
 }
 
 impl WriteTool {
     pub fn new(working_dir: impl Into<PathBuf>) -> Self {
         Self {
             working_dir: working_dir.into(),
+            hashline: None,
         }
+    }
+
+    pub fn with_hashline(
+        mut self,
+        session: std::sync::Arc<super::hashline::HashlineSession>,
+    ) -> Self {
+        self.hashline = Some(session);
+        self
     }
 }
 
@@ -588,8 +598,13 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. The parent directory must already exist; this tool does not create directories and fails if the target exists. Returns the created file path.
+        if self.hashline.is_some() {
+            r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. The parent directory must already exist; this tool does not create directories and fails if the target exists. Returns the created file path and its [PATH#TAG] header with every line registered as displayed, so Edit accepts the header immediately.
 Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","content":"pub fn example() {}\n"}."#
+        } else {
+            r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. The parent directory must already exist; this tool does not create directories and fails if the target exists. Returns the created file path.
+Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","content":"pub fn example() {}\n"}."#
+        }
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -614,6 +629,16 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
             .map_err(|error| format!("Failed to create file {}: {error}", path.display()))?;
         file.write_all(args.content.as_bytes())
             .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
+        if let Some(session) = self.hashline.as_ref() {
+            let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            let seen = 1..=args.content.lines().count() as u32;
+            let tag = session.record(canonical, &args.content, seen)?;
+            return Ok(format!(
+                "Created file {}\n[{}#{tag}]",
+                path.display(),
+                args.path
+            ));
+        }
         Ok(format!("Created file {}", path.display()))
     }
 }

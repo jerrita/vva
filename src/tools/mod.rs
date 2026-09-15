@@ -101,9 +101,11 @@ impl ToolRegistry {
             grep = grep.with_hashline(session);
         }
         registry.register(Arc::new(read));
-        registry.register(Arc::new(crate::tools::filesystem::WriteTool::new(
-            workspace,
-        )));
+        let mut write = crate::tools::filesystem::WriteTool::new(workspace);
+        if let Some(session) = hashline.clone() {
+            write = write.with_hashline(session);
+        }
+        registry.register(Arc::new(write));
         match editor {
             EditorKind::Replace => {
                 registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
