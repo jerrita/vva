@@ -55,7 +55,8 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
   - 统计浮块（`.stats-panel`）：右上角浮动（会话活跃时），**非阻塞**——无遮罩，主界面可操作；内容滚入面板区域时自动收起（`opacity: 0` 保留测量、不参与命中测试），离开后自动展开；顶栏右缘开关（`.stats-toggle`）为手动覆盖——隐藏时点击强制显示（保持到不再遮挡）、展开时点击手动收起（持久化于 localStorage `vva.stats-collapsed`）；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；
   - 设置弹窗（`.settings-modal`）：侧栏页脚打开，编辑全局配置文件原文（JSONC，路径示于标题行右侧），后端校验解析通过后落盘并热重载；Esc/遮罩点击关闭；
-  - 居中确认弹窗（`.modal-overlay` + `.modal`）：**仅用于破坏性操作**，带遮罩与模糊；设置与 AskUser 弹窗复用 `.modal` 基类（面板底、边框、阴影、入场动画）叠加自身尺寸。
+  - 居中确认弹窗（`.modal-overlay` + `.modal`）：**仅用于破坏性操作**，带遮罩与模糊；设置弹窗复用 `.modal` 基类（面板底、边框、阴影、入场动画）叠加自身尺寸。
+- **AskUser 面板**：停靠输入框上方（`.ask-user-dock` 内联展开，复用 `.modal` 基类），无遮罩不挡聊天记录，历史可滚动回看；面板限高（`min(440px, 60dvh)`）内部滚动；提问挂起期间输入区保持展示（窄屏下滑隐藏不生效）。
 - **动效**：入场 `rise`（分组列表 stagger 45ms、上限 8 组）、`pulse` 状态点；微交互 `transition 0.15s`。不加大型/装饰性动画。
 - **图标**：全部内联 SVG，集中定义于 `src/components/icons.tsx`（stroke 2、round，顶栏面板类 1.8），不引入图标库；颜色继承 `currentColor`。
 

@@ -153,6 +153,8 @@ export default function App() {
   const [draftProject, setDraftProject] = useState('')
 
   const running = snap !== null && snap.state !== ''
+  // AskUser 提问挂起：面板停靠输入框上方，输入区保持展示可交互
+  const askPending = snap?.pending_user_question != null
   const active = snap?.session ?? null
   const turnCount = active?.turns.length ?? 0
   const statsVisible =
@@ -804,15 +806,23 @@ export default function App() {
               />
             </div>
             <div
-              className={`composer-area${composerHidden ? ' composer-hidden' : ''}`}
+              className={`composer-area${composerHidden && !askPending ? ' composer-hidden' : ''}`}
               ref={composerAreaRef}
               onFocus={onComposerFocus}
               onBlur={onComposerBlur}
               onTouchStart={onComposerTouchStart}
               onTouchMove={onComposerTouchMove}
-              aria-hidden={composerHidden}
-              inert={composerHidden}
+              aria-hidden={composerHidden && !askPending}
+              inert={composerHidden && !askPending}
             >
+              {/* AskUser 面板停靠输入框上方：无遮罩，聊天记录保持可见 */}
+              {snap?.pending_user_question && (
+                <AskUserModal
+                  request={snap.pending_user_question}
+                  onSubmit={answers => void answerUser(answers)}
+                  onCancel={() => void answerUser([])}
+                />
+              )}
               <Composer
                 ref={composerRef}
                 running={running}
@@ -843,13 +853,6 @@ export default function App() {
             <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />
           )}
         </>
-      )}
-      {activeId && snap?.pending_user_question && (
-        <AskUserModal
-          request={snap.pending_user_question}
-          onSubmit={answers => void answerUser(answers)}
-          onCancel={() => void answerUser([])}
-        />
       )}
       {settingsOpen && (
         <SettingsModal

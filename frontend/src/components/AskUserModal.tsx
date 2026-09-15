@@ -57,8 +57,8 @@ export function AskUserModal({
   }
 
   return (
-    <div className="modal-overlay ask-user-overlay">
-      <section className="modal ask-user-modal" role="dialog" aria-modal="true" aria-labelledby="ask-user-title">
+    <div className="ask-user-dock">
+      <section className="modal ask-user-modal" role="dialog" aria-labelledby="ask-user-title">
         <div className="ask-user-head">
           <div>
             <div className="modal-kicker">
