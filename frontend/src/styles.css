@@ -2206,7 +2206,7 @@ div.tool-row {
 .file-sidebar {
   position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: var(--panel);
   border-left: 1px solid var(--border);
   height: 100dvh;
@@ -2241,29 +2241,76 @@ body.resizing .file-sidebar-resize::after {
   background: var(--accent);
 }
 
-.file-sidebar-head {
+.file-sidebar-preview-pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.file-sidebar-nav-pane {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.file-sidebar.dual-pane .file-sidebar-nav-pane {
+  width: 250px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+}
+
+.file-preview-head {
   height: var(--topbar-h);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 14px;
+  padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   flex-shrink: 0;
 }
 
-.file-sidebar-title-row {
+.file-preview-title-wrap {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex: 1;
 }
 
-.file-sidebar-title {
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 15px;
-  color: var(--text);
+.file-preview-title-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.file-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.file-nav-head {
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
 }
 
 .file-count-badge {
@@ -2319,25 +2366,9 @@ body.resizing .file-sidebar-resize::after {
   line-height: 16px;
 }
 
-.file-sidebar-nav {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-
 .file-nav-back {
   padding: 4px;
   flex-shrink: 0;
-}
-
-.file-nav-title {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
 }
 
 .file-nav-name {
@@ -2357,13 +2388,6 @@ body.resizing .file-sidebar-resize::after {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.file-sidebar-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
 }
 
 .file-sidebar-list-container {
@@ -2436,6 +2460,16 @@ body.resizing .file-sidebar-resize::after {
 
 .file-tree-row:hover {
   background: var(--panel-2);
+}
+
+.file-tree-row.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.file-tree-row.active .file-tree-icon {
+  color: var(--accent);
 }
 
 .file-tree-chevron {
@@ -2527,6 +2561,20 @@ body.resizing .file-sidebar-resize::after {
 
 .file-item:hover {
   background: var(--panel-2);
+}
+
+.file-item.active {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.file-item.active .file-item-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.file-item.active .file-item-icon {
+  color: var(--accent);
 }
 
 .file-item-icon {
@@ -2629,37 +2677,17 @@ body.resizing .file-sidebar-resize::after {
   line-height: 1.4;
 }
 
-.file-preview-container {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.file-preview-meta-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 12px;
-  background: var(--panel-2);
-  border-bottom: 1px solid var(--border-soft);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  flex-shrink: 0;
-}
-
 .file-meta-tags {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--muted);
+  gap: 6px;
 }
 
-.file-meta-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.file-meta-item {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .file-view-toggle {

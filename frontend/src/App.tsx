@@ -144,6 +144,7 @@ export default function App() {
   const onPreviewFile = useCallback((path: string) => {
     setPreviewFilePath(path)
     setFileSidebarOpen(true)
+    setFileSidebarWidth(w => clampFileSidebar(Math.max(w, 680)))
   }, [])
 
   // 未创建会话前的模型偏好，创建会话时生效
