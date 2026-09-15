@@ -1,11 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import hljs from 'highlight.js/lib/common'
 import { api, toError } from '../api'
-import type { ContentPart, RelatedFile, Session, SessionFileResponse } from '../types'
+import type { ContentPart, FsEntry, RelatedFile, Session, SessionFileResponse } from '../types'
 import { CopyButton } from './CopyButton'
 import { Markdown } from './Markdown'
-import { IconArrowLeft, IconFile, IconX } from './icons'
+import {
+  IconArrowLeft,
+  IconChevronDown,
+  IconChevronRight,
+  IconFile,
+  IconFolderClosed,
+  IconFolderOpen,
+  IconX,
+} from './icons'
 
 export const FILE_SIDEBAR_MIN = 240
 export const FILE_SIDEBAR_MAX = 760
@@ -180,8 +188,97 @@ export function extractRelatedFiles(
   return files
 }
 
+interface TreeNodeProps {
+  entry: FsEntry
+  depth: number
+  expandedDirs: Set<string>
+  dirChildren: Record<string, FsEntry[]>
+  dirLoading: Record<string, boolean>
+  onToggleDir: (path: string) => void
+  onSelectFile: (path: string) => void
+}
+
+function TreeNode({
+  entry,
+  depth,
+  expandedDirs,
+  dirChildren,
+  dirLoading,
+  onToggleDir,
+  onSelectFile,
+}: TreeNodeProps) {
+  const isExpanded = expandedDirs.has(entry.path)
+  const isLoading = !!dirLoading[entry.path]
+  const children = dirChildren[entry.path] || []
+
+  if (entry.is_dir) {
+    return (
+      <div className="file-tree-node">
+        <button
+          type="button"
+          className="file-tree-row dir"
+          style={{ paddingLeft: `${depth * 14 + 8}px` }}
+          onClick={() => onToggleDir(entry.path)}
+          title={entry.path}
+        >
+          <span className="file-tree-chevron">
+            {isExpanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+          </span>
+          <span className="file-tree-icon dir">
+            {isExpanded ? <IconFolderOpen size={15} /> : <IconFolderClosed size={15} />}
+          </span>
+          <span className="file-tree-name">{entry.name}</span>
+          {isLoading && <span className="file-loading-spinner small" />}
+        </button>
+        {isExpanded && (
+          <div className="file-tree-children">
+            {children.length === 0 && !isLoading ? (
+              <div
+                className="file-tree-empty"
+                style={{ paddingLeft: `${(depth + 1) * 14 + 22}px` }}
+              >
+                空目录
+              </div>
+            ) : (
+              children.map(child => (
+                <TreeNode
+                  key={child.path}
+                  entry={child}
+                  depth={depth + 1}
+                  expandedDirs={expandedDirs}
+                  dirChildren={dirChildren}
+                  dirLoading={dirLoading}
+                  onToggleDir={onToggleDir}
+                  onSelectFile={onSelectFile}
+                />
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      className="file-tree-row file"
+      style={{ paddingLeft: `${depth * 14 + 22}px` }}
+      onClick={() => onSelectFile(entry.path)}
+      title={entry.path}
+    >
+      <span className="file-tree-icon file">
+        <IconFile size={15} />
+      </span>
+      <span className="file-tree-name">{entry.name}</span>
+      <span className="file-tree-size">{fmtBytes(entry.size)}</span>
+    </button>
+  )
+}
+
 interface FileSidebarProps {
   sessionId: string | null
+  workspace?: string | null
   files: RelatedFile[]
   activePath: string | null
   open: boolean
@@ -195,6 +292,7 @@ interface FileSidebarProps {
 
 export function FileSidebar({
   sessionId,
+  workspace,
   files,
   activePath,
   open,
@@ -205,11 +303,96 @@ export function FileSidebar({
   onResizeMove,
   onResizeEnd,
 }: FileSidebarProps) {
+  const [activeTab, setActiveTab] = useState<'tree' | 'related'>('tree')
   const [filter, setFilter] = useState('')
+  const [treeFilter, setTreeFilter] = useState('')
+  const [rootEntries, setRootEntries] = useState<FsEntry[]>([])
+  const [rootLoading, setRootLoading] = useState(false)
+  const [rootError, setRootError] = useState<string | null>(null)
+  const [dirChildren, setDirChildren] = useState<Record<string, FsEntry[]>>({})
+  const [dirLoading, setDirLoading] = useState<Record<string, boolean>>({})
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
   const [fileData, setFileData] = useState<SessionFileResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'render' | 'source'>('render')
+
+  // 加载工程根目录条目
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setRootLoading(true)
+    setRootError(null)
+    api
+      .fsEntries(workspace || undefined)
+      .then(res => {
+        if (!cancelled) {
+          setRootEntries(res.entries)
+          setRootLoading(false)
+        }
+      })
+      .catch(err => {
+        if (!cancelled) {
+          setRootError(toError(err))
+          setRootLoading(false)
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, workspace])
+
+  // 展开或折叠目录
+  const onToggleDir = useCallback(
+    (path: string) => {
+      setExpandedDirs(prev => {
+        const next = new Set(prev)
+        if (next.has(path)) {
+          next.delete(path)
+          return next
+        }
+        next.add(path)
+        return next
+      })
+
+      setDirChildren(current => {
+        if (!current[path]) {
+          setDirLoading(loading => ({ ...loading, [path]: true }))
+          api
+            .fsEntries(workspace || undefined, path)
+            .then(res => {
+              setDirChildren(prev => ({ ...prev, [path]: res.entries }))
+            })
+            .catch(err => {
+              console.error('Failed to load directory entries:', err)
+            })
+            .finally(() => {
+              setDirLoading(loading => ({ ...loading, [path]: false }))
+            })
+        }
+        return current
+      })
+    },
+    [workspace],
+  )
+
+  // 树过滤匹配条目（含根与已缓存的子目录）
+  const filteredTreeEntries = useMemo(() => {
+    if (!treeFilter.trim()) return null
+    const query = treeFilter.toLowerCase().trim()
+    const all = new Map<string, FsEntry>()
+    for (const e of rootEntries) {
+      all.set(e.path, e)
+    }
+    for (const children of Object.values(dirChildren)) {
+      for (const e of children) {
+        all.set(e.path, e)
+      }
+    }
+    return [...all.values()].filter(
+      e => e.name.toLowerCase().includes(query) || e.path.toLowerCase().includes(query),
+    )
+  }, [rootEntries, dirChildren, treeFilter])
 
   const filteredFiles = useMemo(() => {
     if (!filter.trim()) return files
@@ -221,7 +404,7 @@ export function FileSidebar({
 
   // 当 activePath 改变时加载文件内容
   useEffect(() => {
-    if (!sessionId || !activePath) {
+    if (!activePath) {
       setFileData(null)
       setError(null)
       setLoading(false)
@@ -230,8 +413,12 @@ export function FileSidebar({
     let cancelled = false
     setLoading(true)
     setError(null)
-    api
-      .sessionFile(sessionId, activePath)
+
+    const fetcher = sessionId
+      ? api.sessionFile(sessionId, activePath)
+      : api.fsFile(activePath, workspace || undefined)
+
+    fetcher
       .then(res => {
         if (!cancelled) {
           setFileData(res)
@@ -247,7 +434,7 @@ export function FileSidebar({
     return () => {
       cancelled = true
     }
-  }, [sessionId, activePath])
+  }, [sessionId, workspace, activePath])
 
   const lines = useMemo(() => {
     if (!fileData || fileData.is_binary) return []
@@ -282,7 +469,7 @@ export function FileSidebar({
     <aside
       className="file-sidebar"
       style={{ width: `${width}px` }}
-      aria-label="相关文件预览"
+      aria-label="工程文件浏览器"
     >
       <div
         className="file-sidebar-resize"
@@ -297,6 +484,7 @@ export function FileSidebar({
         {activePath ? (
           <div className="file-sidebar-nav">
             <button
+              type="button"
               className="icon-ghost file-nav-back"
               onClick={() => onSelectPath(null)}
               title="返回文件列表"
@@ -305,21 +493,37 @@ export function FileSidebar({
               <IconArrowLeft size={16} />
             </button>
             <div className="file-nav-title" title={activePath}>
-              <span className="file-nav-name">{activeFileInfo?.name || activePath}</span>
+              <span className="file-nav-name">
+                {activeFileInfo?.name || activePath.split('/').pop() || activePath}
+              </span>
               <span className="file-nav-path">{activePath}</span>
             </div>
           </div>
         ) : (
-          <div className="file-sidebar-title-row">
-            <span className="file-sidebar-title">相关文件</span>
-            {files.length > 0 && (
-              <span className="file-count-badge">{files.length}</span>
-            )}
+          <div className="file-sidebar-tabs">
+            <button
+              type="button"
+              className={`file-tab-btn${activeTab === 'tree' ? ' active' : ''}`}
+              onClick={() => setActiveTab('tree')}
+            >
+              工程文件
+            </button>
+            <button
+              type="button"
+              className={`file-tab-btn${activeTab === 'related' ? ' active' : ''}`}
+              onClick={() => setActiveTab('related')}
+            >
+              会话变动
+              {files.length > 0 && (
+                <span className="file-count-badge">{files.length}</span>
+              )}
+            </button>
           </div>
         )}
 
         <div className="file-sidebar-head-actions">
           <button
+            type="button"
             className="icon-ghost file-sidebar-close"
             onClick={onClose}
             title="关闭侧边栏"
@@ -332,61 +536,151 @@ export function FileSidebar({
 
       {!activePath ? (
         <div className="file-sidebar-list-container">
-          {files.length > 4 && (
-            <div className="file-sidebar-filter-wrap">
-              <input
-                type="search"
-                className="file-sidebar-filter"
-                placeholder="筛选相关文件…"
-                value={filter}
-                onChange={e => setFilter(e.target.value)}
-              />
-            </div>
-          )}
-
-          <div className="file-sidebar-list">
-            {filteredFiles.length === 0 ? (
-              <div className="file-empty-state">
-                <IconFile size={36} strokeWidth={1.4} />
-                <div className="file-empty-title">
-                  {filter ? '未找到匹配文件' : '暂无涉及文件'}
-                </div>
-                <div className="file-empty-hint">
-                  {filter ? '请尝试其他关键词' : '模型执行 Read、Edit、Write 操作后将自动在此汇总'}
-                </div>
+          {activeTab === 'tree' ? (
+            <>
+              <div className="file-sidebar-filter-wrap">
+                <input
+                  type="search"
+                  className="file-sidebar-filter"
+                  placeholder="筛选工程文件…"
+                  value={treeFilter}
+                  onChange={e => setTreeFilter(e.target.value)}
+                />
               </div>
-            ) : (
-              filteredFiles.map(file => {
-                const parentDir =
-                  file.path.includes('/')
-                    ? file.path.slice(0, file.path.lastIndexOf('/'))
-                    : ''
-                return (
-                  <button
-                    key={file.path}
-                    className="file-item"
-                    onClick={() => onSelectPath(file.path)}
-                    title={file.path}
-                  >
-                    <div className="file-item-icon">
-                      <IconFile size={16} />
+
+              <div className="file-sidebar-list">
+                {rootLoading ? (
+                  <div className="file-tree-status">
+                    <span className="file-loading-spinner small" />
+                    <span>加载工程目录中…</span>
+                  </div>
+                ) : rootError ? (
+                  <div className="file-tree-status error">
+                    <span>{rootError}</span>
+                  </div>
+                ) : filteredTreeEntries ? (
+                  filteredTreeEntries.length === 0 ? (
+                    <div className="file-empty-state">
+                      <IconFile size={36} strokeWidth={1.4} />
+                      <div className="file-empty-title">未找到匹配文件</div>
                     </div>
-                    <div className="file-item-text">
-                      <span className="file-item-name">{file.name}</span>
-                      {parentDir && <span className="file-item-dir">{parentDir}</span>}
+                  ) : (
+                    filteredTreeEntries.map(file => {
+                      const parentDir = file.path.includes('/')
+                        ? file.path.slice(0, file.path.lastIndexOf('/'))
+                        : ''
+                      return (
+                        <button
+                          key={file.path}
+                          type="button"
+                          className="file-item"
+                          onClick={() => {
+                            if (file.is_dir) {
+                              setExpandedDirs(prev => new Set([...prev, file.path]))
+                              setTreeFilter('')
+                            } else {
+                              onSelectPath(file.path)
+                            }
+                          }}
+                          title={file.path}
+                        >
+                          <div className="file-item-icon">
+                            {file.is_dir ? <IconFolderClosed size={16} /> : <IconFile size={16} />}
+                          </div>
+                          <div className="file-item-text">
+                            <span className="file-item-name">{file.name}</span>
+                            {parentDir && <span className="file-item-dir">{parentDir}</span>}
+                          </div>
+                          {!file.is_dir && (
+                            <span className="file-tree-size">{fmtBytes(file.size)}</span>
+                          )}
+                        </button>
+                      )
+                    })
+                  )
+                ) : rootEntries.length === 0 ? (
+                  <div className="file-empty-state">
+                    <IconFolderClosed size={36} strokeWidth={1.4} />
+                    <div className="file-empty-title">工程目录为空</div>
+                  </div>
+                ) : (
+                  <div className="file-tree-view">
+                    {rootEntries.map(entry => (
+                      <TreeNode
+                        key={entry.path}
+                        entry={entry}
+                        depth={0}
+                        expandedDirs={expandedDirs}
+                        dirChildren={dirChildren}
+                        dirLoading={dirLoading}
+                        onToggleDir={onToggleDir}
+                        onSelectFile={onSelectPath}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              {files.length > 4 && (
+                <div className="file-sidebar-filter-wrap">
+                  <input
+                    type="search"
+                    className="file-sidebar-filter"
+                    placeholder="筛选相关文件…"
+                    value={filter}
+                    onChange={e => setFilter(e.target.value)}
+                  />
+                </div>
+              )}
+
+              <div className="file-sidebar-list">
+                {filteredFiles.length === 0 ? (
+                  <div className="file-empty-state">
+                    <IconFile size={36} strokeWidth={1.4} />
+                    <div className="file-empty-title">
+                      {filter ? '未找到匹配文件' : '暂无涉及文件'}
                     </div>
-                    <div className="file-item-badges">
-                      {file.actions.map(action => (
-                        <span key={action} className={`file-badge file-badge-${action}`}>
-                          {action}
-                        </span>
-                      ))}
+                    <div className="file-empty-hint">
+                      {filter ? '请尝试其他关键词' : '模型执行 Read、Edit、Write 操作后将自动在此汇总'}
                     </div>
-                  </button>
-                )
-              })
-            )}
-          </div>
+                  </div>
+                ) : (
+                  filteredFiles.map(file => {
+                    const parentDir =
+                      file.path.includes('/')
+                        ? file.path.slice(0, file.path.lastIndexOf('/'))
+                        : ''
+                    return (
+                      <button
+                        key={file.path}
+                        type="button"
+                        className="file-item"
+                        onClick={() => onSelectPath(file.path)}
+                        title={file.path}
+                      >
+                        <div className="file-item-icon">
+                          <IconFile size={16} />
+                        </div>
+                        <div className="file-item-text">
+                          <span className="file-item-name">{file.name}</span>
+                          {parentDir && <span className="file-item-dir">{parentDir}</span>}
+                        </div>
+                        <div className="file-item-badges">
+                          {file.actions.map(action => (
+                            <span key={action} className={`file-badge file-badge-${action}`}>
+                              {action}
+                            </span>
+                          ))}
+                        </div>
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <div className="file-preview-container">

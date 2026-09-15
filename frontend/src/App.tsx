@@ -713,8 +713,8 @@ export default function App() {
             <button
               className={`icon-ghost file-sidebar-toggle${fileSidebarOpen ? ' active' : ''}`}
               onClick={() => setFileSidebarOpen(value => !value)}
-              title={fileSidebarOpen ? '收起相关文件' : '展开相关文件'}
-              aria-label="相关文件预览"
+              title={fileSidebarOpen ? '收起文件浏览器' : '展开文件浏览器'}
+              aria-label="工程文件浏览器"
             >
               <IconPanelRight size={18} />
               {relatedFiles.length > 0 && (
@@ -839,6 +839,7 @@ export default function App() {
         <>
           <FileSidebar
             sessionId={activeId}
+            workspace={active.workspace_root}
             files={relatedFiles}
             activePath={previewFilePath}
             open={fileSidebarOpen}

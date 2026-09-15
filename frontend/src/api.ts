@@ -68,6 +68,20 @@ export const api = {
     request<import('./types').SessionFileResponse>(
       `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
     ),
+  /** 列出工程目录下的条目（目录与文件），支持工程文件浏览器懒加载 */
+  fsEntries: (workspace?: string, path?: string) => {
+    const params = new URLSearchParams()
+    if (workspace) params.set('workspace', workspace)
+    if (path) params.set('path', path)
+    const qs = params.toString()
+    return request<import('./types').FsEntriesResponse>(`/api/fs/entries${qs ? `?${qs}` : ''}`)
+  },
+  /** 读取指定工作区文件内容 */
+  fsFile: (path: string, workspace?: string) => {
+    const params = new URLSearchParams({ path })
+    if (workspace) params.set('workspace', workspace)
+    return request<import('./types').SessionFileResponse>(`/api/fs/file?${params.toString()}`)
+  },
   /** 全局配置文件原文（JSONC）；文件不存在时 content 为 null */
   getConfig: () => request<{ path: string; content: string | null }>('/api/config'),
   /** 保存全局配置：后端校验解析通过后落盘并热重载 */

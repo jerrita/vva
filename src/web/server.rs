@@ -33,6 +33,8 @@ pub async fn run_server(
         .route("/api/skills", get(api::list_skills))
         .route("/api/workspace", get(api::default_workspace))
         .route("/api/fs/dirs", get(api::list_dirs))
+        .route("/api/fs/entries", get(api::list_fs_entries))
+        .route("/api/fs/file", get(api::get_fs_file))
         .route("/api/files", post(api::upload_file))
         .route(
             "/api/config",

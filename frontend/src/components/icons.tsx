@@ -60,6 +60,14 @@ export function IconChevronDown({ size, strokeWidth }: IconProps) {
   )
 }
 
+export function IconChevronRight({ size, strokeWidth }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={strokeWidth}>
+      <path d="M9 18l6-6-6-6" />
+    </Svg>
+  )
+}
+
 export function IconArrowUp({ size, strokeWidth }: IconProps) {
   return (
     <Svg size={size} strokeWidth={strokeWidth}>

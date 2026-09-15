@@ -163,6 +163,107 @@ pub async fn list_dirs(State(state): State<AppState>, Query(query): Query<DirQue
 }
 
 #[derive(Deserialize)]
+pub struct FsEntriesQuery {
+    pub workspace: Option<String>,
+    pub path: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FsEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FsEntriesResponse {
+    pub workspace: String,
+    pub path: String,
+    pub entries: Vec<FsEntry>,
+}
+
+/// 列出工程目录下的条目（目录与文件），支持工程文件浏览器懒加载
+pub async fn list_fs_entries(
+    State(state): State<AppState>,
+    Query(query): Query<FsEntriesQuery>,
+) -> Response {
+    let workspace = match query.workspace.as_deref().map(str::trim) {
+        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
+        _ => state.manager.workspace().to_path_buf(),
+    };
+
+    let subpath = query.path.as_deref().unwrap_or("").trim();
+    let target_dir = crate::tools::filesystem::resolve_path(&workspace, subpath);
+
+    match tokio::fs::metadata(&target_dir).await {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return error(StatusCode::BAD_REQUEST, "目标路径不是目录"),
+        Err(e) => return error(StatusCode::NOT_FOUND, format!("目录不存在: {e}")),
+    }
+
+    let mut read_dir = match tokio::fs::read_dir(&target_dir).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取目录失败: {e}"),
+            );
+        }
+    };
+
+    let mut entries = Vec::new();
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        // 过滤内部版本控制系统目录
+        if file_name == ".git" {
+            continue;
+        }
+
+        let entry_path = entry.path();
+        let meta = match tokio::fs::metadata(&entry_path).await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let is_dir = meta.is_dir();
+        let size = if is_dir { 0 } else { meta.len() };
+
+        let rel_path = match entry_path.strip_prefix(&workspace) {
+            Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+            Err(_) => entry_path.to_string_lossy().replace('\\', "/"),
+        };
+
+        entries.push(FsEntry {
+            name: file_name,
+            path: rel_path,
+            is_dir,
+            size,
+        });
+    }
+
+    // 排序：目录优先，同类按名称不区分大小写排序
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let rel_target = match target_dir.strip_prefix(&workspace) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        Err(_) => String::new(),
+    };
+
+    Json(FsEntriesResponse {
+        workspace: workspace.to_string_lossy().to_string(),
+        path: rel_target,
+        entries,
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
 pub struct CreateSessionRequest {
     pub model: Option<String>,
     pub variant: Option<String>,
@@ -227,7 +328,13 @@ pub struct SessionFileQuery {
     pub path: String,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize)]
+pub struct FsFileQuery {
+    pub workspace: Option<String>,
+    pub path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct SessionFileResponse {
     pub path: String,
     pub name: String,
@@ -235,6 +342,18 @@ pub struct SessionFileResponse {
     pub is_binary: bool,
     pub content: String,
     pub mime_type: Option<String>,
+}
+
+/// 读取指定工作区文件的实时内容，供无会话或直连场景预览
+pub async fn get_fs_file(
+    State(state): State<AppState>,
+    Query(query): Query<FsFileQuery>,
+) -> Response {
+    let workspace = match query.workspace.as_deref().map(str::trim) {
+        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
+        _ => state.manager.workspace().to_path_buf(),
+    };
+    read_file_from_workspace(&workspace, &query.path).await
 }
 
 /// 读取会话相关文件的实时内容，供前端侧栏预览
@@ -248,7 +367,12 @@ pub async fn get_session_file(
         Err(_) => return not_found(&id),
     };
     let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
-    let path = crate::tools::filesystem::resolve_path(&workspace, &query.path);
+    read_file_from_workspace(&workspace, &query.path).await
+}
+
+/// 从指定工作区读取文件内容并返回统一的 SessionFileResponse 响应
+pub async fn read_file_from_workspace(workspace: &std::path::Path, rel_path: &str) -> Response {
+    let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
 
     let metadata = match tokio::fs::metadata(&path).await {
         Ok(meta) => meta,
@@ -657,4 +781,114 @@ pub async fn stream_events(State(state): State<AppState>, Path(id): Path<String>
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::SessionManager;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_list_fs_entries_filters_git_and_sorts() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        tokio::fs::create_dir_all(ws.join(".git")).await.unwrap();
+        tokio::fs::write(ws.join(".git/config"), "dummy")
+            .await
+            .unwrap();
+
+        tokio::fs::create_dir_all(ws.join("src/nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(ws.join("src/lib.rs"), "pub fn test() {}")
+            .await
+            .unwrap();
+        tokio::fs::write(ws.join("Cargo.toml"), "[package]")
+            .await
+            .unwrap();
+        tokio::fs::write(ws.join("README.md"), "# Test")
+            .await
+            .unwrap();
+
+        let temp_sessions = TempDir::new().unwrap();
+        let store =
+            Arc::new(crate::storage::jsonl::JsonlSessionStore::new(temp_sessions.path()).unwrap());
+        let config = crate::config::AppConfig::default();
+        let manager = Arc::new(SessionManager::new(
+            store,
+            config,
+            ws,
+            ws.join("state.json"),
+        ));
+        let state = AppState { manager };
+
+        let response = list_fs_entries(
+            State(state.clone()),
+            Query(FsEntriesQuery {
+                workspace: Some(ws.to_string_lossy().to_string()),
+                path: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let res: FsEntriesResponse = serde_json::from_slice(&body).unwrap();
+
+        assert!(!res.entries.iter().any(|e| e.name == ".git"));
+        assert_eq!(res.entries[0].name, "src");
+        assert!(res.entries[0].is_dir);
+        assert_eq!(res.entries[0].path, "src");
+
+        let file_names: Vec<&str> = res.entries[1..].iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(file_names, vec!["Cargo.toml", "README.md"]);
+
+        let sub_response = list_fs_entries(
+            State(state.clone()),
+            Query(FsEntriesQuery {
+                workspace: Some(ws.to_string_lossy().to_string()),
+                path: Some("src".into()),
+            }),
+        )
+        .await;
+
+        assert_eq!(sub_response.status(), StatusCode::OK);
+        let sub_body = axum::body::to_bytes(sub_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sub_res: FsEntriesResponse = serde_json::from_slice(&sub_body).unwrap();
+        assert_eq!(sub_res.entries[0].name, "nested");
+        assert!(sub_res.entries[0].is_dir);
+        assert_eq!(sub_res.entries[0].path, "src/nested");
+        assert_eq!(sub_res.entries[1].name, "lib.rs");
+        assert!(!sub_res.entries[1].is_dir);
+        assert_eq!(sub_res.entries[1].path, "src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn test_read_file_from_workspace() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+        tokio::fs::write(ws.join("hello.txt"), "hello world")
+            .await
+            .unwrap();
+
+        let response = read_file_from_workspace(ws, "hello.txt").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let res: SessionFileResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(res.name, "hello.txt");
+        assert_eq!(res.content, "hello world");
+        assert!(!res.is_binary);
+
+        let missing = read_file_from_workspace(ws, "nonexistent.txt").await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
 }

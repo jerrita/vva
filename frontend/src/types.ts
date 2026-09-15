@@ -237,3 +237,16 @@ export interface RelatedFile {
   turnIndex: number
 }
 
+export interface FsEntry {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number
+}
+
+export interface FsEntriesResponse {
+  workspace: string
+  path: string
+  entries: FsEntry[]
+}
+
