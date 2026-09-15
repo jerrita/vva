@@ -1312,7 +1312,8 @@ div.tool-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 10px;
+  /* 行内边距恒为 0：折叠工作段内外与流式草稿的行统一顶齐内容左缘 */
+  padding: 4px 0;
 }
 
 .tool-row > summary,
@@ -1519,14 +1520,6 @@ div.tool-row {
 
 .worked[open] > summary::after {
   transform: rotate(90deg);
-}
-
-/* 展开后内部块与外部内容同宽同层级：去除行内边距 */
-.worked-body > .tool-row,
-.worked-body > .tool-row > summary,
-.worked-body > .reasoning-row > summary,
-.worked-body > .search-row > summary {
-  padding-inline: 0;
 }
 
 .worked > summary:hover {
