@@ -230,3 +230,19 @@ pub struct SessionSummary {
     pub current_variant: Option<String>,
     pub web_search: bool,
 }
+
+impl SessionSummary {
+    /// 由持久化 Header 与轮次条数构建列表摘要
+    pub fn from_header(header: SessionHeader, turn_count: usize) -> Self {
+        Self {
+            id: header.id,
+            title: header.title,
+            workspace_root: header.workspace_root,
+            created_at: header.created_at,
+            turn_count,
+            current_model: header.current_model,
+            current_variant: header.current_variant,
+            web_search: header.web_search,
+        }
+    }
+}

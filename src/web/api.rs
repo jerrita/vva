@@ -12,6 +12,7 @@ use base64::Engine;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 
+use crate::harness::ManagedSession;
 use crate::ui::history::compute_stats;
 
 use super::server::AppState;
@@ -27,6 +28,26 @@ fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
 
 fn not_found(id: &str) -> Response {
     error(StatusCode::NOT_FOUND, format!("Session not found: {id}"))
+}
+
+/// 取会话句柄；会话不存在时返回 404 响应
+async fn session_handle(
+    state: &AppState,
+    id: &str,
+) -> Result<std::sync::Arc<ManagedSession>, Response> {
+    state
+        .manager
+        .get_or_load(id)
+        .await
+        .map_err(|_| not_found(id))
+}
+
+/// 显式工作区参数（trim 后非空）优先，缺省回退服务器启动目录
+fn workspace_or_default(state: &AppState, explicit: Option<&str>) -> std::path::PathBuf {
+    match explicit.map(str::trim) {
+        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
+        _ => state.manager.workspace().to_path_buf(),
+    }
 }
 
 #[derive(Serialize)]
@@ -123,10 +144,7 @@ pub struct DirQuery {
 
 /// 列出目录下的一级子目录，供新建项目多级点选
 pub async fn list_dirs(State(state): State<AppState>, Query(query): Query<DirQuery>) -> Response {
-    let path = match query.path.as_deref().map(str::trim) {
-        Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
-        _ => state.manager.workspace().to_path_buf(),
-    };
+    let path = workspace_or_default(&state, query.path.as_deref());
     match tokio::fs::metadata(&path).await {
         Ok(meta) if meta.is_dir() => {}
         _ => {
@@ -188,11 +206,7 @@ pub async fn list_fs_entries(
     State(state): State<AppState>,
     Query(query): Query<FsEntriesQuery>,
 ) -> Response {
-    let workspace = match query.workspace.as_deref().map(str::trim) {
-        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
-        _ => state.manager.workspace().to_path_buf(),
-    };
-
+    let workspace = workspace_or_default(&state, query.workspace.as_deref());
     let subpath = query.path.as_deref().unwrap_or("").trim();
     let target_dir = crate::tools::filesystem::resolve_path(&workspace, subpath);
 
@@ -306,21 +320,25 @@ pub async fn create_session(
     }
 }
 
-pub async fn get_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    match state.manager.get_or_load(&id).await {
-        Ok(handle) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
-        Err(_) => not_found(&id),
-    }
+pub async fn get_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
+    Ok(Json(SessionSnapshot::from(&*handle.snapshot())).into_response())
 }
 
-pub async fn delete_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    match state.manager.get_or_load(&id).await {
-        Ok(handle) => match state.manager.delete_session(&handle).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
-            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-        },
-        Err(_) => not_found(&id),
-    }
+pub async fn delete_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
+    state
+        .manager
+        .delete_session(&handle)
+        .await
+        .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(Deserialize)]
@@ -348,12 +366,9 @@ pub struct SessionFileResponse {
 pub async fn get_fs_file(
     State(state): State<AppState>,
     Query(query): Query<FsFileQuery>,
-) -> Response {
-    let workspace = match query.workspace.as_deref().map(str::trim) {
-        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
-        _ => state.manager.workspace().to_path_buf(),
-    };
-    read_file_from_workspace(&workspace, &query.path).await
+) -> Result<Response, Response> {
+    let workspace = workspace_or_default(&state, query.workspace.as_deref());
+    Ok(read_file_from_workspace(&workspace, &query.path).await)
 }
 
 /// 读取会话相关文件的实时内容，供前端侧栏预览
@@ -361,24 +376,18 @@ pub async fn get_session_file(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<SessionFileQuery>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
-    read_file_from_workspace(&workspace, &query.path).await
+    Ok(read_file_from_workspace(&workspace, &query.path).await)
 }
 
 /// 下载指定工作区文件，保留原始二进制内容
 pub async fn download_fs_file(
     State(state): State<AppState>,
     Query(query): Query<FsFileQuery>,
-) -> Response {
-    let workspace = match query.workspace.as_deref().map(str::trim) {
-        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
-        _ => state.manager.workspace().to_path_buf(),
-    };
+) -> Result<Response, Response> {
+    let workspace = workspace_or_default(&state, query.workspace.as_deref());
     download_file_from_workspace(&workspace, &query.path).await
 }
 
@@ -387,34 +396,23 @@ pub async fn download_session_file(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<SessionFileQuery>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
     download_file_from_workspace(&workspace, &query.path).await
 }
 
-async fn download_file_from_workspace(workspace: &std::path::Path, rel_path: &str) -> Response {
-    let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
-    let metadata = match tokio::fs::metadata(&path).await {
-        Ok(meta) => meta,
-        Err(e) => return error(StatusCode::NOT_FOUND, format!("文件不存在: {e}")),
-    };
-    if metadata.is_dir() {
-        return error(StatusCode::BAD_REQUEST, "目标是目录而非文件");
-    }
-
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("读取文件失败: {e}"),
-            );
-        }
-    };
+async fn download_file_from_workspace(
+    workspace: &std::path::Path,
+    rel_path: &str,
+) -> Result<Response, Response> {
+    let (path, _) = open_workspace_file(workspace, rel_path).await?;
+    let bytes = tokio::fs::read(&path).await.map_err(|e| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("读取文件失败: {e}"),
+        )
+    })?;
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -444,21 +442,30 @@ async fn download_file_from_workspace(workspace: &std::path::Path, rel_path: &st
             .headers_mut()
             .insert(header::CONTENT_DISPOSITION, value);
     }
-    response
+    Ok(response)
+}
+
+/// 解析工作区内相对路径并校验为存在的文件；缺失或目录转为错误响应
+async fn open_workspace_file(
+    workspace: &std::path::Path,
+    rel_path: &str,
+) -> Result<(std::path::PathBuf, std::fs::Metadata), Response> {
+    let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| error(StatusCode::NOT_FOUND, format!("文件不存在: {e}")))?;
+    if metadata.is_dir() {
+        return Err(error(StatusCode::BAD_REQUEST, "目标是目录而非文件"));
+    }
+    Ok((path, metadata))
 }
 
 /// 从指定工作区读取文件内容并返回统一的 SessionFileResponse 响应
 pub async fn read_file_from_workspace(workspace: &std::path::Path, rel_path: &str) -> Response {
-    let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
-
-    let metadata = match tokio::fs::metadata(&path).await {
-        Ok(meta) => meta,
-        Err(e) => return error(StatusCode::NOT_FOUND, format!("文件不存在: {e}")),
+    let (path, metadata) = match open_workspace_file(workspace, rel_path).await {
+        Ok(ok) => ok,
+        Err(response) => return response,
     };
-
-    if metadata.is_dir() {
-        return error(StatusCode::BAD_REQUEST, "目标是目录而非文件");
-    }
 
     let size = metadata.len();
     if size > 10 * 1024 * 1024 {
@@ -592,11 +599,8 @@ pub async fn submit_message(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<SubmitMessageRequest>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     let files = request
         .files
         .into_iter()
@@ -621,9 +625,9 @@ pub async fn submit_message(
         })
         .collect();
     match handle.submit(&request.prompt, files, None).await {
-        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Ok(()) => Ok(StatusCode::ACCEPTED.into_response()),
         // 会话正在执行其他请求时拒绝重复提交
-        Err(e) => error(StatusCode::CONFLICT, e),
+        Err(e) => Err(error(StatusCode::CONFLICT, e)),
     }
 }
 
@@ -637,14 +641,11 @@ pub async fn revert_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<RevertRequest>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     match handle.revert(request.turn_index).await {
-        Ok(()) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
+        Ok(()) => Ok(Json(SessionSnapshot::from(&*handle.snapshot())).into_response()),
+        Err(e) => Err(error(StatusCode::BAD_REQUEST, e)),
     }
 }
 
@@ -660,11 +661,8 @@ pub async fn fork_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<ForkRequest>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     match state
         .manager
         .fork_session(
@@ -674,19 +672,19 @@ pub async fn fork_session(
         )
         .await
     {
-        Ok(created) => Json(SessionSnapshot::from(&*created.snapshot())).into_response(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
+        Ok(created) => Ok(Json(SessionSnapshot::from(&*created.snapshot())).into_response()),
+        Err(e) => Err(error(StatusCode::BAD_REQUEST, e)),
     }
 }
 
-pub async fn abort_session(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+pub async fn abort_session(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     match handle.abort_current().await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => error(StatusCode::CONFLICT, e),
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(e) => Err(error(StatusCode::CONFLICT, e)),
     }
 }
 
@@ -700,17 +698,14 @@ pub async fn answer_user(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<AnswerUserRequest>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     match handle
         .answer_user(request.request_id, request.answers)
         .await
     {
-        Ok(()) => StatusCode::ACCEPTED.into_response(),
-        Err(message) => error(StatusCode::BAD_REQUEST, message),
+        Ok(()) => Ok(StatusCode::ACCEPTED.into_response()),
+        Err(message) => Err(error(StatusCode::BAD_REQUEST, message)),
     }
 }
 
@@ -739,28 +734,25 @@ pub async fn configure_session(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<ConfigureSessionRequest>,
-) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     match handle
         .configure(request.model, request.variant, request.search)
         .await
     {
-        Ok(()) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
+        Ok(()) => Ok(Json(SessionSnapshot::from(&*handle.snapshot())).into_response()),
+        Err(e) => Err(error(StatusCode::BAD_REQUEST, e)),
     }
 }
 
 /// 会话统计 (Token 消耗、缓存命中与预估花费)，复用 TUI 侧栏的 compute_stats 投影
-pub async fn session_stats(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+pub async fn session_stats(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
     let view = handle.snapshot();
-    Json(compute_stats(&view.session, &state.manager.app_config())).into_response()
+    Ok(Json(compute_stats(&view.session, &state.manager.app_config())).into_response())
 }
 
 /// 全局配置文件寻址：`~/.vva/config.jsonc` 优先，其次 `config.json`，
@@ -826,11 +818,11 @@ pub async fn update_global_config(
 
 /// 每条连接以快照建立基线，再发送相对已发送版本的增量。
 /// watch 可合并中间发布；慢客户端仍从自己的基线更新到最新状态。
-pub async fn stream_events(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let handle = match state.manager.get_or_load(&id).await {
-        Ok(handle) => handle,
-        Err(_) => return not_found(&id),
-    };
+pub async fn stream_events(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, Response> {
+    let handle = session_handle(&state, &id).await?;
 
     let mut rx = handle.subscribe();
     let initial = rx.borrow_and_update().clone();
@@ -856,9 +848,9 @@ pub async fn stream_events(State(state): State<AppState>, Path(id): Path<String>
                 Some((Ok(event), (rx, current, false)))
             },
         ));
-    Sse::new(stream)
+    Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
-        .into_response()
+        .into_response())
 }
 
 #[cfg(test)]

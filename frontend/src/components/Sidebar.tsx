@@ -72,10 +72,8 @@ function projectColor(name: string): string {
 }
 
 function FolderIcon({ open, color }: { open: boolean; color: string }) {
-  return open ? (
-    <span style={{ color }}><IconFolderOpen size={14} /></span>
-  ) : (
-    <span style={{ color }}><IconFolderClosed size={14} /></span>
+  return (
+    <span style={{ color }}>{open ? <IconFolderOpen size={14} /> : <IconFolderClosed size={14} />}</span>
   )
 }
 
@@ -308,6 +306,8 @@ export function Sidebar({
     })
   }
 
+  const visibleGroups = groups.filter(group => !hiddenProjects.has(group.project))
+
   return (
     <aside className="sidebar" style={{ width }}>
       <div className="sidebar-top">
@@ -333,12 +333,8 @@ export function Sidebar({
         />
       )}
       <nav className="session-list">
-        {groups.filter(group => !hiddenProjects.has(group.project)).length === 0 && (
-          <div className="session-empty">暂无会话</div>
-        )}
-        {groups
-          .filter(group => !hiddenProjects.has(group.project))
-          .map((group, index) => (
+        {visibleGroups.length === 0 && <div className="session-empty">暂无会话</div>}
+        {visibleGroups.map((group, index) => (
            <div
              key={group.root}
              className={`session-group${draggingRoot === group.root ? ' dragging' : ''}${dropTargetRoot === group.root ? ' drop-target' : ''}`}

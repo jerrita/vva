@@ -98,7 +98,7 @@ impl SessionManager {
             commands: commands.downgrade(),
             dirty: false,
             cli: None,
-            stop: None,
+            stop_request: None,
             notified: HashSet::new(),
             title_task: None,
             text_parts: HashMap::new(),
@@ -207,13 +207,13 @@ impl SessionManager {
         model: Option<String>,
         variant: Option<String>,
     ) -> (String, Option<String>) {
+        let config = self.app_config();
         if let Some(model) = model {
             return (model, variant);
         }
         let state = AppState::load(&self.state_path);
         if !state.last_model.is_empty() {
             let inherited = variant.clone().or(state.last_variant.clone());
-            let config = self.app_config();
             if config
                 .resolve_model(&state.last_model, inherited.as_deref())
                 .is_ok()
@@ -224,7 +224,7 @@ impl SessionManager {
                 return (state.last_model, variant);
             }
         }
-        (self.app_config().settings.default.clone(), variant)
+        (config.settings.default.clone(), variant)
     }
 
     fn remember_session(&self, session: &Session) {

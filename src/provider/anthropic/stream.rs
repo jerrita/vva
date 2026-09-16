@@ -10,7 +10,9 @@ use crate::model::{
     AnthropicSearchResultContent,
 };
 use crate::provider::ProviderError;
-use crate::provider::common::{EventForwarder, require_str, require_u64, require_value};
+use crate::provider::common::{
+    EventForwarder, from_value, require_str, require_u64, require_value,
+};
 use crate::provider::http::SseEventHandler;
 pub(super) struct AnthropicStreamHandler {
     pub(super) blocks: Vec<AnthropicContentBlock>,
@@ -131,11 +133,7 @@ impl SseEventHandler for AnthropicStreamHandler {
                         let raw_content = require_value(cb, "content")?;
                         if block_type == "web_search_tool_result" {
                             let content: AnthropicSearchResultContent =
-                                serde_json::from_value(raw_content.clone()).map_err(|e| {
-                                    ProviderError::Protocol(format!(
-                                        "Invalid web_search_tool_result content: {e}"
-                                    ))
-                                })?;
+                                from_value(raw_content, "web_search_tool_result content")?;
                             let input = self.server_use_input(&tool_use_id)?;
                             let call = project_search_call(&tool_use_id, &input, &content)?;
                             self.forwarder.web_search_call(call).await;
@@ -145,11 +143,7 @@ impl SseEventHandler for AnthropicStreamHandler {
                             }
                         } else {
                             let content: AnthropicFetchResultContent =
-                                serde_json::from_value(raw_content.clone()).map_err(|e| {
-                                    ProviderError::Protocol(format!(
-                                        "Invalid web_fetch_tool_result content: {e}"
-                                    ))
-                                })?;
+                                from_value(raw_content, "web_fetch_tool_result content")?;
                             let input = self.server_use_input(&tool_use_id)?;
                             let call = project_fetch_call(&tool_use_id, &input, &content)?;
                             self.forwarder.web_search_call(call).await;
@@ -205,12 +199,8 @@ impl SseEventHandler for AnthropicStreamHandler {
                     // 引用以增量事件逐条下发，追加至当前 text 块的 citations 列表
                     "citations_delta" => {
                         let raw = require_value(delta, "citation")?;
-                        let citation: AnthropicCitation = serde_json::from_value(raw.clone())
-                            .map_err(|e| {
-                                ProviderError::Protocol(format!(
-                                    "Invalid citation in citations_delta: {e}"
-                                ))
-                            })?;
+                        let citation: AnthropicCitation =
+                            from_value(raw, "citation in citations_delta")?;
                         match self.blocks.get_mut(idx) {
                             Some(AnthropicContentBlock::Text { citations, .. }) => {
                                 citations.push(citation.clone())

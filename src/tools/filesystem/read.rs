@@ -164,13 +164,7 @@ fn format_read_text(content: &str, args: &ReadArgs, editor: EditorKind) -> Resul
     } else {
         String::new()
     };
-    let all_lines: Vec<&str> = content.lines().collect();
-    let mut lines = all_lines
-        .iter()
-        .copied()
-        .enumerate()
-        .skip(offset - 1)
-        .peekable();
+    let mut lines = content.lines().enumerate().skip(offset - 1).peekable();
     let mut shown = 0;
     while shown < args.limit.unwrap_or(usize::MAX) {
         let Some((index, line)) = lines.next() else {

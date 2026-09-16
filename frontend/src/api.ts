@@ -1,4 +1,4 @@
-import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillsResponse, UserAnswer } from './types'
+import type { FileAttachment, FsEntriesResponse, ModelsResponse, SessionFileResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillsResponse, UserAnswer } from './types'
 
 export function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -65,7 +65,7 @@ export const api = {
   stats: (id: string) => request<SidebarStats>(`/api/sessions/${id}/stats`),
   /** 读取会话相关文件的实时内容，供前端侧栏预览 */
   sessionFile: (id: string, path: string) =>
-    request<import('./types').SessionFileResponse>(
+    request<SessionFileResponse>(
       `/api/sessions/${encodeURIComponent(id)}/file?path=${encodeURIComponent(path)}`,
     ),
   /** 列出工程目录下的条目（目录与文件），支持工程文件浏览器懒加载 */
@@ -74,13 +74,13 @@ export const api = {
     if (workspace) params.set('workspace', workspace)
     if (path) params.set('path', path)
     const qs = params.toString()
-    return request<import('./types').FsEntriesResponse>(`/api/fs/entries${qs ? `?${qs}` : ''}`)
+    return request<FsEntriesResponse>(`/api/fs/entries${qs ? `?${qs}` : ''}`)
   },
   /** 读取指定工作区文件内容 */
   fsFile: (path: string, workspace?: string) => {
     const params = new URLSearchParams({ path })
     if (workspace) params.set('workspace', workspace)
-    return request<import('./types').SessionFileResponse>(`/api/fs/file?${params.toString()}`)
+    return request<SessionFileResponse>(`/api/fs/file?${params.toString()}`)
   },
   sessionFileDownloadUrl: (id: string, path: string) =>
     `/api/sessions/${encodeURIComponent(id)}/download?path=${encodeURIComponent(path)}`,

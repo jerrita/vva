@@ -43,18 +43,18 @@ struct AnthropicResponseDto {
     #[serde(default)]
     usage: Option<AnthropicUsageDto>,
     #[serde(default)]
-    pub(super) stop_reason: Option<String>,
+    stop_reason: Option<String>,
 }
 
 /// Anthropic Messages API usage 统计
 #[derive(serde::Deserialize)]
 struct AnthropicUsageDto {
-    pub(super) input_tokens: u64,
-    pub(super) output_tokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
     #[serde(default)]
-    pub(super) cache_creation_input_tokens: Option<u32>,
+    cache_creation_input_tokens: Option<u32>,
     #[serde(default)]
-    pub(super) cache_read_input_tokens: Option<u32>,
+    cache_read_input_tokens: Option<u32>,
 }
 
 /// 将原生块序列投影为领域内容块：server tool 调用与其结果块配对为一条 WebSearchCall，
@@ -131,7 +131,8 @@ pub(super) fn project_parts(
     Ok(parts)
 }
 
-pub(super) fn take_server_use(
+/// 取回并移除与结果块配对的 server_tool_use：缺失即报协议错误
+fn take_server_use(
     server_uses: &mut HashMap<String, (String, serde_json::Value)>,
     tool_use_id: &str,
 ) -> Result<(String, serde_json::Value), ProviderError> {

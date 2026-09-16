@@ -285,289 +285,301 @@ async fn handle_crossterm_event(
     event: CrosstermEvent,
     events: &mut mpsc::UnboundedReceiver<CrosstermEvent>,
 ) {
-    if let CrosstermEvent::Mouse(mouse) = event {
-        match mouse.kind {
-            MouseEventKind::ScrollUp => {
-                if app.modal.is_none() {
-                    app.scroll_up(3);
-                } else {
-                    app.modal.apply_input(ModalInput::NavigateUp);
-                }
+    match event {
+        CrosstermEvent::Mouse(mouse) => handle_mouse_event(app, mouse).await,
+        CrosstermEvent::Paste(text) => {
+            if app.modal.is_none() {
+                app.insert_str(&text);
             }
-            MouseEventKind::ScrollDown => {
-                if app.modal.is_none() {
-                    app.scroll_down(3);
-                } else {
-                    app.modal.apply_input(ModalInput::NavigateDown);
-                }
+        }
+        CrosstermEvent::Key(key) if key.kind == KeyEventKind::Press => {
+            handle_key_event(app, key, events).await;
+        }
+        _ => {}
+    }
+}
+
+/// 鼠标事件分发：无弹窗时驱动滚动/选区/命中测试，弹窗内转发给列表导航
+async fn handle_mouse_event(app: &mut App, mouse: crossterm::event::MouseEvent) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            if app.modal.is_none() {
+                app.scroll_up(3);
+            } else {
+                app.modal.apply_input(ModalInput::NavigateUp);
             }
-            MouseEventKind::Down(MouseButton::Left) => {
-                if app.modal.is_none() {
-                    handle_mouse_left_down(app, mouse).await;
-                } else {
-                    handle_modal_click(app, mouse).await;
-                }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.modal.is_none() {
+                app.scroll_down(3);
+            } else {
+                app.modal.apply_input(ModalInput::NavigateDown);
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                if app.modal.is_none() {
-                    handle_mouse_left_drag(app, mouse);
-                }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if app.modal.is_none() {
+                handle_mouse_left_down(app, mouse).await;
+            } else {
+                handle_modal_click(app, mouse).await;
             }
-            MouseEventKind::Up(MouseButton::Left) => {
-                let user_click = (app.modal.is_none()
-                    && app.chat.selection.is_selecting()
-                    && app.chat.selection.get().is_some_and(|sel| sel.is_empty()))
-                .then(|| app.chat.selection.get().map(|sel| sel.anchor.line))
-                .flatten();
-                app.is_dragging_scrollbar = false;
-                app.finish_selections();
-                if let Some(line) = user_click
-                    && !app.handle_tool_click(line)
-                    && !app.handle_thought_click(line)
-                    && !app.handle_citations_click(line)
-                    && !app.handle_response_click(line)
-                {
-                    app.open_message_action_at_line(line);
-                }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if app.modal.is_none() {
+                handle_mouse_left_drag(app, mouse);
             }
-            MouseEventKind::Down(MouseButton::Right) => {
-                if app.copy_active_selection() {
-                    return;
-                }
-                if app.modal.is_none() {
-                    if app.chat.hit(mouse.column, mouse.row) {
-                        let (row_offset, _) = app.chat.offsets(mouse.column, mouse.row);
-                        if app.handle_response_right_click(app.chat_scroll() + row_offset) {
-                            return;
-                        }
-                    }
-                    // 右键档位标签：循环切换推理档位。
-                    if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
-                        app.cycle_variant().await;
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            // 单击（非拖拽出非空选区）：按命中组件分发，未命中组件时尝试打开消息操作
+            let user_click = if app.modal.is_none()
+                && app.chat.selection.is_selecting()
+                && app.chat.selection.get().is_some_and(|sel| sel.is_empty())
+            {
+                app.chat.selection.get().map(|sel| sel.anchor.line)
+            } else {
+                None
+            };
+            app.is_dragging_scrollbar = false;
+            app.finish_selections();
+            if let Some(line) = user_click
+                && !app.handle_tool_click(line)
+                && !app.handle_thought_click(line)
+                && !app.handle_citations_click(line)
+                && !app.handle_response_click(line)
+            {
+                app.open_message_action_at_line(line);
+            }
+        }
+        MouseEventKind::Down(MouseButton::Right) => {
+            if app.copy_active_selection() {
+                return;
+            }
+            if app.modal.is_none() {
+                if app.chat.hit(mouse.column, mouse.row) {
+                    let (row_offset, _) = app.chat.offsets(mouse.column, mouse.row);
+                    if app.handle_response_right_click(app.chat_scroll() + row_offset) {
                         return;
                     }
-                    if rect_hit(app.input_inner_area, mouse.column, mouse.row) {
-                        app.paste_from_clipboard();
-                    }
+                }
+                // 右键档位标签：循环切换推理档位。
+                if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
+                    app.cycle_variant().await;
+                    return;
+                }
+                if rect_hit(app.input_inner_area, mouse.column, mouse.row) {
+                    app.paste_from_clipboard();
                 }
             }
-            _ => {}
         }
+        _ => {}
+    }
+}
+
+/// 常规按键分发：弹窗独占 → 命令补全选单 → 普通编辑按键
+async fn handle_key_event(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    events: &mut mpsc::UnboundedReceiver<CrosstermEvent>,
+) {
+    // 弹窗打开时独占按键
+    if !app.modal.is_none() {
+        handle_modal_key(app, key.code).await;
         return;
     }
 
-    if let CrosstermEvent::Paste(text) = event {
-        if app.modal.is_none() {
-            app.insert_str(&text);
-        }
+    // 命令/技能建议选单交互 (Claude Code / OpenCode 风格)
+    if !app.matched_candidates.is_empty() && handle_completion_key(app, &key).await {
         return;
     }
 
-    if let CrosstermEvent::Key(key) = event {
-        if key.kind != KeyEventKind::Press {
-            return;
-        }
+    handle_normal_key(app, key, events).await;
+}
 
-        // 弹窗打开时独占按键
-        if !app.modal.is_none() {
-            handle_modal_key(app, key.code).await;
-            return;
+/// 补全选单激活时的按键处理；返回 true 表示按键已被选单消费
+async fn handle_completion_key(app: &mut App, key: &crossterm::event::KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Up => app.command_select_previous(),
+        KeyCode::Down => app.command_select_next(),
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.command_select_previous();
         }
-
-        // 常规输入交互
-        // 1. 命令/技能建议选单交互 (Claude Code / OpenCode 风格)
-        if !app.matched_candidates.is_empty() {
-            match key.code {
-                KeyCode::Up => {
-                    app.command_select_previous();
-                    return;
-                }
-                KeyCode::Down => {
-                    app.command_select_next();
-                    return;
-                }
-                KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.command_select_previous();
-                    return;
-                }
-                KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    app.command_select_next();
-                    return;
-                }
-                KeyCode::Tab => {
-                    app.complete_selected_command();
-                    return;
-                }
-                KeyCode::Enter => {
-                    if key.modifiers.contains(KeyModifiers::SHIFT)
-                        || key.modifiers.contains(KeyModifiers::ALT)
-                        || key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.command_select_next();
+        }
+        KeyCode::Tab => {
+            app.complete_selected_command();
+        }
+        KeyCode::Enter => {
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                app.matched_candidates.clear();
+                app.selected_command_index = 0;
+                app.insert_char('\n');
+                return true;
+            }
+            if let Some(candidate) = app.matched_candidates.get(app.selected_command_index) {
+                match candidate {
+                    crate::ui::command::CompletionCandidate::Command(cmd) => {
+                        app.set_input(cmd.name);
                         app.matched_candidates.clear();
                         app.selected_command_index = 0;
-                        app.insert_char('\n');
-                        return;
+                        app.submit_input().await;
                     }
-                    if let Some(candidate) = app.matched_candidates.get(app.selected_command_index)
-                    {
-                        match candidate {
-                            crate::ui::command::CompletionCandidate::Command(cmd) => {
-                                app.set_input(cmd.name);
-                                app.matched_candidates.clear();
-                                app.selected_command_index = 0;
-                                app.submit_input().await;
-                            }
-                            crate::ui::command::CompletionCandidate::Skill { name, .. } => {
-                                // 技能候选仅补全，任务描述待用户继续输入
-                                app.set_input(&format!("/{name} "));
-                            }
-                        }
+                    crate::ui::command::CompletionCandidate::Skill { name, .. } => {
+                        // 技能候选仅补全，任务描述待用户继续输入
+                        app.set_input(&format!("/{name} "));
                     }
-                    return;
                 }
-                KeyCode::Esc => {
-                    app.matched_candidates.clear();
-                    app.selected_command_index = 0;
-                    return;
-                }
-                _ => {}
             }
         }
+        KeyCode::Esc => {
+            app.matched_candidates.clear();
+            app.selected_command_index = 0;
+        }
+        _ => return false,
+    }
+    true
+}
 
-        // 2. 普通按键处理
-        match key.code {
-            // Ctrl+C 语义级联：复制选区 → 清空输入 → 中止当前轮 → 退出
-            KeyCode::Char(_) if is_ctrl_key(&key, 'c') => {
-                handle_abort_or_quit(app).await;
+/// 普通编辑按键处理
+async fn handle_normal_key(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    events: &mut mpsc::UnboundedReceiver<CrosstermEvent>,
+) {
+    match key.code {
+        // Ctrl+C 语义级联：复制选区 → 清空输入 → 中止当前轮 → 退出
+        KeyCode::Char(_) if is_ctrl_key(&key, 'c') => {
+            handle_abort_or_quit(app).await;
+        }
+        // Ctrl+A / Ctrl+E 光标首尾移动
+        KeyCode::Char(_) if is_ctrl_key(&key, 'a') => {
+            app.input.move_cursor_home();
+        }
+        KeyCode::Char(_) if is_ctrl_key(&key, 'e') => {
+            app.input.move_cursor_end();
+        }
+        // Ctrl+K / Ctrl+U 清空输入框内容
+        KeyCode::Char(_) if is_ctrl_key(&key, 'k') || is_ctrl_key(&key, 'u') => {
+            app.clear_input();
+        }
+        // 剪贴板粘贴快捷键 (Ctrl+V / Ctrl+Shift+V / Shift+Insert / ASCII 0x16)
+        KeyCode::Char(_) if is_ctrl_key(&key, 'v') => {
+            if app.modal.is_none() {
+                app.paste_from_clipboard();
             }
-            // Ctrl+A / Ctrl+E 光标首尾移动
-            KeyCode::Char(_) if is_ctrl_key(&key, 'a') => {
-                app.input.move_cursor_home();
+        }
+        KeyCode::Insert if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            if app.modal.is_none() {
+                app.paste_from_clipboard();
             }
-            KeyCode::Char(_) if is_ctrl_key(&key, 'e') => {
-                app.input.move_cursor_end();
-            }
-            // Ctrl+K / Ctrl+U 清空输入框内容
-            KeyCode::Char(_) if is_ctrl_key(&key, 'k') || is_ctrl_key(&key, 'u') => {
-                app.clear_input();
-            }
-            // 剪贴板粘贴快捷键 (Ctrl+V / Ctrl+Shift+V / Shift+Insert / ASCII 0x16)
-            KeyCode::Char(_) if is_ctrl_key(&key, 'v') => {
-                if app.modal.is_none() {
-                    app.paste_from_clipboard();
-                }
-            }
-            KeyCode::Insert if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                if app.modal.is_none() {
-                    app.paste_from_clipboard();
-                }
-            }
-            KeyCode::Enter => {
-                if key.modifiers.contains(KeyModifiers::SHIFT)
-                    || key.modifiers.contains(KeyModifiers::ALT)
-                    || key.modifiers.contains(KeyModifiers::CONTROL)
-                {
+        }
+        KeyCode::Enter => {
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT)
+                || key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                app.insert_char('\n');
+            } else {
+                let is_rapid_paste = app
+                    .last_key_input_time
+                    .map(|t| t.elapsed() < Duration::from_millis(40))
+                    .unwrap_or(false);
+
+                if is_rapid_paste {
                     app.insert_char('\n');
                 } else {
-                    let is_rapid_paste = app
-                        .last_key_input_time
-                        .map(|t| t.elapsed() < Duration::from_millis(40))
-                        .unwrap_or(false);
+                    let upcoming_event = tokio::select! {
+                        next_ev = events.recv() => next_ev,
+                        _ = tokio::time::sleep(Duration::from_millis(15)) => None,
+                    };
 
-                    if is_rapid_paste {
+                    if let Some(next_ev) = upcoming_event {
                         app.insert_char('\n');
+                        Box::pin(handle_crossterm_event(app, next_ev, events)).await;
                     } else {
-                        let upcoming_event = tokio::select! {
-                            next_ev = events.recv() => next_ev,
-                            _ = tokio::time::sleep(Duration::from_millis(15)) => None,
-                        };
-
-                        if let Some(next_ev) = upcoming_event {
-                            app.insert_char('\n');
-                            Box::pin(handle_crossterm_event(app, next_ev, events)).await;
-                        } else {
-                            app.submit_input().await;
-                        }
+                        app.submit_input().await;
                     }
                 }
             }
-            // Ctrl+J / 部分终端将 Enter 发送为裸 '\n' 控制字符
-            KeyCode::Char(_) if is_ctrl_key(&key, 'j') => {
-                app.insert_char('\n');
-            }
-            KeyCode::Tab => {
-                if app.input.trim_start().starts_with('/') {
-                    app.update_command_matches();
-                    if !app.matched_candidates.is_empty() {
-                        app.complete_selected_command();
-                    }
-                }
-            }
-            KeyCode::Char(c) => {
-                app.insert_char(c);
-            }
-            KeyCode::Backspace => {
-                app.backspace();
-            }
-            KeyCode::Delete => {
-                app.delete();
-            }
-            KeyCode::Left => {
-                app.input.move_cursor_left();
-            }
-            KeyCode::Right => {
-                app.input.move_cursor_right();
-            }
-            KeyCode::Up => {
-                let (row, _) = app.input.cursor_line_and_col();
-                if app.input.is_empty() || app.history_index.is_some() || row == 0 {
-                    if !app.prompt_history.is_empty() {
-                        app.history_previous();
-                    } else if app.input.is_empty() {
-                        app.scroll_up(2);
-                    }
-                } else {
-                    app.input.move_cursor_up();
-                }
-            }
-            KeyCode::Down => {
-                let (row, _) = app.input.cursor_line_and_col();
-                let line_count = app.input.line_count();
-                if app.history_index.is_some() {
-                    app.history_next();
-                } else if app.input.is_empty() {
-                    app.scroll_down(2);
-                } else if row + 1 < line_count {
-                    app.input.move_cursor_down();
-                }
-            }
-            KeyCode::Home => {
-                if app.input.is_empty() {
-                    app.scroll_to_top();
-                } else {
-                    app.input.move_cursor_home();
-                }
-            }
-            KeyCode::End => {
-                if app.input.is_empty() {
-                    app.scroll_to_bottom();
-                } else {
-                    app.input.move_cursor_end();
-                }
-            }
-            KeyCode::PageUp => {
-                let step = app.viewport_height.saturating_sub(2).max(5);
-                app.scroll_up(step);
-            }
-            KeyCode::PageDown => {
-                let step = app.viewport_height.saturating_sub(2).max(5);
-                app.scroll_down(step);
-            }
-            KeyCode::Esc => {
-                handle_escape(app).await;
-            }
-            _ => {}
         }
+        // Ctrl+J / 部分终端将 Enter 发送为裸 '\n' 控制字符
+        KeyCode::Char(_) if is_ctrl_key(&key, 'j') => {
+            app.insert_char('\n');
+        }
+        KeyCode::Tab => {
+            if app.input.trim_start().starts_with('/') {
+                app.update_command_matches();
+                if !app.matched_candidates.is_empty() {
+                    app.complete_selected_command();
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            app.insert_char(c);
+        }
+        KeyCode::Backspace => {
+            app.backspace();
+        }
+        KeyCode::Delete => {
+            app.delete();
+        }
+        KeyCode::Left => {
+            app.input.move_cursor_left();
+        }
+        KeyCode::Right => {
+            app.input.move_cursor_right();
+        }
+        KeyCode::Up => {
+            let (row, _) = app.input.cursor_line_and_col();
+            if app.input.is_empty() || app.history_index.is_some() || row == 0 {
+                if !app.prompt_history.is_empty() {
+                    app.history_previous();
+                } else if app.input.is_empty() {
+                    app.scroll_up(2);
+                }
+            } else {
+                app.input.move_cursor_up();
+            }
+        }
+        KeyCode::Down => {
+            let (row, _) = app.input.cursor_line_and_col();
+            let line_count = app.input.line_count();
+            if app.history_index.is_some() {
+                app.history_next();
+            } else if app.input.is_empty() {
+                app.scroll_down(2);
+            } else if row + 1 < line_count {
+                app.input.move_cursor_down();
+            }
+        }
+        KeyCode::Home => {
+            if app.input.is_empty() {
+                app.scroll_to_top();
+            } else {
+                app.input.move_cursor_home();
+            }
+        }
+        KeyCode::End => {
+            if app.input.is_empty() {
+                app.scroll_to_bottom();
+            } else {
+                app.input.move_cursor_end();
+            }
+        }
+        KeyCode::PageUp => {
+            let step = app.viewport_height.saturating_sub(2).max(5);
+            app.scroll_up(step);
+        }
+        KeyCode::PageDown => {
+            let step = app.viewport_height.saturating_sub(2).max(5);
+            app.scroll_down(step);
+        }
+        KeyCode::Esc => {
+            handle_escape(app).await;
+        }
+        _ => {}
     }
 }
 
@@ -683,10 +695,8 @@ async fn handle_modal_key(app: &mut App, code: KeyCode) {
             state.toggle_scope();
             return;
         }
-        ActiveModal::Sessions(_) if matches!(code, KeyCode::Char('d')) => {
-            if let ActiveModal::Sessions(state) = &mut app.modal {
-                state.request_delete();
-            }
+        ActiveModal::Sessions(state) if matches!(code, KeyCode::Char('d')) => {
+            state.request_delete();
             return;
         }
         // 设置弹窗：空格与 Enter 同为激活键
@@ -716,23 +726,19 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
         ModalAction::DeleteSession(id) => {
             if id == app.active_session.id {
                 app.modal = ActiveModal::None;
-                if let Err(error) = app.session_mgr.delete_session(&app.active_session).await {
-                    app.notices.push(error);
-                } else if let Err(error) = app.new_session().await {
-                    app.notices.push(error);
-                }
-            } else {
-                match app.session_mgr.get_or_load(&id).await {
-                    Ok(session) => match app.session_mgr.delete_session(&session).await {
-                        Ok(()) => {
-                            if let ActiveModal::Sessions(state) = &mut app.modal {
-                                state.remove_session(&id);
-                            }
+                app.delete_and_recreate_session().await;
+                return;
+            }
+            match app.session_mgr.get_or_load(&id).await {
+                Ok(session) => match app.session_mgr.delete_session(&session).await {
+                    Ok(()) => {
+                        if let ActiveModal::Sessions(state) = &mut app.modal {
+                            state.remove_session(&id);
                         }
-                        Err(error) => app.notices.push(error),
-                    },
+                    }
                     Err(error) => app.notices.push(error),
-                }
+                },
+                Err(error) => app.notices.push(error),
             }
         }
         ModalAction::SwitchModel(spec) => {

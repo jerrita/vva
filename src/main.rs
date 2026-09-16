@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use vva::config::{AppConfig, home_dir, load_config};
 use vva::harness::{AgentEvent, SessionManager};
-use vva::model::{Annotation, ContentPart, WebSearchAction};
+use vva::model::{Annotation, ContentPart, WebSearchAction, WebSearchCall};
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::ui::run_tui;
@@ -83,6 +83,21 @@ enum SessionAction {
     List,
     /// 查看指定会话详情、轮次与元数据
     Inspect { session_id: String },
+}
+
+/// 打印一次原生搜索调用的动作摘要（Run 流式输出与 Inspect 详情共用）
+fn print_search_action(prefix: &str, call: &WebSearchCall) {
+    match &call.action {
+        WebSearchAction::Search => println!(
+            "{prefix}[web_search] {} ({} sources)",
+            call.query,
+            call.sources.len()
+        ),
+        WebSearchAction::OpenPage { url } => println!("{prefix}[web_open] {url}"),
+        WebSearchAction::FindInPage { url, pattern } => {
+            println!("{prefix}[web_find] {url} / {pattern}")
+        }
+    }
 }
 
 #[tokio::main]
@@ -215,17 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AgentEvent::WebSearchCall(call) => {
                         in_thought = false;
                         in_text = false;
-                        match &call.action {
-                            WebSearchAction::Search => println!(
-                                "\n[web_search] {} ({} sources)",
-                                call.query,
-                                call.sources.len()
-                            ),
-                            WebSearchAction::OpenPage { url } => println!("\n[web_open] {url}"),
-                            WebSearchAction::FindInPage { url, pattern } => {
-                                println!("\n[web_find] {url} / {pattern}")
-                            }
-                        }
+                        print_search_action("\n", &call);
                     }
                     AgentEvent::ToolFinished {
                         name,
@@ -384,19 +389,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     );
                                 }
                                 ContentPart::WebSearchCall(call) => {
-                                    match &call.action {
-                                        WebSearchAction::Search => println!(
-                                            "    [web_search] {} ({} sources)",
-                                            call.query,
-                                            call.sources.len()
-                                        ),
-                                        WebSearchAction::OpenPage { url } => {
-                                            println!("    [web_open] {url}")
-                                        }
-                                        WebSearchAction::FindInPage { url, pattern } => {
-                                            println!("    [web_find] {url} / {pattern}")
-                                        }
-                                    }
+                                    print_search_action("    ", call);
                                     for src in &call.sources {
                                         println!("       - {} ({})", src.title, src.url);
                                     }

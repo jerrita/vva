@@ -100,6 +100,12 @@ fn ensure_subdir_sync(project_dir: &Path, name: &str) -> Result<PathBuf, StoreEr
     Ok(path)
 }
 
+/// 将 JSONL 记录序列化为单行写入
+fn write_record(file: &mut File, record: &JsonlRecord) -> Result<(), StoreError> {
+    writeln!(file, "{}", serde_json::to_string(record)?)?;
+    Ok(())
+}
+
 fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError> {
     let dir = project_dir(base_dir, &session.workspace_root);
     let path = dir.join(session_file_name(&session.id));
@@ -109,14 +115,12 @@ fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError
     // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
     let temp_path = path.with_extension("jsonl.tmp");
     let mut file = File::create(&temp_path)?;
-    let header_record = JsonlRecord::Header(SessionHeader::from(session));
-    let header_json = serde_json::to_string(&header_record)?;
-    writeln!(file, "{header_json}")?;
-
+    write_record(
+        &mut file,
+        &JsonlRecord::Header(SessionHeader::from(session)),
+    )?;
     for turn in &session.turns {
-        let turn_record = JsonlRecord::Turn(Box::new(turn.clone()));
-        let turn_json = serde_json::to_string(&turn_record)?;
-        writeln!(file, "{turn_json}")?;
+        write_record(&mut file, &JsonlRecord::Turn(Box::new(turn.clone())))?;
     }
 
     file.flush()?;
@@ -137,10 +141,7 @@ fn append_turn_sync(base_dir: &Path, session_id: &str, turn: &Turn) -> Result<()
         .ok_or_else(|| StoreError::NotFound(session_id.to_string()))?;
 
     let mut file = OpenOptions::new().create(false).append(true).open(&path)?;
-
-    let turn_record = JsonlRecord::Turn(Box::new(turn.clone()));
-    let turn_json = serde_json::to_string(&turn_record)?;
-    writeln!(file, "{turn_json}")?;
+    write_record(&mut file, &JsonlRecord::Turn(Box::new(turn.clone())))?;
     file.flush()?;
 
     Ok(())
@@ -233,16 +234,7 @@ fn collect_summaries(dir: &Path, summaries: &mut Vec<SessionSummary>) -> Result<
         });
         if let Some(header) = parsed_header {
             let turn_count = count_lines(&mut reader);
-            summaries.push(SessionSummary {
-                id: header.id,
-                title: header.title,
-                workspace_root: header.workspace_root,
-                created_at: header.created_at,
-                turn_count,
-                current_model: header.current_model,
-                current_variant: header.current_variant,
-                web_search: header.web_search,
-            });
+            summaries.push(SessionSummary::from_header(header, turn_count));
         }
     }
     Ok(())

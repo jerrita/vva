@@ -116,6 +116,7 @@ pub fn parse_config_str(input: &str) -> Result<AppConfig, ConfigError> {
     let interpolated = interpolate_env_vars(&stripped);
     let mut value: serde_json::Value = serde_json::from_str(&interpolated)?;
     // 在配置入口展开供应商预设，运行时只保留协议类型。
+    // glm-coding-plan 不是合法协议名，需在反序列化前归一化为 response
     if let Some(providers) = value.get_mut("providers").and_then(|v| v.as_object_mut()) {
         for provider in providers.values_mut() {
             if provider["type"] == "glm-coding-plan" {
@@ -123,20 +124,13 @@ pub fn parse_config_str(input: &str) -> Result<AppConfig, ConfigError> {
                 if provider.get("base_url").is_none() {
                     provider["base_url"] = serde_json::json!(super::GLM_CODING_PLAN_BASE_URL);
                 }
-                let mut preset = AppConfig::default();
-                preset.providers.insert(
-                    super::GLM_CODING_PLAN_PROVIDER_ID.into(),
-                    Default::default(),
-                );
-                preset.hydrate_builtin_providers();
                 let models = provider
                     .as_object_mut()
                     .unwrap()
                     .entry("models")
                     .or_insert_with(|| serde_json::json!({}));
                 if let Some(models) = models.as_object_mut() {
-                    for (id, model) in &preset.providers[super::GLM_CODING_PLAN_PROVIDER_ID].models
-                    {
+                    for (id, model) in &super::model::glm_coding_plan_preset().models {
                         models
                             .entry(id.clone())
                             .or_insert(serde_json::to_value(model)?);

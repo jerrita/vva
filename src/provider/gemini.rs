@@ -8,8 +8,8 @@ use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, Pr
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
-    Message, Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta,
-    WebSearchAction, WebSearchCall, WebSearchSource,
+    MediaSource, Message, Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition,
+    TurnMeta, WebSearchAction, WebSearchCall, WebSearchSource,
 };
 
 pub struct GeminiProvider {
@@ -98,7 +98,7 @@ impl GeminiProvider {
                                     }));
                                 }
                                 ContentPart::Image {
-                                    source: crate::model::MediaSource::Base64 { data, mime_type },
+                                    source: MediaSource::Base64 { data, mime_type },
                                     ..
                                 } => {
                                     parts_arr.push(serde_json::json!({
@@ -109,7 +109,7 @@ impl GeminiProvider {
                                     }));
                                 }
                                 ContentPart::File {
-                                    source: crate::model::MediaSource::Base64 { data, mime_type },
+                                    source: MediaSource::Base64 { data, mime_type },
                                     ..
                                 } => {
                                     parts_arr.push(serde_json::json!({

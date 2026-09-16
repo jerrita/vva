@@ -2,7 +2,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::ResponseProvider;
 
-use crate::model::{ContentPart, Role, Session, ToolDefinition};
+use crate::config::ProviderType;
+use crate::model::{ContentPart, MediaKind, MediaSource, Role, Session, ToolDefinition};
 use crate::provider::{CompletionOptions, ProviderError};
 
 impl ResponseProvider {
@@ -53,25 +54,18 @@ impl ResponseProvider {
 
         let mut input_items: Vec<serde_json::Value> = Vec::new();
 
-        // 如果存在 previous_response_id，则只需要增量发送自该 response_id 之后产生的用户和工具消息
-        let turns_to_send = if prev_id.is_some() {
-            let mut found_prev = false;
-            let mut delta = Vec::new();
-            for turn in &session.turns {
-                if found_prev {
-                    delta.push(turn);
-                } else if turn.openai_response_id() == prev_id {
-                    found_prev = true;
-                }
-            }
-            if found_prev && !delta.is_empty() {
-                delta
-            } else {
-                session.turns.iter().collect()
-            }
-        } else {
-            session.turns.iter().collect()
-        };
+        // 存在 previous_response_id 时仅增量发送该 response_id 之后的轮次；
+        // 定位不到锚点轮次或其后无新轮次时回退全量历史
+        let turns_to_send = prev_id
+            .and_then(|prev| {
+                let pos = session
+                    .turns
+                    .iter()
+                    .position(|turn| turn.openai_response_id() == Some(prev))?;
+                let delta = &session.turns[pos + 1..];
+                (!delta.is_empty()).then_some(delta)
+            })
+            .unwrap_or(&session.turns);
 
         for turn in turns_to_send {
             if turn.role == Role::Assistant
@@ -111,8 +105,8 @@ impl ResponseProvider {
                                 }
                                 ContentPart::Image { source, .. } => {
                                     let url = match source {
-                                        crate::model::MediaSource::Url { url } => url.clone(),
-                                        crate::model::MediaSource::Base64 { data, mime_type } => {
+                                        MediaSource::Url { url } => url.clone(),
+                                        MediaSource::Base64 { data, mime_type } => {
                                             format!("data:{mime_type};base64,{data}")
                                         }
                                     };
@@ -121,7 +115,7 @@ impl ResponseProvider {
                                     }));
                                 }
                                 ContentPart::File {
-                                    source: crate::model::MediaSource::Base64 { data, mime_type },
+                                    source: MediaSource::Base64 { data, mime_type },
                                     filename,
                                     ..
                                 } => {
@@ -255,19 +249,20 @@ impl ResponseProvider {
         Ok(body)
     }
 }
+
 fn tool_output(result: &crate::model::ToolResult) -> Result<serde_json::Value, ProviderError> {
     if result.attachments.is_empty() {
         return Ok(serde_json::json!(result.content));
     }
     let mut content = vec![serde_json::json!({"type": "input_text", "text": result.content})];
     for media in &result.attachments {
-        crate::config::ProviderType::Response
+        ProviderType::Response
             .require_media(media.kind, &media.mime_type)
             .map_err(ProviderError::Protocol)?;
         let data_url = format!("data:{};base64,{}", media.mime_type, media.data);
         content.push(match media.kind {
-            crate::model::MediaKind::Image => serde_json::json!({"type": "input_image", "image_url": data_url}),
-            crate::model::MediaKind::Pdf => serde_json::json!({"type": "input_file", "filename": media.filename, "file_data": data_url}),
+            MediaKind::Image => serde_json::json!({"type": "input_image", "image_url": data_url}),
+            MediaKind::Pdf => serde_json::json!({"type": "input_file", "filename": media.filename, "file_data": data_url}),
             _ => unreachable!("validated media kind"),
         });
     }

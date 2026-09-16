@@ -58,21 +58,39 @@ impl InputBuffer {
         self.selection = None;
     }
 
+    /// 字符索引 → 字节偏移（越界时取文本末尾）
+    fn byte_offset_of_char(&self, char_idx: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(self.text.len())
+    }
+
+    /// 各行首个字符的全局字符索引
+    fn line_char_starts(&self) -> Vec<usize> {
+        let mut line_starts = Vec::with_capacity(self.text.split('\n').count());
+        let mut cur_char = 0;
+        for line in self.text.split('\n') {
+            line_starts.push(cur_char);
+            cur_char += line.chars().count() + 1; // +1 对应 '\n'
+        }
+        line_starts
+    }
+
+    /// 光标所在行号（基于行首字符索引二分定位）
+    fn cursor_row(&self, line_starts: &[usize]) -> usize {
+        match line_starts.binary_search(&self.cursor_pos) {
+            Ok(idx) => idx,
+            Err(idx) => idx.saturating_sub(1),
+        }
+    }
+
     /// 删除当前选区中的文本内容；若存在有效选区并删除成功返回 true
     pub fn delete_selection(&mut self) -> bool {
         if let Some((start, end)) = self.selection_range() {
-            let start_byte = self
-                .text
-                .char_indices()
-                .nth(start)
-                .map(|(i, _)| i)
-                .unwrap_or(self.text.len());
-            let end_byte = self
-                .text
-                .char_indices()
-                .nth(end)
-                .map(|(i, _)| i)
-                .unwrap_or(self.text.len());
+            let start_byte = self.byte_offset_of_char(start);
+            let end_byte = self.byte_offset_of_char(end);
             self.text.drain(start_byte..end_byte);
             self.cursor_pos = start;
             self.selection = None;
@@ -85,18 +103,8 @@ impl InputBuffer {
     /// 获取选区选中的文本字符串
     pub fn selected_text(&self) -> Option<String> {
         self.selection_range().map(|(start, end)| {
-            let start_byte = self
-                .text
-                .char_indices()
-                .nth(start)
-                .map(|(i, _)| i)
-                .unwrap_or(self.text.len());
-            let end_byte = self
-                .text
-                .char_indices()
-                .nth(end)
-                .map(|(i, _)| i)
-                .unwrap_or(self.text.len());
+            let start_byte = self.byte_offset_of_char(start);
+            let end_byte = self.byte_offset_of_char(end);
             self.text[start_byte..end_byte].to_string()
         })
     }
@@ -120,12 +128,7 @@ impl InputBuffer {
 
     /// 计算光标当前所在的行号 (0-indexed) 以及在该行中的显示列宽度 (0-indexed，支持全角 CJK 字符)
     pub fn cursor_line_and_col(&self) -> (usize, usize) {
-        let byte_offset = self
-            .text
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(self.cursor_pos)
-            .unwrap_or(self.text.len());
+        let byte_offset = self.byte_offset_of_char(self.cursor_pos);
         let prefix = &self.text[..byte_offset];
         let lines: Vec<&str> = prefix.split('\n').collect();
         let cursor_line = lines.len().saturating_sub(1);
@@ -137,12 +140,7 @@ impl InputBuffer {
     /// 插入单字符 (支持多字节 Unicode/中文字符，自动替换选区)
     pub fn insert_char(&mut self, c: char) {
         self.delete_selection();
-        let byte_offset = self
-            .text
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(self.cursor_pos)
-            .unwrap_or(self.text.len());
+        let byte_offset = self.byte_offset_of_char(self.cursor_pos);
         self.text.insert(byte_offset, c);
         self.cursor_pos += 1;
     }
@@ -151,12 +149,7 @@ impl InputBuffer {
     pub fn insert_str(&mut self, s: &str) {
         self.delete_selection();
         let normalized = s.replace("\r\n", "\n").replace('\r', "\n");
-        let byte_offset = self
-            .text
-            .char_indices()
-            .map(|(i, _)| i)
-            .nth(self.cursor_pos)
-            .unwrap_or(self.text.len());
+        let byte_offset = self.byte_offset_of_char(self.cursor_pos);
         self.text.insert_str(byte_offset, &normalized);
         self.cursor_pos += normalized.chars().count();
     }
@@ -201,121 +194,78 @@ impl InputBuffer {
         }
     }
 
+    /// 将光标移动到指定行并按当前视觉列宽对齐
+    fn move_cursor_to_row(&mut self, line_starts: &[usize], target_row: usize) {
+        let (_, current_visual_col) = self.cursor_line_and_col();
+        let target_line = self.text.split('\n').nth(target_row).unwrap_or("");
+        let target_char_col = char_idx_for_visual_width(target_line, current_visual_col);
+        self.cursor_pos = line_starts[target_row] + target_char_col;
+    }
+
     /// 光标向上移动一行，在上一行中尽量对齐当前列的视觉显示宽度
     pub fn move_cursor_up(&mut self) {
         self.clear_selection();
-        if self.text.is_empty() {
+        let line_starts = self.line_char_starts();
+        if line_starts.len() <= 1 {
             return;
         }
-        let all_lines: Vec<&str> = self.text.split('\n').collect();
-        if all_lines.len() <= 1 {
-            return;
-        }
-
-        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
-        let mut cur_char = 0;
-        for l in &all_lines {
-            line_starts.push(cur_char);
-            cur_char += l.chars().count() + 1; // +1 对应 '\n'
-        }
-
-        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        };
-
+        let cursor_row = self.cursor_row(&line_starts);
         if cursor_row > 0 {
-            let target_row = cursor_row - 1;
-            let target_line = all_lines[target_row];
-            let (_, current_visual_col) = self.cursor_line_and_col();
-            let target_char_col = char_idx_for_visual_width(target_line, current_visual_col);
-            self.cursor_pos = line_starts[target_row] + target_char_col;
+            self.move_cursor_to_row(&line_starts, cursor_row - 1);
         }
     }
 
     /// 光标向下移动一行，在下一行中尽量对齐当前列的视觉显示宽度
     pub fn move_cursor_down(&mut self) {
         self.clear_selection();
-        if self.text.is_empty() {
+        let line_starts = self.line_char_starts();
+        if line_starts.len() <= 1 {
             return;
         }
-        let all_lines: Vec<&str> = self.text.split('\n').collect();
-        if all_lines.len() <= 1 {
-            return;
-        }
-
-        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
-        let mut cur_char = 0;
-        for l in &all_lines {
-            line_starts.push(cur_char);
-            cur_char += l.chars().count() + 1; // +1 对应 '\n'
-        }
-
-        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        };
-
-        if cursor_row + 1 < all_lines.len() {
-            let target_row = cursor_row + 1;
-            let target_line = all_lines[target_row];
-            let (_, current_visual_col) = self.cursor_line_and_col();
-            let target_char_col = char_idx_for_visual_width(target_line, current_visual_col);
-            self.cursor_pos = line_starts[target_row] + target_char_col;
+        let cursor_row = self.cursor_row(&line_starts);
+        if cursor_row + 1 < line_starts.len() {
+            self.move_cursor_to_row(&line_starts, cursor_row + 1);
         }
     }
 
     /// 光标移动到当前行行首；若已在当前行行首，则移动到整个文本最开头
     pub fn move_cursor_home(&mut self) {
         self.clear_selection();
-        if self.text.is_empty() || self.cursor_pos == 0 {
-            self.cursor_pos = 0;
+        if self.cursor_pos == 0 {
             return;
         }
-        let all_lines: Vec<&str> = self.text.split('\n').collect();
-        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
-        let mut cur_char = 0;
-        for l in &all_lines {
-            line_starts.push(cur_char);
-            cur_char += l.chars().count() + 1;
-        }
-        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        };
-        let line_start = line_starts[cursor_row];
-        if self.cursor_pos == line_start {
-            self.cursor_pos = 0;
+        let line_starts = self.line_char_starts();
+        let line_start = line_starts[self.cursor_row(&line_starts)];
+        self.cursor_pos = if self.cursor_pos == line_start {
+            0
         } else {
-            self.cursor_pos = line_start;
-        }
+            line_start
+        };
     }
 
     /// 光标移动到当前行行尾；若已在当前行行尾，则移动到整个文本最末尾
     pub fn move_cursor_end(&mut self) {
         self.clear_selection();
         let total_chars = self.text.chars().count();
-        if self.text.is_empty() || self.cursor_pos >= total_chars {
+        if self.cursor_pos >= total_chars {
             self.cursor_pos = total_chars;
             return;
         }
-        let all_lines: Vec<&str> = self.text.split('\n').collect();
-        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
-        let mut cur_char = 0;
-        for l in &all_lines {
-            line_starts.push(cur_char);
-            cur_char += l.chars().count() + 1;
-        }
-        let cursor_row = match line_starts.binary_search(&self.cursor_pos) {
-            Ok(idx) => idx,
-            Err(idx) => idx.saturating_sub(1),
-        };
-        let line_end = line_starts[cursor_row] + all_lines[cursor_row].chars().count();
-        if self.cursor_pos == line_end {
-            self.cursor_pos = total_chars;
+        let line_starts = self.line_char_starts();
+        let cursor_row = self.cursor_row(&line_starts);
+        let line_chars = self
+            .text
+            .split('\n')
+            .nth(cursor_row)
+            .map(str::chars)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        let line_end = line_starts[cursor_row] + line_chars;
+        self.cursor_pos = if self.cursor_pos == line_end {
+            total_chars
         } else {
-            self.cursor_pos = line_end;
-        }
+            line_end
+        };
     }
 
     /// 根据文本行号与目标视觉列宽度设置光标位置 (支持视口滚动、多行及 CJK 字符)，并返回字符偏移
@@ -329,16 +279,9 @@ impl InputBuffer {
             return 0;
         }
 
-        let all_lines: Vec<&str> = self.text.split('\n').collect();
-        let mut line_starts: Vec<usize> = Vec::with_capacity(all_lines.len());
-        let mut cur_char = 0;
-        for l in &all_lines {
-            line_starts.push(cur_char);
-            cur_char += l.chars().count() + 1;
-        }
-
-        let row = target_row.min(all_lines.len().saturating_sub(1));
-        let line = all_lines[row];
+        let line_starts = self.line_char_starts();
+        let row = target_row.min(line_starts.len().saturating_sub(1));
+        let line = self.text.split('\n').nth(row).unwrap_or("");
         let char_col = char_idx_for_visual_width(line, target_visual_col);
         let pos = line_starts[row] + char_col;
         self.cursor_pos = pos;

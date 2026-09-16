@@ -98,16 +98,19 @@ impl AppConfig {
 
     /// 为内置供应商预设补全 type / base_url / 模型清单。已显式声明的字段与模型不被覆盖。
     pub fn hydrate_builtin_providers(&mut self) {
+        let preset = glm_coding_plan_preset();
         for (id, cfg) in self.providers.iter_mut() {
             if !is_glm_coding_plan_provider(id, cfg.provider_type) {
                 continue;
             }
-            cfg.provider_type = Some(ProviderType::Response);
+            cfg.provider_type = preset.provider_type;
             if cfg.base_url.is_empty() {
-                cfg.base_url = GLM_CODING_PLAN_BASE_URL.to_string();
+                cfg.base_url = preset.base_url.clone();
             }
-            for (model_id, model_cfg) in glm_coding_plan_builtin_models() {
-                cfg.models.entry(model_id).or_insert(model_cfg);
+            for (model_id, model_cfg) in &preset.models {
+                cfg.models
+                    .entry(model_id.clone())
+                    .or_insert_with(|| model_cfg.clone());
             }
         }
     }
@@ -118,59 +121,62 @@ fn is_glm_coding_plan_provider(id: &str, provider_type: Option<ProviderType>) ->
         && matches!(provider_type, Some(ProviderType::Response) | None)
 }
 
-fn glm_coding_plan_builtin_models() -> HashMap<String, ModelConfig> {
+/// glm-coding-plan 内置预设：Response 协议 + 官方端点 + 内置模型清单。
+/// 配置解析 (parse_config_str) 与合并补全 (hydrate_builtin_providers) 共用此单一来源。
+pub(crate) fn glm_coding_plan_preset() -> ProviderConfig {
     let mut models = HashMap::new();
     models.insert(
         "glm-5.3".into(),
-        ModelConfig {
-            name: "GLM 5.3".into(),
-            model_type_override: None,
-            modalities: Some(ModalitiesConfig {
-                input: vec!["text".into()],
-                output: Vec::new(),
-            }),
-            reasoning: true,
-            limit: Some(ModelLimitConfig {
-                context: 1_000_000,
-                output: 128_000,
-            }),
-            variants: Some(vec!["low".into(), "high".into(), "max".into()]),
-            cost: Some(ModelCostConfig {
-                input: 1.4,
-                output: 4.4,
-                cache_read: Some(0.26),
-                cache_write: None,
-                context_over_200k: None,
-            }),
-            annotation: None,
-        },
+        glm_builtin_model("GLM 5.3", &["text"], 1.4, 4.4, 0.26),
     );
     models.insert(
         "glm-5.3-flash".into(),
-        ModelConfig {
-            name: "GLM 5.3 Flash".into(),
-            model_type_override: None,
-            modalities: Some(ModalitiesConfig {
-                input: vec!["text".into(), "image".into(), "video".into(), "pdf".into()],
-                output: Vec::new(),
-            }),
-            reasoning: true,
-            limit: Some(ModelLimitConfig {
-                context: 1_000_000,
-                output: 128_000,
-            }),
-            variants: Some(vec!["low".into(), "high".into(), "max".into()]),
-            cost: Some(ModelCostConfig {
-                input: 0.15,
-                output: 0.5,
-                cache_read: Some(0.03),
-                cache_write: None,
-                context_over_200k: None,
-            }),
-            annotation: None,
-        },
+        glm_builtin_model(
+            "GLM 5.3 Flash",
+            &["text", "image", "video", "pdf"],
+            0.15,
+            0.5,
+            0.03,
+        ),
     );
-    models
+    ProviderConfig {
+        provider_type: Some(ProviderType::Response),
+        base_url: GLM_CODING_PLAN_BASE_URL.to_string(),
+        api_key: String::new(),
+        models,
+    }
+}
+
+/// 内置模型的公共骨架：推理开启、统一限额与档位，仅名称 / 输入模态 / 单价不同
+fn glm_builtin_model(
+    name: &str,
+    input: &[&str],
+    input_cost: f64,
+    output_cost: f64,
+    cache_read_cost: f64,
+) -> ModelConfig {
+    ModelConfig {
+        name: name.into(),
+        model_type_override: None,
+        modalities: Some(ModalitiesConfig {
+            input: input.iter().map(|m| m.to_string()).collect(),
+            output: Vec::new(),
+        }),
+        reasoning: true,
+        limit: Some(ModelLimitConfig {
+            context: 1_000_000,
+            output: 128_000,
+        }),
+        variants: Some(vec!["low".into(), "high".into(), "max".into()]),
+        cost: Some(ModelCostConfig {
+            input: input_cost,
+            output: output_cost,
+            cache_read: Some(cache_read_cost),
+            cache_write: None,
+            context_over_200k: None,
+        }),
+        annotation: None,
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

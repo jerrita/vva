@@ -306,19 +306,13 @@ pub(super) fn edit_hunk_starts(diff: Option<&str>) -> Option<(usize, usize)> {
     ))
 }
 
-pub(super) fn push_patch_detail(
+/// 按行首 +/- 着色输出补丁正文，超过 cap 行时以 "..." 提示截断
+pub(super) fn push_patch_lines(
     lines: &mut Vec<Line<'static>>,
-    arguments: &str,
-    result: Option<&str>,
-    max_width: usize,
+    text: &str,
     cap: usize,
+    max_width: usize,
 ) {
-    let parsed = serde_json::from_str::<serde_json::Value>(arguments).ok();
-    let fallback = parsed
-        .as_ref()
-        .and_then(|args| json_str(args, "input"))
-        .unwrap_or(arguments);
-    let text = result.unwrap_or(fallback);
     for line in text.lines().take(cap) {
         let style = match line.as_bytes().first() {
             Some(b'+') => EDIT_INSERT,
@@ -337,6 +331,22 @@ pub(super) fn push_patch_detail(
     }
 }
 
+pub(super) fn push_patch_detail(
+    lines: &mut Vec<Line<'static>>,
+    arguments: &str,
+    result: Option<&str>,
+    max_width: usize,
+    cap: usize,
+) {
+    let parsed = serde_json::from_str::<serde_json::Value>(arguments).ok();
+    let fallback = parsed
+        .as_ref()
+        .and_then(|args| json_str(args, "input"))
+        .unwrap_or(arguments);
+    let text = result.unwrap_or(fallback);
+    push_patch_lines(lines, text, cap, max_width);
+}
+
 pub(super) fn push_edit_detail(
     lines: &mut Vec<Line<'static>>,
     arguments: &str,
@@ -349,22 +359,7 @@ pub(super) fn push_edit_detail(
     };
     if args.get("edits").is_some() {
         if let Some(result) = result {
-            for text in result.lines().take(cap) {
-                let style = match text.as_bytes().first() {
-                    Some(b'+') => EDIT_INSERT,
-                    Some(b'-') => EDIT_DELETE,
-                    _ => Style::default(),
-                };
-                push_filled_text(lines, text, style, max_width);
-            }
-            if result.lines().count() > cap {
-                push_filled_text(
-                    lines,
-                    "...",
-                    Style::default().fg(Color::DarkGray),
-                    max_width,
-                );
-            }
+            push_patch_lines(lines, result, cap, max_width);
         } else if let Some(edits) = args.get("edits").and_then(serde_json::Value::as_array) {
             for edit in edits {
                 for (field, marker, style) in [

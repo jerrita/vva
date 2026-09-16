@@ -1,7 +1,7 @@
 import type { ContentPart, Session, Turn } from '../types'
 import { CopyButton } from './CopyButton'
 import { IconFork, IconRevert } from './icons'
-import { Parts } from './Parts'
+import { Parts, mediaSourceUrl } from './Parts'
 
 /** 部件列表中的纯文本（消息原文与复制回答用） */
 export function partsText(parts: ContentPart[]): string {
@@ -208,11 +208,7 @@ function UserBubble({
                   <img
                     key={index}
                     className="bubble-img"
-                    src={
-                      part.source.kind === 'url'
-                        ? part.source.url
-                        : `data:${part.source.mime_type};base64,${part.source.data}`
-                    }
+                    src={mediaSourceUrl(part.source)}
                     alt=""
                   />
                 )

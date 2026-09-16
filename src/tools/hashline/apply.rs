@@ -2,13 +2,11 @@
 
 use super::block;
 use super::parse::{FileOp, Op, Section};
-use super::session::HashlineSession;
-use super::session::file_tag;
+use super::session::{HashlineSession, file_tag};
 use super::snapshot::report_update;
-use crate::tools::filesystem::{edit_lock, persist_edit, resolve_path};
+use crate::tools::filesystem::{edit_lock, persist_edit, resolve_path, write_new_file};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 pub(super) struct LineFile {
@@ -158,31 +156,30 @@ fn prepare_group(
     let mut spans = Vec::new();
     for (op_index, op) in group.ops.iter().enumerate() {
         if let Some(captured) = capture(op, &refs, &group.label)? {
-            write_register(captured.register, captured.lines, batch_named, anonymous)?;
+            write_register(captured.register, captured.lines, batch_named, anonymous);
         }
-        let span = op_span(
-            op,
-            &refs,
-            &group.label,
-            &snap.seen,
-            &Registers {
-                session,
-                named: batch_named,
-                anonymous,
-            },
-            op_index,
-        )
-        .map_err(|error| {
-            format!(
-                "[{}#{}] op {}: {error}",
-                group.label,
-                group.tag,
-                op_index + 1
+        spans.push(
+            op_span(
+                op,
+                &refs,
+                &group.label,
+                &snap.seen,
+                &Registers {
+                    session,
+                    named: batch_named,
+                    anonymous,
+                },
+                op_index,
             )
-        })?;
-        if let Some(span) = span {
-            spans.push(span);
-        }
+            .map_err(|error| {
+                format!(
+                    "[{}#{}] op {}: {error}",
+                    group.label,
+                    group.tag,
+                    op_index + 1
+                )
+            })?,
+        );
     }
     spans.sort_by_key(|span| (span.start, span.end));
     for pair in spans.windows(2) {
@@ -254,31 +251,12 @@ fn write_register(
     lines: Vec<String>,
     named: &mut HashMap<String, Vec<String>>,
     anonymous: &mut Option<Vec<String>>,
-) -> Result<(), String> {
+) {
     match register {
         Some(name) => {
             named.insert(name, lines);
         }
         None => *anonymous = Some(lines),
-    }
-    Ok(())
-}
-
-fn read_register(
-    register: Option<&str>,
-    session: &HashlineSession,
-    named: &HashMap<String, Vec<String>>,
-    anonymous: &Option<Vec<String>>,
-) -> Result<Vec<String>, String> {
-    match register {
-        Some(name) => named
-            .get(name)
-            .cloned()
-            .or_else(|| session.named(name).ok().flatten())
-            .ok_or_else(|| format!("not_found: register @{name} is empty; CUT into it first")),
-        None => anonymous.clone().ok_or_else(|| {
-            "not_found: anonymous register is empty; CUT without @name first".into()
-        }),
     }
 }
 
@@ -290,7 +268,17 @@ struct Registers<'a> {
 
 impl Registers<'_> {
     fn read(&self, register: Option<&str>) -> Result<Vec<String>, String> {
-        read_register(register, self.session, self.named, self.anonymous)
+        match register {
+            Some(name) => self
+                .named
+                .get(name)
+                .cloned()
+                .or_else(|| self.session.named(name).ok().flatten())
+                .ok_or_else(|| format!("not_found: register @{name} is empty; CUT into it first")),
+            None => self.anonymous.clone().ok_or_else(|| {
+                "not_found: anonymous register is empty; CUT without @name first".into()
+            }),
+        }
     }
 }
 
@@ -301,141 +289,78 @@ fn op_span(
     seen: &HashSet<u32>,
     registers: &Registers<'_>,
     op_index: usize,
-) -> Result<Option<Span>, String> {
+) -> Result<Span, String> {
     let require = |line: u32| require_seen(seen, line);
-    let span = match op {
+    let (start, end, replacement) = match op {
         Op::Replace { start, end, body } => {
             require_range(seen, *start, *end)?;
             let (lo, hi) = inclusive_range(*start, *end, lines.len())?;
-            Span {
-                start: lo,
-                end: hi,
-                replacement: body.clone(),
-                op_index,
-            }
+            (lo, hi, body.clone())
         }
         Op::ReplaceBlock { line, body } => {
             let (lo, hi) = block_span(lines, *line, path, Some(seen))?;
-            Span {
-                start: lo,
-                end: hi,
-                replacement: body.clone(),
-                op_index,
-            }
+            (lo, hi, body.clone())
         }
         Op::InsertBefore { line, body } => {
             require(*line)?;
             let at = line_index(*line, lines.len())?;
-            Span {
-                start: at,
-                end: at,
-                replacement: body.clone(),
-                op_index,
-            }
+            (at, at, body.clone())
         }
         Op::InsertAfter { line, body } => {
             require(*line)?;
             let at = line_index(*line, lines.len())? + 1;
-            Span {
-                start: at,
-                end: at,
-                replacement: body.clone(),
-                op_index,
-            }
+            (at, at, body.clone())
         }
         Op::InsertAfterBlock { line, body } => {
             let (_, at) = block_span(lines, *line, path, Some(seen))?;
-            Span {
-                start: at,
-                end: at,
-                replacement: body.clone(),
-                op_index,
-            }
+            (at, at, body.clone())
         }
         Op::Append { body } => {
             if let Some(last) = lines.len().checked_sub(1) {
                 require((last + 1) as u32)?;
             }
-            let at = lines.len();
-            Span {
-                start: at,
-                end: at,
-                replacement: body.clone(),
-                op_index,
-            }
+            (lines.len(), lines.len(), body.clone())
         }
         Op::InsertBof { body } => {
             if !lines.is_empty() {
                 require(1)?;
             }
-            Span {
-                start: 0,
-                end: 0,
-                replacement: body.clone(),
-                op_index,
-            }
+            (0, 0, body.clone())
         }
         Op::Cut { start, end, .. } => {
             require_range(seen, *start, *end)?;
             let (lo, hi) = inclusive_range(*start, *end, lines.len())?;
-            Span {
-                start: lo,
-                end: hi,
-                replacement: Vec::new(),
-                op_index,
-            }
+            (lo, hi, Vec::new())
         }
         Op::CutBlock { line, .. } => {
             let (lo, hi) = block_span(lines, *line, path, Some(seen))?;
-            Span {
-                start: lo,
-                end: hi,
-                replacement: Vec::new(),
-                op_index,
-            }
+            (lo, hi, Vec::new())
         }
         Op::PasteBefore { line, register } => {
             require(*line)?;
             let at = line_index(*line, lines.len())?;
-            Span {
-                start: at,
-                end: at,
-                replacement: registers.read(register.as_deref())?,
-                op_index,
-            }
+            (at, at, registers.read(register.as_deref())?)
         }
         Op::PasteAfter { line, register } => {
             require(*line)?;
             let at = line_index(*line, lines.len())? + 1;
-            Span {
-                start: at,
-                end: at,
-                replacement: registers.read(register.as_deref())?,
-                op_index,
-            }
+            (at, at, registers.read(register.as_deref())?)
         }
         Op::PasteEof { register } => {
             if let Some(last) = lines.len().checked_sub(1) {
                 require((last + 1) as u32)?;
             }
-            let at = lines.len();
-            Span {
-                start: at,
-                end: at,
-                replacement: registers.read(register.as_deref())?,
-                op_index,
-            }
+            (
+                lines.len(),
+                lines.len(),
+                registers.read(register.as_deref())?,
+            )
         }
         Op::PasteBof { register } => {
             if !lines.is_empty() {
                 require(1)?;
             }
-            Span {
-                start: 0,
-                end: 0,
-                replacement: registers.read(register.as_deref())?,
-                op_index,
-            }
+            (0, 0, registers.read(register.as_deref())?)
         }
         Op::PasteRange {
             start,
@@ -444,33 +369,23 @@ fn op_span(
         } => {
             require_range(seen, *start, *end)?;
             let (lo, hi) = inclusive_range(*start, *end, lines.len())?;
-            Span {
-                start: lo,
-                end: hi,
-                replacement: registers.read(Some(register))?,
-                op_index,
-            }
+            (lo, hi, registers.read(Some(register))?)
         }
         Op::PasteBlock { line, register } => {
             let (lo, hi) = block_span(lines, *line, path, Some(seen))?;
-            Span {
-                start: lo,
-                end: hi,
-                replacement: registers.read(Some(register))?,
-                op_index,
-            }
+            (lo, hi, registers.read(Some(register))?)
         }
         Op::PasteAfterBlock { line, register } => {
             let (_, at) = block_span(lines, *line, path, Some(seen))?;
-            Span {
-                start: at,
-                end: at,
-                replacement: registers.read(register.as_deref())?,
-                op_index,
-            }
+            (at, at, registers.read(register.as_deref())?)
         }
     };
-    Ok(Some(span))
+    Ok(Span {
+        start,
+        end,
+        replacement,
+        op_index,
+    })
 }
 
 fn require_seen(seen: &HashSet<u32>, line: u32) -> Result<(), String> {
@@ -613,15 +528,4 @@ fn commit_group(
             )
         }
     }
-}
-
-fn write_new_file(path: &Path, contents: &str) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| format!("Failed to create file {}: {error}", path.display()))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
-    Ok(())
 }

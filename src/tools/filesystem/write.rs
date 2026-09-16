@@ -1,11 +1,10 @@
 //! Write 工具：独占创建写。
 
 use super::parse_args;
-use super::{Tool, resolve_path};
+use super::{Tool, resolve_path, write_new_file};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::PathBuf;
 
 pub struct WriteTool {
@@ -66,13 +65,7 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         let args: WriteArgs = parse_args(arguments, "Write")?;
         let path = resolve_path(&self.working_dir, &args.path);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| format!("Failed to create file {}: {error}", path.display()))?;
-        file.write_all(args.content.as_bytes())
-            .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
+        write_new_file(&path, &args.content)?;
         if let Some(session) = self.hashline.as_ref() {
             let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
             let seen = 1..=args.content.lines().count() as u32;

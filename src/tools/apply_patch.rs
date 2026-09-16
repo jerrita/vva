@@ -1,10 +1,11 @@
 use super::Tool;
-use super::filesystem::{EditPlan, commit_text_edit, edit_lock, resolve_path};
+use super::filesystem::{
+    EditPlan, commit_text_edit, edit_lock, format_edit_result, parse_args, resolve_path,
+    write_new_file,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::fs;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const BEGIN_PATCH: &str = "*** Begin Patch";
@@ -73,7 +74,7 @@ impl UpdateChunk {
 
 fn parse_apply_patch(input: &str) -> Result<Vec<FileHunk>, String> {
     let lines: Vec<&str> = input.trim().lines().collect();
-    let lines = strip_optional_heredoc(&lines)?;
+    let lines = strip_optional_heredoc(&lines);
     if lines.first().copied() != Some(BEGIN_PATCH) {
         return Err(
             "invalid_arguments: patch must start with *** Begin Patch and end with *** End Patch"
@@ -86,14 +87,14 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FileHunk>, String> {
     parse_hunks(&lines)
 }
 
-fn strip_optional_heredoc<'a>(lines: &'a [&'a str]) -> Result<Vec<&'a str>, String> {
+fn strip_optional_heredoc<'a>(lines: &[&'a str]) -> Vec<&'a str> {
     if lines.len() >= 4
         && is_heredoc_start(lines[0])
         && lines.last().is_some_and(|line| line.ends_with("EOF"))
     {
-        Ok(lines[1..lines.len() - 1].to_vec())
+        lines[1..lines.len() - 1].to_vec()
     } else {
-        Ok(lines.to_vec())
+        lines.to_vec()
     }
 }
 
@@ -453,17 +454,6 @@ fn apply_parsed(working_dir: &Path, hunks: Vec<FileHunk>) -> Result<String, Stri
     Ok(reports.join("\n\n"))
 }
 
-fn write_new_file(path: &Path, contents: &str) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| format!("Failed to create file {}: {error}", path.display()))?;
-    file.write_all(contents.as_bytes())
-        .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
-    Ok(())
-}
-
 fn add_file(working_dir: &Path, path: &str, contents: &str) -> Result<String, String> {
     let path = resolve_path(working_dir, path);
     if path.exists() {
@@ -551,7 +541,7 @@ fn update_file(
         "Moved {} -> {}\n{}",
         src.display(),
         dest.display(),
-        super::filesystem::format_edit_result(&dest, &content, &plan, false)
+        format_edit_result(&dest, &content, &plan, false)
     ))
 }
 
@@ -598,8 +588,7 @@ Hunks start with @@ or @@ <context>. Context lines begin with a space, removals 
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: ApplyPatchArgs = serde_json::from_str(arguments)
-            .map_err(|error| format!("Invalid arguments for Edit: {error}"))?;
+        let args: ApplyPatchArgs = parse_args(arguments, "Edit")?;
         let hunks = parse_apply_patch(&args.input)?;
         let working_dir = self.working_dir.clone();
         tokio::task::spawn_blocking(move || apply_parsed(&working_dir, hunks))

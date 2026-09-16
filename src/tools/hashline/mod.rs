@@ -9,6 +9,7 @@ mod snapshot;
 mod tests;
 
 use super::Tool;
+use super::filesystem::parse_args;
 use async_trait::async_trait;
 use parse::parse_patch;
 use serde::Deserialize;
@@ -79,8 +80,7 @@ After Edit, use its new [PATH#TAG]; displayed lines outside changed ranges carry
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: HashlineArgs = serde_json::from_str(arguments)
-            .map_err(|error| format!("Invalid arguments for Edit: {error}"))?;
+        let args: HashlineArgs = parse_args(arguments, "Edit")?;
         let sections = parse_patch(&args.input)?;
         let working_dir = self.working_dir.clone();
         let session = self

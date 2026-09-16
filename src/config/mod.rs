@@ -77,28 +77,29 @@ pub fn load_config(custom_path: Option<&Path>) -> Result<AppConfig, ConfigError>
     load_config_with_workspace(custom_path, None)
 }
 
+/// 依次尝试候选路径，返回首个存在文件的配置；均不存在时为 `None`
+fn load_first_config(paths: &[PathBuf]) -> Result<Option<AppConfig>, ConfigError> {
+    for path in paths {
+        if path.exists() {
+            return Ok(Some(load_config_file(path)?));
+        }
+    }
+    Ok(None)
+}
+
 /// 支持指定 workspace 路径的配置加载与合并（项目配置覆盖全局配置）
 pub fn load_config_with_workspace(
     custom_path: Option<&Path>,
     workspace: Option<&Path>,
 ) -> Result<AppConfig, ConfigError> {
     // 1. 加载全局配置 (~/.vva/config.jsonc 或 ~/.vva/config.json)
-    let global_config = {
-        let mut global_paths = Vec::new();
-        if let Some(home) = home_dir() {
+    let global_paths: Vec<PathBuf> = home_dir()
+        .map(|home| {
             let home_vva = home.join(".vva");
-            global_paths.push(home_vva.join("config.jsonc"));
-            global_paths.push(home_vva.join("config.json"));
-        }
-        let mut loaded = None;
-        for gp in &global_paths {
-            if gp.exists() {
-                loaded = Some(load_config_file(gp)?);
-                break;
-            }
-        }
-        loaded
-    };
+            vec![home_vva.join("config.jsonc"), home_vva.join("config.json")]
+        })
+        .unwrap_or_default();
+    let global_config = load_first_config(&global_paths)?;
 
     // 2. 加载项目配置 (custom_path, VVA_CONFIG, 或 workspace/cwd 目录下的 vva.jsonc/config.jsonc 等)
     let project_config = {
@@ -116,23 +117,16 @@ pub fn load_config_with_workspace(
             let base_dir = workspace
                 .map(PathBuf::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-            let candidate_filenames = [
+            let candidates: Vec<PathBuf> = [
                 "vva.jsonc",
                 "vva.json",
                 ".vva/config.jsonc",
                 ".vva/config.json",
-            ];
-
-            let mut loaded = None;
-            for name in &candidate_filenames {
-                let p = base_dir.join(name);
-                if p.exists() {
-                    loaded = Some(load_config_file(&p)?);
-                    break;
-                }
-            }
-            loaded
+            ]
+            .iter()
+            .map(|name| base_dir.join(name))
+            .collect();
+            load_first_config(&candidates)?
         }
     };
 
@@ -142,12 +136,10 @@ pub fn load_config_with_workspace(
         (None, Some(project)) => Ok(project),
         (Some(global), None) => Ok(global),
         (None, None) => {
-            let mut searched = Vec::new();
-            if let Some(home) = home_dir() {
-                let home_vva = home.join(".vva");
-                searched.push(home_vva.join("config.jsonc").display().to_string());
-                searched.push(home_vva.join("config.json").display().to_string());
-            }
+            let mut searched: Vec<String> = global_paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect();
             searched.push("vva.jsonc".to_string());
             searched.push("config.jsonc".to_string());
             Err(ConfigError::NotFound(searched))

@@ -110,6 +110,33 @@ pub(crate) fn thought_kind(
     }
 }
 
+/// 思考正文与前缀的统一样式（历史渲染与流式草稿共用，保证两者一致）
+pub(crate) fn thought_body_style() -> Style {
+    Style::default()
+        .fg(Color::Rgb(120, 120, 120))
+        .add_modifier(Modifier::ITALIC)
+}
+
+pub(crate) fn thought_prefix_style() -> Style {
+    Style::default()
+        .fg(Color::Rgb(140, 140, 140))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// 单行 Markdown 成型：剥除排版缩进首空格并套用正文字体样式
+pub(crate) fn polish_md_line(line: &mut Line<'static>, body_style: Option<Style>) {
+    if let Some(span) = line.spans.first_mut()
+        && span.content.starts_with(' ')
+    {
+        span.content.to_mut().remove(0);
+    }
+    if let Some(style) = body_style {
+        for span in &mut line.spans {
+            span.style = span.style.patch(style);
+        }
+    }
+}
+
 pub(crate) fn append_md(
     render: &mut ChatRender<'_>,
     mut md_lines: Vec<Line<'static>>,
@@ -123,16 +150,7 @@ pub(crate) fn append_md(
         link.columns.end = link.columns.end.saturating_sub(1);
     }
     for line in &mut md_lines {
-        if let Some(span) = line.spans.first_mut()
-            && span.content.starts_with(' ')
-        {
-            span.content.to_mut().remove(0);
-        }
-        if let Some(style) = body_style {
-            for span in &mut line.spans {
-                span.style = span.style.patch(style);
-            }
-        }
+        polish_md_line(line, body_style);
     }
     render.links.extend(md_links);
     render.lines.extend(md_lines);
@@ -199,12 +217,8 @@ pub(crate) fn append_part(
             if group_start {
                 render.lines.push(Line::from(""));
             }
-            let body_style = Style::default()
-                .fg(Color::Rgb(120, 120, 120))
-                .add_modifier(Modifier::ITALIC);
-            let prefix_style = Style::default()
-                .fg(Color::Rgb(140, 140, 140))
-                .add_modifier(Modifier::BOLD);
+            let body_style = thought_body_style();
+            let prefix_style = thought_prefix_style();
 
             if group_start {
                 let kind = thought.expect("group_start implies thought kind");

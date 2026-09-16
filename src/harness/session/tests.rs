@@ -28,7 +28,7 @@ fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
         commands: commands.downgrade(),
         dirty: false,
         cli: None,
-        stop: None,
+        stop_request: None,
         notified: HashSet::new(),
         title_task: None,
         text_parts: HashMap::new(),

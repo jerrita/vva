@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::Tool;
+use super::filesystem::parse_args;
 
 /// 单条命令的执行超时
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -50,8 +51,7 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: ShellArgs = serde_json::from_str(arguments)
-            .map_err(|error| format!("Invalid arguments for Shell: {error}"))?;
+        let args: ShellArgs = parse_args(arguments, "Shell")?;
         if args.intent.trim().is_empty() {
             return Err("intent must not be empty".to_string());
         }
@@ -127,9 +127,7 @@ async fn run_shell_command(mut cmd: tokio::process::Command) -> Result<String, S
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     let mut result = String::new();
-    if !stdout.is_empty() {
-        result.push_str(&stdout);
-    }
+    result.push_str(&stdout);
     if !stderr.is_empty() {
         if !result.is_empty() {
             result.push('\n');

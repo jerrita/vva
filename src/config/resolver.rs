@@ -80,36 +80,31 @@ impl AppConfig {
             })?
         };
 
-        // 校验或确定推理强度档位 (Variant)
-        let selected_variant = if let Some(req_var) = requested_variant {
-            if req_var == "none"
-                && !model_cfg
-                    .variants
-                    .as_ref()
-                    .is_some_and(|variants| variants.iter().any(|variant| variant == req_var))
-            {
-                return Err(ConfigError::InvalidVariant {
-                    variant: req_var.to_string(),
-                    model: model_id.clone(),
-                    valid: model_cfg.variants.clone().unwrap_or_default(),
-                });
-            }
-            if let Some(valid_vars) = &model_cfg.variants {
-                if !valid_vars.iter().any(|v| v == req_var) {
+        // 校验或确定推理强度档位 (Variant)：
+        // 显式清单时逐项匹配；未声明清单时按 reasoning 开关决定是否透传
+        let selected_variant = match (requested_variant, &model_cfg.variants) {
+            (None, _) => None,
+            (Some(req), Some(valid)) => {
+                if !valid.iter().any(|v| v == req) {
                     return Err(ConfigError::InvalidVariant {
-                        variant: req_var.to_string(),
+                        variant: req.to_string(),
                         model: model_id.clone(),
-                        valid: valid_vars.clone(),
+                        valid: valid.clone(),
                     });
                 }
-                Some(req_var.to_string())
-            } else if model_cfg.reasoning {
-                Some(req_var.to_string())
-            } else {
-                None
+                Some(req.to_string())
             }
-        } else {
-            None
+            // 未声明清单时 "none" 是保留值，其余档位仅在推理模型上透传
+            (Some(req), None) => {
+                if req == "none" {
+                    return Err(ConfigError::InvalidVariant {
+                        variant: req.to_string(),
+                        model: model_id.clone(),
+                        valid: Vec::new(),
+                    });
+                }
+                model_cfg.reasoning.then(|| req.to_string())
+            }
         };
 
         let full_spec = format!("{provider_id}/{model_id}");

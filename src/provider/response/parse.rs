@@ -1,7 +1,7 @@
 use super::ResponseProvider;
 use super::search::project_web_search_call;
 use crate::provider::common::{
-    require_array, require_bool, require_str, require_u64, require_value,
+    from_value, require_array, require_bool, require_str, require_u64, require_value,
 };
 
 use crate::model::{
@@ -24,11 +24,7 @@ impl ResponseProvider {
 
         let raw_id = require_str(&json, "id")?;
 
-        let response_id = if is_stored {
-            Some(raw_id.to_string())
-        } else {
-            None
-        };
+        let response_id = is_stored.then(|| raw_id.to_string());
 
         let status = require_str(&json, "status")?.to_string();
 
@@ -44,7 +40,7 @@ impl ResponseProvider {
         }
 
         let previous_response_id = if is_stored {
-            json["previous_response_id"].as_str().map(|s| s.to_string())
+            json["previous_response_id"].as_str().map(str::to_string)
         } else {
             None
         };
@@ -55,10 +51,7 @@ impl ResponseProvider {
 
         let mut native_output_items = Vec::with_capacity(output_items.len());
         for item in output_items {
-            let native_item: ResponseOutputItem =
-                serde_json::from_value(item.clone()).map_err(|e| {
-                    ProviderError::Protocol(format!("Invalid Responses API output item: {e}"))
-                })?;
+            let native_item: ResponseOutputItem = from_value(item, "Responses API output item")?;
             native_output_items.push(native_item);
         }
 

@@ -1,6 +1,15 @@
-use super::App;
+use super::{App, ToolExpand};
 use crate::ui::history::compute_stats;
 use crate::ui::modals::*;
+
+/// 工具块无覆盖值时的默认展示档位：变更类工具直接全文，其余预览
+fn default_tool_mode(full_only: bool) -> ToolExpand {
+    if full_only {
+        ToolExpand::Full
+    } else {
+        ToolExpand::Preview
+    }
+}
 
 impl App {
     pub fn refresh_view(&mut self) {
@@ -61,6 +70,17 @@ impl App {
             .await?;
         self.attach_session(handle);
         Ok(())
+    }
+
+    /// 删除当前会话并以原配置新建（/clear 命令与会话弹窗删除共用）
+    pub async fn delete_and_recreate_session(&mut self) {
+        if let Err(error) = self.session_mgr.delete_session(&self.active_session).await {
+            self.notices.push(error);
+            return;
+        }
+        if let Err(error) = self.new_session().await {
+            self.notices.push(error);
+        }
     }
 
     pub async fn open_sessions_modal(&mut self) {
@@ -227,6 +247,14 @@ impl App {
         self.refresh_view();
     }
 
+    /// 读取工具块的生效展示档位（覆盖值优先，缺省按工具类别）
+    fn tool_expand_at(&self, id: &str, full_only: bool) -> ToolExpand {
+        self.tool_expand
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| default_tool_mode(full_only))
+    }
+
     /// 单击工具标题行隐藏内容块；隐藏后再次单击恢复默认展示。Shell 预览块单击可展开全文。
     pub fn handle_tool_click(&mut self, line: usize) -> bool {
         let Some(hit) = self.chat_cache.tool_hit_at(line) else {
@@ -235,31 +263,17 @@ impl App {
         let id = hit.id.clone();
         let truncated = hit.truncated;
         let full_only = hit.full_only;
+        let mode = self.tool_expand_at(&id, full_only);
         if hit.contains_header(line) {
-            let mode = self.tool_expand.get(&id).copied().unwrap_or(if full_only {
-                super::ToolExpand::Full
+            if mode == ToolExpand::Hidden {
+                self.tool_expand.insert(id, default_tool_mode(full_only));
             } else {
-                super::ToolExpand::Preview
-            });
-            if mode == super::ToolExpand::Hidden {
-                let default = if full_only {
-                    super::ToolExpand::Full
-                } else {
-                    super::ToolExpand::Preview
-                };
-                self.tool_expand.insert(id, default);
-            } else {
-                self.tool_expand.insert(id, super::ToolExpand::Hidden);
+                self.tool_expand.insert(id, ToolExpand::Hidden);
             }
             return true;
         }
-        let mode = self.tool_expand.get(&id).copied().unwrap_or(if full_only {
-            super::ToolExpand::Full
-        } else {
-            super::ToolExpand::Preview
-        });
-        if mode == super::ToolExpand::Preview && truncated {
-            self.tool_expand.insert(id, super::ToolExpand::Full);
+        if mode == ToolExpand::Preview && truncated {
+            self.tool_expand.insert(id, ToolExpand::Full);
         }
         true
     }
@@ -273,26 +287,18 @@ impl App {
             return false;
         }
         let id = hit.id.clone();
-        let mode = self
-            .tool_expand
-            .get(&id)
-            .copied()
-            .unwrap_or(if hit.full_only {
-                super::ToolExpand::Full
-            } else {
-                super::ToolExpand::Preview
-            });
+        let mode = self.tool_expand_at(&id, hit.full_only);
         match mode {
-            super::ToolExpand::Full if hit.full_only => {
-                self.tool_expand.insert(id, super::ToolExpand::Hidden);
+            ToolExpand::Full if hit.full_only => {
+                self.tool_expand.insert(id, ToolExpand::Hidden);
             }
-            super::ToolExpand::Full => {
-                self.tool_expand.insert(id, super::ToolExpand::Preview);
+            ToolExpand::Full => {
+                self.tool_expand.insert(id, ToolExpand::Preview);
             }
-            super::ToolExpand::Preview => {
-                self.tool_expand.insert(id, super::ToolExpand::Hidden);
+            ToolExpand::Preview => {
+                self.tool_expand.insert(id, ToolExpand::Hidden);
             }
-            super::ToolExpand::Hidden => {}
+            ToolExpand::Hidden => {}
         }
         true
     }

@@ -1,6 +1,13 @@
-import type { Annotation, ContentPart, ToolCall, ToolResult, WebSearchCall } from '../types'
+import type { Annotation, ContentPart, MediaSource, ToolCall, ToolResult, WebSearchCall } from '../types'
 import { IconFile } from './icons'
 import { Markdown } from './Markdown'
+
+/** 图片数据源地址：URL 直连或 Base64 data URL */
+export function mediaSourceUrl(source: MediaSource): string {
+  return source.kind === 'url'
+    ? source.url
+    : `data:${source.mime_type};base64,${source.data}`
+}
 
 function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max)}…` : text
@@ -79,6 +86,17 @@ interface ToolDetail {
   shellCommand?: string
 }
 
+/** Glob/Grep 结果中的匹配行数：非空行且排除截断标记 */
+function resultMatchCount(result: ToolResult): number {
+  return result.content
+    .split('\n')
+    .filter(line => line.trim() !== '' && line !== '[results truncated]').length
+}
+
+function matchSuffix(count: number): string {
+  return `(${count} ${count === 1 ? 'match' : 'matches'})`
+}
+
 function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: string): ToolDetail {
   const rel = (path: string) => relativePath(path, workspace)
   const args = parseArgs(call.arguments)
@@ -139,11 +157,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     case 'Glob': {
       const pattern = str(args.pattern) ?? truncate(call.arguments, 88)
       if (result && !result.is_error) {
-        const count = result.content
-          .split('\n')
-          .filter(line => line.trim() !== '' && line !== '[results truncated]').length
-        const noun = count === 1 ? 'match' : 'matches'
-        return { text: `"${pattern}" (${count} ${noun})` }
+        return { text: `"${pattern}" ${matchSuffix(resultMatchCount(result))}` }
       }
       return { text: `"${pattern}"` }
     }
@@ -162,11 +176,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
           : null
       const target = loc ? `${loc}, "${pattern}"` : `"${pattern}"`
       if (result && !result.is_error) {
-        const count = result.content
-          .split('\n')
-          .filter(line => line.trim() !== '' && line !== '[results truncated]').length
-        const noun = count === 1 ? 'match' : 'matches'
-        return { text: `${target} (${count} ${noun})` }
+        return { text: `${target} ${matchSuffix(resultMatchCount(result))}` }
       }
       return { text: target }
     }
@@ -366,15 +376,7 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
       return <WebSearchView call={part} expanded={expanded} />
     case 'image':
       return (
-        <img
-          className="part-image"
-          src={
-            part.source.kind === 'url'
-              ? part.source.url
-              : `data:${part.source.mime_type};base64,${part.source.data}`
-          }
-          alt=""
-        />
+        <img className="part-image" src={mediaSourceUrl(part.source)} alt="" />
       )
   }
 }

@@ -11,7 +11,8 @@ pub(super) struct SessionTask {
     /// 流式增量只置脏，由 drive 的节流 tick 或结构性变化触发发布
     pub(super) dirty: bool,
     pub(super) cli: Option<mpsc::Sender<AgentEvent>>,
-    pub(super) stop: Option<(bool, Reply)>,
+    /// 待处理的停止请求 (是否删除, 应答)，当前轮次结束后执行
+    pub(super) stop_request: Option<(bool, Reply)>,
     pub(super) notified: HashSet<String>,
     pub(super) title_task: Option<tokio::task::JoinHandle<()>>,
     /// 响应内文本标识到草稿部件的映射，供增量与引用共同定位。
@@ -19,6 +20,89 @@ pub(super) struct SessionTask {
     pub(super) ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
     pub(super) ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
     pub(super) pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
+}
+
+/// 提交前校验附件：图片先过输入能力，File 校验 MIME 一致性
+fn validate_attachments(engine: &AgentEngine, images: &[ContentPart]) -> Result<(), String> {
+    for image in images {
+        if let ContentPart::Image { source, mime_type } = image {
+            let mime = match source {
+                MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
+                MediaSource::Url { .. } => mime_type.as_deref(),
+            };
+            match mime {
+                Some(mime) => engine
+                    .inputs
+                    .require(crate::model::MediaKind::Image, mime)?,
+                None => {
+                    if !engine
+                        .inputs
+                        .modalities
+                        .iter()
+                        .any(|input| input == "image")
+                    {
+                        return Err(format!(
+                            "Model '{}' does not support image input",
+                            engine.inputs.model
+                        ));
+                    }
+                }
+            }
+        } else if let ContentPart::File {
+            source: MediaSource::Base64 { mime_type, .. },
+            mime_type: declared_mime,
+            ..
+        } = image
+        {
+            if declared_mime != mime_type {
+                return Err("File MIME type does not match its source".into());
+            }
+            engine
+                .inputs
+                .require(crate::model::MediaKind::Pdf, mime_type)?;
+        }
+    }
+    Ok(())
+}
+
+/// Read 工具命中工作空间内子目录 AGENTS.md 时返回待注入的 (路径, 正文)；
+/// 会话已载入同路径或本轮已排队的文件跳过。
+fn collect_on_demand_agents(
+    session: &Session,
+    call: &crate::model::ToolCall,
+    result: &crate::model::ToolResult,
+    pending: &[(PathBuf, String)],
+) -> Option<(PathBuf, String)> {
+    if call.name != "Read" || result.is_error {
+        return None;
+    }
+    let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;
+    let path_str = args.get("path").and_then(|p| p.as_str())?;
+    let file_path = crate::tools::filesystem::resolve_path(&session.workspace_root, path_str);
+    let agents_path = crate::system::find_directory_agents_md(&session.workspace_root, &file_path)?;
+    let ws_canonical = session
+        .workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| session.workspace_root.clone());
+    let agents_canonical = agents_path
+        .canonicalize()
+        .unwrap_or_else(|_| agents_path.clone());
+    let rel_path = agents_canonical
+        .strip_prefix(&ws_canonical)
+        .unwrap_or(&agents_path)
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let already_in_session = crate::system::session_contains_agents_md(session, &rel_path);
+    let already_pending = pending.iter().any(|(p, _)| p == &agents_path);
+    if already_in_session || already_pending {
+        return None;
+    }
+    let content = std::fs::read_to_string(&agents_path).ok()?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    Some((agents_path, content))
 }
 
 impl SessionTask {
@@ -33,6 +117,12 @@ impl SessionTask {
         if self.dirty {
             self.publish();
         }
+    }
+
+    /// 用修改后的会话替换视图并发布快照
+    fn replace_session(&mut self, session: Session) {
+        self.view.session = Arc::new(session);
+        self.publish();
     }
 
     fn text_part_index(&mut self, text_id: &str, relocate: bool) -> usize {
@@ -192,8 +282,7 @@ impl SessionTask {
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        self.view.session = Arc::new(session);
-        self.publish();
+        self.replace_session(session);
         Ok(())
     }
 
@@ -207,8 +296,7 @@ impl SessionTask {
             .save_header(&session)
             .await
             .map_err(|e| e.to_string())?;
-        self.view.session = Arc::new(session);
-        self.publish();
+        self.replace_session(session);
         Ok(())
     }
 
@@ -230,9 +318,8 @@ impl SessionTask {
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        self.view.session = Arc::new(session);
         self.view.draft.clear();
-        self.publish();
+        self.replace_session(session);
         Ok(())
     }
 
@@ -257,95 +344,10 @@ impl SessionTask {
             skills.clone(),
         )?;
         // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
-        for image in &images {
-            if let ContentPart::Image { source, mime_type } = image {
-                let mime = match source {
-                    MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
-                    MediaSource::Url { .. } => mime_type.as_deref(),
-                };
-                match mime {
-                    Some(mime) => engine
-                        .inputs
-                        .require(crate::model::MediaKind::Image, mime)?,
-                    None => {
-                        if !engine
-                            .inputs
-                            .modalities
-                            .iter()
-                            .any(|input| input == "image")
-                        {
-                            return Err(format!(
-                                "Model '{}' does not support image input",
-                                engine.inputs.model
-                            ));
-                        }
-                    }
-                }
-            } else if let ContentPart::File {
-                source: MediaSource::Base64 { mime_type, .. },
-                mime_type: declared_mime,
-                ..
-            } = image
-            {
-                if declared_mime != mime_type {
-                    return Err("File MIME type does not match its source".into());
-                }
-                engine
-                    .inputs
-                    .require(crate::model::MediaKind::Pdf, mime_type)?;
-            }
-        }
+        validate_attachments(&engine, &images)?;
         let generate = self.view.session.title.is_none();
         if !self.view.persisted {
-            let mut session = (*self.view.session).clone();
-            let workspace = session.workspace_root.clone();
-            let scratch = self
-                .store
-                .ensure_scratch(&workspace)
-                .await
-                .map_err(|e| e.to_string())?;
-            let (system, global_agents, project_agents) = tokio::task::spawn_blocking(move || {
-                let system = crate::system::build_system_prompt(&workspace, &scratch);
-                let global = crate::system::load_global_agents_md();
-                let project = crate::system::load_project_agents_md(&workspace);
-                (system, global, project)
-            })
-            .await
-            .map_err(|e| e.to_string())?;
-
-            session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
-
-            let mut loaded_canonical = Vec::new();
-            if let Some((path, content)) = global_agents {
-                if let Ok(c) = path.canonicalize() {
-                    loaded_canonical.push(c);
-                }
-                let reminder = crate::system::format_global_agents_reminder(&path, &content);
-                session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
-            }
-            if let Some((path, content)) = project_agents {
-                let is_dup = path
-                    .canonicalize()
-                    .ok()
-                    .is_some_and(|c| loaded_canonical.contains(&c));
-                if !is_dup {
-                    let reminder = crate::system::format_project_agents_reminder(&path, &content);
-                    session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
-                }
-            }
-            if !skills.is_empty() {
-                let reminder = crate::system::format_skills_reminder(&skills);
-                session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
-            }
-            if generate {
-                session.title = Some(crate::model::provisional_title(prompt));
-            }
-            self.store
-                .save_header(&session)
-                .await
-                .map_err(|e| e.to_string())?;
-            self.view.session = Arc::new(session);
-            self.view.persisted = true;
+            self.persist_new_session(&skills, prompt, generate).await?;
         }
         self.view.draft.clear();
         let mut parts = images;
@@ -360,22 +362,86 @@ impl SessionTask {
         self.view.state = RunState::Thinking;
         self.publish();
         if generate {
-            let config = self.config.clone();
-            let model = self.view.session.current_model.clone();
-            let prompt = prompt.to_string();
-            let commands = self.commands.clone();
-            self.title_task = Some(tokio::spawn(async move {
-                match generate_title(&config, &model, &prompt).await {
-                    Ok(title) => {
-                        if let Some(tx) = commands.upgrade() {
-                            let _ = tx.send(Command::Title(title)).await;
-                        }
-                    }
-                    Err(error) => tracing::warn!("Title generation failed: {error}"),
-                }
-            }));
+            self.spawn_title_task(prompt);
         }
         Ok(engine)
+    }
+
+    /// 首次落盘：组装 System Prompt / AGENTS.md / 技能清单轮次并写入 Header
+    async fn persist_new_session(
+        &mut self,
+        skills: &[crate::skills::Skill],
+        prompt: &str,
+        generate: bool,
+    ) -> Result<(), String> {
+        let mut session = (*self.view.session).clone();
+        let workspace = session.workspace_root.clone();
+        let scratch = self
+            .store
+            .ensure_scratch(&workspace)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (system, global_agents, project_agents) = tokio::task::spawn_blocking(move || {
+            let system = crate::system::build_system_prompt(&workspace, &scratch);
+            let global = crate::system::load_global_agents_md();
+            let project = crate::system::load_project_agents_md(&workspace);
+            (system, global, project)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+        session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
+
+        let mut loaded_canonical = Vec::new();
+        if let Some((path, content)) = global_agents {
+            if let Ok(c) = path.canonicalize() {
+                loaded_canonical.push(c);
+            }
+            let reminder = crate::system::format_global_agents_reminder(&path, &content);
+            session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
+        }
+        if let Some((path, content)) = project_agents {
+            let is_dup = path
+                .canonicalize()
+                .ok()
+                .is_some_and(|c| loaded_canonical.contains(&c));
+            if !is_dup {
+                let reminder = crate::system::format_project_agents_reminder(&path, &content);
+                session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
+            }
+        }
+        if !skills.is_empty() {
+            let reminder = crate::system::format_skills_reminder(skills);
+            session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
+        }
+        if generate {
+            session.title = Some(crate::model::provisional_title(prompt));
+        }
+        self.store
+            .save_header(&session)
+            .await
+            .map_err(|e| e.to_string())?;
+        self.view.session = Arc::new(session);
+        self.view.persisted = true;
+        Ok(())
+    }
+
+    /// 后台小模型生成正式标题，完成后经 Title 命令回写会话
+    fn spawn_title_task(&mut self, prompt: &str) {
+        let config = self.config.clone();
+        let model = self.view.session.current_model.clone();
+        let prompt = prompt.to_string();
+        let commands = self.commands.clone();
+        self.title_task = Some(tokio::spawn(async move {
+            match generate_title(&config, &model, &prompt).await {
+                Ok(title) => {
+                    if let Some(tx) = commands.upgrade() {
+                        let _ = tx.send(Command::Title(title)).await;
+                    }
+                }
+                Err(error) => tracing::warn!("Title generation failed: {error}"),
+            }
+        }));
     }
 
     /// 网络与工具等待期间处理设置和取消；磁盘提交在本任务中顺序完成。
@@ -399,21 +465,41 @@ impl SessionTask {
                 Some(request) = self.ask_user_rx.recv() => self.receive_user_question(request).await,
                 _ = publish_tick.tick() => self.publish_throttled(),
                 command = commands.recv() => match command {
-                    Some(Command::Configure { model, variant, search, reply }) => { let _ = reply.send(self.configure(model, variant, search).await); }
-                    Some(Command::Title(title)) => if let Err(error) = self.title(title).await { self.event(AgentEvent::Notice(error)).await; },
+                    Some(Command::Configure { model, variant, search, reply }) => {
+                        self.handle_configure(model, variant, search, reply).await;
+                    }
+                    Some(Command::Title(title)) => self.handle_title(title).await,
                     Some(Command::Submit { reply, .. }) | Some(Command::Revert { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
                     Some(Command::AnswerUser { request_id, answers, reply }) => {
                         let _ = reply.send(self.answer_user(request_id, answers).await);
                     }
                     Some(Command::Stop { delete, reply }) => {
                         self.cancel_pending_user_question();
-                        self.stop = Some((delete, reply));
+                        self.stop_request = Some((delete, reply));
                         self.publish_throttled();
                         return None;
                     }
                     None => { self.publish_throttled(); return None; }
                 }
             }
+        }
+    }
+
+    /// Configure 命令在运行中 (drive) 与空闲 (run) 两条路径共用同一处理
+    async fn handle_configure(
+        &mut self,
+        model: Option<String>,
+        variant: Option<Option<String>>,
+        search: Option<bool>,
+        reply: Reply,
+    ) {
+        let _ = reply.send(self.configure(model, variant, search).await);
+    }
+
+    /// Title 命令在运行中 (drive) 与空闲 (run) 两条路径共用同一处理
+    async fn handle_title(&mut self, title: String) {
+        if let Err(error) = self.title(title).await {
+            self.event(AgentEvent::Notice(error)).await;
         }
     }
 
@@ -501,81 +587,7 @@ impl SessionTask {
             else {
                 return Ok(false);
             };
-            let mut on_demand_agents = Vec::new();
-            for (call, mut result) in calls.into_iter().zip(results) {
-                // Configure can run while tools are reading; validate before committing their media.
-                if !result.attachments.is_empty() {
-                    let inputs = self
-                        .config
-                        .resolve_model(&self.view.session.current_model, None)
-                        .map_err(|error| error.to_string())?
-                        .input_capabilities();
-                    if let Some(error) = result
-                        .attachments
-                        .iter()
-                        .find_map(|media| inputs.require(media.kind, &media.mime_type).err())
-                    {
-                        result = crate::model::ToolResult::error(&call.id, error);
-                    }
-                }
-                self.event(AgentEvent::ToolFinished {
-                    name: call.name.clone(),
-                    result: result.content.clone(),
-                    is_error: result.is_error,
-                })
-                .await;
-                self.append(Turn::new(
-                    Role::Tool,
-                    vec![Message::tool_result(result.clone())],
-                ))
-                .await?;
-
-                if call.name == "Read"
-                    && !result.is_error
-                    && let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
-                    && let Some(path_str) = args.get("path").and_then(|p| p.as_str())
-                {
-                    let file_path = crate::tools::filesystem::resolve_path(
-                        &self.view.session.workspace_root,
-                        path_str,
-                    );
-                    if let Some(agents_path) = crate::system::find_directory_agents_md(
-                        &self.view.session.workspace_root,
-                        &file_path,
-                    ) {
-                        let ws_canonical = self
-                            .view
-                            .session
-                            .workspace_root
-                            .canonicalize()
-                            .unwrap_or_else(|_| self.view.session.workspace_root.clone());
-                        let agents_canonical = agents_path
-                            .canonicalize()
-                            .unwrap_or_else(|_| agents_path.clone());
-                        let rel_path = agents_canonical
-                            .strip_prefix(&ws_canonical)
-                            .unwrap_or(&agents_path)
-                            .to_string_lossy()
-                            .replace('\\', "/");
-
-                        let already_in_session = crate::system::session_contains_agents_md(
-                            &self.view.session,
-                            &rel_path,
-                        );
-                        let already_pending =
-                            on_demand_agents.iter().any(|(p, _)| p == &agents_path);
-
-                        if !already_in_session
-                            && !already_pending
-                            && let Ok(content) = std::fs::read_to_string(&agents_path)
-                            && !content.trim().is_empty()
-                        {
-                            on_demand_agents.push((agents_path, content));
-                        }
-                    }
-                }
-            }
-
+            let on_demand_agents = self.commit_tool_results(calls, results).await?;
             for (agents_path, content) in on_demand_agents {
                 let reminder = crate::system::format_directory_agents_reminder(
                     &self.view.session.workspace_root,
@@ -588,6 +600,51 @@ impl SessionTask {
         }
     }
 
+    /// 逐个提交工具结果：附件复验 → ToolFinished 事件 → Tool 轮次落盘，
+    /// 返回本轮待注入的子目录 AGENTS.md 清单。
+    async fn commit_tool_results(
+        &mut self,
+        calls: Vec<crate::model::ToolCall>,
+        results: Vec<crate::model::ToolResult>,
+    ) -> Result<Vec<(PathBuf, String)>, String> {
+        let mut on_demand_agents = Vec::new();
+        for (call, mut result) in calls.into_iter().zip(results) {
+            // Configure can run while tools are reading; validate before committing their media.
+            if !result.attachments.is_empty() {
+                let inputs = self
+                    .config
+                    .resolve_model(&self.view.session.current_model, None)
+                    .map_err(|error| error.to_string())?
+                    .input_capabilities();
+                if let Some(error) = result
+                    .attachments
+                    .iter()
+                    .find_map(|media| inputs.require(media.kind, &media.mime_type).err())
+                {
+                    result = crate::model::ToolResult::error(&call.id, error);
+                }
+            }
+            self.event(AgentEvent::ToolFinished {
+                name: call.name.clone(),
+                result: result.content.clone(),
+                is_error: result.is_error,
+            })
+            .await;
+            self.append(Turn::new(
+                Role::Tool,
+                vec![Message::tool_result(result.clone())],
+            ))
+            .await?;
+
+            if let Some(agents) =
+                collect_on_demand_agents(&self.view.session, &call, &result, &on_demand_agents)
+            {
+                on_demand_agents.push(agents);
+            }
+        }
+        Ok(on_demand_agents)
+    }
+
     async fn receive_user_question(&mut self, request: crate::tools::ask_user::AskUserRequest) {
         if self.pending_user_question.is_some() {
             let _ = request.response.send(Err(
@@ -595,16 +652,10 @@ impl SessionTask {
             ));
             return;
         }
-        self.view.pending_user_question = Some(request.prompt.clone());
+        let prompt = request.prompt.clone();
+        self.view.pending_user_question = Some(prompt.clone());
         self.pending_user_question = Some(request);
-        self.event(AgentEvent::AskUser(
-            self.view
-                .pending_user_question
-                .as_ref()
-                .expect("pending question set")
-                .clone(),
-        ))
-        .await;
+        self.event(AgentEvent::AskUser(prompt)).await;
     }
 
     async fn answer_user(
@@ -692,7 +743,7 @@ impl SessionTask {
                         Err(error) => self.event(AgentEvent::Error(error)).await,
                     }
                     self.cli = None;
-                    if let Some((delete, reply)) = self.stop.take()
+                    if let Some((delete, reply)) = self.stop_request.take()
                         && self.stop(delete, reply).await
                     {
                         break;
@@ -704,13 +755,9 @@ impl SessionTask {
                     search,
                     reply,
                 } => {
-                    let _ = reply.send(self.configure(model, variant, search).await);
+                    self.handle_configure(model, variant, search, reply).await;
                 }
-                Command::Title(title) => {
-                    if let Err(error) = self.title(title).await {
-                        self.event(AgentEvent::Notice(error)).await;
-                    }
-                }
+                Command::Title(title) => self.handle_title(title).await,
                 Command::Revert { turn_index, reply } => {
                     let _ = reply.send(self.revert(turn_index).await);
                 }

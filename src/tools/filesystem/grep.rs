@@ -110,11 +110,10 @@ Returns path:line: text with 1-indexed line numbers, sorted by file modification
             let Ok(content) = fs::read_to_string(&path) else {
                 continue;
             };
-            let all_lines: Vec<&str> = content.lines().collect();
             if self.editor == EditorKind::Hashline {
                 let mut clipped = Vec::new();
                 let mut truncated = false;
-                for (index, line) in all_lines.iter().copied().enumerate() {
+                for (index, line) in content.lines().enumerate() {
                     if !regex.is_match(line) {
                         continue;
                     }
@@ -145,7 +144,7 @@ Returns path:line: text with 1-indexed line numbers, sorted by file modification
                 }
                 continue;
             }
-            for (index, line) in all_lines.iter().copied().enumerate() {
+            for (index, line) in content.lines().enumerate() {
                 if regex.is_match(line) {
                     if match_count == MAX_RESULTS {
                         return Ok(format!("{}\n[results truncated]", results.join("\n")));

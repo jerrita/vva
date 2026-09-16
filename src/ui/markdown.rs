@@ -189,22 +189,14 @@ pub fn preprocess_cjk_markdown(input: &str) -> String {
     let mut in_code_block = false;
 
     for line in input.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
+        if line.trim().starts_with("```") {
             in_code_block = !in_code_block;
-            result.push_str(line);
+        } else if !in_code_block {
+            result.push_str(&normalize_cjk_bold_in_line(line));
             result.push('\n');
             continue;
         }
-
-        if in_code_block {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-
-        let processed = normalize_cjk_bold_in_line(line);
-        result.push_str(&processed);
+        result.push_str(line);
         result.push('\n');
     }
 
@@ -308,6 +300,312 @@ pub(crate) fn strippable_line(line: &Line<'_>) -> bool {
     line.spans.is_empty() || (line.spans.len() == 1 && line.spans[0].content.trim().is_empty())
 }
 
+/// 单次 Markdown 渲染的块级状态与输出缓冲
+struct MarkdownRenderer {
+    max_width: usize,
+    /// 本次调用之前已有输出（影响标题与代码块前的空行判定）
+    preceded: bool,
+    output_lines: Vec<Line<'static>>,
+    links: MarkdownLinks,
+    bold: bool,
+    italic: bool,
+    strikethrough: bool,
+    current_heading_level: Option<HeadingLevel>,
+    list_stack: Vec<Option<u64>>,
+    in_blockquote: bool,
+    in_code_block: bool,
+    code_block_lang: String,
+    code_block_lines: Vec<String>,
+    in_table: bool,
+    table_rows: Vec<Vec<String>>,
+    current_row: Vec<String>,
+    current_cell: String,
+    /// 普通行 Span 收集器
+    pending_spans: Vec<Span<'static>>,
+}
+
+impl MarkdownRenderer {
+    fn new(max_width: usize, preceded: bool) -> Self {
+        Self {
+            max_width,
+            preceded,
+            output_lines: Vec::new(),
+            links: MarkdownLinks::default(),
+            bold: false,
+            italic: false,
+            strikethrough: false,
+            current_heading_level: None,
+            list_stack: Vec::new(),
+            in_blockquote: false,
+            in_code_block: false,
+            code_block_lang: String::new(),
+            code_block_lines: Vec::new(),
+            in_table: false,
+            table_rows: Vec::new(),
+            current_row: Vec::new(),
+            current_cell: String::new(),
+            pending_spans: Vec::new(),
+        }
+    }
+
+    /// 将挂起的普通行 Span 按列表/引用缩进排版并写入输出
+    fn flush_paragraph(&mut self) {
+        if self.pending_spans.is_empty() {
+            return;
+        }
+
+        let (init_indent, cont_indent) = match self.list_stack.last() {
+            Some(Some(num)) => (format!("   {num}. "), "      ".to_string()),
+            Some(None) => ("   • ".to_string(), "     ".to_string()),
+            None if self.in_blockquote => ("   │ ".to_string(), "   │ ".to_string()),
+            None => ("   ".to_string(), "   ".to_string()),
+        };
+
+        let offset = self.output_lines.len();
+        let spans = std::mem::take(&mut self.pending_spans);
+        let wrapped = wrap_spans(
+            &spans,
+            self.max_width,
+            &init_indent,
+            &cont_indent,
+            |span, line, col, width| {
+                self.links.record(span, offset + line, col, width);
+            },
+        );
+        self.output_lines.extend(wrapped);
+        self.links.pending.clear();
+    }
+
+    /// 标题行：图标 + 挂起 Span，并为链接记录命中区域
+    fn push_heading(&mut self) {
+        let level = self
+            .current_heading_level
+            .take()
+            .unwrap_or(HeadingLevel::H1);
+        let (icon, style) = heading_decoration(level);
+
+        let mut heading_spans = vec![Span::raw("   "), Span::styled(icon, style)];
+        let mut column = 3 + icon.width();
+        for (index, span) in self.pending_spans.iter().enumerate() {
+            self.links
+                .record(index, self.output_lines.len(), column, span.width());
+            column += span.width();
+        }
+        self.links.pending.clear();
+        heading_spans.append(&mut self.pending_spans);
+        self.output_lines.push(Line::from(heading_spans));
+        self.output_lines.push(Line::from(""));
+    }
+
+    fn end_code_block(&mut self) {
+        self.in_code_block = false;
+        if self.preceded || !self.output_lines.is_empty() {
+            self.output_lines.push(Line::from(""));
+        }
+        self.output_lines
+            .push(code_box_header_line(&self.code_block_lang, self.max_width));
+        for code_l in &self.code_block_lines {
+            self.output_lines
+                .push(code_box_line(code_l, self.max_width));
+        }
+        self.output_lines.push(code_box_footer_line(self.max_width));
+        self.output_lines.push(Line::from(""));
+    }
+
+    fn handle_start(&mut self, tag: Tag) {
+        match tag {
+            Tag::Heading { level, .. } => {
+                self.flush_paragraph();
+                if self.preceded || !self.output_lines.is_empty() {
+                    self.output_lines.push(Line::from(""));
+                }
+                self.current_heading_level = Some(level);
+            }
+            Tag::Paragraph => {
+                // 段落开始
+            }
+            Tag::List(start_num) => {
+                self.flush_paragraph();
+                self.list_stack.push(start_num);
+            }
+            Tag::Item => self.flush_paragraph(),
+            Tag::BlockQuote(_) => {
+                self.flush_paragraph();
+                self.in_blockquote = true;
+            }
+            Tag::CodeBlock(kind) => {
+                self.flush_paragraph();
+                self.in_code_block = true;
+                self.code_block_lang = match kind {
+                    CodeBlockKind::Fenced(lang) => lang.to_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                self.code_block_lines.clear();
+            }
+            Tag::Table(_) => {
+                self.flush_paragraph();
+                self.in_table = true;
+                self.table_rows.clear();
+            }
+            Tag::TableHead | Tag::TableRow => self.current_row.clear(),
+            Tag::TableCell => self.current_cell.clear(),
+            Tag::Emphasis => self.italic = true,
+            Tag::Strong => self.bold = true,
+            Tag::Strikethrough => self.strikethrough = true,
+            Tag::Link { dest_url, .. } => self.links.active = Some(dest_url.into_string()),
+            _ => {}
+        }
+    }
+
+    fn handle_end(&mut self, tag_end: TagEnd) {
+        match tag_end {
+            TagEnd::Heading(_) => self.push_heading(),
+            TagEnd::Paragraph => {
+                self.flush_paragraph();
+                self.output_lines.push(Line::from(""));
+            }
+            TagEnd::List(_) => {
+                self.flush_paragraph();
+                self.list_stack.pop();
+                if self.list_stack.is_empty() {
+                    self.output_lines.push(Line::from(""));
+                }
+            }
+            TagEnd::Item => {
+                self.flush_paragraph();
+                if let Some(Some(n)) = self.list_stack.last_mut() {
+                    *n += 1;
+                }
+            }
+            TagEnd::BlockQuote(_) => {
+                self.flush_paragraph();
+                self.in_blockquote = false;
+                self.output_lines.push(Line::from(""));
+            }
+            TagEnd::CodeBlock => self.end_code_block(),
+            TagEnd::TableCell => self
+                .current_row
+                .push(std::mem::take(&mut self.current_cell)),
+            TagEnd::TableHead | TagEnd::TableRow => {
+                if !self.current_row.is_empty() {
+                    self.table_rows.push(std::mem::take(&mut self.current_row));
+                }
+            }
+            TagEnd::Table => {
+                self.in_table = false;
+                render_table(&self.table_rows, self.max_width, &mut self.output_lines);
+                self.output_lines.push(Line::from(""));
+            }
+            TagEnd::Emphasis => self.italic = false,
+            TagEnd::Strong => self.bold = false,
+            TagEnd::Strikethrough => self.strikethrough = false,
+            TagEnd::Link => self.links.active = None,
+            _ => {}
+        }
+    }
+
+    fn push_text(&mut self, text: &str) {
+        if self.in_code_block {
+            for line in text.split('\n') {
+                self.code_block_lines.push(line.to_string());
+            }
+        } else if self.in_table {
+            self.current_cell.push_str(text);
+        } else {
+            let mut style = Style::default().fg(Color::White);
+            if self.bold {
+                style = style
+                    .fg(Color::Rgb(255, 215, 80))
+                    .add_modifier(Modifier::BOLD);
+            }
+            if self.italic {
+                style = style
+                    .add_modifier(Modifier::ITALIC)
+                    .fg(Color::Rgb(200, 200, 210));
+            }
+            if self.strikethrough {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            if self.links.active.is_some() {
+                style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
+            }
+            if self.in_blockquote {
+                style = style
+                    .fg(Color::Rgb(170, 175, 185))
+                    .add_modifier(Modifier::ITALIC);
+            }
+
+            self.links.track(self.pending_spans.len());
+            self.pending_spans
+                .push(Span::styled(text.to_string(), style));
+        }
+    }
+
+    fn push_code(&mut self, code: &str) {
+        if self.in_table {
+            self.current_cell.push_str(code);
+            return;
+        }
+        let code_style = Style::default()
+            .fg(Color::Rgb(240, 195, 110))
+            .bg(Color::Rgb(40, 44, 52));
+        self.links.track(self.pending_spans.len());
+        self.pending_spans
+            .push(Span::styled(format!("`{code}`"), code_style));
+    }
+
+    fn push_soft_break(&mut self) {
+        self.links.track(self.pending_spans.len());
+        self.pending_spans.push(Span::raw(" "));
+    }
+
+    fn push_rule(&mut self) {
+        self.flush_paragraph();
+        let w = self.max_width.saturating_sub(6).max(10);
+        self.output_lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled("─".repeat(w), Style::default().fg(Color::Rgb(80, 80, 85))),
+        ]));
+        self.output_lines.push(Line::from(""));
+    }
+
+    fn finish(mut self) -> (Vec<Line<'static>>, Vec<LinkRegion>) {
+        // 刷新末尾悬挂段落
+        self.flush_paragraph();
+        (self.output_lines, self.links.regions)
+    }
+}
+
+/// 标题层级 → 图标与样式
+fn heading_decoration(level: HeadingLevel) -> (&'static str, Style) {
+    match level {
+        HeadingLevel::H1 => (
+            "█ ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        HeadingLevel::H2 => (
+            "■ ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        HeadingLevel::H3 => (
+            "◆ ",
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        ),
+        _ => (
+            "▸ ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    }
+}
+
 /// 增量渲染用开放尾渲染：不剥除末尾空行；`preceded` 表示本次调用之前已有输出，
 /// 影响标题与代码块前的空行判定。
 pub(crate) fn render_markdown_open(
@@ -322,373 +620,27 @@ pub(crate) fn render_markdown_open(
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
 
-    let parser = Parser::new_ext(&preprocessed, options);
-
-    let mut output_lines: Vec<Line<'static>> = Vec::new();
-
-    // 格式栈
-    let mut bold = false;
-    let mut italic = false;
-    let mut strikethrough = false;
-    let mut links = MarkdownLinks::default();
-
-    // 当前块状态
-    let mut current_heading_level: Option<HeadingLevel> = None;
-    let mut list_stack: Vec<Option<u64>> = Vec::new();
-    let mut in_blockquote = false;
-
-    // 代码块缓冲
-    let mut in_code_block = false;
-    let mut code_block_lang = String::new();
-    let mut code_block_lines: Vec<String> = Vec::new();
-
-    // 表格缓冲
-    let mut in_table = false;
-    let mut table_rows: Vec<Vec<String>> = Vec::new();
-    let mut current_row: Vec<String> = Vec::new();
-    let mut current_cell = String::new();
-
-    // 普通行 Span 收集器
-    let mut pending_spans: Vec<Span<'static>> = Vec::new();
-
-    let flush_paragraph = |spans: &mut Vec<Span<'static>>,
-                           lines: &mut Vec<Line<'static>>,
-                           list_stack: &[Option<u64>],
-                           in_bq: bool,
-                           links: &mut MarkdownLinks| {
-        if spans.is_empty() {
-            return;
-        }
-
-        let (init_indent, cont_indent) = if let Some(ordered) = list_stack.last() {
-            if let Some(num) = ordered {
-                (format!("   {}. ", num), "      ".to_string())
-            } else {
-                ("   • ".to_string(), "     ".to_string())
-            }
-        } else if in_bq {
-            ("   │ ".to_string(), "   │ ".to_string())
-        } else {
-            ("   ".to_string(), "   ".to_string())
-        };
-
-        let offset = lines.len();
-        let wrapped = wrap_spans(
-            spans,
-            max_width,
-            &init_indent,
-            &cont_indent,
-            |span, line, col, width| {
-                links.record(span, offset + line, col, width);
-            },
-        );
-        lines.extend(wrapped);
-        spans.clear();
-        links.pending.clear();
-    };
-
-    for event in parser {
+    let mut renderer = MarkdownRenderer::new(max_width, preceded);
+    for event in Parser::new_ext(&preprocessed, options) {
         match event {
-            Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    if preceded || !output_lines.is_empty() {
-                        output_lines.push(Line::from(""));
-                    }
-                    current_heading_level = Some(level);
-                }
-                Tag::Paragraph => {
-                    // 段落开始
-                }
-                Tag::List(start_num) => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    list_stack.push(start_num);
-                }
-                Tag::Item => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                }
-                Tag::BlockQuote(_) => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    in_blockquote = true;
-                }
-                Tag::CodeBlock(kind) => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    in_code_block = true;
-                    code_block_lang = match kind {
-                        CodeBlockKind::Fenced(lang) => lang.to_string(),
-                        CodeBlockKind::Indented => String::new(),
-                    };
-                    code_block_lines.clear();
-                }
-                Tag::Table(_) => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    in_table = true;
-                    table_rows.clear();
-                }
-                Tag::TableHead => {
-                    current_row.clear();
-                }
-                Tag::TableRow => {
-                    current_row.clear();
-                }
-                Tag::TableCell => {
-                    current_cell.clear();
-                }
-                Tag::Emphasis => italic = true,
-                Tag::Strong => bold = true,
-                Tag::Strikethrough => strikethrough = true,
-                Tag::Link { dest_url, .. } => links.active = Some(dest_url.into_string()),
-                _ => {}
-            },
-
-            Event::End(tag_end) => match tag_end {
-                TagEnd::Heading(_) => {
-                    let level = current_heading_level.take().unwrap_or(HeadingLevel::H1);
-                    let (icon, style) = match level {
-                        HeadingLevel::H1 => (
-                            "█ ",
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        HeadingLevel::H2 => (
-                            "■ ",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        HeadingLevel::H3 => (
-                            "◆ ",
-                            Style::default()
-                                .fg(Color::LightGreen)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        _ => (
-                            "▸ ",
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    };
-
-                    let mut heading_spans = vec![Span::raw("   "), Span::styled(icon, style)];
-                    let mut column = 3 + icon.width();
-                    for (index, span) in pending_spans.iter().enumerate() {
-                        links.record(index, output_lines.len(), column, span.width());
-                        column += span.width();
-                    }
-                    links.pending.clear();
-                    heading_spans.append(&mut pending_spans);
-                    output_lines.push(Line::from(heading_spans));
-                    output_lines.push(Line::from(""));
-                }
-                TagEnd::Paragraph => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    output_lines.push(Line::from(""));
-                }
-                TagEnd::List(_) => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    list_stack.pop();
-                    if list_stack.is_empty() {
-                        output_lines.push(Line::from(""));
-                    }
-                }
-                TagEnd::Item => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    if let Some(Some(n)) = list_stack.last_mut() {
-                        *n += 1;
-                    }
-                }
-                TagEnd::BlockQuote(_) => {
-                    flush_paragraph(
-                        &mut pending_spans,
-                        &mut output_lines,
-                        &list_stack,
-                        in_blockquote,
-                        &mut links,
-                    );
-                    in_blockquote = false;
-                    output_lines.push(Line::from(""));
-                }
-                TagEnd::CodeBlock => {
-                    in_code_block = false;
-                    if preceded || !output_lines.is_empty() {
-                        output_lines.push(Line::from(""));
-                    }
-                    output_lines.push(code_box_header_line(&code_block_lang, max_width));
-                    for code_l in &code_block_lines {
-                        output_lines.push(code_box_line(code_l, max_width));
-                    }
-                    output_lines.push(code_box_footer_line(max_width));
-                    output_lines.push(Line::from(""));
-                }
-                TagEnd::TableCell => {
-                    current_row.push(std::mem::take(&mut current_cell));
-                }
-                TagEnd::TableHead | TagEnd::TableRow => {
-                    if !current_row.is_empty() {
-                        table_rows.push(std::mem::take(&mut current_row));
-                    }
-                }
-                TagEnd::Table => {
-                    in_table = false;
-                    render_table(&table_rows, max_width, &mut output_lines);
-                    output_lines.push(Line::from(""));
-                }
-                TagEnd::Emphasis => italic = false,
-                TagEnd::Strong => bold = false,
-                TagEnd::Strikethrough => strikethrough = false,
-                TagEnd::Link => links.active = None,
-                _ => {}
-            },
-
-            Event::Text(text) => {
-                if in_code_block {
-                    for line in text.split('\n') {
-                        code_block_lines.push(line.to_string());
-                    }
-                } else if in_table {
-                    current_cell.push_str(&text);
-                } else {
-                    let mut style = Style::default().fg(Color::White);
-                    if bold {
-                        style = style
-                            .fg(Color::Rgb(255, 215, 80))
-                            .add_modifier(Modifier::BOLD);
-                    }
-                    if italic {
-                        style = style
-                            .add_modifier(Modifier::ITALIC)
-                            .fg(Color::Rgb(200, 200, 210));
-                    }
-                    if strikethrough {
-                        style = style.add_modifier(Modifier::CROSSED_OUT);
-                    }
-                    if links.active.is_some() {
-                        style = style.fg(Color::Cyan).add_modifier(Modifier::UNDERLINED);
-                    }
-                    if in_blockquote {
-                        style = style
-                            .fg(Color::Rgb(170, 175, 185))
-                            .add_modifier(Modifier::ITALIC);
-                    }
-
-                    links.track(pending_spans.len());
-                    pending_spans.push(Span::styled(text.to_string(), style));
-                }
-            }
-
-            Event::Code(code) => {
-                if in_table {
-                    current_cell.push_str(&code);
-                    continue;
-                }
-                let code_style = Style::default()
-                    .fg(Color::Rgb(240, 195, 110))
-                    .bg(Color::Rgb(40, 44, 52));
-                links.track(pending_spans.len());
-                pending_spans.push(Span::styled(format!("`{code}`"), code_style));
-            }
-
-            Event::SoftBreak | Event::HardBreak => {
-                links.track(pending_spans.len());
-                pending_spans.push(Span::raw(" "));
-            }
-
-            Event::Rule => {
-                flush_paragraph(
-                    &mut pending_spans,
-                    &mut output_lines,
-                    &list_stack,
-                    in_blockquote,
-                    &mut links,
-                );
-                let w = max_width.saturating_sub(6).max(10);
-                output_lines.push(Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled("─".repeat(w), Style::default().fg(Color::Rgb(80, 80, 85))),
-                ]));
-                output_lines.push(Line::from(""));
-            }
-
+            Event::Start(tag) => renderer.handle_start(tag),
+            Event::End(tag_end) => renderer.handle_end(tag_end),
+            Event::Text(text) => renderer.push_text(&text),
+            Event::Code(code) => renderer.push_code(&code),
+            Event::SoftBreak | Event::HardBreak => renderer.push_soft_break(),
+            Event::Rule => renderer.push_rule(),
             _ => {}
         }
     }
-
-    // 刷新末尾悬挂段落
-    flush_paragraph(
-        &mut pending_spans,
-        &mut output_lines,
-        &list_stack,
-        in_blockquote,
-        &mut links,
-    );
-
-    (output_lines, links.regions)
+    renderer.finish()
 }
 
 /// 代码盒头部行（语言标签来自围栏 info string 或为空）
 pub(crate) fn code_box_header_line(lang: &str, max_width: usize) -> Line<'static> {
-    let lang_tag = if lang.is_empty() {
-        "code".to_string()
-    } else {
-        lang.to_string()
-    };
-    let lang_tag = truncate(&lang_tag, max_width.saturating_sub(12));
+    let lang_tag = truncate(
+        if lang.is_empty() { "code" } else { lang },
+        max_width.saturating_sub(12),
+    );
     let header_line = format!(
         "   ┌── [{lang_tag}] {}┐",
         "─".repeat(max_width.saturating_sub(11 + lang_tag.width()))
@@ -720,6 +672,16 @@ pub(crate) fn code_box_footer_line(max_width: usize) -> Line<'static> {
         footer_line,
         Style::default().fg(Color::Rgb(100, 100, 110)),
     )])
+}
+
+/// 表格边框行：`prefix` 起始（含缩进）、列间 `join`、末尾 `end`
+fn table_border(prefix: &str, join: char, end: char, col_widths: &[usize]) -> String {
+    let mut border = String::from(prefix);
+    for (i, &w) in col_widths.iter().enumerate() {
+        border.push_str(&"─".repeat(w + 2));
+        border.push(if i + 1 < col_widths.len() { join } else { end });
+    }
+    border
 }
 
 /// 格式化渲染美观的 Unicode 表格
@@ -761,16 +723,10 @@ fn render_table(rows: &[Vec<String>], max_width: usize, output: &mut Vec<Line<'s
     let cell_style = Style::default().fg(Color::White);
 
     // 顶边框 ┌──────┬──────┐
-    let mut top_border = String::from("   ┌");
-    for (i, &w) in col_widths.iter().enumerate() {
-        top_border.push_str(&"─".repeat(w + 2));
-        if i + 1 < col_count {
-            top_border.push('┬');
-        } else {
-            top_border.push('┐');
-        }
-    }
-    output.push(Line::from(vec![Span::styled(top_border, border_style)]));
+    output.push(Line::from(vec![Span::styled(
+        table_border("   ┌", '┬', '┐', &col_widths),
+        border_style,
+    )]));
 
     // 数据行与分隔线
     for (row_idx, row) in rows.iter().enumerate() {
@@ -782,6 +738,11 @@ fn render_table(rows: &[Vec<String>], max_width: usize, output: &mut Vec<Line<'s
             })
             .collect();
         let row_height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1);
+        let row_style = if row_idx == 0 {
+            header_style
+        } else {
+            cell_style
+        };
 
         for line_idx in 0..row_height {
             let mut line_spans = vec![Span::raw("   "), Span::styled("│", border_style)];
@@ -792,12 +753,7 @@ fn render_table(rows: &[Vec<String>], max_width: usize, output: &mut Vec<Line<'s
                     .unwrap_or("");
                 let pad = width.saturating_sub(content.width());
                 let padded_cell = format!(" {content}{} ", " ".repeat(pad));
-                let current_style = if row_idx == 0 {
-                    header_style
-                } else {
-                    cell_style
-                };
-                line_spans.push(Span::styled(padded_cell, current_style));
+                line_spans.push(Span::styled(padded_cell, row_style));
                 line_spans.push(Span::styled("│", border_style));
             }
             output.push(Line::from(line_spans));
@@ -805,30 +761,18 @@ fn render_table(rows: &[Vec<String>], max_width: usize, output: &mut Vec<Line<'s
 
         // 表头下边框 ├──────┼──────┤
         if row_idx == 0 && rows.len() > 1 {
-            let mut mid_border = String::from("   ├");
-            for (i, &w) in col_widths.iter().enumerate() {
-                mid_border.push_str(&"─".repeat(w + 2));
-                if i + 1 < col_count {
-                    mid_border.push('┼');
-                } else {
-                    mid_border.push('┤');
-                }
-            }
-            output.push(Line::from(vec![Span::styled(mid_border, border_style)]));
+            output.push(Line::from(vec![Span::styled(
+                table_border("   ├", '┼', '┤', &col_widths),
+                border_style,
+            )]));
         }
     }
 
     // 底边框 └──────┴──────┘
-    let mut bot_border = String::from("   └");
-    for (i, &w) in col_widths.iter().enumerate() {
-        bot_border.push_str(&"─".repeat(w + 2));
-        if i + 1 < col_count {
-            bot_border.push('┴');
-        } else {
-            bot_border.push('┘');
-        }
-    }
-    output.push(Line::from(vec![Span::styled(bot_border, border_style)]));
+    output.push(Line::from(vec![Span::styled(
+        table_border("   └", '┴', '┘', &col_widths),
+        border_style,
+    )]));
 }
 
 fn wrap_table_cell(cell: &str, max_width: usize) -> Vec<String> {

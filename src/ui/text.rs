@@ -1,9 +1,14 @@
 //! 文本展示工具：按字符显示宽度（CJK 计双列）安全截断，多字节内容不会 panic 或溢出窄栏。
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 fn char_width(ch: char) -> usize {
     ch.width().unwrap_or(0)
+}
+
+/// 按显示宽度右侧补空格到指定列宽（表格列对齐用）
+pub fn pad_to_width(text: &str, width: usize) -> String {
+    format!("{text}{}", " ".repeat(width.saturating_sub(text.width())))
 }
 
 fn prefix_by_width(text: &str, max: usize) -> String {

@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::model::{ContentPart, Role};
@@ -22,7 +22,8 @@ use crate::ui::markdown::{
 };
 use crate::ui::views::chat::{
     ChatRender, PartContext, RenderState, ThoughtKind, append_md, append_part, part_context,
-    push_citations_block, push_empty_hint, thought_kind,
+    polish_md_line, push_citations_block, push_empty_hint, thought_body_style, thought_kind,
+    thought_prefix_style,
 };
 
 use super::pane::ThoughtHit;
@@ -164,18 +165,6 @@ fn streamable(render: &ChatRender<'_>, state: &RenderState, part: &ContentPart) 
         }
         _ => false,
     }
-}
-
-fn thought_body_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(120, 120, 120))
-        .add_modifier(Modifier::ITALIC)
-}
-
-fn thought_prefix_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(140, 140, 140))
-        .add_modifier(Modifier::BOLD)
 }
 
 fn stream_part(
@@ -348,18 +337,8 @@ fn stream_markdown(
 }
 
 fn finish_stream_line(render: &mut ChatRender<'_>, body_style: Option<Style>) {
-    let Some(line) = render.lines.last_mut() else {
-        return;
-    };
-    if let Some(span) = line.spans.first_mut()
-        && span.content.starts_with(' ')
-    {
-        span.content.to_mut().remove(0);
-    }
-    if let Some(style) = body_style {
-        for span in &mut line.spans {
-            span.style = span.style.patch(style);
-        }
+    if let Some(line) = render.lines.last_mut() {
+        polish_md_line(line, body_style);
     }
 }
 

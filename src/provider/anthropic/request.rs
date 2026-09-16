@@ -1,5 +1,8 @@
 use super::AnthropicProvider;
-use crate::model::{ContentPart, Message, Role, Session, ToolDefinition, TurnMeta};
+use crate::config::ProviderType;
+use crate::model::{
+    ContentPart, MediaKind, MediaSource, Message, Role, Session, ToolDefinition, TurnMeta,
+};
 use crate::provider::common::RoleBlockMerger;
 use crate::provider::{CompletionOptions, ProviderError};
 
@@ -49,8 +52,7 @@ impl AnthropicProvider {
         let total_msgs = flattened_msgs.len();
 
         for (i, (role, msg, meta)) in flattened_msgs.iter().enumerate() {
-            let is_last_user_turn = i + 1 == total_msgs && *role == Role::User;
-            let should_cache = is_last_user_turn;
+            let should_cache = i + 1 == total_msgs && *role == Role::User;
 
             match role {
                 Role::System => {
@@ -72,7 +74,7 @@ impl AnthropicProvider {
                                 content_blocks.push(block);
                             }
                             ContentPart::File {
-                                source: crate::model::MediaSource::Base64 { data, mime_type },
+                                source: MediaSource::Base64 { data, mime_type },
                                 ..
                             } => {
                                 content_blocks.push(serde_json::json!({
@@ -85,7 +87,7 @@ impl AnthropicProvider {
                                 }));
                             }
                             ContentPart::Image { source, .. } => match source {
-                                crate::model::MediaSource::Base64 { data, mime_type } => {
+                                MediaSource::Base64 { data, mime_type } => {
                                     content_blocks.push(serde_json::json!({
                                         "type": "image",
                                         "source": {
@@ -95,7 +97,7 @@ impl AnthropicProvider {
                                         }
                                     }));
                                 }
-                                crate::model::MediaSource::Url { url } => {
+                                MediaSource::Url { url } => {
                                     content_blocks.push(serde_json::json!({
                                         "type": "image",
                                         "source": {
@@ -223,12 +225,12 @@ fn tool_output(result: &crate::model::ToolResult) -> Result<serde_json::Value, P
     }
     let mut content = vec![serde_json::json!({"type": "text", "text": result.content})];
     for media in &result.attachments {
-        crate::config::ProviderType::Anthropic
+        ProviderType::Anthropic
             .require_media(media.kind, &media.mime_type)
             .map_err(ProviderError::Protocol)?;
         let kind = match media.kind {
-            crate::model::MediaKind::Image => "image",
-            crate::model::MediaKind::Pdf => "document",
+            MediaKind::Image => "image",
+            MediaKind::Pdf => "document",
             _ => unreachable!("validated media kind"),
         };
         content.push(serde_json::json!({

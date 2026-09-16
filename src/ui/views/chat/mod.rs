@@ -16,7 +16,8 @@ mod view;
 pub(crate) use citations::push_citations_block;
 pub(crate) use pipeline::{
     append_collapsed_response, append_md, append_notices, append_part, append_parts,
-    collect_tool_results, is_empty_session, part_context, push_empty_hint, thought_kind,
+    collect_tool_results, is_empty_session, part_context, polish_md_line, push_empty_hint,
+    thought_body_style, thought_kind, thought_prefix_style,
 };
 pub(crate) use selection::{apply_selection_highlight, extract_selected_text};
 pub(crate) use state::{ChatRender, PartContext, RenderState, ThoughtKind};

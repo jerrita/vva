@@ -8,28 +8,17 @@ import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
 import { EmptyStage } from './components/EmptyStage'
 import { Sash } from './components/Sash'
-import { Sidebar, groupByProject, projectName } from './components/Sidebar'
+import { Sidebar, groupByProject, projectName, type ProjectOption } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
 import { StatsPanel } from './components/StatsPanel'
 import { IconActivity, IconPanelLeft, IconPanelRight } from './components/icons'
 import { FileSidebar } from './components/FileSidebar'
 import { useComposerVisibility } from './hooks/useComposerVisibility'
-import { useResizable } from './hooks/useResizable'
+import { usePanelLayout } from './hooks/usePanelLayout'
 import { useStatsPanel } from './hooks/useStatsPanel'
-import { loadFlag, storeFlag, usePersistentState } from './hooks/usePersistentState'
+import { usePersistentState } from './hooks/usePersistentState'
 import { extractRelatedFiles } from './utils/relatedFiles'
-import type { ProjectOption } from './components/Sidebar'
 import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SkillEntry, UserAnswer } from './types'
-
-const SIDEBAR_MIN = 200
-const SIDEBAR_MAX = 420
-const FILE_SIDEBAR_MIN = 240
-const FILE_SIDEBAR_MAX = 1000
-
-const clampSidebar = (width: number) =>
-  Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width))
-const clampFileSidebar = (width: number) =>
-  Math.min(FILE_SIDEBAR_MAX, Math.max(FILE_SIDEBAR_MIN, width))
 
 const ACTIVE_SESSION_STORAGE_KEY = 'vva.active-session'
 
@@ -44,11 +33,6 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
   const [skills, setSkills] = useState<SkillEntry[]>([])
-  const [sidebarHidden, setSidebarHidden] = usePersistentState(
-    'vva.sidebar-hidden',
-    loadFlag('vva.sidebar-hidden'),
-    storeFlag,
-  )
   const [hiddenProjects, setHiddenProjects] = usePersistentState<Set<string>>(
     'vva.projects-hidden',
     () => new Set(JSON.parse(localStorage.getItem('vva.projects-hidden') ?? '[]') as string[]),
@@ -66,44 +50,22 @@ export default function App() {
     },
     value => JSON.stringify(value),
   )
-  const [sidebarWidth, setSidebarWidth] = usePersistentState(
-    'vva.sidebar-width',
-    () => {
-      const stored = Number(localStorage.getItem('vva.sidebar-width'))
-      return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
-    },
-    String,
-  )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const composerRef = useRef<ComposerHandle>(null)
 
-  const [fileSidebarOpen, setFileSidebarOpen] = usePersistentState(
-    'vva.file-sidebar-open',
-    loadFlag('vva.file-sidebar-open'),
-    storeFlag,
-  )
-  const [fileSidebarWidth, setFileSidebarWidth] = usePersistentState(
-    'vva.file-sidebar-width',
-    () => {
-      const stored = Number(localStorage.getItem('vva.file-sidebar-width'))
-      return stored >= FILE_SIDEBAR_MIN && stored <= FILE_SIDEBAR_MAX ? stored : 360
-    },
-    String,
-  )
-  const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
-  const sidebarResize = useResizable(() => sidebarWidth, setSidebarWidth, clampSidebar, 1)
-  const fileSidebarResize = useResizable(
-    () => fileSidebarWidth,
-    setFileSidebarWidth,
-    clampFileSidebar,
-    -1,
-  )
-
-  const onPreviewFile = useCallback((path: string) => {
-    setPreviewFilePath(path)
-    setFileSidebarOpen(true)
-    setFileSidebarWidth(w => clampFileSidebar(Math.max(w, 680)))
-  }, [setFileSidebarOpen, setFileSidebarWidth])
+  const {
+    sidebarHidden,
+    setSidebarHidden,
+    sidebarWidth,
+    sidebarResize,
+    fileSidebarOpen,
+    setFileSidebarOpen,
+    fileSidebarWidth,
+    fileSidebarResize,
+    previewFilePath,
+    setPreviewFilePath,
+    onPreviewFile,
+  } = usePanelLayout()
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)

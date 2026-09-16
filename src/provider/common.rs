@@ -104,6 +104,16 @@ pub fn require_array<'a>(
         .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
 }
 
+/// 强类型反序列化协议子结构：失败即报协议错误（含结构名与 serde 原因），
+/// 统一各适配器重复的 `from_value(..).map_err(..)` 样板
+pub fn from_value<T: serde::de::DeserializeOwned>(
+    json: &serde_json::Value,
+    what: &str,
+) -> Result<T, ProviderError> {
+    serde_json::from_value(json.clone())
+        .map_err(|e| ProviderError::Protocol(format!("Invalid {what}: {e}")))
+}
+
 /// 相邻同角色消息合并器。
 /// Anthropic（user/assistant 严格交替）与 Gemini（user/model 角色）都要求
 /// 将连续的同角色内容块聚合进同一条消息，仅 `content` / `parts` 字段名不同。

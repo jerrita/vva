@@ -18,7 +18,8 @@ pub use read::ReadTool;
 pub use write::WriteTool;
 
 use ::glob::{MatchOptions, Pattern};
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use super::Tool;
@@ -66,6 +67,18 @@ pub fn resolve_path(working_dir: &Path, path: &str) -> PathBuf {
     } else {
         working_dir.join(path)
     }
+}
+
+/// 独占创建新文件并写入完整内容（Write 与 Add/Move 落盘共用）。
+pub(crate) fn write_new_file(path: &Path, contents: &str) -> Result<(), String> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("Failed to create file {}: {error}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| format!("Failed to write file {}: {error}", path.display()))?;
+    Ok(())
 }
 
 fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {

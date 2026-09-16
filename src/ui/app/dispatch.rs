@@ -137,13 +137,7 @@ impl App {
                 self.toggle_thinking_display();
             }
             "/clear" | "/c" => {
-                if let Err(error) = self.session_mgr.delete_session(&self.active_session).await {
-                    self.notices.push(error);
-                    return;
-                }
-                if let Err(error) = self.new_session().await {
-                    self.notices.push(error);
-                }
+                self.delete_and_recreate_session().await;
             }
             "/help" | "/h" | "/?" => {
                 self.modal = ActiveModal::Help;

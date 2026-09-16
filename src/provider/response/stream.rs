@@ -7,7 +7,9 @@ use super::ResponseProvider;
 use super::search::project_web_search_call;
 use crate::event::AgentEvent;
 use crate::model::{Annotation, ContentPart, ResponseOutputItem, WebSearchCall};
-use crate::provider::common::{EventForwarder, require_str, require_u64, require_value};
+use crate::provider::common::{
+    EventForwarder, from_value, require_str, require_u64, require_value,
+};
 use crate::provider::http::SseEventHandler;
 use crate::provider::{ProviderError, ProviderResponse};
 /// Responses API 流式事件累积处理器
@@ -109,10 +111,7 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                 let text_id = response_text_id(&json)?;
                 let annotation = require_value(&json, "annotation")?;
                 if require_str(annotation, "type")? == "url_citation" {
-                    let annotation: Annotation = serde_json::from_value(annotation.clone())
-                        .map_err(|e| {
-                            ProviderError::Protocol(format!("Invalid URL citation: {e}"))
-                        })?;
+                    let annotation: Annotation = from_value(annotation, "URL citation")?;
                     self.forwarder.citation(&text_id, annotation).await;
                 }
                 Ok(())
@@ -134,12 +133,7 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             "response.output_item.done" => {
                 let item = require_value(&json, "item")?;
                 if require_str(item, "type")? == "web_search_call" {
-                    let item: ResponseOutputItem =
-                        serde_json::from_value(item.clone()).map_err(|e| {
-                            ProviderError::Protocol(format!(
-                                "Invalid Responses API output item: {e}"
-                            ))
-                        })?;
+                    let item: ResponseOutputItem = from_value(item, "Responses API output item")?;
                     if let ResponseOutputItem::WebSearchCall { id, status, action } = item {
                         let missing_action = action.is_none();
                         let call = project_web_search_call(&id, &status, action.as_ref())?;
@@ -155,20 +149,18 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             "response.completed" => {
                 let resp_obj = require_value(&json, "response")?;
                 let mut parsed = self.provider.parse_response(resp_obj.clone())?;
-                let missing_action_ids = parsed
+                for item in parsed
                     .meta
                     .response
                     .iter()
                     .flat_map(|meta| &meta.output_items)
-                    .filter_map(|item| match item {
-                        ResponseOutputItem::WebSearchCall {
-                            id, action: None, ..
-                        } => Some(id.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                for id in missing_action_ids {
-                    self.warn_missing_search_action(&id).await;
+                {
+                    if let ResponseOutputItem::WebSearchCall {
+                        id, action: None, ..
+                    } = item
+                    {
+                        self.warn_missing_search_action(id).await;
+                    }
                 }
                 self.apply_streamed_searches(&mut parsed);
                 self.completed = Some(parsed);
