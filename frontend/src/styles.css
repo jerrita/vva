@@ -2301,6 +2301,13 @@ body.resizing .file-sidebar-resize::after {
   flex-shrink: 0;
 }
 
+.file-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .file-nav-head {
   height: var(--topbar-h);
   display: flex;
@@ -2915,7 +2922,8 @@ body.resizing .file-sidebar-resize::after {
     position: fixed;
     inset: 0 0 0 auto;
     z-index: 20;
-    width: min(420px, 88vw) !important;
+    /* 保留一条可见的主界面边缘，避免文件抽屉在手机上吞没整个工作区。 */
+    width: min(420px, calc(100vw - 64px)) !important;
     transform: translateX(100%);
     transition: transform 0.2s ease;
   }

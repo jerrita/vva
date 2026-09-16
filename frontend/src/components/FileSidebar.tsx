@@ -9,6 +9,7 @@ import {
   IconArrowLeft,
   IconChevronDown,
   IconChevronRight,
+  IconDownload,
   IconFile,
   IconFolderClosed,
   IconFolderOpen,
@@ -320,6 +321,15 @@ export function FileSidebar({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'render' | 'source'>('render')
+  const [isMobile, setIsMobile] = useState(false)
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 820px)')
+    const sync = () => setIsMobile(media.matches)
+    sync()
+    media.addEventListener('change', sync)
+    return () => media.removeEventListener('change', sync)
+  }, [])
 
   // 加载工程根目录条目
   useEffect(() => {
@@ -515,7 +525,8 @@ export function FileSidebar({
 
   if (!open) return null
 
-  const isDualPane = Boolean(activePath && width >= 520)
+  // 小屏采用“列表 → 预览”两步流，确保文件内容和下载操作都有足够空间。
+  const isDualPane = Boolean(activePath && width >= 520 && !isMobile)
 
   const renderNavList = () => {
     if (activeTab === 'tree') {
@@ -819,6 +830,22 @@ export function FileSidebar({
               )}
 
               {fileData && !fileData.is_binary && <CopyButton text={fileData.content} />}
+
+              {activePath && (
+                <a
+                  className="icon-ghost file-download"
+                  href={
+                    sessionId
+                      ? api.sessionFileDownloadUrl(sessionId, activePath)
+                      : api.fsFileDownloadUrl(activePath, workspace || undefined)
+                  }
+                  download
+                  title="下载文件"
+                  aria-label="下载文件"
+                >
+                  <IconDownload size={16} />
+                </a>
+              )}
 
               <button
                 type="button"

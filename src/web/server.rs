@@ -35,6 +35,7 @@ pub async fn run_server(
         .route("/api/fs/dirs", get(api::list_dirs))
         .route("/api/fs/entries", get(api::list_fs_entries))
         .route("/api/fs/file", get(api::get_fs_file))
+        .route("/api/fs/download", get(api::download_fs_file))
         .route("/api/files", post(api::upload_file))
         .route(
             "/api/config",
@@ -49,6 +50,10 @@ pub async fn run_server(
             get(api::get_session).delete(api::delete_session),
         )
         .route("/api/sessions/{id}/file", get(api::get_session_file))
+        .route(
+            "/api/sessions/{id}/download",
+            get(api::download_session_file),
+        )
         .route("/api/sessions/{id}/messages", post(api::submit_message))
         .route("/api/sessions/{id}/revert", post(api::revert_session))
         .route("/api/sessions/{id}/fork", post(api::fork_session))

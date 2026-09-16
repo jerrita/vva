@@ -82,6 +82,13 @@ export const api = {
     if (workspace) params.set('workspace', workspace)
     return request<import('./types').SessionFileResponse>(`/api/fs/file?${params.toString()}`)
   },
+  sessionFileDownloadUrl: (id: string, path: string) =>
+    `/api/sessions/${encodeURIComponent(id)}/download?path=${encodeURIComponent(path)}`,
+  fsFileDownloadUrl: (path: string, workspace?: string) => {
+    const params = new URLSearchParams({ path })
+    if (workspace) params.set('workspace', workspace)
+    return `/api/fs/download?${params.toString()}`
+  },
   /** 全局配置文件原文（JSONC）；文件不存在时 content 为 null */
   getConfig: () => request<{ path: string; content: string | null }>('/api/config'),
   /** 保存全局配置：后端校验解析通过后落盘并热重载 */

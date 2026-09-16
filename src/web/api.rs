@@ -5,7 +5,7 @@ use std::path::Path as StdPath;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
@@ -368,6 +368,83 @@ pub async fn get_session_file(
     };
     let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
     read_file_from_workspace(&workspace, &query.path).await
+}
+
+/// 下载指定工作区文件，保留原始二进制内容
+pub async fn download_fs_file(
+    State(state): State<AppState>,
+    Query(query): Query<FsFileQuery>,
+) -> Response {
+    let workspace = match query.workspace.as_deref().map(str::trim) {
+        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
+        _ => state.manager.workspace().to_path_buf(),
+    };
+    download_file_from_workspace(&workspace, &query.path).await
+}
+
+/// 下载会话工作区文件，保留原始二进制内容
+pub async fn download_session_file(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<SessionFileQuery>,
+) -> Response {
+    let handle = match state.manager.get_or_load(&id).await {
+        Ok(handle) => handle,
+        Err(_) => return not_found(&id),
+    };
+    let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
+    download_file_from_workspace(&workspace, &query.path).await
+}
+
+async fn download_file_from_workspace(workspace: &std::path::Path, rel_path: &str) -> Response {
+    let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(meta) => meta,
+        Err(e) => return error(StatusCode::NOT_FOUND, format!("文件不存在: {e}")),
+    };
+    if metadata.is_dir() {
+        return error(StatusCode::BAD_REQUEST, "目标是目录而非文件");
+    }
+
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取文件失败: {e}"),
+            );
+        }
+    };
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".into())
+        .replace(['"', '\\', '\r', '\n'], "_");
+    let encoded_name = name
+        .as_bytes()
+        .iter()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (*byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect::<String>();
+    let mime = mime_guess::from_path(&path)
+        .first_raw()
+        .unwrap_or("application/octet-stream");
+    let mut response = bytes.into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    if let Ok(value) = HeaderValue::from_str(&format!(
+        "attachment; filename=\"download\"; filename*=UTF-8''{encoded_name}"
+    )) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_DISPOSITION, value);
+    }
+    response
 }
 
 /// 从指定工作区读取文件内容并返回统一的 SessionFileResponse 响应

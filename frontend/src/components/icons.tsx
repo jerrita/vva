@@ -118,6 +118,15 @@ export function IconFile({ size, strokeWidth }: IconProps) {
   )
 }
 
+export function IconDownload({ size, strokeWidth }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={strokeWidth}>
+      <path d="M12 3v12M7 10l5 5 5-5" />
+      <path d="M5 21h14" />
+    </Svg>
+  )
+}
+
 export function IconZap({ size, strokeWidth }: IconProps) {
   return (
     <Svg size={size} strokeWidth={strokeWidth}>
