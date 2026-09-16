@@ -12,7 +12,7 @@ function viewportBottom(): number {
 }
 
 /**
- * 移动端输入框 / 顶栏显隐手势机：滚动上滑隐藏输入框、下滑回看隐藏顶栏、
+ * 移动端输入框 / 顶栏显隐手势机：滚动上滑隐藏输入框、上滑隐藏顶栏、
  * 屏幕底缘上滑唤出输入框、输入框内下滑隐藏（聚焦时除外）。
  * 桌面端仅维护底部跟随标记。
  */
@@ -106,10 +106,10 @@ export function useComposerVisibility(options: {
     const prev = lastScrollTop.current
     lastScrollTop.current = el.scrollTop
     const delta = el.scrollTop - prev
-    // 下滑回看历史：隐藏标题栏；上滑恢复
-    if (delta < -COMPOSER_HIDE_DELTA) {
+    // 上滑隐藏标题栏；下滑恢复
+    if (delta > COMPOSER_HIDE_DELTA) {
       setTopbarHidden(true)
-    } else if (delta > COMPOSER_HIDE_DELTA) {
+    } else if (delta < -COMPOSER_HIDE_DELTA) {
       setTopbarHidden(false)
     }
     // 输入中不隐藏输入框
