@@ -182,6 +182,16 @@ src/
     └── server.rs           # 路由组装与静态资源服务 (rust_embed 内嵌前端 dist，SPA 回退)
 
 frontend/                    # Web 前端源码 (React + Vite + TypeScript)；build.rs 构件期编译，产物 dist 由 rust_embed 打包进二进制；设计规范与开发契约见 frontend/AGENTS.md
+├── src/App.tsx              # 根组件：会话状态与 SSE 协调核心、API 动作回调、布局编排
+├── src/api.ts               # 统一 request() 请求层 (错误提取/空响应处理)
+├── src/types.ts             # 后端 serde 序列化镜像类型
+├── src/sessionSync.ts       # SSE 会话订阅
+├── src/hooks/               # usePersistentState (localStorage 持久化) / useResizable (面板拖拽) /
+│                            # useComposerVisibility (移动端输入框手势机) / useStatsPanel (用量面板) /
+│                            # useFileTree (懒加载目录树) / useMediaQuery
+├── src/utils/               # highlight (hljs 语言映射/按行切分) / relatedFiles (会话涉及文件提取)
+└── src/components/          # Sidebar / Chat / Composer / Parts / FileSidebar(+file/ 树与预览) /
+                             # StatsPanel / EmptyStage / Sash / AskUserModal / SettingsModal / icons
 ```
 
 ---

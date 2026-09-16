@@ -1,5 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FocusEvent as ReactFocusEvent, PointerEvent as ReactPointerEvent, TouchEvent as ReactTouchEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, toError } from './api'
 import { subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
@@ -7,88 +6,32 @@ import { Chat, turnText } from './components/Chat'
 import { AskUserModal } from './components/AskUserModal'
 import { ChipSelect } from './components/ChipSelect'
 import { Composer, type ComposerHandle } from './components/Composer'
+import { EmptyStage } from './components/EmptyStage'
+import { Sash } from './components/Sash'
 import { Sidebar, groupByProject, projectName } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
+import { StatsPanel } from './components/StatsPanel'
 import { IconActivity, IconPanelLeft, IconPanelRight } from './components/icons'
-import {
-  FileSidebar,
-  FILE_SIDEBAR_MIN,
-  FILE_SIDEBAR_MAX,
-  clampFileSidebar,
-  extractRelatedFiles,
-} from './components/FileSidebar'
+import { FileSidebar } from './components/FileSidebar'
+import { useComposerVisibility } from './hooks/useComposerVisibility'
+import { useResizable } from './hooks/useResizable'
+import { useStatsPanel } from './hooks/useStatsPanel'
+import { loadFlag, storeFlag, usePersistentState } from './hooks/usePersistentState'
+import { extractRelatedFiles } from './utils/relatedFiles'
 import type { ProjectOption } from './components/Sidebar'
-import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillEntry, UserAnswer } from './types'
+import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SkillEntry, UserAnswer } from './types'
 
 const SIDEBAR_MIN = 200
 const SIDEBAR_MAX = 420
+const FILE_SIDEBAR_MIN = 240
+const FILE_SIDEBAR_MAX = 1000
 
 const clampSidebar = (width: number) =>
   Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width))
+const clampFileSidebar = (width: number) =>
+  Math.min(FILE_SIDEBAR_MAX, Math.max(FILE_SIDEBAR_MIN, width))
 
-function Sash({
-  className,
-  label,
-  onStart,
-  onMove,
-  onEnd,
-}: {
-  className?: string
-  label: string
-  onStart: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onMove: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
-}) {
-  return (
-    <div
-      className={`sash${className ? ` ${className}` : ''}`}
-      onPointerDown={event => {
-        event.currentTarget.classList.add('is-resizing')
-        onStart(event)
-      }}
-      onPointerMove={onMove}
-      onPointerUp={event => {
-        event.currentTarget.classList.remove('is-resizing')
-        onEnd(event)
-      }}
-      onPointerCancel={event => {
-        event.currentTarget.classList.remove('is-resizing')
-        onEnd(event)
-      }}
-      title={label}
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={label}
-    >
-      <span className="sash-grip" aria-hidden>
-        <span />
-        <span />
-        <span />
-      </span>
-    </div>
-  )
-}
-
-const MOBILE_MQ = '(max-width: 820px)'
-const COMPOSER_HIDE_DELTA = 16
-const COMPOSER_EDGE = 72
-const COMPOSER_SWIPE = 24
 const ACTIVE_SESSION_STORAGE_KEY = 'vva.active-session'
-
-function viewportBottom(): number {
-  const viewport = window.visualViewport
-  return viewport ? viewport.offsetTop + viewport.height : window.innerHeight
-}
-
-function fmtNum(value: number): string {
-  return value.toLocaleString()
-}
-
-/** 上下文窗口上限缩写，对齐 TUI format_context_limit */
-function fmtLimit(value: number): string {
-  if (value >= 1_000_000 && value % 1_000_000 === 0) return `${value / 1_000_000}M`
-  return `${Math.floor(value / 1000)}k`
-}
 
 export default function App() {
   const [models, setModels] = useState<ModelsResponse | null>(null)
@@ -99,110 +42,68 @@ export default function App() {
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [stats, setStats] = useState<SidebarStats | null>(null)
   const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
   const [skills, setSkills] = useState<SkillEntry[]>([])
-  const [sidebarHidden, setSidebarHidden] = useState(
-    () => localStorage.getItem('vva.sidebar-hidden') === '1',
+  const [sidebarHidden, setSidebarHidden] = usePersistentState(
+    'vva.sidebar-hidden',
+    loadFlag('vva.sidebar-hidden'),
+    storeFlag,
   )
-  const [hiddenProjects, setHiddenProjects] = useState<Set<string>>(
-    () =>
-      new Set(
-        JSON.parse(localStorage.getItem('vva.projects-hidden') ?? '[]') as string[],
-      ),
+  const [hiddenProjects, setHiddenProjects] = usePersistentState<Set<string>>(
+    'vva.projects-hidden',
+    () => new Set(JSON.parse(localStorage.getItem('vva.projects-hidden') ?? '[]') as string[]),
+    value => JSON.stringify([...value]),
   )
-  const [projectOrder, setProjectOrder] = useState<string[]>(() => {
-    try {
-      const value = JSON.parse(localStorage.getItem('vva.projects-order') ?? '[]')
-      return Array.isArray(value) && value.every(item => typeof item === 'string') ? value : []
-    } catch {
-      return []
-    }
-  })
-  const [sidebarWidth, setSidebarWidth] = useState(() => {
-    const stored = Number(localStorage.getItem('vva.sidebar-width'))
-    return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
-  })
-  const [statsCollapsed, setStatsCollapsed] = useState(
-    () => localStorage.getItem('vva.stats-collapsed') === '1',
+  const [projectOrder, setProjectOrder] = usePersistentState<string[]>(
+    'vva.projects-order',
+    () => {
+      try {
+        const value = JSON.parse(localStorage.getItem('vva.projects-order') ?? '[]')
+        return Array.isArray(value) && value.every(item => typeof item === 'string') ? value : []
+      } catch {
+        return []
+      }
+    },
+    value => JSON.stringify(value),
   )
-  // 遮挡自动收起：内容滚入面板区域时隐藏，离开后恢复；顶栏开关可手动覆盖
-  const [statsAutoHidden, setStatsAutoHidden] = useState(false)
-  const [statsPinned, setStatsPinned] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = usePersistentState(
+    'vva.sidebar-width',
+    () => {
+      const stored = Number(localStorage.getItem('vva.sidebar-width'))
+      return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
+    },
+    String,
+  )
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const statsPanelRef = useRef<HTMLDivElement>(null)
-  const statsOverlapRaf = useRef(0)
-  const resizing = useRef(false)
-  const resizeStartX = useRef(0)
-  const resizeStartW = useRef(0)
   const composerRef = useRef<ComposerHandle>(null)
 
-  const [fileSidebarOpen, setFileSidebarOpen] = useState(
-    () => localStorage.getItem('vva.file-sidebar-open') === '1',
+  const [fileSidebarOpen, setFileSidebarOpen] = usePersistentState(
+    'vva.file-sidebar-open',
+    loadFlag('vva.file-sidebar-open'),
+    storeFlag,
   )
-  const [fileSidebarWidth, setFileSidebarWidth] = useState(() => {
-    const stored = Number(localStorage.getItem('vva.file-sidebar-width'))
-    return stored >= FILE_SIDEBAR_MIN && stored <= FILE_SIDEBAR_MAX ? stored : 360
-  })
+  const [fileSidebarWidth, setFileSidebarWidth] = usePersistentState(
+    'vva.file-sidebar-width',
+    () => {
+      const stored = Number(localStorage.getItem('vva.file-sidebar-width'))
+      return stored >= FILE_SIDEBAR_MIN && stored <= FILE_SIDEBAR_MAX ? stored : 360
+    },
+    String,
+  )
   const [previewFilePath, setPreviewFilePath] = useState<string | null>(null)
-  const fileResizing = useRef(false)
-  const fileResizeStartX = useRef(0)
-  const fileResizeStartW = useRef(0)
-
-  useEffect(() => {
-    localStorage.setItem('vva.sidebar-hidden', sidebarHidden ? '1' : '0')
-  }, [sidebarHidden])
-
-  useEffect(() => {
-    localStorage.setItem('vva.projects-hidden', JSON.stringify([...hiddenProjects]))
-  }, [hiddenProjects])
-
-  useEffect(() => {
-    localStorage.setItem('vva.projects-order', JSON.stringify(projectOrder))
-  }, [projectOrder])
-
-  useEffect(() => {
-    localStorage.setItem('vva.sidebar-width', String(sidebarWidth))
-  }, [sidebarWidth])
-
-  useEffect(() => {
-    localStorage.setItem('vva.stats-collapsed', statsCollapsed ? '1' : '0')
-  }, [statsCollapsed])
-
-  useEffect(() => {
-    localStorage.setItem('vva.file-sidebar-open', fileSidebarOpen ? '1' : '0')
-  }, [fileSidebarOpen])
-
-  useEffect(() => {
-    localStorage.setItem('vva.file-sidebar-width', String(fileSidebarWidth))
-  }, [fileSidebarWidth])
-
-  const onFileResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    fileResizing.current = true
-    fileResizeStartX.current = event.clientX
-    fileResizeStartW.current = fileSidebarWidth
-    document.body.classList.add('resizing')
-    event.currentTarget.setPointerCapture(event.pointerId)
-  }
-  const onFileResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!fileResizing.current) return
-    setFileSidebarWidth(
-      clampFileSidebar(fileResizeStartW.current + (fileResizeStartX.current - event.clientX)),
-    )
-  }
-  const onFileResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!fileResizing.current) return
-    fileResizing.current = false
-    document.body.classList.remove('resizing')
-    event.currentTarget.releasePointerCapture(event.pointerId)
-  }
+  const sidebarResize = useResizable(() => sidebarWidth, setSidebarWidth, clampSidebar, 1)
+  const fileSidebarResize = useResizable(
+    () => fileSidebarWidth,
+    setFileSidebarWidth,
+    clampFileSidebar,
+    -1,
+  )
 
   const onPreviewFile = useCallback((path: string) => {
     setPreviewFilePath(path)
     setFileSidebarOpen(true)
     setFileSidebarWidth(w => clampFileSidebar(Math.max(w, 680)))
-  }, [])
+  }, [setFileSidebarOpen, setFileSidebarWidth])
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)
@@ -215,8 +116,6 @@ export default function App() {
   const askPending = snap?.pending_user_question != null
   const active = snap?.session ?? null
   const turnCount = active?.turns.length ?? 0
-  const statsVisible =
-    stats !== null && active !== null && !statsCollapsed && (!statsAutoHidden || statsPinned)
 
   // 打开或新建位于隐藏项目的会话时，该项目重新显示
   useEffect(() => {
@@ -228,23 +127,9 @@ export default function App() {
       next.delete(name)
       return next
     })
-  }, [active?.id, active?.workspace_root])
+  }, [active?.id, active?.workspace_root, setHiddenProjects])
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const nearBottom = useRef(true)
-  const [composerHidden, setComposerHidden] = useState(false)
-  const [topbarHidden, setTopbarHidden] = useState(false)
-
-  const composerHiddenRef = useRef(false)
-  composerHiddenRef.current = composerHidden
-  const composerAreaRef = useRef<HTMLDivElement>(null)
-  const composerFocused = useRef(false)
-  const mobileRef = useRef(false)
-  const lastScrollTop = useRef(0)
-  const touchStartY = useRef<number | null>(null)
-  const composerTouchStartY = useRef<number | null>(null)
-  // 下滑隐藏后的抑制窗口：隐藏引发的 clamp 滚动会被判定为"在底部"而立即回显
-  const suppressRevealUntil = useRef(0)
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
@@ -283,44 +168,12 @@ export default function App() {
       }
       return next.length === prev.length ? prev : next
     })
-  }, [sessions])
+  }, [sessions, setProjectOrder])
 
   useEffect(() => {
     const summary = sessions.find(session => session.id === activeId)
     document.title = active?.title?.trim() || summary?.title?.trim() || 'vva'
   }, [active, activeId, sessions])
-
-  useEffect(() => {
-    const mq = window.matchMedia(MOBILE_MQ)
-    const sync = () => {
-      mobileRef.current = mq.matches
-      if (!mq.matches) setComposerHidden(false)
-    }
-    sync()
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
-  }, [])
-
-  // 切换会话时输入框复位为展示
-  useEffect(() => {
-    setComposerHidden(false)
-    setTopbarHidden(false)
-    nearBottom.current = true
-    lastScrollTop.current = 0
-  }, [activeId])
-
-  // 窄屏隐藏用负 margin 回收高度，跟踪输入区实测高度
-  useEffect(() => {
-    const area = composerAreaRef.current
-    if (!area) return
-    const apply = () => {
-      area.style.setProperty('--composer-h', `${area.offsetHeight}px`)
-    }
-    apply()
-    const observer = new ResizeObserver(apply)
-    observer.observe(area)
-    return () => observer.disconnect()
-  }, [activeId])
 
   // 切换会话时建立 SSE 订阅，连接建立即收到当前快照
   useEffect(() => {
@@ -332,7 +185,6 @@ export default function App() {
     }
     setSnap(null)
     setPending(null)
-    setStats(null)
     setPreviewFilePath(null)
     return subscribeSession(activeId, setSnap, e => setError(toError(e)))
   }, [activeId])
@@ -372,177 +224,27 @@ export default function App() {
     if (exists) setPending(null)
   }, [snap, pending])
 
+  const { stats, statsVisible, statsPanelRef, toggle: toggleStats, refreshStatsOverlap } =
+    useStatsPanel({
+      activeId,
+      turnCount,
+      contentKey: snap,
+      scrollRef,
+    })
+  const {
+    scrollProps,
+    composerAreaRef,
+    composerAreaProps,
+    composerHidden,
+    topbarHidden,
+    revealComposer,
+    followBottom,
+  } = useComposerVisibility({ activeId, scrollRef, onScrollExtra: refreshStatsOverlap })
+
   // 用户位于底部时跟随滚动
   useEffect(() => {
-    const el = scrollRef.current
-    if (el && nearBottom.current) {
-      el.scrollTop = el.scrollHeight
-      if (Date.now() >= suppressRevealUntil.current) setComposerHidden(false)
-    }
-  }, [snap])
-
-  // 顶栏用量数据：切换会话与轮次变化时刷新
-  useEffect(() => {
-    if (!activeId) {
-      setStats(null)
-      return
-    }
-    let cancelled = false
-    api
-      .stats(activeId)
-      .then(value => {
-        if (!cancelled) setStats(value)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [activeId, turnCount])
-
-  // 用量面板遮挡检测：任一消息内容与面板矩形相交即视为遮挡
-  const refreshStatsOverlap = useCallback(() => {
-    if (statsOverlapRaf.current) return
-    statsOverlapRaf.current = requestAnimationFrame(() => {
-      statsOverlapRaf.current = 0
-      const panel = statsPanelRef.current
-      const scroller = scrollRef.current
-      if (!panel || !scroller) return
-      const pr = panel.getBoundingClientRect()
-      let overlap = false
-      for (const el of scroller.querySelectorAll('.chat > *')) {
-        const r = el.getBoundingClientRect()
-        if (
-          Math.min(pr.right, r.right) - Math.max(pr.left, r.left) > 8 &&
-          Math.min(pr.bottom, r.bottom) - Math.max(pr.top, r.top) > 8
-        ) {
-          overlap = true
-          break
-        }
-      }
-      setStatsAutoHidden(overlap)
-      if (!overlap) setStatsPinned(false)
-    })
-  }, [])
-
-  // 内容变化（流式增量、切换会话、手动开合）后重新评估遮挡
-  useEffect(() => {
-    refreshStatsOverlap()
-  }, [snap, statsCollapsed, statsPinned, refreshStatsOverlap])
-
-  // 视口与布局尺寸变化（窗口缩放、侧栏拖宽）后重新评估遮挡
-  useEffect(() => {
-    if (!activeId) return
-    const scroller = scrollRef.current
-    if (!scroller) return
-    const observer = new ResizeObserver(refreshStatsOverlap)
-    observer.observe(scroller)
-    window.addEventListener('resize', refreshStatsOverlap)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', refreshStatsOverlap)
-    }
-  }, [activeId, refreshStatsOverlap])
-
-  const onScroll = () => {
-    const el = scrollRef.current
-    if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    nearBottom.current = atBottom
-    refreshStatsOverlap()
-    if (!mobileRef.current) {
-      lastScrollTop.current = el.scrollTop
-      return
-    }
-    if (atBottom) {
-      lastScrollTop.current = el.scrollTop
-      if (Date.now() >= suppressRevealUntil.current) setComposerHidden(false)
-      setTopbarHidden(false)
-      return
-    }
-    const prev = lastScrollTop.current
-    lastScrollTop.current = el.scrollTop
-    const delta = el.scrollTop - prev
-    // 下滑回看历史：隐藏标题栏；上滑恢复
-    if (delta < -COMPOSER_HIDE_DELTA) {
-      setTopbarHidden(true)
-    } else if (delta > COMPOSER_HIDE_DELTA) {
-      setTopbarHidden(false)
-    }
-    // 输入中不隐藏输入框
-    if (composerFocused.current) return
-    if (delta < -COMPOSER_HIDE_DELTA) setComposerHidden(true)
-  }
-
-  const onChatTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (!mobileRef.current || !composerHiddenRef.current) {
-      touchStartY.current = null
-      return
-    }
-    const y = event.touches[0]?.clientY
-    if (y == null) return
-    touchStartY.current = viewportBottom() - y <= COMPOSER_EDGE ? y : null
-  }
-
-  const onChatTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
-    const start = touchStartY.current
-    const y = event.touches[0]?.clientY
-    if (start == null || y == null) return
-    if (start - y >= COMPOSER_SWIPE) {
-      setComposerHidden(false)
-      touchStartY.current = null
-    }
-  }
-
-  const onComposerFocus = () => {
-    composerFocused.current = true
-    setComposerHidden(false)
-  }
-
-  const onComposerBlur = (event: ReactFocusEvent<HTMLDivElement>) => {
-    const next = event.relatedTarget
-    if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
-      composerFocused.current = false
-    }
-  }
-
-  // 移动端：输入框上下滑隐藏
-  const onComposerTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
-    composerTouchStartY.current = event.touches[0]?.clientY ?? null
-  }
-
-  const onComposerTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
-    if (!mobileRef.current) return
-    const start = composerTouchStartY.current
-    const y = event.touches[0]?.clientY
-    if (start == null || y == null) return
-    if (y - start < COMPOSER_SWIPE) return
-    composerTouchStartY.current = null
-    // 文本框内容滚动中不触发
-    const target = event.target
-    if (target instanceof HTMLTextAreaElement && target.scrollTop > 0) return
-    suppressRevealUntil.current = Date.now() + 400
-    setComposerHidden(true)
-  }
-
-  // 侧栏拖拽调宽
-  const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    resizing.current = true
-    resizeStartX.current = event.clientX
-    resizeStartW.current = sidebarWidth
-    document.body.classList.add('resizing')
-    event.currentTarget.setPointerCapture(event.pointerId)
-  }
-  const onResizeMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizing.current) return
-    setSidebarWidth(clampSidebar(resizeStartW.current + event.clientX - resizeStartX.current))
-  }
-  const onResizeEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizing.current) return
-    resizing.current = false
-    document.body.classList.remove('resizing')
-    event.currentTarget.releasePointerCapture(event.pointerId)
-  }
+    followBottom()
+  }, [snap, followBottom])
 
   const submit = useCallback(
     async (text: string, files: FileAttachment[] = []) => {
@@ -593,7 +295,7 @@ export default function App() {
   const revertTurn = useCallback(
     async (turnIndex: number, prompt: string) => {
       if (!activeId) return
-      setComposerHidden(false)
+      revealComposer()
       try {
         await api.revert(activeId, turnIndex)
         setPending(null)
@@ -602,7 +304,7 @@ export default function App() {
         setError(toError(e))
       }
     },
-    [activeId],
+    [activeId, revealComposer],
   )
 
   // 分叉：保留该用户轮次之前的历史创建新会话，并切换过去
@@ -640,17 +342,20 @@ export default function App() {
     [activeId],
   )
 
-  const reorderProjects = useCallback((sourceRoot: string, targetRoot: string) => {
-    setProjectOrder(prev => {
-      const sourceIndex = prev.indexOf(sourceRoot)
-      const targetIndex = prev.indexOf(targetRoot)
-      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return prev
-      const next = [...prev]
-      next.splice(sourceIndex, 1)
-      next.splice(next.indexOf(targetRoot), 0, sourceRoot)
-      return next
-    })
-  }, [])
+  const reorderProjects = useCallback(
+    (sourceRoot: string, targetRoot: string) => {
+      setProjectOrder(prev => {
+        const sourceIndex = prev.indexOf(sourceRoot)
+        const targetIndex = prev.indexOf(targetRoot)
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return prev
+        const next = [...prev]
+        next.splice(sourceIndex, 1)
+        next.splice(next.indexOf(targetRoot), 0, sourceRoot)
+        return next
+      })
+    },
+    [setProjectOrder],
+  )
 
   const configure = useCallback(
     async (body: ConfigureBody) => {
@@ -667,14 +372,7 @@ export default function App() {
   const currentModel = active?.current_model ?? draftModel ?? models?.default ?? ''
   const currentVariant = active?.current_variant ?? draftVariant
   const currentSearch = active?.web_search ?? draftSearch
-  const currentEditor = active?.editor ?? 'replace'
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
-  const workspaceName =
-    active?.workspace_root.split('/').filter(Boolean).pop() ?? active?.workspace_root ?? null
-  const contextLimit = stats?.context_limit ?? 200_000
-  const contextPercent = stats
-    ? Math.min(100, Math.round((stats.context_tokens / contextLimit) * 100))
-    : 0
 
   const changeModel = (spec: string) => {
     if (activeId) {
@@ -780,9 +478,9 @@ export default function App() {
       <Sash
         className="sash-sidebar"
         label="拖拽调节会话列表宽度"
-        onStart={onResizeStart}
-        onMove={onResizeMove}
-        onEnd={onResizeEnd}
+        onStart={sidebarResize.onStart}
+        onMove={sidebarResize.onMove}
+        onEnd={sidebarResize.onEnd}
       />
       {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)} />}
       <main className={`main${topbarHidden ? ' topbar-hidden' : ''}`}>
@@ -805,16 +503,7 @@ export default function App() {
           {stats && active && (
             <button
               className={`icon-ghost stats-toggle${statsVisible ? ' active' : ''}`}
-              onClick={() => {
-                if (statsVisible) {
-                  setStatsCollapsed(true)
-                  setStatsPinned(false)
-                } else {
-                  setStatsCollapsed(false)
-                  // 遮挡位置强制显示，保持到滚动至不再遮挡
-                  setStatsPinned(true)
-                }
-              }}
+              onClick={toggleStats}
               title={statsVisible ? '收起用量面板' : '展开用量面板'}
               aria-label="用量面板"
             >
@@ -836,41 +525,7 @@ export default function App() {
           )}
         </header>
         {stats && active && (
-          <div
-            className={`stats-panel${statsVisible ? '' : ' hidden'}`}
-            ref={statsPanelRef}
-          >
-            {(
-              [
-                ['Session', active.id],
-                ['Workspace', workspaceName],
-                ['Editor', currentEditor],
-                ['Turns', fmtNum(stats.total_turns)],
-                ['Context', `${fmtNum(stats.context_tokens)} / ${fmtLimit(contextLimit)}`],
-                ['In', fmtNum(stats.prompt_tokens)],
-                ['Out', fmtNum(stats.completion_tokens)],
-                ...(stats.tps != null ? ([['TPS', stats.tps.toFixed(1)]] as const) : []),
-                ['Cache Read', fmtNum(stats.cache_read_tokens)],
-                ['Cache Write', fmtNum(stats.cache_write_tokens)],
-                ['Est. Cost', `$${stats.estimated_cost_usd.toFixed(4)}`],
-              ] as [string, string][]
-            ).map(([label, value]) => (
-              <Fragment key={label}>
-                <div className="stat-row">
-                  <span className="stat-label">{label}</span>
-                  <span className="stat-value">{value}</span>
-                </div>
-                {label === 'Context' && (
-                  <div className="ctx-gauge">
-                    <span className="ctx-gauge-track">
-                      <span className="ctx-gauge-fill" style={{ width: `${contextPercent}%` }} />
-                    </span>
-                    <span>{contextPercent}%</span>
-                  </div>
-                )}
-              </Fragment>
-            ))}
-          </div>
+          <StatsPanel stats={stats} active={active} visible={statsVisible} panelRef={statsPanelRef} />
         )}
         {error && (
           <div className="banner error" onClick={() => setError(null)}>
@@ -885,37 +540,20 @@ export default function App() {
           </div>
         )}
         {!activeId ? (
-          <div className="empty-stage">
-            <div className="empty-brand">vva</div>
-            <div className="empty-hint">选择项目，输入任务开始 · Enter 发送</div>
-            <div className="empty-composer">
-              <div className="empty-project">
-                <ChipSelect
-                  title="项目"
-                  value={draftProject || defaultRoot || ''}
-                  options={projects.map(project => ({ value: project.root, label: project.name }))}
-                  onChange={setDraftProject}
-                />
-              </div>
-               <Composer
-                 running={running}
-                 onSend={submit}
-                 onStop={abort}
-                 controls={composerControls}
-                 skills={skills}
-                 workspace={draftProject || defaultRoot || undefined}
-               />
-            </div>
-          </div>
+          <EmptyStage
+            projects={projects}
+            defaultRoot={defaultRoot}
+            draftProject={draftProject}
+            onDraftProjectChange={setDraftProject}
+            controls={composerControls}
+            running={running}
+            skills={skills}
+            onSend={submit}
+            onStop={abort}
+          />
         ) : (
           <>
-            <div
-              className="chat-scroll"
-              ref={scrollRef}
-              onScroll={onScroll}
-              onTouchStart={onChatTouchStart}
-              onTouchMove={onChatTouchMove}
-            >
+            <div className="chat-scroll" ref={scrollRef} {...scrollProps}>
               <Chat
                 snap={snap}
                 pending={pending}
@@ -927,10 +565,7 @@ export default function App() {
             <div
               className={`composer-area${composerHidden && !askPending ? ' composer-hidden' : ''}`}
               ref={composerAreaRef}
-              onFocus={onComposerFocus}
-              onBlur={onComposerBlur}
-              onTouchStart={onComposerTouchStart}
-              onTouchMove={onComposerTouchMove}
+              {...composerAreaProps}
               aria-hidden={composerHidden && !askPending}
               inert={composerHidden && !askPending}
             >
@@ -961,9 +596,9 @@ export default function App() {
             <Sash
               className="sash-files"
               label="拖拽调节文件浏览器宽度"
-              onStart={onFileResizeStart}
-              onMove={onFileResizeMove}
-              onEnd={onFileResizeEnd}
+              onStart={fileSidebarResize.onStart}
+              onMove={fileSidebarResize.onMove}
+              onEnd={fileSidebarResize.onEnd}
             />
           )}
           <FileSidebar
