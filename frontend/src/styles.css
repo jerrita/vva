@@ -42,6 +42,9 @@
   --shadow: 0 1px 2px rgba(46, 36, 82, 0.06), 0 8px 28px rgba(46, 36, 82, 0.1);
   /* 顶栏高度：上下 padding 10px ×2 + 内容行 30px + 1px 底边 */
   --topbar-h: 51px;
+  /* 工作台：圆角面板 + 列间距（桌面端生效） */
+  --radius-pane: 14px;
+  --workbench-gap: 6px;
   --font-display: 'Space Grotesk', -apple-system, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
   --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
@@ -93,12 +96,16 @@
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: color-mix(in srgb, var(--muted) 42%, transparent) transparent;
 }
 
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track,
@@ -107,14 +114,19 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: transparent;
   border-radius: 999px;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 42%, transparent);
   background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--faint);
+  background: color-mix(in srgb, var(--muted) 68%, transparent);
   background-clip: padding-box;
 }
 
@@ -236,11 +248,13 @@ pre {
   display: flex;
   height: 100dvh;
   overflow: hidden;
+  background: var(--bg);
 }
 
 .main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   position: relative;
@@ -252,37 +266,15 @@ pre {
   position: relative;
   width: 268px;
   flex-shrink: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--panel);
-  border-right: 1px solid var(--border);
 }
 
-/* 拖拽调宽手柄 */
-.sidebar-resize {
-  position: absolute;
-  top: 0;
-  right: -3px;
-  bottom: 0;
-  width: 6px;
-  cursor: col-resize;
-  z-index: 5;
-}
-
-.sidebar-resize::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 2px;
-  width: 2px;
-  background: transparent;
-  transition: background 0.15s;
-}
-
-.sidebar-resize:hover::after,
-body.resizing .sidebar-resize::after {
-  background: var(--accent);
+/* 分隔柱：桌面工作台才展示，整列可拖 */
+.sash {
+  display: none;
 }
 
 body.resizing {
@@ -515,7 +507,7 @@ body.resizing .chat-scroll {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 10px 14px;
+  padding: 10px 14px 16px;
   border-top: 1px solid var(--border);
   color: var(--faint);
   font-family: var(--font-mono);
@@ -2245,37 +2237,11 @@ div.tool-row {
   display: flex;
   flex-direction: row;
   background: var(--panel);
-  border-left: 1px solid var(--border);
-  height: 100dvh;
+  min-height: 0;
+  height: 100%;
   overflow: hidden;
   z-index: 5;
   flex-shrink: 0;
-}
-
-.file-sidebar-resize {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 14px;
-  left: -7px;
-  cursor: col-resize;
-  z-index: 6;
-}
-
-.file-sidebar-resize::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 6px;
-  width: 2px;
-  background: transparent;
-  transition: background 0.15s;
-}
-
-.file-sidebar-resize:hover::after,
-body.resizing .file-sidebar-resize::after {
-  background: var(--accent);
 }
 
 .file-sidebar-preview-pane {
@@ -2923,8 +2889,69 @@ body.resizing .file-sidebar-resize::after {
 /* ---- 窄屏 ---- */
 
 @media (min-width: 821px) {
-  .app.sidebar-hidden .sidebar {
+  .app {
+    gap: 0;
+    padding: var(--workbench-gap);
+  }
+
+  .app.sidebar-hidden .sidebar,
+  .app.sidebar-hidden .sash-sidebar {
     display: none;
+  }
+
+  .sidebar,
+  .main,
+  .file-sidebar {
+    border-radius: var(--radius-pane);
+    overflow: hidden;
+  }
+
+  .main {
+    background: var(--panel);
+  }
+
+  .file-sidebar {
+    height: auto;
+    align-self: stretch;
+  }
+
+  .sash {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    align-self: stretch;
+    width: var(--workbench-gap);
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+    z-index: 6;
+  }
+
+  .sash-grip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    pointer-events: none;
+  }
+
+  .sash-grip span {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--faint);
+    transition: background 0.15s;
+  }
+
+  .sash:hover .sash-grip span,
+  .sash.is-resizing .sash-grip span {
+    background: var(--muted);
+  }
+
+  .composer-area {
+    padding: 8px 20px 14px;
   }
 }
 
@@ -2934,12 +2961,9 @@ body.resizing .file-sidebar-resize::after {
     inset: 0 auto 0 0;
     z-index: 20;
     width: min(320px, 84vw) !important;
+    border-radius: 0 var(--radius-pane) var(--radius-pane) 0;
     transform: translateX(-100%);
     transition: transform 0.2s ease;
-  }
-
-  .sidebar-resize {
-    display: none;
   }
 
   .app.sidebar-open .sidebar {
@@ -2959,14 +2983,12 @@ body.resizing .file-sidebar-resize::after {
     position: fixed;
     inset: 0 0 0 auto;
     z-index: 20;
+    height: 100dvh;
+    border-radius: var(--radius-pane) 0 0 var(--radius-pane);
     /* 保留一条可见的主界面边缘，避免文件抽屉在手机上吞没整个工作区。 */
     width: min(420px, calc(100vw - 64px)) !important;
     transform: translateX(100%);
     transition: transform 0.2s ease;
-  }
-
-  .file-sidebar-resize {
-    display: none;
   }
 
   .app.file-sidebar-open .file-sidebar {

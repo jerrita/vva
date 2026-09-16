@@ -26,6 +26,49 @@ const SIDEBAR_MAX = 420
 const clampSidebar = (width: number) =>
   Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, width))
 
+function Sash({
+  className,
+  label,
+  onStart,
+  onMove,
+  onEnd,
+}: {
+  className?: string
+  label: string
+  onStart: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onMove: (event: ReactPointerEvent<HTMLDivElement>) => void
+  onEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
+}) {
+  return (
+    <div
+      className={`sash${className ? ` ${className}` : ''}`}
+      onPointerDown={event => {
+        event.currentTarget.classList.add('is-resizing')
+        onStart(event)
+      }}
+      onPointerMove={onMove}
+      onPointerUp={event => {
+        event.currentTarget.classList.remove('is-resizing')
+        onEnd(event)
+      }}
+      onPointerCancel={event => {
+        event.currentTarget.classList.remove('is-resizing')
+        onEnd(event)
+      }}
+      title={label}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+    >
+      <span className="sash-grip" aria-hidden>
+        <span />
+        <span />
+        <span />
+      </span>
+    </div>
+  )
+}
+
 const MOBILE_MQ = '(max-width: 820px)'
 const COMPOSER_HIDE_DELTA = 16
 const COMPOSER_EDGE = 72
@@ -726,9 +769,6 @@ export default function App() {
           setHiddenProjects(prev => new Set([...prev, project]))
         }
         onReorder={reorderProjects}
-        onResizeStart={onResizeStart}
-        onResizeMove={onResizeMove}
-        onResizeEnd={onResizeEnd}
         onSelect={id => {
           setActiveId(id)
           setSidebarOpen(false)
@@ -736,6 +776,13 @@ export default function App() {
         onCreate={newChat}
         onDelete={removeSession}
         onOpenSettings={() => setSettingsOpen(true)}
+      />
+      <Sash
+        className="sash-sidebar"
+        label="拖拽调节会话列表宽度"
+        onStart={onResizeStart}
+        onMove={onResizeMove}
+        onEnd={onResizeEnd}
       />
       {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)} />}
       <main className={`main${topbarHidden ? ' topbar-hidden' : ''}`}>
@@ -910,6 +957,15 @@ export default function App() {
       </main>
       {active && (
         <>
+          {fileSidebarOpen && (
+            <Sash
+              className="sash-files"
+              label="拖拽调节文件浏览器宽度"
+              onStart={onFileResizeStart}
+              onMove={onFileResizeMove}
+              onEnd={onFileResizeEnd}
+            />
+          )}
           <FileSidebar
             sessionId={activeId}
             workspace={active.workspace_root}
@@ -919,9 +975,6 @@ export default function App() {
             width={fileSidebarWidth}
             onSelectPath={setPreviewFilePath}
             onClose={() => setFileSidebarOpen(false)}
-            onResizeStart={onFileResizeStart}
-            onResizeMove={onFileResizeMove}
-            onResizeEnd={onFileResizeEnd}
           />
           {fileSidebarOpen && (
             <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />

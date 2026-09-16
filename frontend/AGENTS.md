@@ -14,7 +14,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 
 | 令牌 | 语义 |
 |---|---|
-| `--bg` / `--panel` / `--panel-2` | 页面底 / 面板 / 次级面（hover、代码底） |
+| `--bg` / `--panel` / `--panel-2` | 页面底（工作台底板） / 面板（圆角分区） / 次级面（hover、代码底） |
 | `--border` / `--border-soft` | 边框 / 弱分隔线 |
 | `--text` / `--muted` / `--faint` | 正文 / 次要 / 最弱层级文字 |
 | `--accent` / `--accent-hover` / `--accent-soft` / `--on-accent` | 紫罗兰信号色：链接、激活态、聚焦环、主按钮、搜索开关选中 |
@@ -22,9 +22,10 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 | `--danger` / `--danger-soft` | 破坏性操作与错误（删除按钮、错误横幅/错误块） |
 | `--warning` / `--warning-soft` | Notice 横幅 |
 | `--dot` | 聊天区点阵纹理 |
+| `--radius-pane` / `--workbench-gap` | 工作台面板圆角 / 窗口内边距与列间距（两套主题共用） |
 
 - 浅色（薰衣草纸面）/ 深色（深茄紫夜面）由 `prefers-color-scheme` 自动切换，新增颜色必须同时定义两套。
-- 滚动条已全局主题化（thin、透明轨道、圆角拇指），禁止默认样式回归。
+- 滚动条已全局主题化（thin、透明轨道、默认隐去、悬停显现圆角拇指），禁止默认样式回归。
 
 ## 3. 字体
 
@@ -38,9 +39,10 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 
 ## 4. 版式与组件契约
 
+- **工作台**：桌面端 `.app` 以 `--workbench-gap`（6px）作窗口内边距；列间为同宽 `.sash` 分隔柱（整列可拖，中点三点、无胶囊外壳），侧栏 / 主区 / 文件抽屉各自为 `--radius-pane`（14px）圆角面板，坐落在 `--bg` 底板上。窄屏满铺，抽屉仍为 overlay。
 - **内容列**：聊天与输入框 `max-width: 760px` 居中；聊天区背景为 22px 网格点阵（`--dot`）。
-- **侧栏**：宽度可拖拽（200–420px，经右缘 `.sidebar-resize` 手柄，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。页脚为 Settings 入口（`.sidebar-foot` 按钮），打开全局配置弹窗。
-- **文件抽屉**：宽度可拖拽（240–760px，经左缘 `.file-sidebar-resize` 手柄，Pointer Capture 实现），支持「工程文件」（树状目录懒加载、折叠展开与点选预览）与「会话变动」（Read/Write/Edit 变动汇总）双选项卡切换。
+- **侧栏**：宽度可拖拽（200–420px，经右侧 `.sash` 分隔柱，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。页脚为 Settings 入口（`.sidebar-foot` 按钮），打开全局配置弹窗。
+- **文件抽屉**：宽度可拖拽（240–760px，经左侧 `.sash` 分隔柱，Pointer Capture 实现），支持「工程文件」（树状目录懒加载、折叠展开与点选预览）与「会话变动」（Read/Write/Edit 变动汇总）双选项卡切换。
 - **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章 + 悬停显示新建与隐藏按钮（新建预选该项目 workspace 并回空态，会话在首条消息发送时创建）。折叠状态与隐藏列表均持久化于 localStorage（`vva.projects-collapsed` / `vva.projects-hidden`）；打开或新建位于隐藏项目的会话时该项目自动恢复显示。
 - **新建项目目录点选**：新建模式为多级目录点选（`GET /api/fs/dirs` 列一级子目录，含上一级按钮），路径文本保持原始大小写（父级 uppercase 需显式覆盖）。
 - **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；支持在输入框粘贴图片附件（Base64 随消息提交），气泡内以缩略图展示；悬停气泡显示操作行（复制原文、回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
@@ -51,7 +53,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **引用注脚**：消息文本的 url_citation 渲染为 `.citations` 折叠行（`引用来源（N）`），按 URL 去重（对齐 TUI `search_citations`），默认收起，展开为编号列表。
 - **按钮体系**：`primary-button`/`send-button`（主色实心）、`ghost-button`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
 - **输入框**：会话底栏；窄屏向上滚动隐藏（聚焦时除外），回到底部或从屏幕底部上滑重新展示。
-- **顶栏**：半透明毛玻璃（`color-mix` 半透明 `--panel` + `backdrop-filter: blur`），脱离文档流覆盖主区（高度令牌 `--topbar-h`），聊天内容从其下方滚过；横幅、聊天区与空态自行让出顶栏高度。
+- **顶栏**：半透明毛玻璃（`color-mix` 半透明 `--panel` + `backdrop-filter: blur`），脱离文档流覆盖主区（高度令牌 `--topbar-h`），聊天内容从其下方滚过；横幅、聊天区与空态自行让出顶栏高度。桌面端主区 `overflow: hidden` 裁切至圆角。
 - **浮层**：
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；
   - 统计浮块（`.stats-panel`）：右上角浮动（会话活跃时），**非阻塞**——无遮罩，主界面可操作；内容滚入面板区域时自动收起（`opacity: 0` 保留测量、不参与命中测试），离开后自动展开；顶栏右缘开关（`.stats-toggle`）为手动覆盖——隐藏时点击强制显示（保持到不再遮挡）、展开时点击手动收起（持久化于 localStorage `vva.stats-collapsed`）；字段：Session / Workspace / Turns / Context（数值 + 比例条，上限缺省 200k）/ In / Out / TPS / Cache Read / Cache Write / Est. Cost；模型与档位在输入框工具行已展示，不重复；

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
 import hljs from 'highlight.js/lib/common'
 import { api, toError } from '../api'
 import type { ContentPart, FsEntry, RelatedFile, Session, SessionFileResponse } from '../types'
@@ -290,9 +289,6 @@ interface FileSidebarProps {
   width: number
   onSelectPath: (path: string | null) => void
   onClose: () => void
-  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onResizeMove: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onResizeEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
 }
 
 export function FileSidebar({
@@ -304,9 +300,6 @@ export function FileSidebar({
   width,
   onSelectPath,
   onClose,
-  onResizeStart,
-  onResizeMove,
-  onResizeEnd,
 }: FileSidebarProps) {
   const [activeTab, setActiveTab] = useState<'tree' | 'related'>('tree')
   const [filter, setFilter] = useState('')
@@ -767,15 +760,6 @@ export function FileSidebar({
       style={{ width: `${width}px` }}
       aria-label="工程文件浏览器"
     >
-      <div
-        className="file-sidebar-resize"
-        onPointerDown={onResizeStart}
-        onPointerMove={onResizeMove}
-        onPointerUp={onResizeEnd}
-        onPointerCancel={onResizeEnd}
-        title="拖拽调节宽度"
-      />
-
       {/* 左侧：文件代码预览区（处于双栏模式或单独预览模式时展示） */}
       {(isDualPane || (activePath && !isDualPane)) && (
         <div className="file-sidebar-preview-pane">

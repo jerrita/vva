@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import type { PointerEvent as ReactPointerEvent } from 'react'
 import { api } from '../api'
 import type { SessionSummary, SkillEntry } from '../types'
 import {
@@ -252,9 +251,6 @@ export function Sidebar({
   hiddenProjects,
   onHideProject,
   onReorder,
-  onResizeStart,
-  onResizeMove,
-  onResizeEnd,
   onSelect,
   onCreate,
   onDelete,
@@ -268,9 +264,6 @@ export function Sidebar({
   hiddenProjects: Set<string>
   onHideProject: (project: string) => void
   onReorder: (sourceRoot: string, targetRoot: string) => void
-  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onResizeMove: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onResizeEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
   onSelect: (id: string) => void
   onCreate: (workspace: string) => void
   onDelete: (id: string) => void
@@ -317,14 +310,6 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" style={{ width }}>
-      <div
-        className="sidebar-resize"
-        onPointerDown={onResizeStart}
-        onPointerMove={onResizeMove}
-        onPointerUp={onResizeEnd}
-        onPointerCancel={onResizeEnd}
-        aria-hidden
-      />
       <div className="sidebar-top">
         <span className="brand">vva</span>
         <button
