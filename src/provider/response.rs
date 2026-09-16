@@ -434,34 +434,6 @@ impl ResponseProvider {
             ..Default::default()
         };
 
-        // 领域实体因果时序：web_search 是服务端自主执行的前置检索动作，
-        // 最终回答文本（Message/Text）基于检索结果生成并携带引用注脚。
-        // 部分供应商（如 Grok Responses API）在 output 数组中将 Message 置于 WebSearchCall 之前，
-        // 此处校准领域模型 parts 顺序，使前置搜索排在最终回答之前。
-        if let Some(first_text_pos) = parts
-            .iter()
-            .position(|p| matches!(p, ContentPart::Text { .. }))
-            && parts[first_text_pos + 1..]
-                .iter()
-                .any(|p| matches!(p, ContentPart::WebSearchCall(_)))
-        {
-            let mut searches_after_text = Vec::new();
-            let mut other_parts = Vec::with_capacity(parts.len());
-            for (idx, part) in parts.into_iter().enumerate() {
-                if idx > first_text_pos && matches!(part, ContentPart::WebSearchCall(_)) {
-                    searches_after_text.push(part);
-                } else {
-                    other_parts.push(part);
-                }
-            }
-            let mut sorted_parts =
-                Vec::with_capacity(other_parts.len() + searches_after_text.len());
-            sorted_parts.extend(other_parts.drain(..first_text_pos));
-            sorted_parts.extend(searches_after_text);
-            sorted_parts.extend(other_parts);
-            parts = sorted_parts;
-        }
-
         let message = Message::new(parts);
 
         Ok(ProviderResponse {
@@ -1011,7 +983,7 @@ mod tests {
     }
 
     #[test]
-    fn test_response_provider_parse_orders_search_before_message() {
+    fn test_response_provider_parse_preserves_output_order() {
         let provider = ResponseProvider::new("test-key");
         let mock_json = serde_json::json!({
             "id": "resp_grok_1",
@@ -1047,8 +1019,8 @@ mod tests {
         let parts = &parsed.messages[0].parts;
         assert_eq!(parts.len(), 3);
         assert!(matches!(parts[0], ContentPart::Reasoning { .. }));
-        assert!(matches!(parts[1], ContentPart::WebSearchCall(_)));
-        assert!(matches!(parts[2], ContentPart::Text { .. }));
+        assert!(matches!(parts[1], ContentPart::Text { .. }));
+        assert!(matches!(parts[2], ContentPart::WebSearchCall(_)));
 
         // 强类型原生 output_items 顺序保持与厂商完全一致
         let meta_items = &parsed.meta.response.as_ref().unwrap().output_items;
