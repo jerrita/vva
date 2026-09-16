@@ -850,7 +850,14 @@ export default function App() {
                   onChange={setDraftProject}
                 />
               </div>
-              <Composer running={running} onSend={submit} onStop={abort} controls={composerControls} skills={skills} />
+               <Composer
+                 running={running}
+                 onSend={submit}
+                 onStop={abort}
+                 controls={composerControls}
+                 skills={skills}
+                 workspace={draftProject || defaultRoot || undefined}
+               />
             </div>
           </div>
         ) : (
@@ -895,6 +902,7 @@ export default function App() {
                 onStop={abort}
                 controls={composerControls}
                 skills={skills}
+                workspace={active?.workspace_root}
               />
             </div>
           </>

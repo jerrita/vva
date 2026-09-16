@@ -550,6 +550,7 @@ pub struct SubmitFile {
 pub struct UploadFileRequest {
     pub filename: String,
     pub data: String,
+    pub workspace: Option<String>,
 }
 
 /// 将浏览器无法原生传给模型的文件保存到当前工作区 scratch。
@@ -571,12 +572,12 @@ pub async fn upload_file(
             );
         }
     };
-    let scratch = match state
-        .manager
-        .store()
-        .ensure_scratch(state.manager.workspace())
-        .await
-    {
+    let workspace = request
+        .workspace
+        .as_deref()
+        .map(StdPath::new)
+        .unwrap_or_else(|| state.manager.workspace());
+    let scratch = match state.manager.store().ensure_scratch(workspace).await {
         Ok(path) => path,
         Err(store_error) => return error(StatusCode::INTERNAL_SERVER_ERROR, store_error),
     };

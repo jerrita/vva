@@ -49,8 +49,8 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
   submit: (id: string, prompt: string, files: FileAttachment[] = []) =>
     request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt, files })),
-  uploadFile: (filename: string, data: string) =>
-    request<{ path: string }>('/api/files', json('POST', { filename, data })),
+  uploadFile: (filename: string, data: string, workspace?: string) =>
+    request<{ path: string }>('/api/files', json('POST', { filename, data, workspace })),
   /** 回退到指定用户轮次：丢弃该轮次及其后的内容 */
   revert: (id: string, turnIndex: number) =>
     request<SessionSnapshot>(`/api/sessions/${id}/revert`, json('POST', { turn_index: turnIndex })),

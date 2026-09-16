@@ -1401,7 +1401,7 @@ div.tool-row {
 
 .tool-output {
   margin: 0;
-  padding: 4px 12px 10px;
+  padding: 4px 12px 10px 20px;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
@@ -1443,7 +1443,7 @@ div.tool-row {
 }
 
 .reasoning-body {
-  padding: 4px 12px 10px 32px;
+  padding: 4px 12px 10px 20px;
   color: var(--muted);
   white-space: pre-wrap;
   font-size: 12.5px;
@@ -1882,6 +1882,27 @@ div.tool-row {
   padding: 14px 12px 10px 16px;
   box-shadow: var(--shadow);
   transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.composer.dragging {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+}
+
+.composer-drop-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--panel) 94%, var(--accent));
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  pointer-events: none;
 }
 
 /* /<skill_name> 候选浮层：锚定输入框上方 */

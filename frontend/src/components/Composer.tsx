@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
-import type { ClipboardEvent, KeyboardEvent, ReactNode, Ref } from 'react'
+import type { ClipboardEvent, DragEvent, KeyboardEvent, ReactNode, Ref } from 'react'
 import { api } from '../api'
 import type { FileAttachment, SkillEntry } from '../types'
 import { IconArrowUp, IconPlus, IconStop, IconX } from './icons'
@@ -15,6 +15,7 @@ export function Composer({
   onStop,
   controls,
   skills,
+  workspace,
   ref,
 }: {
   running: boolean
@@ -22,16 +23,20 @@ export function Composer({
   onStop: () => void
   controls?: ReactNode
   skills: SkillEntry[]
+  workspace?: string
   ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
   const [files, setFiles] = useState<FileAttachment[]>([])
+  const [uploadedFiles, setUploadedFiles] = useState<{ filename: string; path: string }[]>([])
   const [uploading, setUploading] = useState(0)
+  const [dragging, setDragging] = useState(false)
   const [skillIndex, setSkillIndex] = useState(0)
   const [paletteClosed, setPaletteClosed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const selectedOptionRef = useRef<HTMLButtonElement>(null)
+  const dragDepthRef = useRef(0)
 
   // /<skill_name> 快速选择：输入以 / 开头且不含空白时按名前缀过滤
   const query = text.trimStart()
@@ -90,8 +95,8 @@ export function Composer({
           setFiles(prev => [...prev, { filename: file.name, mime_type: file.type, data }])
         } else {
           setUploading(count => count + 1)
-          const { path } = await api.uploadFile(file.name, data)
-          setText(prev => `${prev}${prev.trim() ? '\n\n' : ''}文件已保存到 scratch：${path}`)
+          const { path } = await api.uploadFile(file.name, data, workspace)
+          setUploadedFiles(prev => [...prev, { filename: file.name, path }])
         }
       } catch {
         setText(prev => `${prev}${prev.trim() ? '\n\n' : ''}文件上传失败：${file.name}`)
@@ -111,12 +116,38 @@ export function Composer({
     void addFiles(pasted)
   }
 
+  const onDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current += 1
+    if (event.dataTransfer.types.includes('Files')) setDragging(true)
+  }
+
+  const onDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragging(false)
+  }
+
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current = 0
+    setDragging(false)
+    const dropped = Array.from(event.dataTransfer.files)
+    if (dropped.length > 0) void addFiles(dropped)
+  }
+
   const send = () => {
     const trimmed = text.trim()
-    if ((!trimmed && files.length === 0) || running || uploading > 0) return
-    onSend(trimmed, files)
+    if ((!trimmed && files.length === 0 && uploadedFiles.length === 0) || running || uploading > 0) return
+    const prompt = [trimmed, ...uploadedFiles.map(file => `文件已保存到 scratch：${file.path}`)]
+      .filter(Boolean).join('\n\n')
+    onSend(prompt, files)
     setText('')
     setFiles([])
+    setUploadedFiles([])
     setSkillIndex(0)
     setPaletteClosed(false)
     requestAnimationFrame(resize)
@@ -157,8 +188,19 @@ export function Composer({
   }, [running])
 
   return (
-    <div className="composer">
-      {files.length > 0 && (
+    <div
+      className={`composer${dragging ? ' dragging' : ''}`}
+      onDragEnter={onDragEnter}
+      onDragOver={event => {
+        event.preventDefault()
+        event.stopPropagation()
+        event.dataTransfer.dropEffect = 'copy'
+      }}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragging && <div className="composer-drop-hint">松开以上传文件</div>}
+      {(files.length > 0 || uploadedFiles.length > 0) && (
         <div className="composer-attachments">
           {files.map((file, index) => (
             <figure key={`${file.filename}-${index}`} className="attachment-chip">
@@ -171,6 +213,18 @@ export function Composer({
                 onClick={() => setFiles(prev => prev.filter((_, i) => i !== index))}
                 title="移除文件"
                 aria-label="移除文件"
+              >
+                <IconX size={11} strokeWidth={2.2} />
+              </button>
+            </figure>
+          ))}
+          {uploadedFiles.map((file, index) => (
+            <figure key={`uploaded-${index}`} className="attachment-chip">
+              <span className="attachment-file" title={file.filename}>{file.filename}</span>
+              <button
+                onClick={() => setUploadedFiles(prev => prev.filter((_, i) => i !== index))}
+                title="移除文件"
+                aria-label={`移除文件 ${file.filename}`}
               >
                 <IconX size={11} strokeWidth={2.2} />
               </button>
@@ -238,7 +292,7 @@ export function Composer({
             <IconStop size={15} />
           </button>
         ) : (
-          <button className="send-button" onClick={send} disabled={(!text.trim() && files.length === 0) || uploading > 0} title="发送" aria-label="发送">
+          <button className="send-button" onClick={send} disabled={(!text.trim() && files.length === 0 && uploadedFiles.length === 0) || uploading > 0} title="发送" aria-label="发送">
             <IconArrowUp size={17} />
           </button>
         )}
