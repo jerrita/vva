@@ -29,28 +29,37 @@ export function projectName(root: string): string {
   return name || trimmed
 }
 
-/** 按 project 分组；组内与组间均按最新会话排序 */
-export function groupByProject(sessions: SessionSummary[]): SessionGroup[] {
+/** 按 project 分组；组内按最新会话排序，组间按持久化顺序排列 */
+export function groupByProject(
+  sessions: SessionSummary[],
+  projectOrder: string[] = [],
+): SessionGroup[] {
   const groups = new Map<string, SessionSummary[]>()
   for (const session of sessions) {
-    const project = projectName(session.workspace_root)
-    const list = groups.get(project)
+    const list = groups.get(session.workspace_root)
     if (list) {
       list.push(session)
     } else {
-      groups.set(project, [session])
+      groups.set(session.workspace_root, [session])
     }
   }
-  return [...groups.values()]
+  const result = [...groups.entries()]
     .map(list => ({
-      project: projectName(list[0].workspace_root),
-      root: list[0].workspace_root,
-      sessions: list.sort((a, b) => b.created_at.localeCompare(a.created_at)),
+      project: projectName(list[1][0].workspace_root),
+      root: list[0],
+      sessions: list[1].sort((a, b) => b.created_at.localeCompare(a.created_at)),
     }))
-    .sort(
-      (a, b) =>
-        b.sessions[0].created_at.localeCompare(a.sessions[0].created_at),
+  if (projectOrder.length === 0) {
+    return result.sort((a, b) =>
+      b.sessions[0].created_at.localeCompare(a.sessions[0].created_at),
     )
+  }
+  const order = new Map(projectOrder.map((root, index) => [root, index]))
+  return result.sort(
+    (a, b) =>
+      (order.get(a.root) ?? projectOrder.length) -
+      (order.get(b.root) ?? projectOrder.length),
+  )
 }
 
 /** 由项目名生成稳定的高辨识度颜色（紫罗兰色系内变化，保持整体统一） */
@@ -242,6 +251,7 @@ export function Sidebar({
   skills,
   hiddenProjects,
   onHideProject,
+  onReorder,
   onResizeStart,
   onResizeMove,
   onResizeEnd,
@@ -257,6 +267,7 @@ export function Sidebar({
   skills: SkillEntry[]
   hiddenProjects: Set<string>
   onHideProject: (project: string) => void
+  onReorder: (sourceRoot: string, targetRoot: string) => void
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void
   onResizeMove: (event: ReactPointerEvent<HTMLDivElement>) => void
   onResizeEnd: (event: ReactPointerEvent<HTMLDivElement>) => void
@@ -271,6 +282,8 @@ export function Sidebar({
   )
   const [newOpen, setNewOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
+  const [draggingRoot, setDraggingRoot] = useState<string | null>(null)
+  const [dropTargetRoot, setDropTargetRoot] = useState<string | null>(null)
 
   useEffect(() => {
     localStorage.setItem('vva.projects-collapsed', JSON.stringify([...collapsed]))
@@ -341,44 +354,67 @@ export function Sidebar({
         {groups
           .filter(group => !hiddenProjects.has(group.project))
           .map((group, index) => (
-          <div
-            key={group.project}
-            className="session-group"
-            style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
-          >
-            <div
-              className="group-label"
-              onClick={() => toggle(group.project)}
-              title={group.project}
-            >
-              <FolderIcon
-                open={!collapsed.has(group.project)}
-                color={projectColor(group.project)}
-              />
-              <span className="group-name">{group.project}</span>
-              <span className="group-count">{group.sessions.length}</span>
-              <button
-                className="group-new"
-                title={`在 ${group.project} 新建会话`}
-                aria-label={`在 ${group.project} 新建会话`}
-                onClick={event => {
-                  event.stopPropagation()
-                  onCreate(group.root)
-                }}
-              >
-                <IconPlus size={12} />
-              </button>
-              <button
-                className="group-hide"
-                title="隐藏项目"
-                aria-label={`隐藏项目 ${group.project}`}
-                onClick={event => {
-                  event.stopPropagation()
-                  onHideProject(group.project)
-                }}
-              >
-                <IconX size={12} />
-              </button>
+           <div
+             key={group.root}
+             className={`session-group${draggingRoot === group.root ? ' dragging' : ''}${dropTargetRoot === group.root ? ' drop-target' : ''}`}
+             style={{ animationDelay: `${Math.min(index, 8) * 45}ms` }}
+             onDragOver={event => {
+               event.preventDefault()
+               if (draggingRoot !== group.root) setDropTargetRoot(group.root)
+             }}
+             onDrop={event => {
+               event.preventDefault()
+               const sourceRoot = event.dataTransfer.getData('text/plain')
+               if (sourceRoot && sourceRoot !== group.root) onReorder(sourceRoot, group.root)
+               setDraggingRoot(null)
+               setDropTargetRoot(null)
+             }}
+           >
+             <div
+               className="group-label"
+               onClick={() => toggle(group.project)}
+               title={group.project}
+               draggable
+               onDragStart={event => {
+                 event.dataTransfer.effectAllowed = 'move'
+                 event.dataTransfer.setData('text/plain', group.root)
+                 setDraggingRoot(group.root)
+               }}
+               onDragEnd={() => {
+                 setDraggingRoot(null)
+                 setDropTargetRoot(null)
+               }}
+             >
+                <FolderIcon
+                  open={!collapsed.has(group.project)}
+                  color={projectColor(group.project)}
+                />
+                <span className="group-name">{group.project}</span>
+                <span className="group-count">{group.sessions.length}</span>
+                <button
+                  className="group-new"
+                  title={`在 ${group.project} 新建会话`}
+                  aria-label={`在 ${group.project} 新建会话`}
+                  onClick={event => {
+                    event.stopPropagation()
+                    onCreate(group.root)
+                  }}
+                  draggable={false}
+                >
+                  <IconPlus size={12} />
+                </button>
+                <button
+                  className="group-hide"
+                  title="隐藏项目"
+                  aria-label={`隐藏项目 ${group.project}`}
+                  onClick={event => {
+                    event.stopPropagation()
+                    onHideProject(group.project)
+                  }}
+                  draggable={false}
+                >
+                  <IconX size={12} />
+                </button>
             </div>
             {!collapsed.has(group.project) &&
               group.sessions.map(session => (

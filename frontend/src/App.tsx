@@ -68,6 +68,14 @@ export default function App() {
         JSON.parse(localStorage.getItem('vva.projects-hidden') ?? '[]') as string[],
       ),
   )
+  const [projectOrder, setProjectOrder] = useState<string[]>(() => {
+    try {
+      const value = JSON.parse(localStorage.getItem('vva.projects-order') ?? '[]')
+      return Array.isArray(value) && value.every(item => typeof item === 'string') ? value : []
+    } catch {
+      return []
+    }
+  })
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(localStorage.getItem('vva.sidebar-width'))
     return stored >= SIDEBAR_MIN && stored <= SIDEBAR_MAX ? stored : 268
@@ -105,6 +113,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('vva.projects-hidden', JSON.stringify([...hiddenProjects]))
   }, [hiddenProjects])
+
+  useEffect(() => {
+    localStorage.setItem('vva.projects-order', JSON.stringify(projectOrder))
+  }, [projectOrder])
 
   useEffect(() => {
     localStorage.setItem('vva.sidebar-width', String(sidebarWidth))
@@ -218,6 +230,17 @@ export default function App() {
       localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
     }
   }, [activeId, sessionsLoaded])
+
+  useEffect(() => {
+    const roots = new Set(sessions.map(session => session.workspace_root))
+    setProjectOrder(prev => {
+      const next = [...prev]
+      for (const root of roots) {
+        if (!next.includes(root)) next.push(root)
+      }
+      return next.length === prev.length ? prev : next
+    })
+  }, [sessions])
 
   useEffect(() => {
     const summary = sessions.find(session => session.id === activeId)
@@ -574,6 +597,18 @@ export default function App() {
     [activeId],
   )
 
+  const reorderProjects = useCallback((sourceRoot: string, targetRoot: string) => {
+    setProjectOrder(prev => {
+      const sourceIndex = prev.indexOf(sourceRoot)
+      const targetIndex = prev.indexOf(targetRoot)
+      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return prev
+      const next = [...prev]
+      next.splice(sourceIndex, 1)
+      next.splice(next.indexOf(targetRoot), 0, sourceRoot)
+      return next
+    })
+  }, [])
+
   const configure = useCallback(
     async (body: ConfigureBody) => {
       if (!activeId) return
@@ -681,7 +716,7 @@ export default function App() {
       }${fileSidebarOpen ? ' file-sidebar-open' : ''}`}
     >
       <Sidebar
-        groups={groupByProject(sessions)}
+        groups={groupByProject(sessions, projectOrder)}
         projects={projects}
         activeId={activeId}
         width={sidebarWidth}
@@ -690,6 +725,7 @@ export default function App() {
         onHideProject={project =>
           setHiddenProjects(prev => new Set([...prev, project]))
         }
+        onReorder={reorderProjects}
         onResizeStart={onResizeStart}
         onResizeMove={onResizeMove}
         onResizeEnd={onResizeEnd}

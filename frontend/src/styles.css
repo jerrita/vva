@@ -222,6 +222,14 @@ pre {
   animation: rise 0.34s ease backwards;
 }
 
+.session-group.dragging {
+  opacity: 0.45;
+}
+
+.session-group.drop-target {
+  border-top: 1px solid var(--accent);
+}
+
 /* ---- 整体布局 ---- */
 
 .app {
@@ -343,6 +351,14 @@ body.resizing .chat-scroll {
   text-align: left;
   cursor: pointer;
   user-select: none;
+}
+
+.group-label[draggable='true'] {
+  cursor: grab;
+}
+
+.group-label[draggable='true']:active {
+  cursor: grabbing;
 }
 
 .group-hide,
