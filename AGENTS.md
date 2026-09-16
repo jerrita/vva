@@ -87,8 +87,17 @@ src/
 │   ├── mod.rs              # Provider Trait (capabilities/complete/complete_stream)、能力声明与共享 HTTP Client (超时)
 │   ├── common.rs           # 跨供应商共享辅助 (EventForwarder 背压转发 / require_* 严格读取 / RoleBlockMerger)
 │   ├── http.rs             # 共享传输封装 (post_json 非流式 / post_sse 流式事件循环 SseEventHandler)
-│   ├── response.rs         # OpenAI Responses API (previous_response_id + 原生搜索)
-│   ├── anthropic.rs        # Anthropic Messages API (Prompt Caching + Thinking 签名，流式/非流式统一解析)
+│   ├── response/           # OpenAI Responses API (previous_response_id + 原生搜索)
+│   │   ├── mod.rs          # ResponseProvider 与 Provider Trait 实现
+│   │   ├── request.rs      # 请求体构建 (previous_response_id 增量切片 / 原生条目回传 / 媒体)
+│   │   ├── parse.rs        # 响应解析 (output items 反序列化 → 领域投影 + TurnMeta)
+│   │   ├── stream.rs       # SSE 事件累积处理器 (delta / output_item.done / response.completed)
+│   │   └── search.rs       # web_search_call → 领域 WebSearchCall 共享投影
+│   ├── anthropic/          # Anthropic Messages API (Prompt Caching + Thinking 签名，流式/非流式统一解析)
+│   │   ├── mod.rs          # AnthropicProvider 与 Provider Trait 实现
+│   │   ├── request.rs      # 请求体构建 (cache_control 断点 / thinking 签名回显 / 角色合并)
+│   │   ├── parse.rs        # 响应 DTO 严格解析与 assemble_response 统一组装
+│   │   └── stream.rs       # SSE 流式事件累积处理器 (content blocks / usage / stop_reason)
 │   ├── gemini.rs           # Google Gemini API (Grounding 多 chunk 合并投影 + 代码沙盒 + 共享累积器)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
 ├── skills/                 # Agent Skills (agentskills.io 规范：SKILL.md 技能包解析与发现)
@@ -96,14 +105,31 @@ src/
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
 │   ├── shell.rs            # Shell 执行 (超时/输出上限/退出码检查)
-│   ├── filesystem.rs       # Read、Write、Edit、Glob、Grep
+│   ├── filesystem/         # Read、Write、Edit、Glob、Grep 与共享基建 (路径解析/目录遍历/brace 展开/unified diff)
+│   │   ├── mod.rs          # 共享辅助与 parse_args 解析、各工具 re-export
+│   │   ├── read.rs         # Read (分页/媒体嗅探/hashline 快照/内容版本号)
+│   │   ├── write.rs        # Write (独占创建)
+│   │   ├── edit.rs         # Edit 精确替换引擎 (CRLF 规范化/冲突检测/行尾保持/原子落盘) + edit_lock/EditPlan 共享基建
+│   │   ├── glob.rs         # Glob (mtime 排序/上限截断)
+│   │   └── grep.rs         # Grep (include 过滤/hashline 输出)
 │   ├── apply_patch.rs      # Edit（patch）：Codex V4A
 │   ├── skill.rs            # Skill 工具：按 name 加载 SKILL.md 全文指令 (渐进披露第二层)
 │   └── hashline/           # Edit（hashline）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁
+│       ├── mod.rs          # HashlineEditTool (Tool Trait 实现) 与模块导出
+│       ├── session.rs      # HashlineSession (文件指纹 tag 与已展示行号集合登记)
+│       ├── snapshot.rs     # 快照渲染 (format_read/format_grep_file/编辑结果报告)
+│       ├── apply.rs        # 补丁应用 (分组预检/寄存器/块区间解析/落盘提交)
+│       ├── parse.rs        # 补丁文法解析 (Section/FileOp/Op)
+│       └── block.rs        # `N*` 块操作启发式解析
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
 │   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions) 与 capability_notices 能力协商
-│   └── session.rs          # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
+│   └── session/            # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
+│       ├── mod.rs          # 模块导出 (SessionManager/ManagedSession/SessionView/RunState)
+│       ├── view.rs         # SessionView 只读快照与 RunState
+│       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议
+│       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换
+│       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止)
 ├── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── app/                # App 响应式控制器、状态机与子系统调度
     │   ├── mod.rs          # App 结构体定义、生命周期与模块导出
@@ -128,7 +154,19 @@ src/
     │   └── config.rs       # ConfigModalState (设置项交互切换)
     └── views/              # 纯渲染层组件
         ├── mod.rs          # 视图模块导出
-        ├── chat.rs         # 聊天流渲染 (已完成轮次 + 流式草稿同源渲染)
+        ├── chat/           # 聊天流渲染 (已完成轮次 + 流式草稿同源渲染)
+        │   ├── mod.rs      # 模块导出 facade (外部路径不变)
+        │   ├── state.rs    # ChatRender 输出槽与 RenderState 增量状态
+        │   ├── pipeline.rs # 渲染管线 (append_parts/append_part/thought_kind 统一决策)
+        │   ├── tool.rs     # 工具调用头部行 (逐工具摘要)
+        │   ├── tool_block.rs # 工具展开块 (边框/填充/结果正文)
+        │   ├── diff.rs     # Edit 差异渲染 (LCS 统一/双栏)
+        │   ├── thought.rs  # 思考内容渲染 (内联/折叠启发式)
+        │   ├── citations.rs # 搜索引用注脚与 Sources 块
+        │   ├── user_block.rs # 用户消息引用块
+        │   ├── selection.rs # 文本选区 (提取/高亮/叠加)
+        │   ├── view.rs     # 终端视口 (面板/滚动/状态行)
+        │   └── tests.rs    # 聊天渲染测试集
         ├── config_modal.rs # 设置弹窗视图
         ├── header.rs       # 顶部标题栏
         ├── help_modal.rs   # 帮助弹窗视图

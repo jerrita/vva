@@ -14,6 +14,9 @@ use std::sync::Arc;
 
 pub const MAX_INLINE_OUTPUT_BYTES: usize = 32 * 1024;
 
+/// 工具输出的内联预算：为包装文案预留的余量。
+pub const INLINE_OUTPUT_BUDGET: usize = MAX_INLINE_OUTPUT_BYTES - 256;
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
