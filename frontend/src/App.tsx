@@ -30,6 +30,7 @@ const MOBILE_MQ = '(max-width: 820px)'
 const COMPOSER_HIDE_DELTA = 16
 const COMPOSER_EDGE = 72
 const COMPOSER_SWIPE = 24
+const ACTIVE_SESSION_STORAGE_KEY = 'vva.active-session'
 
 function viewportBottom(): number {
   const viewport = window.visualViewport
@@ -50,6 +51,7 @@ export default function App() {
   const [models, setModels] = useState<ModelsResponse | null>(null)
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
   const [snap, setSnap] = useState<SessionSnapshot | null>(null)
   const [pending, setPending] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -192,9 +194,35 @@ export default function App() {
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(toError(e)))
     api.workspace().then(workspace => setDefaultRoot(workspace.root)).catch(() => {})
-    api.sessions().then(setSessions).catch(e => setError(toError(e)))
+    api
+      .sessions()
+      .then(list => {
+        setSessions(list)
+        const storedActiveId = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+        if (storedActiveId && list.some(session => session.id === storedActiveId)) {
+          setActiveId(storedActiveId)
+        } else if (storedActiveId) {
+          localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+        }
+        setSessionsLoaded(true)
+      })
+      .catch(e => setError(toError(e)))
     api.skills().then(response => setSkills(response.skills)).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!sessionsLoaded) return
+    if (activeId) {
+      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, activeId)
+    } else {
+      localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
+    }
+  }, [activeId, sessionsLoaded])
+
+  useEffect(() => {
+    const summary = sessions.find(session => session.id === activeId)
+    document.title = active?.title?.trim() || summary?.title?.trim() || 'vva'
+  }, [active, activeId, sessions])
 
   useEffect(() => {
     const mq = window.matchMedia(MOBILE_MQ)
