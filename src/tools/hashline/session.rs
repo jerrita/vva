@@ -16,10 +16,12 @@ struct Inner {
     named: HashMap<String, Vec<String>>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct FileSnap {
     pub(super) text: String,
     pub(super) seen: HashSet<u32>,
+    /// 部分展示的长行：行号 -> 已展示字节数（byte_offset 续读进度）。
+    pub(super) partial: HashMap<u32, usize>,
 }
 
 impl HashlineSession {
@@ -41,18 +43,33 @@ impl HashlineSession {
         text: &str,
         seen: impl IntoIterator<Item = u32>,
     ) -> Result<String, String> {
+        self.record_with_partial(canonical, text, seen, Vec::new())
+    }
+
+    /// 同 [`record`](Self::record)，另登记 byte_offset 部分展示进度；
+    /// 行完整展示（计入 seen）时自动清除对应进度。
+    pub(super) fn record_with_partial(
+        &self,
+        canonical: PathBuf,
+        text: &str,
+        seen: impl IntoIterator<Item = u32>,
+        partial: Vec<(u32, usize)>,
+    ) -> Result<String, String> {
         let tag = file_tag(text);
         let mut inner = self.lock()?;
         let snaps = inner.files.entry(canonical).or_default();
-        let snap = snaps.entry(tag.clone()).or_insert_with(|| FileSnap {
-            text: text.to_string(),
-            seen: HashSet::new(),
-        });
+        let snap = snaps.entry(tag.clone()).or_insert_with(Default::default);
         if snap.text != text {
             snap.text = text.to_string();
             snap.seen.clear();
+            snap.partial.clear();
         }
-        snap.seen.extend(seen);
+        let shown: HashSet<u32> = seen.into_iter().collect();
+        snap.seen.extend(shown.iter().copied());
+        snap.partial.retain(|line, _| !snap.seen.contains(line));
+        for (line, bytes) in partial {
+            snap.partial.insert(line, bytes);
+        }
         Ok(tag)
     }
 

@@ -85,6 +85,8 @@ pub enum Op {
 const BEGIN: &str = "*** Begin Patch";
 const END: &str = "*** End Patch";
 const MAX_RANGE: u32 = 100_000;
+const NO_SECTIONS: &str = "invalid_arguments: no hashline sections found in input; copy a \
+    [PATH#TAG] header from the latest Read";
 
 pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
     let mut rows: Vec<(u32, String)> = input
@@ -110,18 +112,19 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
     }
     let rows = &rows[start..end];
     if rows.is_empty() {
-        return Err("invalid_arguments: no hashline sections found in input".into());
+        return Err(NO_SECTIONS.into());
     }
     let rows = if rows[0].1.trim_end() == BEGIN {
         if rows.last().map(|row| row.1.trim_end()) != Some(END) {
             return Err(
-                "invalid_arguments: patch starts with *** Begin Patch but has no *** End Patch"
+                "invalid_arguments: patch starts with *** Begin Patch but has no *** End Patch; \
+                 append `*** End Patch` as the final row"
                     .into(),
             );
         }
         let inner = &rows[1..rows.len() - 1];
         if inner.is_empty() {
-            return Err("invalid_arguments: no hashline sections found in input".into());
+            return Err(NO_SECTIONS.into());
         }
         inner
     } else if rows
@@ -129,7 +132,9 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
         .any(|row| row.1.trim_end() == BEGIN || row.1.trim_end() == END)
     {
         return Err(
-            "invalid_arguments: *** Begin Patch / *** End Patch must wrap the whole payload".into(),
+            "invalid_arguments: *** Begin Patch / *** End Patch must wrap the whole payload; \
+             either wrap everything or drop both markers"
+                .into(),
         );
     } else {
         rows
@@ -158,9 +163,27 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
             });
             continue;
         }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.contains('#') {
+            let body = &trimmed[1..trimmed.len() - 1];
+            let (path, tag) = body.rsplit_once('#').unwrap_or(("", ""));
+            let reason = if tag.len() != 4 {
+                format!("tag must be 4 hex characters, got {tag:?}")
+            } else if !tag.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                format!("tag {tag:?} is not hexadecimal")
+            } else if path.is_empty() {
+                "path is empty".to_string()
+            } else {
+                "path contains `#`".to_string()
+            };
+            return Err(format!(
+                "invalid_arguments: line {line_num}: malformed [PATH#TAG] header ({reason}); \
+                 copy the header from the latest Read or Edit output"
+            ));
+        }
         let Some(section) = current.as_mut() else {
             return Err(format!(
-                "invalid_arguments: line {line_num}: payload has no [PATH#TAG] header"
+                "invalid_arguments: line {line_num}: payload has no [PATH#TAG] header; start \
+                 the section with the header copied from the latest Read"
             ));
         };
         if let Some(header) = parse_hunk(trimmed, *line_num)? {
@@ -170,24 +193,84 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
         }
         if let Some(text) = line.strip_prefix('+') {
             let Some(body) = section.body.as_mut() else {
+                let hint = match section.ops.last() {
+                    Some(
+                        op @ (Op::PasteBefore { .. }
+                        | Op::PasteAfter { .. }
+                        | Op::PasteEof { .. }
+                        | Op::PasteBof { .. }
+                        | Op::PasteRange { .. }
+                        | Op::PasteBlock { .. }
+                        | Op::PasteAfterBlock { .. }),
+                    ) => format!(
+                        "; the preceding {} is a register paste; drop the `+` rows",
+                        op_line(op)
+                    ),
+                    Some(op @ (Op::Cut { .. } | Op::CutBlock { .. })) => format!(
+                        "; {} takes no body rows; use PUT with `:` for replacement",
+                        op_line(op)
+                    ),
+                    _ => String::new(),
+                };
                 return Err(format!(
-                    "invalid_arguments: line {line_num}: `+` body row has no PUT header"
+                    "invalid_arguments: line {line_num}: `+` body row has no PUT header{hint}"
                 ));
             };
             body.push(text.to_string());
             continue;
         }
         return Err(format!(
-            "invalid_arguments: line {line_num}: expected [PATH#TAG], PUT/CUT/REM/MV, or a `+` body row; got {trimmed:?}"
+            "invalid_arguments: line {line_num}: expected [PATH#TAG], PUT/CUT/REM/MV, or a `+` \
+             body row; drop unchanged lines, got {trimmed:?}"
         ));
     }
     if let Some(section) = current.take() {
         sections.push(section.finish(rows.last().map(|row| row.0).unwrap_or(1))?);
     }
     if sections.is_empty() {
-        return Err("invalid_arguments: no hashline sections found in input".into());
+        return Err(NO_SECTIONS.into());
     }
     Ok(sections)
+}
+
+/// PUT 操作对应的定位器写法，用于空 body 错误的 CUT 建议。
+fn put_locator_display(op: &Op) -> String {
+    match op {
+        Op::Replace { start, end, .. } => format!("{start}.={end}"),
+        Op::ReplaceBlock { line, .. } => format!("{line}*"),
+        Op::InsertBefore { line, .. } | Op::PasteBefore { line, .. } => format!("<{line}"),
+        Op::InsertAfter { line, .. } | Op::PasteAfter { line, .. } => format!(">{line}"),
+        Op::InsertAfterBlock { line, .. } | Op::PasteAfterBlock { line, .. } => {
+            format!(">{line}*")
+        }
+        Op::Append { .. } | Op::PasteEof { .. } => ">$".into(),
+        Op::InsertBof { .. } | Op::PasteBof { .. } => "<1".into(),
+        Op::Cut { start, end, .. } => format!("{start}.={end}"),
+        Op::CutBlock { line, .. } => format!("{line}*"),
+        Op::PasteRange { start, end, .. } => format!("{start}.={end}"),
+        Op::PasteBlock { line, .. } => format!("{line}*"),
+    }
+}
+/// 操作在补丁文本中的原始写法，用于错误信息中的定位提示。
+pub(super) fn op_line(op: &Op) -> String {
+    match op {
+        Op::Replace { start, end, .. } => format!("PUT {start}.={end}:"),
+        Op::ReplaceBlock { line, .. } => format!("PUT {line}*:"),
+        Op::InsertBefore { line, .. } => format!("PUT <{line}:"),
+        Op::InsertAfter { line, .. } => format!("PUT >{line}:"),
+        Op::InsertAfterBlock { line, .. } => format!("PUT >{line}*:"),
+        Op::Append { .. } => "PUT >$:".into(),
+        Op::InsertBof { .. } => "PUT <1:".into(),
+        Op::Cut { start, end, .. } => format!("CUT {start}.={end}"),
+        Op::CutBlock { line, .. } => format!("CUT {line}*"),
+        Op::PasteBefore { line, .. } => format!("PUT <{line} @…"),
+        Op::PasteAfter { line, .. } => format!("PUT >{line} @…"),
+        Op::PasteEof { .. } => "PUT >$ @…".into(),
+        Op::PasteBof { .. } => "PUT <1 @…".into(),
+        Op::PasteRange { start, end, .. } => format!("PUT {start}.={end} @…"),
+        Op::PasteBlock { line, .. } => format!("PUT {line}* @…"),
+        Op::PasteAfterBlock { line, .. } => format!("PUT >{line}* @…"),
+    }
 }
 
 struct OpenSection {
@@ -204,8 +287,10 @@ impl OpenSection {
             return Ok(());
         };
         if body.is_empty() {
+            let locator = self.ops.last().map(put_locator_display).unwrap_or_default();
             return Err(format!(
-                "invalid_arguments: line {line_num}: PUT with `:` requires one or more `+` body rows"
+                "invalid_arguments: line {line_num}: PUT with `:` requires one or more `+` body \
+                 rows; for an empty replacement use CUT {locator}"
             ));
         }
         let Some(
@@ -219,7 +304,7 @@ impl OpenSection {
         ) = self.ops.last_mut()
         else {
             return Err(format!(
-                "invalid_arguments: line {line_num}: unexpected body rows"
+                "invalid_arguments: line {line_num}: unexpected body rows; move the `+` rows under their PUT header"
             ));
         };
         *slot = body;
@@ -231,7 +316,7 @@ impl OpenSection {
             Hunk::File(op) => {
                 if self.file_op.is_some() {
                     return Err(format!(
-                        "invalid_arguments: line {line_num}: multiple REM/MV in one section"
+                        "invalid_arguments: line {line_num}: multiple REM/MV in one section; keep one REM or MV"
                     ));
                 }
                 self.file_op = Some(op);
@@ -250,7 +335,8 @@ impl OpenSection {
         self.flush_body(line_num)?;
         if self.ops.is_empty() && self.file_op.is_none() {
             return Err(format!(
-                "invalid_arguments: [{}#{}] has no operations",
+                "invalid_arguments: [{}#{}] has no operations; add at least one PUT/CUT/REM/MV \
+                 row after the header",
                 self.path, self.tag
             ));
         }
@@ -286,18 +372,22 @@ fn parse_hunk(line: &str, line_num: u32) -> Result<Option<Hunk>, String> {
     if let Some(rest) = keyword_tail(line, "REM") {
         if !rest.trim().is_empty() {
             return Err(format!(
-                "invalid_arguments: line {line_num}: REM takes no arguments"
+                "invalid_arguments: line {line_num}: REM takes no arguments; drop the stray text"
             ));
         }
         return Ok(Some(Hunk::File(FileOp::Rem)));
     }
     if let Some(rest) = keyword_tail(line, "MV") {
         let dest = unquote_path(rest.trim()).ok_or_else(|| {
-            format!("invalid_arguments: line {line_num}: MV destination is invalid")
+            format!(
+                "invalid_arguments: line {line_num}: MV destination is invalid; use \
+                 `MV DEST` (quote paths that contain spaces)"
+            )
         })?;
         if dest.is_empty() {
             return Err(format!(
-                "invalid_arguments: line {line_num}: MV requires a destination path"
+                "invalid_arguments: line {line_num}: MV requires a destination path; use \
+                 `MV DEST`"
             ));
         }
         return Ok(Some(Hunk::File(FileOp::Move { dest })));
@@ -329,7 +419,14 @@ fn parse_put(rest: &str, line_num: u32) -> Result<Hunk, String> {
         ));
     }
     let wants_body = colon;
+    let locator_text = locator.to_string();
     let op = match (locator, register, colon) {
+        (Locator::Line { line }, _, _) => {
+            return Err(format!(
+                "invalid_arguments: line {line_num}: expected N.=M, N*, <N, >N, or >$; got \
+                 \"{line}\""
+            ));
+        }
         (Locator::Range { start, end }, None, true) => Op::Replace {
             start,
             end,
@@ -366,18 +463,23 @@ fn parse_put(rest: &str, line_num: u32) -> Result<Hunk, String> {
         (Locator::Eof, register, false) => Op::PasteEof { register },
         (Locator::Range { .. } | Locator::Block { .. }, None, false) => {
             return Err(format!(
-                "invalid_arguments: line {line_num}: range/block paste requires a named @register"
+                "invalid_arguments: line {line_num}: range/block paste requires a named \
+                 @register; use `PUT {locator_text} @name`"
             ));
         }
         (locator, Some(_), true) => {
             return Err(format!(
-                "invalid_arguments: line {line_num}: {locator} register paste takes no body"
+                "invalid_arguments: line {line_num}: {locator} register paste takes no body; \
+                 drop the trailing `:` and its body rows"
             ));
         }
     };
-    if matches!(op, Op::Replace { start, end, .. } if end < start) {
+    if let Op::Replace { start, end, .. } = &op
+        && end < start
+    {
         return Err(format!(
-            "invalid_arguments: line {line_num}: replace_range end is before start"
+            "invalid_arguments: line {line_num}: replace_range end is before start; \
+             swap to `PUT {end}.={start}:`"
         ));
     }
     Ok(Hunk::Op { op, wants_body })
@@ -387,14 +489,20 @@ fn parse_cut(rest: &str, line_num: u32) -> Result<Hunk, String> {
     let (locator, register, colon) = split_locator(rest, line_num)?;
     if colon {
         return Err(format!(
-            "invalid_arguments: line {line_num}: CUT takes no body rows"
+            "invalid_arguments: line {line_num}: CUT takes no body rows; drop the trailing `:`"
         ));
     }
     let op = match locator {
+        Locator::Line { line } => Op::Cut {
+            start: line,
+            end: line,
+            register,
+        },
         Locator::Range { start, end } => {
             if end < start {
                 return Err(format!(
-                    "invalid_arguments: line {line_num}: CUT end is before start"
+                    "invalid_arguments: line {line_num}: CUT end is before start; swap to \
+                     `CUT {end}.={start}`"
                 ));
             }
             Op::Cut {
@@ -406,7 +514,7 @@ fn parse_cut(rest: &str, line_num: u32) -> Result<Hunk, String> {
         Locator::Block { line } => Op::CutBlock { line, register },
         other => {
             return Err(format!(
-                "invalid_arguments: line {line_num}: CUT requires N.=M or N*; got {other}"
+                "invalid_arguments: line {line_num}: CUT requires N, N.=M or N*; got {other}"
             ));
         }
     };
@@ -419,6 +527,7 @@ fn parse_cut(rest: &str, line_num: u32) -> Result<Hunk, String> {
 #[derive(Debug)]
 enum Locator {
     Range { start: u32, end: u32 },
+    Line { line: u32 },
     Block { line: u32 },
     Before { line: u32 },
     After { line: u32 },
@@ -430,6 +539,7 @@ impl std::fmt::Display for Locator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Range { start, end } => write!(f, "{start}.={end}"),
+            Self::Line { line } => write!(f, "{line}"),
             Self::Block { line } => write!(f, "{line}*"),
             Self::Before { line } => write!(f, "<{line}"),
             Self::After { line } => write!(f, ">{line}"),
@@ -450,7 +560,8 @@ fn split_locator(rest: &str, line_num: u32) -> Result<(Locator, Option<String>, 
             .count();
         if len == 0 {
             return Err(format!(
-                "invalid_arguments: line {line_num}: empty register name"
+                "invalid_arguments: line {line_num}: empty register name; name the register \
+                 `@name` (letters, digits, _ or -)"
             ));
         }
         (Some(name[..len].to_string()), name[len..].trim_start())
@@ -461,7 +572,8 @@ fn split_locator(rest: &str, line_num: u32) -> Result<(Locator, Option<String>, 
     let after = if colon { after[1..].trim() } else { after };
     if !after.is_empty() {
         return Err(format!(
-            "invalid_arguments: line {line_num}: trailing junk after locator: {after:?}"
+            "invalid_arguments: line {line_num}: trailing junk after locator: {after:?}; \
+             body rows start with `+` on their own line"
         ));
     }
     Ok((locator, register, colon))
@@ -490,18 +602,25 @@ fn parse_locator(rest: &str, line_num: u32) -> Result<(Locator, &str), String> {
     if let Some(tail) = tail.strip_prefix("*") {
         return Ok((Locator::Block { line: start }, tail));
     }
-    let Some(tail) = tail.strip_prefix(".=") else {
-        return Err(format!(
-            "invalid_arguments: line {line_num}: expected N.=M, N*, <N, >N, or >$; got {rest:?}"
-        ));
-    };
-    let (end, used) = parse_lid(tail, line_num)?;
-    if end.saturating_sub(start).saturating_add(1) > MAX_RANGE {
-        return Err(format!(
-            "invalid_arguments: line {line_num}: range spans more than {MAX_RANGE} lines"
-        ));
+    if let Some(tail) = tail.strip_prefix(".=") {
+        let (end, used) = parse_lid(tail, line_num)?;
+        if end.saturating_sub(start).saturating_add(1) > MAX_RANGE {
+            return Err(format!(
+                "invalid_arguments: line {line_num}: range spans more than {MAX_RANGE} lines"
+            ));
+        }
+        return Ok((Locator::Range { start, end }, &tail[used..]));
     }
-    Ok((Locator::Range { start, end }, &tail[used..]))
+    if tail.is_empty()
+        || tail.starts_with(|c: char| c.is_whitespace())
+        || tail.starts_with('@')
+        || tail.starts_with(':')
+    {
+        return Ok((Locator::Line { line: start }, tail));
+    }
+    Err(format!(
+        "invalid_arguments: line {line_num}: expected N.=M, N*, <N, >N, or >$; got {rest:?}"
+    ))
 }
 
 fn parse_lid(raw: &str, line_num: u32) -> Result<(u32, usize), String> {

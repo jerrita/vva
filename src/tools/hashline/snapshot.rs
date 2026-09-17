@@ -26,6 +26,11 @@ pub fn format_read(
     }
     let file = LineFile::parse(content);
     let tag = file_tag(content);
+    // 早前部分展示进度：byte_offset 恰好接上时，补全的行可计入 seen。
+    let partial = session
+        .and_then(|session| session.lookup(canonical, &tag).ok())
+        .map(|snap| snap.partial)
+        .unwrap_or_default();
     let budget = INLINE_OUTPUT_BUDGET;
     let mut output = format!("[{path_label}#{tag}]\n");
     let mut seen = Vec::new();
@@ -37,7 +42,7 @@ pub fn format_read(
                 return Err("byte_offset refers to a line past EOF".into());
             }
             output.push_str("[End of file]");
-            record_read(session, canonical, content, seen)?;
+            record_read(session, canonical, content, seen, Vec::new())?;
             return Ok(output);
         }
         let line = &file.lines[index];
@@ -55,7 +60,7 @@ pub fn format_read(
         if prefix.len() + text.len() + 1 > remaining {
             if shown > 0 {
                 output.push_str(&format!("[Continue with Read offset={}.]", index + 1));
-                record_read(session, canonical, content, seen)?;
+                record_read(session, canonical, content, seen, Vec::new())?;
                 return Ok(output);
             }
             let mut cut = remaining.saturating_sub(prefix.len() + 1).min(text.len());
@@ -69,14 +74,22 @@ pub fn format_read(
                 index + 1,
                 skip + cut
             ));
-            record_read(session, canonical, content, seen)?;
+            record_read(
+                session,
+                canonical,
+                content,
+                seen,
+                vec![((index + 1) as u32, skip + cut)],
+            )?;
             return Ok(output);
         }
         output.push_str(&prefix);
         output.push_str(text);
         output.push('\n');
-        if skip == 0 {
-            seen.push((index + 1) as u32);
+        let line_no = (index + 1) as u32;
+        let completed = skip == 0 || partial.get(&line_no).is_some_and(|bytes| *bytes == skip);
+        if completed {
+            seen.push(line_no);
         }
         shown += 1;
         index += 1;
@@ -86,7 +99,7 @@ pub fn format_read(
     } else {
         output.push_str("[End of file]");
     }
-    record_read(session, canonical, content, seen)?;
+    record_read(session, canonical, content, seen, Vec::new())?;
     Ok(output)
 }
 
@@ -95,9 +108,10 @@ fn record_read(
     canonical: &Path,
     content: &str,
     seen: Vec<u32>,
+    partial: Vec<(u32, usize)>,
 ) -> Result<(), String> {
     if let Some(session) = session {
-        session.record(canonical.to_path_buf(), content, seen)?;
+        session.record_with_partial(canonical.to_path_buf(), content, seen, partial)?;
     }
     Ok(())
 }
@@ -115,14 +129,46 @@ pub fn format_grep_file(
     let tag = file_tag(content);
     let mut output = format!("[{path_label}#{tag}]\n");
     let mut seen = Vec::new();
+    let mut partials: Vec<(u32, usize)> = Vec::new();
+    let budget = INLINE_OUTPUT_BUDGET;
     for (index, line) in matches {
-        output.push_str(&format!("{}:{line}\n", index + 1));
+        let prefix = format!("{}:", index + 1);
+        let remaining = budget.saturating_sub(output.len());
+        if prefix.len() + line.len() + 1 > remaining {
+            // 超预算的匹配行裁剪展示：不注册 seen，只登记部分进度，
+            // 由 Read 的 byte_offset 续读补全后才可编辑。
+            let mut cut = remaining.saturating_sub(prefix.len() + 1).min(line.len());
+            while cut > 0 && !line.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            output.push_str(&prefix);
+            output.push_str(&line[..cut]);
+            if cut > 0 {
+                output.push_str(&format!(
+                    "\n[Partial line; continue with Read offset={}, byte_offset={}, limit=1.]",
+                    index + 1,
+                    cut
+                ));
+                partials.push(((*index + 1) as u32, cut));
+            } else {
+                output.push_str(&format!(
+                    "\n[Line too long to display; Read offset={}, limit=1.]",
+                    index + 1
+                ));
+            }
+            continue;
+        }
+        output.push_str(&prefix);
+        output.push_str(line);
+        output.push('\n');
         seen.push((*index + 1) as u32);
     }
     if let Some(session) = session {
-        session.record(canonical.to_path_buf(), content, seen)?;
+        session.record_with_partial(canonical.to_path_buf(), content, seen, partials)?;
     }
-    output.pop();
+    if output.ends_with('\n') {
+        output.pop();
+    }
     Ok(output)
 }
 
@@ -176,7 +222,7 @@ pub(super) fn report_update(
             .collect(),
     };
     let diff = format_edit_result(&canonical, original, &plan, false);
-    let mut seen: Vec<u32> = carried.into_iter().collect();
+    let mut seen: Vec<u32> = carried.iter().copied().collect();
     seen.extend(preview.iter().map(|(n, _)| *n));
     let tag = session.record(canonical, updated, seen)?;
     let mut out = format!("[{label}#{tag}]\n{diff}");
@@ -185,17 +231,31 @@ pub(super) fn report_update(
         let mut previous = 0;
         for (number, line) in preview {
             if number > previous + 1 {
-                out.push_str("[Unshown lines; Read before editing]\n");
+                out.push_str(&gap_marker(previous + 1, number - 1, &carried));
             }
             out.push_str(&format!("{number}:{line}\n"));
             previous = number;
         }
         if (previous as usize) < new_offsets.len() - 1 {
-            out.push_str("[Unshown lines; Read before editing]\n");
+            out.push_str(&gap_marker(
+                previous + 1,
+                new_offsets.len() as u32 - 1,
+                &carried,
+            ));
         }
         out.pop();
     }
     Ok(out)
+}
+
+/// 预览间隙提示：早前展示过（行号平移结转）的行无需重新 Read；
+/// 从未展示的行才要求先 Read。
+fn gap_marker(first: u32, last: u32, carried: &HashSet<u32>) -> String {
+    if (first..=last).all(|line| carried.contains(&line)) {
+        format!("[Lines {first}-{last} unchanged; shown earlier, editable without Read]\n")
+    } else {
+        format!("[Lines {first}-{last} not displayed this session; Read before editing]\n")
+    }
 }
 
 fn line_offsets(text: &str) -> Vec<usize> {

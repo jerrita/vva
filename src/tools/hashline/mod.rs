@@ -57,10 +57,10 @@ impl Tool for HashlineEditTool {
 {"input":"[src/example.rs#1A2B]\nPUT 4.=4:\n+const value = 2;\n"}
 
 PUT N.=M: replace inclusive N–M with + body; every line in the range is removed, so include any retained lines in the body. Prefer <N or >N for insertion.
-PUT N*: replace a heuristically detected block (bracket counting, indentation, or Markdown heading; no language parser). Use explicit ranges when strings, comments, or JSX affect boundaries.
+PUT N*: replace a heuristically detected block (bracket counting that skips quoted strings and comments, indentation, or Markdown heading; no language parser). Use explicit ranges when unusual literals or JSX affect boundaries.
 PUT <N: insert before N (`PUT <1:` = file head). PUT >N: after N. PUT >$: append. PUT >N*: after block N.
-CUT N.=M / CUT N* deletes and optionally captures @name. PUT <N @name / PUT >N @name / PUT N.=M @name pastes (range/block paste needs a named register; gap paste may be anonymous).
-REM deletes the section file. MV DEST moves after prior edits in that section.
+CUT N / CUT N.=M / CUT N* deletes and optionally captures @name; CUT N is a single-line cut, equivalent to CUT N.=N. PUT <N @name / PUT >N @name / PUT N.=M @name pastes (range/block paste needs a named register; gap paste may be anonymous). Named registers persist across calls in the session; insertions at the same gap keep input order.
+REM deletes the section file. MV <new-path> moves/renames the whole file after prior edits in that section; a bare name renames in place (same directory), a path with a directory component is workspace-relative.
 Body rows start with +; + alone writes a blank line. Literal leading - or +: +-text / ++text. Never send -old or context rows.
 After Edit, use its new [PATH#TAG]; displayed lines outside changed ranges carry over with shifted numbers, so only genuinely unseen ranges need a Read. All hunks in one request use the original snapshot's numbers. Read/Grep, Write, and numbered Edit previews accumulate displayed lines for the same TAG. Elided and partial lines are unseen. Active-session snapshots survive submissions; after session reload, Read/Grep again."#
     }
