@@ -29,8 +29,10 @@ impl SystemInfo {
              - Operating System: {} ({})\n\
              - Workspace Root: {}\n\
              - Scratch Pad: {}\n\n\
-             The scratch pad is a persistent directory for this project. \
-             Read and write files there for durable notes and working artifacts.\n",
+             The Scratch Pad is the absolute directory shown in Environment Context. \
+             Use that absolute path for durable notes and working artifacts. \
+             Relative paths including scratch/... resolve under the workspace root, \
+             not the Scratch Pad; there is no scratch alias.\n",
             self.date,
             self.os,
             self.arch,
