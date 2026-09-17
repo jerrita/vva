@@ -508,7 +508,7 @@ impl SessionTask {
         engine: AgentEngine,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<bool, String> {
-        for notice in capability_notices(engine.provider.as_ref(), &engine.options) {
+        for notice in engine.notices.clone() {
             if self.notified.insert(notice.clone()) {
                 self.event(AgentEvent::Notice(notice)).await;
             }

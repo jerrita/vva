@@ -177,6 +177,69 @@ mod tests {
     }
 
     #[test]
+    fn test_model_annotation_web_search_declaration() {
+        let json = r#"{
+            "providers": {
+                "prov": {
+                    "models": {
+                        "plain": { "name": "Plain" },
+                        "no-search": {
+                            "name": "No Search",
+                            "annotation": { "web_search": false }
+                        }
+                    }
+                }
+            }
+        }"#;
+        let config = parse_config_str(json).expect("parse config");
+
+        assert!(
+            !config.providers["prov"].models["no-search"].declare_web_search(),
+            "annotation.web_search: false 应关闭原生搜索声明"
+        );
+        assert!(config.providers["prov"].models["plain"].declare_web_search());
+    }
+
+    #[test]
+    fn test_settings_web_merge_replaces_section() {
+        let global = parse_config_str(
+            r#"{
+            "settings": {
+                "default": "a/x",
+                "web": {
+                    "provider": { "brave": { "api_key": "global-key" } },
+                    "search": "brave",
+                    "fetch": "local"
+                }
+            },
+            "providers": { "a": { "models": { "x": { "name": "X" } } } }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            global.settings.web.as_ref().unwrap().search.as_deref(),
+            Some("brave")
+        );
+
+        // 项目配置声明 web 时整段替换，不与全局逐字段合并
+        let project = parse_config_str(
+            r#"{
+            "settings": {
+                "web": { "provider": { "tavily": { "api_key": "project-key" } }, "search": "tavily" }
+            }
+        }"#,
+        )
+        .unwrap();
+        let merged = global.merge(project);
+        let web = merged.settings.web.as_ref().unwrap();
+        assert_eq!(web.search.as_deref(), Some("tavily"));
+        assert_eq!(web.fetch, None);
+        let provider = web.provider.as_ref().unwrap();
+        assert!(provider.brave.is_none());
+        assert_eq!(provider.tavily.as_ref().unwrap().api_key, "project-key");
+    }
+
+    #[test]
     fn test_model_annotation_editor_override() {
         let json = r#"{
             "providers": {

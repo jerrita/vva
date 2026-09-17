@@ -171,6 +171,7 @@ async fn parallel_tool_calls_run_concurrently_and_preserve_order() {
             enable_web_search: false,
             ..Default::default()
         },
+        notices: Vec::new(),
         inputs: Default::default(),
     };
     let (_tx, mut rx) = mpsc::channel(1);

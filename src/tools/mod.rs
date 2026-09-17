@@ -4,6 +4,7 @@ pub mod filesystem;
 pub mod hashline;
 pub mod shell;
 pub mod skill;
+pub mod web;
 
 use crate::model::{EditorKind, ToolCall, ToolDefinition, ToolResult};
 use async_trait::async_trait;

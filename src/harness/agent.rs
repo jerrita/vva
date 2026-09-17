@@ -7,11 +7,16 @@ use crate::provider::{CompletionOptions, Provider};
 use crate::tools::ToolRegistry;
 use tokio::sync::mpsc;
 
-/// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）
-pub fn capability_notices(provider: &dyn Provider, options: &CompletionOptions) -> Vec<String> {
+/// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）。
+/// `external_search` 为真表示外置 web search 工具已接管，不再报"选项被忽略"。
+pub fn capability_notices(
+    provider: &dyn Provider,
+    options: &CompletionOptions,
+    external_search: bool,
+) -> Vec<String> {
     let caps = provider.capabilities();
     let mut notices = Vec::new();
-    if options.enable_web_search && !caps.supports_native_search {
+    if options.enable_web_search && !caps.supports_native_search && !external_search {
         notices.push(format!(
             "Web search is enabled but provider '{}' has no native search support; the option is ignored.",
             provider.name()
@@ -33,6 +38,8 @@ pub(super) struct AgentEngine {
     pub provider: Arc<dyn Provider>,
     pub tools: ToolRegistry,
     pub options: CompletionOptions,
+    /// 能力协商通知：原生能力降级与外置 web 工具激活提示，任务启动时发布
+    pub notices: Vec<String>,
     /// 当前模型的输入能力，供提交前校验用户附件
     pub(super) inputs: crate::config::resolver::InputCapabilities,
 }
@@ -84,24 +91,60 @@ impl AgentEngine {
             model: resolved.model_id,
             max_tokens,
             reasoning_effort: resolved.selected_variant,
-            enable_web_search: session.web_search,
+            enable_web_search: session.web_search && resolved.model_config.declare_web_search(),
             enable_web_fetch: resolved.model_config.declare_web_fetch(),
             service_tier: resolved.model_config.service_tier().map(str::to_string),
             ..Default::default()
         };
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
         // 客户端调用时，注册表给出显式诊断而非误导性的 Tool not found
+        let capabilities = provider.capabilities();
         if options.enable_web_search {
-            let mut server_tools = provider.capabilities().server_tool_names.clone();
+            let mut server_tools = capabilities.server_tool_names.clone();
             if !options.enable_web_fetch {
                 server_tools.retain(|name| *name != "web_fetch");
             }
             tools.reserve_server_tools(server_tools);
         }
+        // 原生 web 能力缺位时以外置 provider 的客户端工具补全（配置错误在此显式报错）
+        let mut notices = Vec::new();
+        let mut external_search = false;
+        if session.web_search {
+            let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
+            let native_search = options.enable_web_search && capabilities.supports_native_search;
+            let native_fetch =
+                options.enable_web_fetch && capabilities.server_tool_names.contains(&"web_fetch");
+            let mut activated: Vec<String> = Vec::new();
+            if !native_search && let Some(search) = &external.search {
+                tools.register(Arc::new(crate::tools::web::tool::WebSearchTool::new(
+                    search.clone(),
+                )));
+                activated.push(format!("web_search ({})", search.name()));
+                external_search = true;
+            }
+            if !native_fetch && let Some(fetch) = &external.fetch {
+                tools.register(Arc::new(crate::tools::web::tool::WebFetchTool::new(
+                    fetch.clone(),
+                )));
+                activated.push(format!("web_fetch ({})", fetch.name()));
+            }
+            if !activated.is_empty() {
+                notices.push(format!(
+                    "External web tools active: {}.",
+                    activated.join(", ")
+                ));
+            }
+        }
+        notices.extend(capability_notices(
+            provider.as_ref(),
+            &options,
+            external_search,
+        ));
         Ok(Self {
             provider,
             tools,
             options,
+            notices,
             inputs,
         })
     }
@@ -202,7 +245,7 @@ mod tests {
             ..Default::default()
         };
         let response = crate::provider::response::ResponseProvider::new("k");
-        assert!(capability_notices(&response, &options).is_empty());
+        assert!(capability_notices(&response, &options, false).is_empty());
 
         // 无原生搜索能力的供应商生成搜索降级通知
         let search_only = CompletionOptions {
@@ -210,10 +253,13 @@ mod tests {
             enable_web_search: true,
             ..Default::default()
         };
-        let notices = capability_notices(&NoSearchProvider, &search_only);
+        let notices = capability_notices(&NoSearchProvider, &search_only, false);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("native search"));
         assert!(notices[0].contains("no-search"));
+
+        // 外置搜索已接管时不再报"选项被忽略"
+        assert!(capability_notices(&NoSearchProvider, &search_only, true).is_empty());
     }
 
     #[test]
@@ -226,8 +272,126 @@ mod tests {
             reasoning_effort: Some("high".into()),
             ..Default::default()
         };
-        let notices = capability_notices(&provider, &options);
+        let notices = capability_notices(&provider, &options, false);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("Reasoning effort 'high'"));
+    }
+
+    /// AgentEngine::new 的测试构造器：不发起网络请求
+    fn build_engine(config: &AppConfig, session: &Session) -> Result<AgentEngine, String> {
+        let (tx, _rx) = mpsc::channel(1);
+        AgentEngine::new(
+            config,
+            session,
+            std::env::temp_dir().join(format!("vva-agent-test-{}", uuid::Uuid::new_v4())),
+            crate::tools::hashline::HashlineSession::new(),
+            tx,
+            Vec::new(),
+        )
+    }
+
+    fn web_config(annotation: Option<crate::config::model::ModelAnnotation>) -> AppConfig {
+        let mut config = AppConfig::default();
+        config.settings.web = Some(
+            serde_json::from_str(
+                r#"{
+                "provider": {
+                    "brave": { "api_key": "k-brave" },
+                    "tavily": { "api_key": "k-tavily" }
+                },
+                "search": "tavily",
+                "fetch": "local"
+            }"#,
+            )
+            .unwrap(),
+        );
+        let mut models = std::collections::HashMap::new();
+        models.insert(
+            "nos".into(),
+            crate::config::ModelConfig {
+                name: "No Search".into(),
+                annotation,
+                ..Default::default()
+            },
+        );
+        config.providers.insert(
+            "p".into(),
+            crate::config::ProviderConfig {
+                api_key: "k".into(),
+                models,
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    fn session_for(model: &str, web_search: bool) -> Session {
+        let mut session = Session::new(".", None);
+        session.set_model(model.to_string(), None);
+        session.set_web_search(web_search);
+        session
+    }
+
+    #[tokio::test]
+    async fn engine_registers_external_web_tools_when_native_missing() {
+        // annotation.web_search: false 关闭原生搜索；Response 协议本无原生 fetch
+        let annotation = crate::config::model::ModelAnnotation {
+            web_search: Some(false),
+            ..Default::default()
+        };
+        let config = web_config(Some(annotation));
+        let engine = build_engine(&config, &session_for("p/nos", true)).unwrap();
+
+        assert!(!engine.options.enable_web_search);
+        assert!(engine.tools.get("web_search").is_some());
+        assert!(engine.tools.get("web_fetch").is_some());
+        // 客户端工具接管时不再预留原生 server tool 名
+        assert!(!engine.tools.is_server_tool("web_search"));
+        assert!(engine.notices.iter().any(|notice| {
+            notice.contains("External web tools active: web_search (tavily), web_fetch (local)")
+        }));
+        assert!(
+            !engine
+                .notices
+                .iter()
+                .any(|notice| notice.contains("the option is ignored"))
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_skips_external_tools_without_native_gap_or_toggle() {
+        // 原生搜索在位（无注记）时搜索不外置；fetch 无原生实现，按能力位独立补全
+        let config = web_config(None);
+        let engine = build_engine(&config, &session_for("p/nos", true)).unwrap();
+        assert!(engine.options.enable_web_search);
+        assert!(engine.tools.get("web_search").is_none());
+        assert!(engine.tools.get("web_fetch").is_some());
+        assert!(engine.tools.is_server_tool("web_search"));
+        assert_eq!(
+            engine.notices,
+            vec!["External web tools active: web_fetch (local).".to_string()]
+        );
+
+        // 会话 web 开关关闭时一律不注册
+        let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();
+        assert!(!engine.options.enable_web_search);
+        assert!(engine.tools.get("web_search").is_none());
+        assert!(engine.tools.get("web_fetch").is_none());
+        assert!(!engine.tools.is_server_tool("web_search"));
+        assert!(engine.notices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn engine_fails_on_web_provider_capability_mismatch() {
+        let mut config = web_config(Some(crate::config::model::ModelAnnotation {
+            web_search: Some(false),
+            ..Default::default()
+        }));
+        config.settings.web.as_mut().unwrap().search = Some("local".into());
+        let Err(error) = build_engine(&config, &session_for("p/nos", true)) else {
+            panic!("expected engine build to fail on capability mismatch");
+        };
+
+        assert!(error.contains("only supports web fetch"), "{error}");
     }
 }

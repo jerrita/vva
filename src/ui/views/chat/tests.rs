@@ -1583,3 +1583,56 @@ fn test_agents_reminders_rendering_visibility() {
     assert!(!full_output.contains("Open the file"));
     assert!(!full_output.contains("system-reminder"));
 }
+
+#[test]
+fn external_web_search_renders_native_row_with_sources() {
+    let call = ToolCall::new("c1", "web_search", r#"{"query":"rust async"}"#);
+    let result = ToolResult::success(
+        "c1",
+        "1. Tokio Tutorial\nhttps://tokio.rs/tutorial\nshared state\n\n2. https://example.org/plain\nplain page\n",
+    );
+    let mut results = HashMap::new();
+    results.insert(result.tool_call_id.clone(), &result);
+    let (lines, hits) = render_tools(
+        &[ContentPart::ToolCall(call)],
+        &results,
+        &HashMap::new(),
+        80,
+    );
+    let text = joined(&lines);
+
+    // 原生形态：无箭头，label + 来源数，行下 title 居左域名居右的来源列表
+    assert!(
+        text.contains("web_search \"rust async\" (2 sources)"),
+        "{text}"
+    );
+    assert!(text.contains("Tokio Tutorial"), "{text}");
+    assert!(text.contains("tokio.rs"), "{text}");
+    assert!(text.contains("example.org"), "{text}");
+    // 不渲染工具输出内容块
+    assert!(!text.contains("shared state"), "{text}");
+    assert!(!text.contains("plain page"), "{text}");
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn external_web_fetch_renders_native_open_page_row() {
+    let call = ToolCall::new("c1", "web_fetch", r#"{"url":"https://example.com/post"}"#);
+    let result = ToolResult::success("c1", "# Post\n\nlong page body\n".repeat(50));
+    let mut results = HashMap::new();
+    results.insert(result.tool_call_id.clone(), &result);
+    let (lines, hits) = render_tools(
+        &[ContentPart::ToolCall(call)],
+        &results,
+        &HashMap::new(),
+        80,
+    );
+    let text = joined(&lines);
+
+    assert!(
+        text.contains("web_fetch https://example.com/post"),
+        "{text}"
+    );
+    assert!(!text.contains("long page body"), "{text}");
+    assert!(hits.is_empty());
+}

@@ -25,6 +25,44 @@
           "enum": ["replace", "patch", "hashline"],
           "default": "hashline",
           "description": "模型未声明 annotation.editor 时的缺省文件编辑协议"
+        },
+        "web": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "外置 web search / fetch 补全：模型原生能力缺位时以客户端工具补齐。local 为内置 fetch provider，无需声明",
+          "properties": {
+            "provider": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "外置 provider 声明，键为 provider 名",
+              "properties": {
+                "brave": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "Brave Search LLM Context，仅支持 search",
+                  "properties": {
+                    "api_key": { "type": "string", "description": "必填，推荐 \"${BRAVE_API_KEY}\" 插值" }
+                  }
+                },
+                "tavily": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "Tavily API，search 与 fetch 均支持",
+                  "properties": {
+                    "api_key": { "type": "string", "description": "必填，推荐 \"${TAVILY_API_KEY}\" 插值" }
+                  }
+                }
+              }
+            },
+            "search": {
+              "enum": ["brave", "tavily"],
+              "description": "web search 使用的 provider 名"
+            },
+            "fetch": {
+              "enum": ["brave", "local", "tavily"],
+              "description": "web fetch 使用的 provider 名；local 为内置网页正文提取（Readability 式），仅支持 fetch"
+            }
+          }
         }
       }
     },
@@ -175,6 +213,15 @@
               "type": "boolean",
               "default": true,
               "description": "false 时不向端点声明 web_fetch 服务端工具；用于未接线该工具的中转端点（未识别条目会整组丢弃工具声明），仅声明 web_search 可保住原生搜索"
+            },
+            "web_search": {
+              "type": "boolean",
+              "default": true,
+              "description": "false 标记模型/端点不支持原生 web search；会话 web 开关开启且配置 settings.web.search 时改用外置客户端工具补全"
+            },
+            "fast": {
+              "type": "boolean",
+              "description": "true 时以 \"service_tier\": \"fast\" 发起请求（快速档位端点）"
             },
             "editor": {
               "enum": ["replace", "patch", "hashline"],

@@ -71,6 +71,9 @@ impl AppConfig {
         if project.settings.editor.is_some() {
             self.settings.editor = project.settings.editor;
         }
+        if project.settings.web.is_some() {
+            self.settings.web = project.settings.web;
+        }
 
         for (p_id, p_cfg) in project.providers {
             if let Some(base_prov) = self.providers.get_mut(&p_id) {
@@ -188,6 +191,55 @@ pub struct GlobalSettings {
     /// 模型未声明 `annotation.editor` 时的缺省文件编辑协议；缺省 `hashline`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor: Option<crate::model::EditorKind>,
+    /// 外置 web search / fetch 补全配置；模型原生能力缺位时以客户端工具补齐
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebSettings>,
+}
+
+/// 外置 web 配置：`search` / `fetch` 按名称选择 provider。
+/// `local` 为内置 fetch provider（无需声明），其余名称须在 `provider` 下声明。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<WebProviders>,
+    /// web search 使用的 provider 名（`brave` / `tavily`）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
+    /// web fetch 使用的 provider 名（`brave` / `local` / `tavily`）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fetch: Option<String>,
+}
+
+/// 外置 web provider 声明；`local` 为内置保留名，不在此声明
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebProviders {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brave: Option<WebApiAuth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tavily: Option<WebApiAuth>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebApiAuth {
+    #[serde(default)]
+    pub api_key: String,
+}
+
+impl WebSettings {
+    /// 声明了哪些 provider 名（不含内置 `local`）
+    pub fn declared_names(&self) -> Vec<&str> {
+        let Some(provider) = &self.provider else {
+            return Vec::new();
+        };
+        let mut names = Vec::new();
+        if provider.brave.is_some() {
+            names.push("brave");
+        }
+        if provider.tavily.is_some() {
+            names.push("tavily");
+        }
+        names
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -238,6 +290,15 @@ impl ModelConfig {
             .unwrap_or(true)
     }
 
+    /// 是否使用原生 web search 服务端工具（`annotation.web_search: false` 时关闭，
+    /// 会话 web 开关开启且配置了外置 provider 时以客户端工具补全）
+    pub fn declare_web_search(&self) -> bool {
+        self.annotation
+            .as_ref()
+            .and_then(|a| a.web_search)
+            .unwrap_or(true)
+    }
+
     /// 该模型显式声明的文件编辑协议；未声明时为 `None`
     pub fn editor(&self) -> Option<crate::model::EditorKind> {
         self.annotation.as_ref().and_then(|a| a.editor)
@@ -259,6 +320,10 @@ impl ModelConfig {
 pub struct ModelAnnotation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_fetch: Option<bool>,
+    /// 原生 web search：`false` 标记模型/端点不支持原生搜索，
+    /// 会话 web 开关开启且配置 `settings.web.search` 时改用外置客户端工具
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_search: Option<bool>,
     /// 文件编辑协议：`hashline`（默认，`[PATH#TAG]` 行号补丁）、`replace`（old_string/new_string）、`patch`（Codex V4A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<crate::model::EditorKind>,

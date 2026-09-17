@@ -1,4 +1,4 @@
-import type { Annotation, ContentPart, MediaSource, ToolCall, ToolResult, WebSearchCall } from '../types'
+import type { Annotation, ContentPart, MediaSource, SearchStatus, ToolCall, ToolResult, WebSearchCall, WebSearchSource } from '../types'
 import { IconFile } from './icons'
 import { Markdown } from './Markdown'
 
@@ -275,6 +275,64 @@ function ToolGroupView({
   )
 }
 
+/**
+ * 外置 web_search 工具输出中的编号条目 → sources。
+ * 与工具输出格式耦合：`N. title` 行后紧跟 URL 行（title 缺省时该行为 `N. url`）。
+ */
+function parseWebSources(content: string): WebSearchSource[] {
+  const lines = content.split('\n')
+  const sources: WebSearchSource[] = []
+  for (let index = 0; index < lines.length; index++) {
+    const entry = /^\d+\. (.+)$/.exec(lines[index])
+    if (!entry) continue
+    const candidate = (lines[index + 1] ?? '').trim()
+    if (/^https?:\/\//.test(candidate)) {
+      sources.push({ url: candidate, title: entry[1] === candidate ? '' : entry[1] })
+      index++
+    } else if (/^https?:\/\//.test(entry[1])) {
+      sources.push({ url: entry[1], title: entry[1] })
+    }
+  }
+  return sources
+}
+
+/** 工具执行中/成功/失败 → 原生搜索状态 */
+function webToolStatus(result: ToolResult | null): SearchStatus {
+  if (!result) return 'searching'
+  return result.is_error ? 'failed' : 'completed'
+}
+
+/**
+ * 外置 web 工具（web_search / web_fetch）→ 原生 WebSearchCall 视图：
+ * 与服务端原生搜索共用同一展示形态（见 WebSearchView），其余工具返回 null。
+ */
+function externalWebSearchCall(node: ToolGroupNode): WebSearchCall | null {
+  const { call, result } = node
+  const args = parseArgs(call.arguments)
+  if (call.name === 'web_search') {
+    const query = str(args?.query) ?? ''
+    return {
+      id: call.id,
+      query,
+      action: { type: 'search' },
+      status: webToolStatus(result),
+      sources: result && !result.is_error ? parseWebSources(result.content) : [],
+    }
+  }
+  if (call.name === 'web_fetch') {
+    const url = str(args?.url) ?? ''
+    if (!url) return null
+    return {
+      id: call.id,
+      query: url,
+      action: { type: 'open_page', url },
+      status: webToolStatus(result),
+      sources: [],
+    }
+  }
+  return null
+}
+
 function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: boolean }) {
   return (
     <details className="search-row" open={expanded}>
@@ -305,7 +363,7 @@ function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: bool
           {call.sources.map((source, index) => (
             <li key={index}>
               <a href={source.url} target="_blank" rel="noreferrer">
-                {source.title}
+                {source.title || source.url}
               </a>
             </li>
           ))}
@@ -426,6 +484,10 @@ export function Parts({
     <>
       {nodes.map((node, index) => {
         const expanded = live && index === nodes.length - 1
+        const webCall = node.kind === 'tool' ? externalWebSearchCall(node.group) : null
+        if (webCall) {
+          return <WebSearchView key={`tool-${index}`} call={webCall} expanded={expanded} />
+        }
         return node.kind === 'tool' ? (
           <ToolGroupView
             key={`tool-${index}`}

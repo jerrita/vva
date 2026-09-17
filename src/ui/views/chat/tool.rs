@@ -1,7 +1,8 @@
 //! 工具调用头部行：逐工具摘要与展开状态判定。
 
 use super::*;
-use super::{state::*, tool_block::*};
+use super::{citations::*, state::*, tool_block::*};
+use crate::ui::text::truncate;
 
 pub(super) fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(serde_json::Value::as_str)
@@ -90,12 +91,63 @@ pub(super) fn glob_match_count(result: &ToolResult) -> Option<usize> {
     )
 }
 
+/// web_search 工具输出中的编号条目 → (title, url)。
+/// 与工具输出格式耦合：`N. title` 行后紧跟 URL 行（title 缺省时该行为 `N. url`）。
+pub(super) fn web_sources(result: &ToolResult) -> Vec<(String, String)> {
+    if result.is_error {
+        return Vec::new();
+    }
+    let lines: Vec<&str> = result.content.lines().collect();
+    let mut sources = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let entry = numbered_entry(lines[index]);
+        if let Some(next) = lines.get(index + 1)
+            && let Some(entry) = entry
+            && next.trim().starts_with("http")
+        {
+            sources.push((entry.trim().to_string(), next.trim().to_string()));
+            index += 2;
+            continue;
+        }
+        if let Some(entry) = entry
+            && entry.trim().starts_with("http")
+        {
+            sources.push((entry.trim().to_string(), entry.trim().to_string()));
+        }
+        index += 1;
+    }
+    sources
+}
+
+fn numbered_entry(line: &str) -> Option<&str> {
+    let (index, entry) = line.split_once(". ")?;
+    (!index.is_empty() && index.len() <= 3 && index.chars().all(|ch| ch.is_ascii_digit()))
+        .then_some(entry)
+}
+
 pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) -> String {
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return arguments.to_string();
     };
     match name {
         "AskUser" => ask_user_detail(&args),
+        "web_search" => {
+            let query = json_str(&args, "query")
+                .map(|query| format!("\"{query}\""))
+                .unwrap_or_else(|| arguments.to_string());
+            match result.map(web_sources) {
+                Some(sources) if !sources.is_empty() => {
+                    let count = sources.len();
+                    let noun = if count == 1 { "source" } else { "sources" };
+                    format!("{query} ({count} {noun})")
+                }
+                _ => query,
+            }
+        }
+        "web_fetch" => json_str(&args, "url")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
         "Read" => {
             let path = json_str(&args, "path")
                 .map(ToOwned::to_owned)
@@ -227,6 +279,7 @@ pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
     match name {
         "Edit" | "Write" => Some(ToolExpand::Full),
         "Shell" => Some(ToolExpand::Preview),
+        // 外置 web 工具对齐原生 WebSearchCall：仅一行 + 来源列表，不渲染输出块
         _ => None,
     }
 }
@@ -241,14 +294,24 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let has_content_block = expand.is_some();
     let expanded = !matches!(expand, Some(ToolExpand::Hidden) | None);
     let detail = tool_call_detail(&call.name, &call.arguments, result);
-    let arrow = if has_content_block {
+    let is_web_tool = matches!(call.name.as_str(), "web_search" | "web_fetch");
+    let arrow = if is_web_tool {
+        // 与原生 WebSearchCall 行一致：无箭头前缀
+        ""
+    } else if has_content_block {
         if expanded { "↓ " } else { "→ " }
     } else {
         "* "
     };
-    let name_style = if result.is_some_and(|result| result.is_error) {
+    let is_error = result.is_some_and(|result| result.is_error);
+    // 外置 web 工具与原生 server tool 同名，头部样式对齐原生（黄色加粗 label）
+    let name_style = if is_error {
         Style::default()
             .fg(Color::Rgb(220, 100, 100))
+            .add_modifier(Modifier::BOLD)
+    } else if matches!(call.name.as_str(), "web_search" | "web_fetch") {
+        Style::default()
+            .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
@@ -280,6 +343,28 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
     render.lines.extend(wrapped);
     let header_end = render.lines.len();
+    // 外置 web 搜索与原生 WebSearchCall 同构：行下直接展示来源列表（title 居左、域名居右）
+    if call.name == "web_search" && !is_error {
+        for (title, url) in result.map(web_sources).unwrap_or_default() {
+            let domain = url_display_domain(&url);
+            let title = if title.trim().is_empty() || title.trim() == url {
+                domain
+            } else {
+                title.trim()
+            };
+            let domain = truncate(domain, render.max_width.saturating_sub(4) / 2);
+            let right_w = domain.width();
+            let title_max = render.max_width.saturating_sub(3 + right_w + 1);
+            let title = truncate(title, title_max);
+            let pad = title_max - title.width() + 1;
+            render.lines.push(Line::from(vec![
+                Span::raw("   "),
+                Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    }
     let mut truncated = false;
     let mut block_start = render.lines.len();
     let mut block_end = block_start;

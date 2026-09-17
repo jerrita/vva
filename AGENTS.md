@@ -114,6 +114,12 @@ src/
 │   │   └── grep.rs         # Grep (include 过滤/hashline 输出)
 │   ├── apply_patch.rs      # Edit（patch）：Codex V4A
 │   ├── skill.rs            # Skill 工具：按 name 加载 SKILL.md 全文指令 (渐进披露第二层)
+│   ├── web/                # 外置 web search / fetch provider 与同名客户端工具 (settings.web 配置驱动)
+│   │   ├── mod.rs          # WebSearch/WebFetchProvider Trait、ExternalWeb 解析 (能力校验与 api_key 校验)
+│   │   ├── brave.rs        # Brave Search LLM Context (grounding.generic 按 url 聚合，仅 search)
+│   │   ├── tavily.rs       # Tavily /search 与 /extract (search + fetch)
+│   │   ├── local.rs        # 内置 fetch：HTTP 抓取 + dom_smoothie 正文提取 + htmd 转 Markdown
+│   │   └── tool.rs         # web_search / web_fetch 工具 (原生能力缺位时注册)
 │   └── hashline/           # Edit（hashline）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁
 │       ├── mod.rs          # HashlineEditTool (Tool Trait 实现) 与模块导出
 │       ├── session.rs      # HashlineSession (文件指纹 tag 与已展示行号集合登记)
