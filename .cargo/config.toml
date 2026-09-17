@@ -1,0 +1,11 @@
+# aarch64 交叉编译配置 (cargo build --release --target aarch64-unknown-linux-gnu)
+# Fedora 交叉 gcc 包不提供共享 libgcc_s，用 .cargo/aarch64/libgcc_s.so 链接脚本
+# 指向静态 libgcc.a；vendored OpenSSL 需要 CC/AR 指向交叉工具链。
+
+[env]
+CC_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-gcc"
+AR_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-ar"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-L", "native=.cargo/aarch64"]
