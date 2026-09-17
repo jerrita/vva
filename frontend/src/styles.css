@@ -429,6 +429,9 @@ body.resizing .chat-scroll {
 
 .session-item {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   border-radius: 8px;
   cursor: pointer;
@@ -448,7 +451,30 @@ body.resizing .chat-scroll {
   font-weight: 500;
 }
 
+.session-status {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.session-status.generating {
+  background: var(--rose);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.session-status.unread {
+  background: var(--accent);
+}
+
+.session-item.unread .session-title {
+  color: var(--text);
+  font-weight: 500;
+}
+
 .session-title {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
@@ -3094,5 +3120,10 @@ div.tool-row {
 @media (prefers-reduced-motion: reduce) {
   .app {
     --panel-duration: 0ms;
+  }
+
+  .session-status.generating,
+  .status-chip .dot {
+    animation: none;
   }
 }

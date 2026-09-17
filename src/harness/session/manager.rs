@@ -246,6 +246,18 @@ impl SessionManager {
         Ok(())
     }
 
+    /// 内存句柄中非空闲会话的运行状态文案（与 Web 快照 `state` 同词）。
+    pub async fn live_run_states(&self) -> HashMap<String, String> {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .iter()
+            .filter_map(|(id, handle)| {
+                let status = handle.snapshot().state.status();
+                (!status.is_empty()).then(|| (id.clone(), status))
+            })
+            .collect()
+    }
+
     pub async fn submit_prompt(
         &self,
         handle: Arc<ManagedSession>,

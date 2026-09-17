@@ -154,6 +154,8 @@ export interface SessionSummary {
   current_model: string
   current_variant?: string | null
   web_search: boolean
+  /** 运行状态文案；空或缺席表示空闲 */
+  state?: string
 }
 
 export interface SessionSnapshot {

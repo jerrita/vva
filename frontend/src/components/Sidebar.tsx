@@ -244,6 +244,7 @@ export function Sidebar({
   groups,
   projects,
   activeId,
+  unreadIds,
   width,
   skills,
   hiddenProjects,
@@ -257,6 +258,7 @@ export function Sidebar({
   groups: SessionGroup[]
   projects: ProjectOption[]
   activeId: string | null
+  unreadIds: Set<string>
   width: number
   skills: SkillEntry[]
   hiddenProjects: Set<string>
@@ -398,27 +400,38 @@ export function Sidebar({
                 </button>
             </div>
             {!collapsed.has(group.project) &&
-              group.sessions.map(session => (
-                <div
-                  key={session.id}
-                  className={`session-item${session.id === activeId ? ' active' : ''}`}
-                  title={session.title || '新对话'}
-                  onClick={() => onSelect(session.id)}
-                >
-                  <div className="session-title">{session.title || '新对话'}</div>
-                  <button
-                    className="session-delete"
-                    title="删除会话"
-                    aria-label="删除会话"
-                    onClick={event => {
-                      event.stopPropagation()
-                      setPendingDelete(session)
-                    }}
+              group.sessions.map(session => {
+                const generating = Boolean(session.state)
+                const unread = !generating && unreadIds.has(session.id)
+                const status = generating ? '正在生成' : unread ? '未读' : undefined
+                return (
+                  <div
+                    key={session.id}
+                    className={`session-item${session.id === activeId ? ' active' : ''}${generating ? ' generating' : ''}${unread ? ' unread' : ''}`}
+                    title={status ? `${session.title || '新对话'} · ${status}` : session.title || '新对话'}
+                    onClick={() => onSelect(session.id)}
                   >
-                    <IconX size={13} />
-                  </button>
-                </div>
-              ))}
+                    {(generating || unread) && (
+                      <span
+                        className={`session-status${generating ? ' generating' : ' unread'}`}
+                        aria-label={status}
+                      />
+                    )}
+                    <div className="session-title">{session.title || '新对话'}</div>
+                    <button
+                      className="session-delete"
+                      title="删除会话"
+                      aria-label="删除会话"
+                      onClick={event => {
+                        event.stopPropagation()
+                        setPendingDelete(session)
+                      }}
+                    >
+                      <IconX size={13} />
+                    </button>
+                  </div>
+                )
+              })}
           </div>
         ))}
         <SkillsSection skills={skills} />

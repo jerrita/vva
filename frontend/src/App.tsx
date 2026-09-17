@@ -50,6 +50,18 @@ export default function App() {
     },
     value => JSON.stringify(value),
   )
+  const [unreadIds, setUnreadIds] = usePersistentState<Set<string>>(
+    'vva.sessions-unread',
+    () => {
+      try {
+        const value = JSON.parse(localStorage.getItem('vva.sessions-unread') ?? '[]')
+        return new Set(Array.isArray(value) ? value.filter(item => typeof item === 'string') : [])
+      } catch {
+        return new Set()
+      }
+    },
+    value => JSON.stringify([...value]),
+  )
   const [settingsOpen, setSettingsOpen] = useState(false)
   const composerRef = useRef<ComposerHandle>(null)
 
@@ -156,12 +168,12 @@ export default function App() {
     [active, snap?.draft],
   )
 
-  // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次变化时）
+  // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次 / 运行态）
   const listKey = useRef('')
   useEffect(() => {
     if (!snap || !snap.persisted) return
     const s = snap.session
-    const key = `${s.id}|${s.title ?? ''}|${s.current_model}|${s.current_variant ?? ''}|${s.turns.length}`
+    const key = `${s.id}|${s.title ?? ''}|${s.current_model}|${s.current_variant ?? ''}|${s.turns.length}|${snap.state}`
     if (key === listKey.current) return
     listKey.current = key
     const summary: SessionSummary = {
@@ -173,9 +185,96 @@ export default function App() {
       current_model: s.current_model,
       current_variant: s.current_variant ?? null,
       web_search: s.web_search,
+      state: snap.state,
     }
     setSessions(prev => [summary, ...prev.filter(item => item.id !== s.id)])
   }, [snap])
+
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+  const runningWatchKey = sessions
+    .filter(session => session.id !== activeId && Boolean(session.state))
+    .map(session => session.id)
+    .sort()
+    .join('|')
+
+  // 后台生成：对非当前会话保持轻量 SSE，结束后标未读
+  useEffect(() => {
+    if (!runningWatchKey) return
+    const unsubscribers = runningWatchKey.split('|').map(id =>
+      subscribeSession(
+        id,
+        next => {
+          setSessions(prev =>
+            prev.map(item =>
+              item.id === next.session.id
+                ? {
+                    ...item,
+                    title: next.session.title ?? item.title,
+                    turn_count: next.session.turns.length,
+                    current_model: next.session.current_model,
+                    current_variant: next.session.current_variant ?? null,
+                    web_search: next.session.web_search,
+                    state: next.state,
+                  }
+                : item,
+            ),
+          )
+          if (next.state === '' && activeIdRef.current !== next.session.id) {
+            setUnreadIds(prev => {
+              if (prev.has(next.session.id)) return prev
+              const nextSet = new Set(prev)
+              nextSet.add(next.session.id)
+              return nextSet
+            })
+          }
+        },
+        () => {},
+      ),
+    )
+    return () => {
+      for (const unsubscribe of unsubscribers) unsubscribe()
+    }
+  }, [runningWatchKey, setUnreadIds])
+
+  const prevActiveRef = useRef<{ id: string | null; state: string }>({
+    id: null,
+    state: '',
+  })
+  useEffect(() => {
+    const previous = prevActiveRef.current
+    if (previous.id && previous.id !== activeId && previous.state) {
+      setSessions(prev =>
+        prev.map(item =>
+          item.id === previous.id && !item.state ? { ...item, state: previous.state } : item,
+        ),
+      )
+    }
+    prevActiveRef.current = { id: activeId, state: snap?.state ?? '' }
+  }, [activeId, snap?.state])
+
+  useEffect(() => {
+    if (!activeId) return
+    setUnreadIds(prev => {
+      if (!prev.has(activeId)) return prev
+      const next = new Set(prev)
+      next.delete(activeId)
+      return next
+    })
+  }, [activeId, setUnreadIds])
+
+  useEffect(() => {
+    const ids = new Set(sessions.map(session => session.id))
+    setUnreadIds(prev => {
+      let changed = false
+      const next = new Set<string>()
+      for (const id of prev) {
+        if (ids.has(id)) next.add(id)
+        else changed = true
+      }
+      return changed ? next : prev
+    })
+  }, [sessions, setUnreadIds])
 
   // 乐观展示的用户消息在会话中出现后移除
   useEffect(() => {
@@ -212,19 +311,22 @@ export default function App() {
     async (text: string, files: FileAttachment[] = []) => {
       setError(null)
       try {
-        if (!activeId) {
+        let id = activeId
+        if (!id) {
           const created = await api.createSession({
             model: draftModel ?? undefined,
             variant: draftVariant,
             search: draftSearch,
             workspace: draftProject || undefined,
           })
-          setActiveId(created.session.id)
-          await api.submit(created.session.id, text, files)
-        } else {
-          await api.submit(activeId, text, files)
+          id = created.session.id
+          setActiveId(id)
         }
+        await api.submit(id, text, files)
         setPending(text || null)
+        setSessions(prev =>
+          prev.map(item => (item.id === id ? { ...item, state: 'Thinking...' } : item)),
+        )
       } catch (e) {
         setError(toError(e))
       }
@@ -423,6 +525,7 @@ export default function App() {
         groups={groupByProject(sessions, projectOrder)}
         projects={projects}
         activeId={activeId}
+        unreadIds={unreadIds}
         width={sidebarWidth}
         skills={skills}
         hiddenProjects={hiddenProjects}

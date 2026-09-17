@@ -1,5 +1,6 @@
 //! Web API：以 REST + SSE 暴露 Harness 会话能力，前端作为唯一数据源消费。
 
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::Path as StdPath;
 
@@ -13,6 +14,7 @@ use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::ManagedSession;
+use crate::model::SessionSummary;
 use crate::ui::history::compute_stats;
 
 use super::server::AppState;
@@ -122,9 +124,33 @@ pub async fn list_skills(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
+#[derive(Serialize)]
+struct SessionListItem {
+    #[serde(flatten)]
+    summary: SessionSummary,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    state: String,
+}
+
+fn overlay_session_states(
+    sessions: Vec<SessionSummary>,
+    live: &HashMap<String, String>,
+) -> Vec<SessionListItem> {
+    sessions
+        .into_iter()
+        .map(|summary| {
+            let state = live.get(&summary.id).cloned().unwrap_or_default();
+            SessionListItem { summary, state }
+        })
+        .collect()
+}
+
 pub async fn list_sessions(State(state): State<AppState>) -> Response {
     match state.manager.store().list_sessions().await {
-        Ok(sessions) => Json(sessions).into_response(),
+        Ok(sessions) => {
+            let live = state.manager.live_run_states().await;
+            Json(overlay_session_states(sessions, &live)).into_response()
+        }
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
@@ -960,5 +986,31 @@ mod tests {
 
         let missing = read_file_from_workspace(ws, "nonexistent.txt").await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn overlay_session_states_attaches_live_run_status() {
+        let idle = SessionSummary {
+            id: "sess_idle".into(),
+            title: Some("Idle".into()),
+            workspace_root: "/tmp/ws".into(),
+            created_at: chrono::Utc::now(),
+            turn_count: 1,
+            current_model: "openai/gpt".into(),
+            current_variant: None,
+            web_search: true,
+        };
+        let running = SessionSummary {
+            id: "sess_run".into(),
+            title: Some("Run".into()),
+            ..idle.clone()
+        };
+        let live = HashMap::from([("sess_run".into(), "Thinking...".into())]);
+        let items = overlay_session_states(vec![idle, running], &live);
+        assert!(items[0].state.is_empty());
+        assert_eq!(items[1].state, "Thinking...");
+        let json = serde_json::to_value(&items).unwrap();
+        assert!(json[0].get("state").is_none());
+        assert_eq!(json[1]["state"], "Thinking...");
     }
 }
