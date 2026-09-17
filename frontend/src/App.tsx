@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, toError } from './api'
 import { subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
@@ -417,6 +417,7 @@ export default function App() {
       className={`app${sidebarOpen ? ' sidebar-open' : ''}${
         sidebarHidden ? ' sidebar-hidden' : ''
       }${fileSidebarOpen ? ' file-sidebar-open' : ''}`}
+      style={{ '--sidebar-width': `${sidebarWidth}px`, '--file-sidebar-width': `${fileSidebarWidth}px` } as CSSProperties}
     >
       <Sidebar
         groups={groupByProject(sessions, projectOrder)}
@@ -444,7 +445,7 @@ export default function App() {
         onMove={sidebarResize.onMove}
         onEnd={sidebarResize.onEnd}
       />
-      {sidebarOpen && <div className="backdrop" onClick={() => setSidebarOpen(false)} />}
+      <div className="backdrop" onClick={() => setSidebarOpen(false)} />
       <main className={`main${topbarHidden ? ' topbar-hidden' : ''}`}>
         <header className="topbar">
           <button
@@ -554,7 +555,6 @@ export default function App() {
       </main>
       {active && (
         <>
-          {fileSidebarOpen && (
             <Sash
               className="sash-files"
               label="拖拽调节文件浏览器宽度"
@@ -562,7 +562,6 @@ export default function App() {
               onMove={fileSidebarResize.onMove}
               onEnd={fileSidebarResize.onEnd}
             />
-          )}
           <FileSidebar
             sessionId={activeId}
             workspace={active.workspace_root}
@@ -573,9 +572,7 @@ export default function App() {
             onSelectPath={setPreviewFilePath}
             onClose={() => setFileSidebarOpen(false)}
           />
-          {fileSidebarOpen && (
-            <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />
-          )}
+          <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />
         </>
       )}
       {settingsOpen && (

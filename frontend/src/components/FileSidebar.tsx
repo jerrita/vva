@@ -65,8 +65,6 @@ export function FileSidebar({
     if (activePath) tree.revealPath(activePath)
   }, [activePath, tree.revealPath])
 
-  if (!open) return null
-
   // 小屏采用“列表 → 预览”两步流，确保文件内容和下载操作都有足够空间。
   const isDualPane = Boolean(activePath && width >= 520 && !isMobile)
 
@@ -219,6 +217,8 @@ export function FileSidebar({
       className={`file-sidebar${isDualPane ? ' dual-pane' : ''}`}
       style={{ width: `${width}px` }}
       aria-label="工程文件浏览器"
+      inert={!open}
+      aria-hidden={!open}
     >
       {/* 左侧：文件代码预览区（处于双栏模式或单独预览模式时展示） */}
       {(isDualPane || (activePath && !isDualPane)) && (
