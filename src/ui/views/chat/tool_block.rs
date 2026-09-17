@@ -65,9 +65,12 @@ pub(super) fn push_filled_text(
         push_filled_blank(lines, max_width);
         return;
     }
-    let spans = vec![Span::styled(text.to_string(), style)];
-    for wrapped in wrap_spans_to_lines(&spans, inner, " ", "  ") {
-        lines.push(fill_to_width(wrapped.spans, max_width));
+    // ratatui 渲染时过滤控制字符，span 内的 \n 会静默丢失并拼接相邻行，须先按行拆分
+    for text in text.lines() {
+        let spans = vec![Span::styled(text.to_string(), style)];
+        for wrapped in wrap_spans_to_lines(&spans, inner, " ", "  ") {
+            lines.push(fill_to_width(wrapped.spans, max_width));
+        }
     }
 }
 

@@ -276,6 +276,28 @@ fn tool_shell_defaults_to_preview() {
 }
 
 #[test]
+fn tool_shell_multiline_command_keeps_lines() {
+    let call = ToolCall::new(
+        "c1",
+        "Shell",
+        r#"{"intent":"capture","command":"rm -f /tmp/a.txt\nsleep 8\ncat /tmp/a.txt"}"#,
+    );
+    let (lines, _) = render_tools(
+        &[ContentPart::ToolCall(call)],
+        &HashMap::new(),
+        &HashMap::new(),
+        80,
+    );
+    let text = joined(&lines);
+    assert!(text.contains("$ rm -f /tmp/a.txt"));
+    assert!(text.contains("sleep 8"));
+    assert!(text.contains("cat /tmp/a.txt"));
+    // 相邻命令不得因控制字符被过滤而拼接
+    assert!(!text.contains("txtsleep"));
+    assert!(!text.contains("8cat"));
+}
+
+#[test]
 fn tool_preview_block_truncates_and_full_shows_all() {
     let output: String = (1..=15)
         .map(|n| format!("line{n}"))
