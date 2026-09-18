@@ -20,6 +20,13 @@ use tokio::sync::mpsc;
 
 use stream::AnthropicStreamHandler;
 
+/// 将当前亲和组写入轮次元数据：回放时据此判定原生块链可否复用
+fn stamp_scope(response: &mut ProviderResponse, scope: Option<String>) {
+    if let Some(meta) = response.meta.anthropic.as_mut() {
+        meta.scope = scope;
+    }
+}
+
 pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
@@ -80,7 +87,9 @@ impl Provider for AnthropicProvider {
     ) -> Result<ProviderResponse, ProviderError> {
         let body = self.build_request_body(session, tools, options)?;
         let response = post_json(&self.normalized_endpoint(), self.auth_headers()?, &body).await?;
-        self.parse_response(response)
+        let mut parsed = self.parse_response(response)?;
+        stamp_scope(&mut parsed, options.affinity.clone());
+        Ok(parsed)
     }
 
     async fn complete_stream(
@@ -108,6 +117,8 @@ impl Provider for AnthropicProvider {
         .await?;
         let (blocks, usage) = handler.finish()?;
 
-        assemble_response(blocks, usage)
+        let mut response = assemble_response(blocks, usage)?;
+        stamp_scope(&mut response, options.affinity.clone());
+        Ok(response)
     }
 }

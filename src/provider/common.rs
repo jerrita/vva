@@ -5,9 +5,9 @@
 
 use tokio::sync::mpsc;
 
-use super::ProviderError;
+use super::{CompletionOptions, ProviderError};
 use crate::event::AgentEvent;
-use crate::model::{Annotation, WebSearchCall};
+use crate::model::{Annotation, ToolDefinition, WebSearchCall};
 
 /// 增量事件转发器：统一封装 `Option<Sender>` 的转发样板。
 /// 全部走 `send().await` 以保留背压语义（通道满时等待而非丢弃事件）。
@@ -151,6 +151,51 @@ impl RoleBlockMerger {
     pub fn into_messages(self) -> Vec<serde_json::Value> {
         self.messages
     }
+}
+
+/// 跨亲和组重建时，领域 WebSearchCall 在当前请求工具面上的投影形态
+pub(crate) enum WebCallSurface {
+    /// 原生 server tool 在位（名称 + 入参），按各协议的历史块形态回传
+    Native(&'static str, serde_json::Value),
+    /// 仅外置客户端函数在位（名称 + 入参），合成 function 调用与结果对
+    Client(&'static str, serde_json::Value),
+}
+
+/// 按当前工具面为搜索调用选择投影：原生 server tool 在位优先，
+/// 其次外置客户端函数，皆无则 None（该轮丢弃）。
+/// 搜索调用是不绑定签发者的纯数据，可跨亲和组流转；决策只看工具面。
+/// OpenPage / FindInPage：有独立 web_fetch 时走该工具；否则随 web_search（Response open_page）。
+pub(crate) fn web_call_surface(
+    call: &WebSearchCall,
+    options: &CompletionOptions,
+    tools: &[ToolDefinition],
+    server_tools: &[&'static str],
+) -> Option<WebCallSurface> {
+    let (native_name, client_name, input) = match &call.action {
+        crate::model::WebSearchAction::Search => (
+            "web_search",
+            "web_search",
+            serde_json::json!({ "query": call.query }),
+        ),
+        crate::model::WebSearchAction::OpenPage { url }
+        | crate::model::WebSearchAction::FindInPage { url, .. } => {
+            let native_name = if server_tools.contains(&"web_fetch") {
+                "web_fetch"
+            } else {
+                "web_search"
+            };
+            (native_name, "web_fetch", serde_json::json!({ "url": url }))
+        }
+    };
+    let native_enabled = match native_name {
+        "web_search" => options.enable_web_search,
+        _ => options.enable_web_fetch,
+    };
+    if native_enabled && server_tools.contains(&native_name) {
+        return Some(WebCallSurface::Native(native_name, input));
+    }
+    let client_declared = tools.iter().any(|tool| tool.name == client_name);
+    client_declared.then_some(WebCallSurface::Client(client_name, input))
 }
 
 #[cfg(test)]

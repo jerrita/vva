@@ -62,6 +62,8 @@ pub struct CompletionOptions {
     pub reasoning_effort: Option<String>,
     /// 请求服务档位（Responses API 的 `service_tier` 参数；模型级 `annotation.fast: true` 时为 `fast`）
     pub service_tier: Option<String>,
+    /// 模型亲和组：组装轮次元数据时打标，回放时据此判定原生状态是否可复用
+    pub affinity: Option<String>,
 }
 
 impl Default for CompletionOptions {
@@ -74,6 +76,7 @@ impl Default for CompletionOptions {
             enable_web_fetch: true,
             reasoning_effort: None,
             service_tier: None,
+            affinity: None,
         }
     }
 }

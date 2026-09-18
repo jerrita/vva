@@ -187,6 +187,12 @@ impl InputCapabilities {
 }
 
 impl ResolvedModel<'_> {
+    /// 模型亲和组：annotation.affinity 优先，缺省 provider 节点 id。
+    /// 同组模型切换时可复用原生回传状态（链锚点 / 签名块），跨组降维重建
+    pub fn affinity(&self) -> String {
+        self.model_config.affinity(&self.provider_id)
+    }
+
     pub fn input_capabilities(&self) -> InputCapabilities {
         InputCapabilities {
             model: self.full_spec.clone(),

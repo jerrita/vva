@@ -259,6 +259,7 @@ impl SessionTask {
         }
         let mut session = (*self.view.session).clone();
         if model.is_some() || variant.is_some() {
+            let previous_model = session.current_model.clone();
             let target = model.as_deref().unwrap_or(&session.current_model);
             let selected = variant.unwrap_or_else(|| session.current_variant.clone());
             let resolved = self
@@ -267,6 +268,10 @@ impl SessionTask {
                 .map_err(|e| e.to_string())?;
             resolved.input_capabilities().validate_session(&session)?;
             session.set_model(resolved.full_spec, selected);
+            // 切换模型即能力/亲和状态变迁：允许通知重新发布（状态变迁发射语义）
+            if previous_model != session.current_model {
+                self.notified.clear();
+            }
             AppState::persist_selection(
                 &self.state_path,
                 &session.current_model,

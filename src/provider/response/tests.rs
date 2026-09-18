@@ -559,7 +559,7 @@ fn test_response_provider_store_false_falls_back_to_full_history() {
     session.append_turn(asst_turn);
 
     // 会话无法提取有效 response_id
-    assert!(session.latest_openai_response_id().is_none());
+    assert!(session.latest_openai_response_id(None).is_none());
 
     // 3. 用户发起第二轮提问
     let user_msg2 = Message::text("第二轮示例问题");
@@ -1107,4 +1107,132 @@ async fn test_stream_item_done_sources_survive_completed_aggregation() {
         panic!("expected native search item");
     };
     assert_eq!(sources.len(), 3);
+}
+
+#[test]
+fn test_response_provider_scope_mismatch_rebuilds_history() {
+    let provider = ResponseProvider::new("test-key");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("第一问")));
+
+    let mut asst_turn = Turn::assistant_turn(vec![Message::new(vec![ContentPart::text("答一")])]);
+    let mut meta = ResponseTurnMeta::new("resp_luna");
+    meta.scope = Some("homo/gpt".into());
+    asst_turn.meta = TurnMeta {
+        response: Some(meta),
+        ..Default::default()
+    };
+    session.append_turn(asst_turn);
+    session.append_turn(Turn::user_turn(Message::text("第二问")));
+
+    // 跨亲和组：锚点不可复用，回退全量重建（无 previous_response_id）
+    let options = CompletionOptions {
+        model: "deepseek".into(),
+        affinity: Some("homo/deepseek".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &[], &options)
+        .expect("build body");
+    assert!(body.get("previous_response_id").is_none());
+    assert_eq!(body["input"].as_array().unwrap().len(), 3);
+
+    // 同亲和组不同模型（gpt 同系切换）：链式锚点保留
+    let options_same = CompletionOptions {
+        model: "terra".into(),
+        affinity: Some("homo/gpt".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &[], &options_same)
+        .expect("build body");
+    assert_eq!(body["previous_response_id"], "resp_luna");
+}
+
+#[test]
+fn test_response_provider_web_search_call_replays_per_tool_surface() {
+    let provider = ResponseProvider::new("test-key");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("search")));
+
+    // 跨亲和组重建的搜索调用（纯数据，按当前工具面投影）
+    let call = WebSearchCall::completed(
+        "ws_1",
+        "rust async",
+        vec![crate::model::WebSearchSource::new(
+            "https://example.com",
+            "Example",
+            None,
+        )],
+    );
+    session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::WebSearchCall(call),
+    ])]));
+
+    let tools = vec![crate::model::ToolDefinition {
+        name: "web_search".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({ "type": "object" }),
+    }];
+
+    // 仅外置客户端函数在位 → 合成 function 调用与结果对
+    let options = CompletionOptions {
+        model: "m".into(),
+        enable_web_search: false,
+        affinity: Some("x".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &tools, &options)
+        .expect("build body");
+    let inputs = body["input"].as_array().unwrap();
+    let call_item = inputs
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .expect("function_call");
+    assert_eq!(call_item["name"], "web_search");
+    assert_eq!(call_item["call_id"], "ws_1");
+    let output = inputs
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .expect("function_call_output");
+    assert!(output["output"].as_str().unwrap().contains("example.com"));
+
+    // 原生 server tool 在位 → 原生 web_search_call 条目
+    let options_native = CompletionOptions {
+        model: "m".into(),
+        enable_web_search: true,
+        affinity: Some("x".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &tools, &options_native)
+        .expect("build body");
+    let inputs = body["input"].as_array().unwrap();
+    let item = inputs
+        .iter()
+        .find(|item| item["type"] == "web_search_call")
+        .expect("web_search_call");
+    assert_eq!(item["action"]["query"], "rust async");
+
+    // open_page 随原生 web_search 回放，不降为客户端 web_fetch
+    let mut open = WebSearchCall::completed("ws_open", "", Vec::new());
+    open.action = WebSearchAction::OpenPage {
+        url: "https://example.com/article".into(),
+    };
+    session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::WebSearchCall(open),
+    ])]));
+    let body = provider
+        .build_request_body(&session, &[], &options_native)
+        .expect("build body");
+    let open_item = body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == "ws_open")
+        .expect("open_page web_search_call");
+    assert_eq!(open_item["type"], "web_search_call");
+    assert_eq!(open_item["action"]["type"], "open_page");
+    assert_eq!(open_item["action"]["url"], "https://example.com/article");
 }

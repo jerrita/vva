@@ -124,6 +124,37 @@ impl WebSearchCall {
             sources,
         }
     }
+
+    /// 历史重建时的结果文本投影：编号 title/url 列表，供客户端工具形态的
+    /// function_call_output / tool_result 携带搜索上下文跨亲和组流转
+    pub fn result_text(&self) -> String {
+        match &self.action {
+            WebSearchAction::Search => {
+                if self.sources.is_empty() {
+                    return format!("No results found for \"{}\".", self.query);
+                }
+                let mut text = String::new();
+                for (index, source) in self.sources.iter().enumerate() {
+                    if source.title.is_empty() {
+                        text.push_str(&format!("{}. {}\n", index + 1, source.url));
+                    } else {
+                        text.push_str(&format!(
+                            "{}. {}\n{}\n",
+                            index + 1,
+                            source.title,
+                            source.url
+                        ));
+                    }
+                    text.push('\n');
+                }
+                text
+            }
+            WebSearchAction::OpenPage { url } => format!("Fetched {url}."),
+            WebSearchAction::FindInPage { url, pattern } => {
+                format!("Found \"{pattern}\" in {url}.")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

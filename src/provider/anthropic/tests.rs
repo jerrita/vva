@@ -732,3 +732,104 @@ async fn test_anthropic_web_search_streaming_matches_parse() {
     assert_eq!(streamed.messages[0].parts, parsed.messages[0].parts);
     assert_eq!(streamed.meta, parsed.meta);
 }
+
+#[test]
+fn test_anthropic_scope_mismatch_rebuilds_and_projects_web_call() {
+    let provider = AnthropicProvider::new("test-key");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("搜一下 rust async")));
+
+    // 前一亲和组（外置时代）的搜索调用：按当前工具面投影
+    let call = WebSearchCall::completed(
+        "ws_1",
+        "rust async",
+        vec![WebSearchSource::new("https://example.com", "Example", None)],
+    );
+    session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::WebSearchCall(call),
+    ])]));
+
+    let tools = vec![ToolDefinition {
+        name: "web_search".into(),
+        description: "d".into(),
+        parameters: serde_json::json!({ "type": "object" }),
+    }];
+
+    // 仅外置客户端函数在位 → tool_use + 紧随 user 消息上的 tool_result
+    let options = CompletionOptions {
+        model: "claude-x".into(),
+        enable_web_search: false,
+        affinity: Some("homo/deepseek".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &tools, &options)
+        .expect("build body");
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 3);
+    assert_eq!(msgs[1]["role"], "assistant");
+    assert_eq!(msgs[1]["content"][0]["type"], "tool_use");
+    assert_eq!(msgs[1]["content"][0]["name"], "web_search");
+    assert_eq!(msgs[2]["role"], "user");
+    assert_eq!(msgs[2]["content"][0]["type"], "tool_result");
+    assert_eq!(msgs[2]["content"][0]["tool_use_id"], "ws_1");
+    assert!(
+        msgs[2]["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("example.com")
+    );
+
+    // 原生 server tool 在位 → server_tool_use + web_search_tool_result
+    let options_native = CompletionOptions {
+        model: "claude-x".into(),
+        enable_web_search: true,
+        affinity: Some("homo/claude".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &[], &options_native)
+        .expect("build body");
+    let msgs = body["messages"].as_array().unwrap();
+    assert_eq!(msgs[1]["content"][0]["type"], "server_tool_use");
+    assert_eq!(msgs[1]["content"][0]["name"], "web_search");
+    assert_eq!(msgs[1]["content"][0]["input"]["query"], "rust async");
+    assert_eq!(msgs[1]["content"][1]["type"], "web_search_tool_result");
+}
+
+#[test]
+fn test_anthropic_native_blocks_skipped_on_affinity_mismatch() {
+    let provider = AnthropicProvider::new("test-key");
+    let mock_resp = serde_json::json!({
+        "id": "msg_01",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            { "type": "thinking", "thinking": "secret reasoning", "signature": "sig_a" },
+            { "type": "text", "text": "answer" }
+        ],
+        "stop_reason": "end_turn",
+        "usage": { "input_tokens": 1, "output_tokens": 1 }
+    });
+    let parsed = provider.parse_response(mock_resp).expect("parse response");
+    let mut asst_turn = Turn::assistant_turn(parsed.messages);
+    asst_turn.meta = parsed.meta;
+    asst_turn.meta.anthropic.as_mut().unwrap().scope = Some("homo/claude".into());
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(asst_turn);
+    session.append_turn(Turn::user_turn(Message::text("继续")));
+
+    // 切换亲和组：签名块绑定签发者不可回传，降维为通用重建（thinking 丢弃，text 保留）
+    let options = CompletionOptions {
+        model: "claude-x".into(),
+        affinity: Some("other".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &[], &options)
+        .expect("build body");
+    let text = serde_json::to_string(&body).unwrap();
+    assert!(!text.contains("sig_a"), "签名不可跨组回传: {text}");
+    assert!(!text.contains("secret reasoning"), "{text}");
+    assert!(text.contains("answer"), "{text}");
+}

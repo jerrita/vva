@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
-use crate::model::{Message, Session, Turn};
+use crate::model::{Message, Role, Session, Turn};
 use crate::provider::{CompletionOptions, Provider};
 use crate::tools::ToolRegistry;
 use tokio::sync::mpsc;
@@ -78,6 +78,7 @@ impl AgentEngine {
             skills,
         ))));
         let provider = resolved.create_provider();
+        let affinity = resolved.affinity();
         let max_tokens = resolved
             .model_config
             .limit
@@ -94,6 +95,7 @@ impl AgentEngine {
             enable_web_search: session.web_search && resolved.model_config.declare_web_search(),
             enable_web_fetch: resolved.model_config.declare_web_fetch(),
             service_tier: resolved.model_config.service_tier().map(str::to_string),
+            affinity: Some(affinity.clone()),
             ..Default::default()
         };
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
@@ -112,8 +114,13 @@ impl AgentEngine {
         if session.web_search {
             let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
             let native_search = options.enable_web_search && capabilities.supports_native_search;
-            let native_fetch =
-                options.enable_web_fetch && capabilities.server_tool_names.contains(&"web_fetch");
+            // 独立 web_fetch server tool（Anthropic）按声明位；
+            // 无独立工具时，web_search 含 open_page（Response）随原生搜索在位
+            let native_fetch = if capabilities.server_tool_names.contains(&"web_fetch") {
+                options.enable_web_fetch
+            } else {
+                native_search && capabilities.server_tool_names.contains(&"web_search")
+            };
             let mut activated: Vec<String> = Vec::new();
             if !native_search && let Some(search) = &external.search {
                 tools.register(Arc::new(crate::tools::web::tool::WebSearchTool::new(
@@ -134,6 +141,29 @@ impl AgentEngine {
                     activated.join(", ")
                 ));
             }
+        }
+        // 亲和组切换：前一段原生状态（链锚点 / 签名块）无法回传，历史降维重建，显式告知
+        let previous_scope = session.turns.iter().rev().find_map(|turn| {
+            if turn.role != Role::Assistant {
+                return None;
+            }
+            turn.meta
+                .response
+                .as_ref()
+                .and_then(|meta| meta.scope.as_deref())
+                .or_else(|| {
+                    turn.meta
+                        .anthropic
+                        .as_ref()
+                        .and_then(|meta| meta.scope.as_deref())
+                })
+        });
+        if let Some(previous) = previous_scope
+            && previous != affinity
+        {
+            notices.push(format!(
+                "Native context from '{previous}' cannot be replayed under affinity '{affinity}'; history has been rebuilt in plain form."
+            ));
         }
         notices.extend(capability_notices(
             provider.as_ref(),
@@ -173,6 +203,7 @@ pub(super) async fn generate_title(
         enable_web_fetch: false,
         reasoning_effort: None,
         service_tier: resolved.model_config.service_tier().map(str::to_string),
+        affinity: None,
     };
     let response = resolved
         .create_provider()
@@ -334,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn engine_registers_external_web_tools_when_native_missing() {
-        // annotation.web_search: false 关闭原生搜索；Response 协议本无原生 fetch
+        // annotation.web_search: false 关闭原生搜索；fetch 随 search 一并缺位
         let annotation = crate::config::model::ModelAnnotation {
             web_search: Some(false),
             ..Default::default()
@@ -360,17 +391,15 @@ mod tests {
 
     #[tokio::test]
     async fn engine_skips_external_tools_without_native_gap_or_toggle() {
-        // 原生搜索在位（无注记）时搜索不外置；fetch 无原生实现，按能力位独立补全
+        // 原生 web_search 在位（无注记）时搜索与 fetch 均不外置：
+        // Response 的 web_search 含 open_page / find_in_page
         let config = web_config(None);
         let engine = build_engine(&config, &session_for("p/nos", true)).unwrap();
         assert!(engine.options.enable_web_search);
         assert!(engine.tools.get("web_search").is_none());
-        assert!(engine.tools.get("web_fetch").is_some());
+        assert!(engine.tools.get("web_fetch").is_none());
         assert!(engine.tools.is_server_tool("web_search"));
-        assert_eq!(
-            engine.notices,
-            vec!["External web tools active: web_fetch (local).".to_string()]
-        );
+        assert!(engine.notices.is_empty());
 
         // 会话 web 开关关闭时一律不注册
         let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();
@@ -393,5 +422,43 @@ mod tests {
         };
 
         assert!(error.contains("only supports web fetch"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn engine_notices_affinity_downgrade_on_model_switch() {
+        let config = web_config(None);
+        let mut session = session_for("p/nos", true);
+        // 上一轮由不同亲和组产出且携带原生状态
+        let mut turn =
+            Turn::assistant_turn(vec![Message::new(vec![crate::model::ContentPart::text(
+                "earlier answer",
+            )])]);
+        turn.meta.response = Some(crate::model::ResponseTurnMeta::new("resp_prev"));
+        turn.meta.response.as_mut().unwrap().scope = Some("homo/gpt".into());
+        session.append_turn(turn);
+
+        let engine = build_engine(&config, &session).unwrap();
+        assert!(
+            engine
+                .notices
+                .iter()
+                .any(|notice| notice.contains("Native context from 'homo/gpt'")),
+            "{:?}",
+            engine.notices
+        );
+
+        // 同亲和组续跑不提示
+        let mut session = session_for("p/nos", true);
+        let mut turn = Turn::assistant_turn(vec![Message::text("earlier")]);
+        turn.meta.response = Some(crate::model::ResponseTurnMeta::new("resp_prev"));
+        turn.meta.response.as_mut().unwrap().scope = Some("p".into());
+        session.append_turn(turn);
+        let engine = build_engine(&config, &session).unwrap();
+        assert!(
+            !engine
+                .notices
+                .iter()
+                .any(|notice| notice.contains("cannot be replayed"))
+        );
     }
 }

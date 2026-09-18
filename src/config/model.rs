@@ -311,6 +311,14 @@ impl ModelConfig {
             _ => None,
         }
     }
+
+    /// 模型亲和组：显式声明优先，缺省沿用 provider 节点 id
+    pub fn affinity(&self, provider_default: &str) -> String {
+        self.annotation
+            .as_ref()
+            .and_then(|a| a.affinity.clone())
+            .unwrap_or_else(|| provider_default.to_string())
+    }
 }
 
 /// 模型级注记：细粒度关闭个别原生服务端工具的声明，以及文件编辑协议。
@@ -324,6 +332,10 @@ pub struct ModelAnnotation {
     /// 会话 web 开关开启且配置 `settings.web.search` 时改用外置客户端工具
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<bool>,
+    /// 模型亲和组：同组模型可互相复用原生回传状态（response_id 链、encrypted
+    /// thinking、签名块），跨组切换时历史降维为通用重建。缺省为 provider 节点 id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affinity: Option<String>,
     /// 文件编辑协议：`hashline`（默认，`[PATH#TAG]` 行号补丁）、`replace`（old_string/new_string）、`patch`（Codex V4A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub editor: Option<crate::model::EditorKind>,

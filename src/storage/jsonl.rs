@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(loaded.editor, crate::model::EditorKind::Hashline);
         assert!(loaded.web_search);
         assert_eq!(loaded.turns.len(), 2);
-        assert_eq!(loaded.latest_openai_response_id(), Some("resp_001xyz"));
+        assert_eq!(loaded.latest_openai_response_id(None), Some("resp_001xyz"));
 
         let project = temp_dir.join(project_key(Path::new("/tmp/repo")));
         assert!(project.join(format!("{}.jsonl", session.id)).is_file());

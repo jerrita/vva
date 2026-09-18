@@ -153,6 +153,7 @@ impl ResponseProvider {
                 reasoning_effort,
                 store: is_stored,
                 output_items: native_output_items,
+                scope: None,
             }),
             ..Default::default()
         };

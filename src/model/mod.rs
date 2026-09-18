@@ -43,14 +43,21 @@ mod tests {
 
         let user_turn = Turn::user_turn(Message::text("Hello world"));
         session.append_turn(user_turn);
-        assert!(session.latest_openai_response_id().is_none());
+        assert!(session.latest_openai_response_id(None).is_none());
 
         let mut assistant_turn =
             Turn::assistant_turn(vec![Message::new(vec![ContentPart::text("Hi there!")])]);
         assistant_turn.meta.response = Some(ResponseTurnMeta::new("resp_001"));
+        assistant_turn.meta.response.as_mut().unwrap().scope = Some("gpt".into());
         session.append_turn(assistant_turn);
 
-        assert_eq!(session.latest_openai_response_id(), Some("resp_001"));
+        // 亲和组一致可复用锚点；不一致（切换模型）时锚点不可见，回退全量重建
+        assert_eq!(
+            session.latest_openai_response_id(Some("gpt")),
+            Some("resp_001")
+        );
+        assert_eq!(session.latest_openai_response_id(Some("deepseek")), None);
+        assert_eq!(session.latest_openai_response_id(None), None);
     }
 
     #[test]

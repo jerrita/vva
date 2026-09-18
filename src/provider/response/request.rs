@@ -3,8 +3,23 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use super::ResponseProvider;
 
 use crate::config::ProviderType;
-use crate::model::{ContentPart, MediaKind, MediaSource, Role, Session, ToolDefinition};
-use crate::provider::{CompletionOptions, ProviderError};
+use crate::model::{
+    ContentPart, MediaKind, MediaSource, Role, Session, ToolDefinition, WebSearchAction,
+    WebSearchCall,
+};
+use crate::provider::common::{WebCallSurface, web_call_surface};
+use crate::provider::{CompletionOptions, Provider, ProviderError};
+
+/// 领域动作 → Responses API web_search_call.action
+fn web_search_action_json(call: &WebSearchCall) -> serde_json::Value {
+    match &call.action {
+        WebSearchAction::Search => serde_json::json!({ "type": "search", "query": call.query }),
+        WebSearchAction::OpenPage { url } => serde_json::json!({ "type": "open_page", "url": url }),
+        WebSearchAction::FindInPage { url, pattern } => {
+            serde_json::json!({ "type": "find_in_page", "url": url, "pattern": pattern })
+        }
+    }
+}
 
 impl ResponseProvider {
     /// 规范化请求端点：base_url 无论是否携带 /responses 后缀，均收敛到唯一端点
@@ -33,7 +48,8 @@ impl ResponseProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<serde_json::Value, ProviderError> {
-        let prev_id = session.latest_openai_response_id();
+        let scope = options.affinity.as_deref();
+        let prev_id = session.latest_openai_response_id(scope);
 
         // 构造 tools 列表
         let mut api_tools: Vec<serde_json::Value> = Vec::new();
@@ -70,6 +86,7 @@ impl ResponseProvider {
         for turn in turns_to_send {
             if turn.role == Role::Assistant
                 && let Some(response_meta) = &turn.meta.response
+                && response_meta.scope.as_deref() == scope
                 && !response_meta.output_items.is_empty()
             {
                 input_items.extend(
@@ -152,6 +169,40 @@ impl ResponseProvider {
                                         "name": call.name,
                                         "arguments": call.arguments,
                                     }));
+                                }
+                                ContentPart::WebSearchCall(call) => {
+                                    // 跨亲和组重建：搜索调用按当前工具面投影——
+                                    // 原生 server tool 在位时回传原生条目，
+                                    // 否则注册了外置客户端工具时合成 function 对，二者皆无则丢弃
+                                    match web_call_surface(
+                                        call,
+                                        options,
+                                        tools,
+                                        &self.capabilities().server_tool_names,
+                                    ) {
+                                        Some(WebCallSurface::Native(..)) => {
+                                            input_items.push(serde_json::json!({
+                                                "type": "web_search_call",
+                                                "id": call.id,
+                                                "status": "completed",
+                                                "action": web_search_action_json(call),
+                                            }));
+                                        }
+                                        Some(WebCallSurface::Client(name, input)) => {
+                                            input_items.push(serde_json::json!({
+                                                "type": "function_call",
+                                                "call_id": call.id,
+                                                "name": name,
+                                                "arguments": input.to_string(),
+                                            }));
+                                            input_items.push(serde_json::json!({
+                                                "type": "function_call_output",
+                                                "call_id": call.id,
+                                                "output": call.result_text(),
+                                            }));
+                                        }
+                                        None => {}
+                                    }
                                 }
                                 _ => {}
                             }

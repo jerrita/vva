@@ -65,10 +65,12 @@ function buildItems(turns: Turn[]): Item[] {
     }
     const parts = turn.messages.flatMap(message => message.parts)
     // 运行段 = 相邻助手轮直到用户消息；折叠折到运行段最后一条消息，
-    // 中间轮的思考/工具与文本均并入折叠组，不单独展示
+    // 中间轮的思考/工具与文本均并入折叠组，不单独展示。
+    // 本轮带 tool_call 时后续必有工具结果，即使结果尚未落盘也不拆尾部文本。
     const next = turns[index + 1]
     const isRunEnd = next == null || next.role === 'user'
-    if (!isRunEnd) {
+    const pendingTools = parts.some(part => part.type === 'tool_call')
+    if (!isRunEnd || pendingTools) {
       pushTurn(turn, parts)
       continue
     }

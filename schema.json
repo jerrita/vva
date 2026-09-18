@@ -219,6 +219,10 @@
               "default": true,
               "description": "false 标记模型/端点不支持原生 web search；会话 web 开关开启且配置 settings.web.search 时改用外置客户端工具补全"
             },
+            "affinity": {
+              "type": "string",
+              "description": "模型亲和组：同组模型互相复用原生回传状态（response_id 链、encrypted thinking、签名块），跨组切换时历史降维为通用重建并提示。缺省为 provider 节点 id；混系网关按模型标注，如 \"gpt\""
+            },
             "fast": {
               "type": "boolean",
               "description": "true 时以 \"service_tier\": \"fast\" 发起请求（快速档位端点）"

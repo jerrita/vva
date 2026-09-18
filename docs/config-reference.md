@@ -96,7 +96,7 @@
 | `search` | provider 名选择：`brave` / `tavily` |
 | `fetch` | provider 名选择：`local` / `tavily` |
 
-模型原生 web 能力缺位时（`annotation.web_search: false`、`annotation.web_fetch: false` 或协议本身未提供），会话 web 开关开启且对应位配置了外置 provider 的情况下，注册同名客户端工具 `web_search` / `web_fetch` 补全并发 Notice 提示；原生能力在位时优先使用原生，外置工具不注册。`settings.web` 未配置时行为与既往一致（搜索选项报"被忽略"通知）。选中的 provider 不具备对应能力、未声明或密钥缺失时，会话启动报错。
+模型原生 web 能力缺位时（`annotation.web_search: false`、`annotation.web_fetch: false` 或协议本身未提供），会话 web 开关开启且对应位配置了外置 provider 的情况下，注册同名客户端工具 `web_search` / `web_fetch` 补全并发 Notice 提示；原生能力在位时优先使用原生，外置工具不注册。Responses 的原生 `web_search` 含 `open_page` / `find_in_page`，视为 fetch 在位。`settings.web` 未配置时行为与既往一致（搜索选项报"被忽略"通知）。选中的 provider 不具备对应能力、未声明或密钥缺失时，会话启动报错。
 
 ---
 
@@ -187,6 +187,7 @@
 |---|---|---|
 | `annotation.web_fetch` | `true` | 设为 `false` 时不向端点声明 `web_fetch` 服务端工具。用于未接线特定 server tool 的中转端点——工具声明组中出现端点未识别的条目时，端点会整组丢弃声明；仅声明 `web_search` 可保住原生搜索。原生 fetch 缺位后，配置 `settings.web.fetch` 时以客户端工具补全 |
 | `annotation.web_search` | `true` | 设为 `false` 标记模型/端点不支持原生 web search，不向端点声明原生搜索；配置 `settings.web.search` 时以客户端工具 `web_search` 补全 |
+| `annotation.affinity` | provider 节点 id | 模型亲和组：同组模型切换时互相复用原生回传状态（response_id 链、encrypted thinking、签名块）；跨组切换时历史降维为通用重建（推理签名丢弃、搜索调用按当前工具面重投影）并发提示。混系网关（同一节点下多家族模型）按模型标注，如 `"gpt"` |
 | `annotation.editor` | `settings.editor` | 文件编辑协议，工具名均为 `Edit`，仅参数与 description 不同。会话创建时写入 Header 并固定，之后换模不改变：`hashline` 为 `[PATH#TAG]` 快照 + `PUT`/`CUT`/`REM`/`MV` 行号补丁；`replace` 为 `old_string`/`new_string`；`patch` 为 Codex V4A `input` |
 | `annotation.fast` | `false` | 设为 `true` 时请求体携带 `"service_tier": "fast"`（Responses API），走端点快速档位 |
 

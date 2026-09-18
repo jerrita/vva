@@ -29,6 +29,10 @@ pub struct ResponseTurnMeta {
     /// Responses API 原生 output items，用于无状态会话逐项保真回传。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_items: Vec<ResponseOutputItem>,
+    /// 产出该轮时的模型亲和组：回放时与当前请求的亲和组比较，
+    /// 不一致则原生条目不可复用（切换模型降维重建）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 impl ResponseTurnMeta {
@@ -41,6 +45,7 @@ impl ResponseTurnMeta {
             reasoning_effort: None,
             store: true,
             output_items: Vec::new(),
+            scope: None,
         }
     }
 }
@@ -164,6 +169,10 @@ pub struct AnthropicTurnMeta {
     /// 原样回传，缺失或改动即 400；同 Responses output_items 的原生条目链策略
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub content_blocks: Vec<AnthropicContentBlock>,
+    /// 产出该轮时的模型亲和组：回放时与当前请求的亲和组比较，
+    /// 不一致则原生块链不可复用（切换模型降维重建）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Anthropic Messages API 原生 assistant content blocks（与官方协议字段一一对应）

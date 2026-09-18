@@ -130,13 +130,19 @@ impl Session {
     }
 
     /// 提取最近一次成功且可链式调用的 OpenAI response_id
-    pub fn latest_openai_response_id(&self) -> Option<&str> {
-        for turn in self.turns.iter().rev() {
-            if turn.role == Role::Assistant {
-                return turn.openai_response_id();
+    /// 最近一个携带原生链锚点且亲和组匹配的 Assistant 轮次：
+    /// 亲和组不一致（切换模型）时锚点不可复用，调用方回退全量历史重建
+    pub fn latest_openai_response_id(&self, scope: Option<&str>) -> Option<&str> {
+        self.turns.iter().rev().find_map(|turn| {
+            if turn.role != Role::Assistant {
+                return None;
             }
-        }
-        None
+            let meta = turn.meta.response.as_ref()?;
+            if meta.scope.as_deref() != scope {
+                return None;
+            }
+            turn.openai_response_id()
+        })
     }
 
     /// 在历史轮次中按 call_id 查找对应的 ToolCall

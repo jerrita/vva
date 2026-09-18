@@ -3,7 +3,8 @@ use crate::config::ProviderType;
 use crate::model::{
     ContentPart, MediaKind, MediaSource, Message, Role, Session, ToolDefinition, TurnMeta,
 };
-use crate::provider::common::RoleBlockMerger;
+use crate::provider::Provider;
+use crate::provider::common::{RoleBlockMerger, WebCallSurface, web_call_surface};
 use crate::provider::{CompletionOptions, ProviderError};
 
 impl AnthropicProvider {
@@ -50,6 +51,7 @@ impl AnthropicProvider {
         }
 
         let total_msgs = flattened_msgs.len();
+        let scope = options.affinity.as_deref();
 
         for (i, (role, msg, meta)) in flattened_msgs.iter().enumerate() {
             let should_cache = i + 1 == total_msgs && *role == Role::User;
@@ -114,8 +116,10 @@ impl AnthropicProvider {
                 }
                 Role::Assistant => {
                     // 核心原生优势：原生块链保真回传（encrypted_content / encrypted_index
-                    // 不可重建，逐块原样带回），同 Responses output_items 策略
+                    // 不可重建，逐块原样带回），同 Responses output_items 策略。
+                    // 块链绑定签发时的模型亲和组，跨组（切换模型）回传即失真，降维为通用重建
                     if let Some(anthropic) = meta.anthropic.as_ref()
+                        && anthropic.scope.as_deref() == scope
                         && !anthropic.content_blocks.is_empty()
                     {
                         let native_blocks = anthropic
@@ -130,19 +134,11 @@ impl AnthropicProvider {
                         continue;
                     }
                     let mut content_blocks = Vec::new();
+                    // 搜索调用以客户端函数形态重建时，tool_result 必须挂在紧随的 user 消息上
+                    let mut web_tool_results = Vec::new();
                     for part in &msg.parts {
                         match part {
-                            ContentPart::Reasoning { content, signature } => {
-                                // 核心原生优势：将带数字签名的 thinking 块原样带回，防止被 API 拒绝
-                                let mut block = serde_json::json!({
-                                    "type": "thinking",
-                                    "thinking": content,
-                                });
-                                if let Some(sig) = signature {
-                                    block["signature"] = serde_json::json!(sig);
-                                }
-                                content_blocks.push(block);
-                            }
+                            // Reasoning/thinking 绑定签发者（签名跨亲和组无效），重建时丢弃
                             ContentPart::Text { text, .. } => {
                                 content_blocks.push(serde_json::json!({
                                     "type": "text",
@@ -165,10 +161,58 @@ impl AnthropicProvider {
                                     "input": args_val,
                                 }));
                             }
+                            ContentPart::WebSearchCall(call) => {
+                                // 跨亲和组重建：搜索调用按当前工具面投影，二者皆无则丢弃
+                                match web_call_surface(
+                                    call,
+                                    options,
+                                    tools,
+                                    &self.capabilities().server_tool_names,
+                                ) {
+                                    Some(WebCallSurface::Native(name, input)) => {
+                                        let result_type = if name == "web_fetch" {
+                                            "web_fetch_tool_result"
+                                        } else {
+                                            "web_search_tool_result"
+                                        };
+                                        content_blocks.push(serde_json::json!({
+                                            "type": "server_tool_use",
+                                            "id": call.id,
+                                            "name": name,
+                                            "input": input,
+                                        }));
+                                        // 官方 tool result 允许字符串 content；加密快照
+                                        // 属签发者状态，无法跨组携带，以摘要文本替代
+                                        content_blocks.push(serde_json::json!({
+                                            "type": result_type,
+                                            "tool_use_id": call.id,
+                                            "content": call.result_text(),
+                                        }));
+                                    }
+                                    Some(WebCallSurface::Client(name, input)) => {
+                                        content_blocks.push(serde_json::json!({
+                                            "type": "tool_use",
+                                            "id": call.id,
+                                            "name": name,
+                                            "input": input,
+                                        }));
+                                        web_tool_results.push(serde_json::json!({
+                                            "type": "tool_result",
+                                            "tool_use_id": call.id,
+                                            "content": call.result_text(),
+                                            "is_error": false,
+                                        }));
+                                    }
+                                    None => {}
+                                }
+                            }
                             _ => {}
                         }
                     }
                     merger.push("assistant", content_blocks);
+                    if !web_tool_results.is_empty() {
+                        merger.push("user", web_tool_results);
+                    }
                 }
                 Role::Tool => {
                     let mut content_blocks = Vec::new();

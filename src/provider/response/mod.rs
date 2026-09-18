@@ -14,6 +14,13 @@ use crate::provider::http::{post_json, post_sse};
 use stream::ResponseStreamHandler;
 use tokio::sync::mpsc;
 
+/// 将当前亲和组写入轮次元数据：回放时据此判定原生状态可否复用
+fn stamp_scope(response: &mut ProviderResponse, scope: Option<String>) {
+    if let Some(meta) = response.meta.response.as_mut() {
+        meta.scope = scope;
+    }
+}
+
 /// OpenAI Responses API 适配器：previous_response_id 链式继承 + 原生搜索。
 pub struct ResponseProvider {
     api_key: String,
@@ -60,7 +67,9 @@ impl Provider for ResponseProvider {
             &body,
         )
         .await?;
-        self.parse_response(response)
+        let mut parsed = self.parse_response(response)?;
+        stamp_scope(&mut parsed, options.affinity.clone());
+        Ok(parsed)
     }
 
     async fn complete_stream(
@@ -82,6 +91,9 @@ impl Provider for ResponseProvider {
         )
         .await?;
 
+        if let Some(completed) = handler.completed.as_mut() {
+            stamp_scope(completed, options.affinity.clone());
+        }
         handler.completed.ok_or_else(|| {
             let response_id = handler.response_id.as_deref().unwrap_or("unknown");
             let last_event = handler.last_event_type.as_deref().unwrap_or("none");

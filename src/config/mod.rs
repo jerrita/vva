@@ -201,6 +201,29 @@ mod tests {
     }
 
     #[test]
+    fn test_model_annotation_affinity_default_and_override() {
+        let json = r#"{
+            "providers": {
+                "prov": {
+                    "models": {
+                        "plain": { "name": "Plain" },
+                        "gpt": {
+                            "name": "GPT",
+                            "annotation": { "affinity": "gpt" }
+                        }
+                    }
+                }
+            }
+        }"#;
+        let config = parse_config_str(json).expect("parse config");
+        let models = &config.providers["prov"].models;
+
+        // 缺省亲和组 = provider 节点 id；显式声明优先
+        assert_eq!(models["plain"].affinity("prov"), "prov");
+        assert_eq!(models["gpt"].affinity("prov"), "gpt");
+    }
+
+    #[test]
     fn test_settings_web_merge_replaces_section() {
         let global = parse_config_str(
             r#"{

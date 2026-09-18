@@ -244,6 +244,7 @@ pub(super) fn assemble_response(
             cache_read_input_tokens,
             stop_reason,
             content_blocks: blocks,
+            scope: None,
         }),
         ..Default::default()
     };
