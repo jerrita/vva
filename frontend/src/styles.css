@@ -1661,6 +1661,19 @@ div.tool-row {
   line-height: 1.55;
 }
 
+/* ---- KaTeX 数学公式 ---- */
+
+.markdown pre.math-pre {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown .katex-display {
+  margin: 0.4em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 /* ---- macOS 代码窗口 ---- */
 
 .code-window {

@@ -195,7 +195,7 @@ frontend/                    # Web 前端源码 (React + Vite + TypeScript)；bu
 ├── src/hooks/               # usePersistentState (localStorage 持久化) / useResizable (面板拖拽) /
 │                            # useComposerVisibility (移动端输入框手势机) / useStatsPanel (用量面板) /
 │                            # useFileTree (懒加载目录树) / useMediaQuery
-├── src/utils/               # highlight (hljs 语言映射/按行切分) / relatedFiles (会话涉及文件提取)
+├── src/utils/               # highlight (hljs 语言映射/按行切分) / relatedFiles (会话涉及文件提取) / math (LaTeX 定界符归一)
 └── src/components/          # Sidebar / Chat / Composer / Parts / FileSidebar(+file/ 树与预览) /
                              # StatsPanel / EmptyStage / Sash / AskUserModal / SettingsModal / icons
 ```
