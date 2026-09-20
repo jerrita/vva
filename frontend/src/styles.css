@@ -1527,7 +1527,8 @@ div.tool-row {
 }
 
 .search-status.searching,
-.search-status.pending {
+.search-status.pending,
+.search-status.in_progress {
   color: var(--accent);
   border-color: var(--accent);
 }
@@ -1543,6 +1544,22 @@ div.tool-row {
 
 .search-sources a {
   font-size: 12.5px;
+}
+
+/* 生成图片行：与搜索行同构，展开内容显示生成的图 */
+.image-gen-row > summary {
+  /* 混排字号不同（CJK 标签 12.5px / mono 提示词 11.5px），按基线对齐而非居中 */
+  align-items: baseline;
+}
+
+.image-gen-row .search-icon {
+  /* ▦ 为全高字形，缩小后与文字光学对齐 */
+  font-size: 12px;
+  line-height: 1;
+}
+
+.image-gen-row .part-image {
+  margin: 4px 12px 10px 32px;
 }
 
 /* ---- 用时折叠（无卡片，纯文本行展开） ---- */

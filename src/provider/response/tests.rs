@@ -1303,22 +1303,27 @@ fn test_response_provider_parse_with_image_generation_call() {
     let encoded = serde_json::to_value(native).unwrap();
     assert_eq!(encoded, ig_item);
 
-    // 领域投影：base64 结果进多模态 Image part，mime 按官方 output_format（缺省 png）
-    let image_part = parsed
+    // 领域投影：ImageGenerationCall part，result 按官方 output_format 映射 mime（缺省 png）
+    let call_part = parsed
         .messages
         .iter()
         .flat_map(|m| &m.parts)
         .find_map(|p| match p {
-            ContentPart::Image { source, mime_type } => Some((source, mime_type)),
+            ContentPart::ImageGenerationCall(call) => Some(call),
             _ => None,
         })
-        .expect("projected image part");
-    let MediaSource::Base64 { data, mime_type } = image_part.0 else {
-        panic!("expected base64 media source");
+        .expect("projected image generation call");
+    assert_eq!(call_part.id, "ig_123");
+    assert_eq!(call_part.status, ImageGenerationStatus::Completed);
+    assert_eq!(
+        call_part.revised_prompt.as_deref(),
+        Some("A gray tabby cat hugging an otter with an orange scarf")
+    );
+    let MediaSource::Base64 { data, mime_type } = call_part.result.as_ref().unwrap() else {
+        panic!("expected base64 result");
     };
     assert_eq!(data, "iVBORw0KGgoAAAANSUhEUg==");
     assert_eq!(mime_type, "image/png");
-    assert_eq!(image_part.1.as_deref(), Some("image/png"));
 
     // 回放：store:false 无链式锚点时全量重建，原生 image_generation_call 条目原样回传 input
     let mut session = Session::new(PathBuf::from("/tmp"), None);
@@ -1341,4 +1346,49 @@ fn test_response_provider_parse_with_image_generation_call() {
         .find(|item| item["type"] == "image_generation_call")
         .expect("replayed image_generation_call");
     assert_eq!(replayed, &ig_item);
+}
+
+#[test]
+fn test_response_provider_parse_with_in_progress_image_generation_call() {
+    let provider = ResponseProvider::new("test-key");
+    // 按官方规范构造：生成中条目无 result
+    let mock_json = serde_json::json!({
+        "id": "resp_ig_2",
+        "status": "in_progress",
+        "store": true,
+        "output": [
+            {
+                "type": "image_generation_call",
+                "id": "ig_456",
+                "status": "in_progress",
+                "revised_prompt": "A gray tabby cat",
+                "output_format": "webp",
+                "quality": "high",
+                "size": "1024x1024"
+            }
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "total_tokens": 30,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        }
+    });
+
+    let parsed = provider.parse_response(mock_json).unwrap();
+
+    // 未完成调用同样投影：状态行可见，无 result
+    let call_part = parsed
+        .messages
+        .iter()
+        .flat_map(|m| &m.parts)
+        .find_map(|p| match p {
+            ContentPart::ImageGenerationCall(call) => Some(call),
+            _ => None,
+        })
+        .expect("projected in-progress call");
+    assert_eq!(call_part.id, "ig_456");
+    assert_eq!(call_part.status, ImageGenerationStatus::InProgress);
+    assert_eq!(call_part.result, None);
 }

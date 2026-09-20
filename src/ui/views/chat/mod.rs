@@ -35,7 +35,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::harness::SessionView;
 use crate::model::{
-    Annotation, ContentPart, Role, ToolCall, ToolResult, WebSearchAction, WebSearchCall,
+    Annotation, ContentPart, ImageGenerationStatus, Role, ToolCall, ToolResult, WebSearchAction,
+    WebSearchCall,
 };
 use crate::ui::app::{
     App, CitationsHit, ResponseHit, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit,

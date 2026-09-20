@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 
 use vva::config::{AppConfig, home_dir, load_config};
 use vva::harness::{AgentEvent, SessionManager};
-use vva::model::{Annotation, ContentPart, WebSearchAction, WebSearchCall};
+use vva::model::{Annotation, ContentPart, ImageGenerationStatus, WebSearchAction, WebSearchCall};
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::ui::run_tui;
@@ -232,6 +232,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         in_text = false;
                         print_search_action("\n", &call);
                     }
+                    AgentEvent::ImageGenerationCall(call) => {
+                        in_thought = false;
+                        in_text = false;
+                        let status = match call.status {
+                            ImageGenerationStatus::InProgress => "in_progress",
+                            ImageGenerationStatus::Completed => "completed",
+                            ImageGenerationStatus::Incomplete => "incomplete",
+                        };
+                        println!("\n🖼️ [Image Generation] id={} status={status}", call.id);
+                    }
                     AgentEvent::ToolFinished {
                         name,
                         result,
@@ -413,6 +423,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                                 ContentPart::Image { source, .. } => {
                                     println!("    🖼️ [Image]: {:?}", source);
+                                }
+                                ContentPart::ImageGenerationCall(call) => {
+                                    let status = match call.status {
+                                        ImageGenerationStatus::InProgress => "in_progress",
+                                        ImageGenerationStatus::Completed => "completed",
+                                        ImageGenerationStatus::Incomplete => "incomplete",
+                                    };
+                                    println!(
+                                        "    🖼️ [ImageGeneration] id={} status={status}",
+                                        call.id
+                                    );
                                 }
                             }
                         }

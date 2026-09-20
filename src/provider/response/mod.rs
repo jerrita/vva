@@ -1,3 +1,4 @@
+mod image;
 mod parse;
 mod request;
 mod search;

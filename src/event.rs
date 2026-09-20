@@ -4,7 +4,7 @@
 //! Harness 调度层在此之上补充工具执行与生命周期事件，
 //! UI 与 CLI 均由该单一事件流驱动渲染。
 
-use crate::model::{Annotation, UserQuestionRequest, WebSearchCall};
+use crate::model::{Annotation, ImageGenerationCall, UserQuestionRequest, WebSearchCall};
 
 /// 单个 Agent 事件的增量语义
 #[derive(Debug, Clone)]
@@ -31,6 +31,8 @@ pub enum AgentEvent {
     },
     /// 原生搜索条目快照，同一 ID 的后续事件更新该条目。
     WebSearchCall(WebSearchCall),
+    /// 原生图像生成调用，同一 ID 的后续事件更新该条目。
+    ImageGenerationCall(ImageGenerationCall),
     /// 信息级通知（如能力协商降级说明），区别于 Error
     Notice(String),
     Finished,

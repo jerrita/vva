@@ -6,8 +6,8 @@ pub mod tool;
 pub mod turn;
 
 pub use content::{
-    Annotation, ContentPart, MediaSource, SearchStatus, WebSearchAction, WebSearchCall,
-    WebSearchSource,
+    Annotation, ContentPart, ImageGenerationCall, ImageGenerationStatus, MediaSource, SearchStatus,
+    WebSearchAction, WebSearchCall, WebSearchSource,
 };
 pub use message::{Message, Role};
 pub use meta::{

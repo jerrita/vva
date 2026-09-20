@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use super::{CompletionOptions, ProviderError};
 use crate::event::AgentEvent;
-use crate::model::{Annotation, ToolDefinition, WebSearchCall};
+use crate::model::{Annotation, ImageGenerationCall, ToolDefinition, WebSearchCall};
 
 /// 增量事件转发器：统一封装 `Option<Sender>` 的转发样板。
 /// 全部走 `send().await` 以保留背压语义（通道满时等待而非丢弃事件）。
@@ -52,6 +52,12 @@ impl EventForwarder {
     pub async fn web_search_call(&self, call: WebSearchCall) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(AgentEvent::WebSearchCall(call)).await;
+        }
+    }
+
+    pub async fn image_generation_call(&self, call: ImageGenerationCall) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(AgentEvent::ImageGenerationCall(call)).await;
         }
     }
 

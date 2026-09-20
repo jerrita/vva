@@ -271,6 +271,36 @@ pub(crate) fn append_part(
             state.prev_reasoning = false;
             state.prev_text = false;
         }
+        (Role::Assistant, ContentPart::ImageGenerationCall(call)) => {
+            let needs_separator = state.prev_reasoning || state.prev_text;
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            if needs_separator {
+                render.lines.push(Line::from(""));
+            }
+            let mut detail = match call.status {
+                ImageGenerationStatus::InProgress => "in_progress",
+                ImageGenerationStatus::Completed => "completed",
+                ImageGenerationStatus::Incomplete => "incomplete",
+            }
+            .to_string();
+            if let Some(prompt) = &call.revised_prompt {
+                detail.push(' ');
+                detail.push_str(prompt);
+            }
+            let spans = vec![
+                Span::styled(
+                    "image_gen",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
+            ];
+            let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
+            render.lines.extend(wrapped);
+        }
         (Role::Assistant, ContentPart::WebSearchCall(call)) => {
             let needs_separator = state.prev_reasoning || state.prev_text;
             state.prev_reasoning = false;

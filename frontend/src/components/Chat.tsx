@@ -83,7 +83,7 @@ function buildItems(turns: Turn[]): Item[] {
       }
     }
 
-    if (lastTextIndex === -1) {
+    if (lastTextIndex === -1 && !parts.some(part => part.type === 'image_generation_call')) {
       pushTurn(turn, parts)
     } else {
       let answerStart = lastTextIndex
@@ -93,10 +93,15 @@ function buildItems(turns: Turn[]): Item[] {
       const workParts: ContentPart[] = []
       const answerParts: ContentPart[] = []
       for (let i = 0; i < parts.length; i++) {
+        const part = parts[i]
         if (i >= answerStart && i <= lastTextIndex) {
-          answerParts.push(parts[i])
+          answerParts.push(part)
+        } else if (part.type === 'image_generation_call' && part.result) {
+          // 生图调用折叠进执行过程，其结果图在最终回答中再展示一遍
+          workParts.push(part)
+          answerParts.push({ type: 'image', source: part.result })
         } else {
-          workParts.push(parts[i])
+          workParts.push(part)
         }
       }
       if (workParts.length > 0) {

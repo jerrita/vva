@@ -68,6 +68,15 @@ export interface WebSearchCall {
   sources?: WebSearchSource[]
 }
 
+export type ImageGenerationStatus = 'in_progress' | 'completed' | 'incomplete'
+
+export interface ImageGenerationCall {
+  id: string
+  status: ImageGenerationStatus
+  result?: MediaSource
+  revised_prompt?: string
+}
+
 export interface ToolCall {
   id: string
   name: string
@@ -118,6 +127,7 @@ export type ContentPart =
   | ({ type: 'tool_call' } & ToolCall)
   | ({ type: 'tool_result' } & ToolResult)
   | ({ type: 'web_search_call' } & WebSearchCall)
+  | ({ type: 'image_generation_call' } & ImageGenerationCall)
 
 export interface Message {
   parts: ContentPart[]

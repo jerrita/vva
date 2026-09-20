@@ -1,13 +1,13 @@
 use super::ResponseProvider;
+use super::image::project_image_generation_call;
 use super::search::project_web_search_call;
 use crate::provider::common::{
     from_value, require_array, require_bool, require_str, require_u64, require_value,
 };
 
 use crate::model::{
-    ContentPart, MediaSource, Message, ResponseMessageContent, ResponseOutputItem,
-    ResponseReasoningContent, ResponseReasoningSummary, ResponseTurnMeta, TokenUsage, ToolCall,
-    TurnMeta,
+    ContentPart, Message, ResponseMessageContent, ResponseOutputItem, ResponseReasoningContent,
+    ResponseReasoningSummary, ResponseTurnMeta, TokenUsage, ToolCall, TurnMeta,
 };
 use crate::provider::{ProviderError, ProviderResponse};
 
@@ -116,26 +116,22 @@ impl ResponseProvider {
                     }));
                 }
                 ResponseOutputItem::ImageGenerationCall {
+                    id,
+                    status,
                     result,
                     output_format,
+                    revised_prompt,
                     ..
                 } => {
-                    // 官方规范：result 为 base64 图像；output_format 缺省输出 png。
-                    // 未完成或失败的调用无 result，不投影
-                    if let Some(data) = result {
-                        let mime_type = match output_format.as_deref() {
-                            Some("webp") => "image/webp",
-                            Some("jpeg") => "image/jpeg",
-                            _ => "image/png",
-                        };
-                        parts.push(ContentPart::Image {
-                            source: MediaSource::Base64 {
-                                data: data.clone(),
-                                mime_type: mime_type.into(),
-                            },
-                            mime_type: Some(mime_type.into()),
-                        });
-                    }
+                    parts.push(ContentPart::ImageGenerationCall(
+                        project_image_generation_call(
+                            id,
+                            status,
+                            result.as_deref(),
+                            output_format.as_deref(),
+                            revised_prompt.as_deref(),
+                        )?,
+                    ));
                 }
             }
         }

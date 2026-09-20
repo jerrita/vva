@@ -216,6 +216,21 @@ impl SessionTask {
                     self.view.draft.push(Arc::new(ContentPart::WebSearchCall(call.clone())));
                 }
             }
+            AgentEvent::ImageGenerationCall(call) => {
+                if let Some(index) = self
+                    .view
+                    .draft
+                    .iter()
+                    .position(|part| matches!(&**part, ContentPart::ImageGenerationCall(existing) if existing.id == call.id))
+                {
+                    self.view.draft[index] =
+                        Arc::new(ContentPart::ImageGenerationCall(call.clone()));
+                } else {
+                    self.view
+                        .draft
+                        .push(Arc::new(ContentPart::ImageGenerationCall(call.clone())));
+                }
+            }
             AgentEvent::ToolFinished { .. } => {}
             AgentEvent::AskUser(_) => {}
             AgentEvent::Notice(text) | AgentEvent::Error(text) => {

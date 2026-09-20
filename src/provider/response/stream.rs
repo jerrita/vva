@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use super::ResponseProvider;
+use super::image::project_image_generation_call;
 use super::search::project_web_search_call;
 use crate::event::AgentEvent;
 use crate::model::{Annotation, ContentPart, ResponseOutputItem, WebSearchCall};
@@ -132,17 +133,43 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             }
             "response.output_item.done" => {
                 let item = require_value(&json, "item")?;
-                if require_str(item, "type")? == "web_search_call" {
-                    let item: ResponseOutputItem = from_value(item, "Responses API output item")?;
-                    if let ResponseOutputItem::WebSearchCall { id, status, action } = item {
-                        let missing_action = action.is_none();
-                        let call = project_web_search_call(&id, &status, action.as_ref())?;
-                        self.streamed_searches.insert(call.id.clone(), call.clone());
-                        self.forwarder.web_search_call(call).await;
-                        if missing_action {
-                            self.warn_missing_search_action(&id).await;
+                match require_str(item, "type")? {
+                    "web_search_call" => {
+                        let item: ResponseOutputItem =
+                            from_value(item, "Responses API output item")?;
+                        if let ResponseOutputItem::WebSearchCall { id, status, action } = item {
+                            let missing_action = action.is_none();
+                            let call = project_web_search_call(&id, &status, action.as_ref())?;
+                            self.streamed_searches.insert(call.id.clone(), call.clone());
+                            self.forwarder.web_search_call(call).await;
+                            if missing_action {
+                                self.warn_missing_search_action(&id).await;
+                            }
                         }
                     }
+                    "image_generation_call" => {
+                        let item: ResponseOutputItem =
+                            from_value(item, "Responses API output item")?;
+                        if let ResponseOutputItem::ImageGenerationCall {
+                            id,
+                            status,
+                            result,
+                            output_format,
+                            revised_prompt,
+                            ..
+                        } = item
+                        {
+                            let call = project_image_generation_call(
+                                &id,
+                                &status,
+                                result.as_deref(),
+                                output_format.as_deref(),
+                                revised_prompt.as_deref(),
+                            )?;
+                            self.forwarder.image_generation_call(call).await;
+                        }
+                    }
+                    _ => {}
                 }
                 Ok(())
             }

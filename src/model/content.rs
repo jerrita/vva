@@ -37,6 +37,8 @@ pub enum ContentPart {
     ToolResult(ToolResult),
     /// 参考 Responses API 的 Web Search 原生调用模型
     WebSearchCall(WebSearchCall),
+    /// 参考 Responses API 的 image_generation_call 原生调用模型
+    ImageGenerationCall(ImageGenerationCall),
 }
 
 impl ContentPart {
@@ -178,6 +180,28 @@ pub enum SearchStatus {
     Searching,
     Completed,
     Failed,
+}
+
+/// 参考 OpenAI Responses API 规范的 image_generation_call.status 三值枚举
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ImageGenerationStatus {
+    InProgress,
+    Completed,
+    Incomplete,
+}
+
+/// 参考 OpenAI Responses API 的 image_generation_call 结构
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageGenerationCall {
+    pub id: String,
+    pub status: ImageGenerationStatus,
+    /// status 为 completed 时的 base64 图像结果，mime 按官方 output_format（缺省 png）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<MediaSource>,
+    /// 模型改写后的提示词
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revised_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

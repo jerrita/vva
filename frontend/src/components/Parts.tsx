@@ -1,4 +1,14 @@
-import type { Annotation, ContentPart, MediaSource, SearchStatus, ToolCall, ToolResult, WebSearchCall, WebSearchSource } from '../types'
+import type {
+  Annotation,
+  ContentPart,
+  ImageGenerationCall,
+  MediaSource,
+  SearchStatus,
+  ToolCall,
+  ToolResult,
+  WebSearchCall,
+  WebSearchSource,
+} from '../types'
 import { IconFile } from './icons'
 import { Markdown } from './Markdown'
 
@@ -373,6 +383,20 @@ function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: bool
   )
 }
 
+function ImageGenerationView({ call, expanded }: { call: ImageGenerationCall; expanded: boolean }) {
+  return (
+    <details className="search-row image-gen-row" open={expanded}>
+      <summary>
+        <span className="search-icon">▦</span>
+        <span className="search-label">生成图片</span>
+        <code className="search-target">{call.revised_prompt ?? ''}</code>
+        <span className={`search-status ${call.status}`}>{call.status}</span>
+      </summary>
+      {call.result && <img className="part-image" src={mediaSourceUrl(call.result)} alt="" />}
+    </details>
+  )
+}
+
 function Citations({ annotations }: { annotations: Annotation[] }) {
   // 与 TUI citation_ref 一致：url_citation 与 web_search_result_location 均展示，按 URL 去重
   type CitedAnnotation = Extract<Annotation, { type: 'url_citation' | 'web_search_result_location' }>
@@ -432,6 +456,8 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
       )
     case 'web_search_call':
       return <WebSearchView call={part} expanded={expanded} />
+    case 'image_generation_call':
+      return <ImageGenerationView call={part} expanded={expanded} />
     case 'image':
       return (
         <img className="part-image" src={mediaSourceUrl(part.source)} alt="" />
