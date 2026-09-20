@@ -1236,3 +1236,109 @@ fn test_response_provider_web_search_call_replays_per_tool_surface() {
     assert_eq!(open_item["action"]["type"], "open_page");
     assert_eq!(open_item["action"]["url"], "https://example.com/article");
 }
+
+#[test]
+fn test_response_provider_parse_with_image_generation_call() {
+    let provider = ResponseProvider::new("test-key");
+    // 按官方规范构造：image_generation tool 产出的 server tool 条目
+    let ig_item = serde_json::json!({
+        "type": "image_generation_call",
+        "id": "ig_123",
+        "status": "completed",
+        "revised_prompt": "A gray tabby cat hugging an otter with an orange scarf",
+        "result": "iVBORw0KGgoAAAANSUhEUg==",
+        "action": "generate",
+        "background": "auto",
+        "output_format": "png",
+        "quality": "high",
+        "size": "1024x1024"
+    });
+    let mock_json = serde_json::json!({
+        "id": "resp_ig_1",
+        "status": "completed",
+        "store": true,
+        "output": [
+            ig_item,
+            {
+                "type": "message",
+                "id": "msg_ig_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Here is your image."}]
+            }
+        ],
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "total_tokens": 30,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        }
+    });
+
+    let parsed = provider.parse_response(mock_json).unwrap();
+
+    // 原生条目强类型保真：逐字段反序列化成功，序列化与官方报文一致（无损回放前提）
+    let resp_meta = parsed.meta.response.as_ref().unwrap();
+    let native = &resp_meta.output_items[0];
+    let ResponseOutputItem::ImageGenerationCall {
+        id,
+        status,
+        result,
+        revised_prompt,
+        size,
+        ..
+    } = native
+    else {
+        panic!("expected image_generation_call native item");
+    };
+    assert_eq!(id, "ig_123");
+    assert_eq!(status, "completed");
+    assert_eq!(result.as_deref(), Some("iVBORw0KGgoAAAANSUhEUg=="));
+    assert_eq!(
+        revised_prompt.as_deref(),
+        Some("A gray tabby cat hugging an otter with an orange scarf")
+    );
+    assert_eq!(size.as_deref(), Some("1024x1024"));
+    let encoded = serde_json::to_value(native).unwrap();
+    assert_eq!(encoded, ig_item);
+
+    // 领域投影：base64 结果进多模态 Image part，mime 按官方 output_format（缺省 png）
+    let image_part = parsed
+        .messages
+        .iter()
+        .flat_map(|m| &m.parts)
+        .find_map(|p| match p {
+            ContentPart::Image { source, mime_type } => Some((source, mime_type)),
+            _ => None,
+        })
+        .expect("projected image part");
+    let MediaSource::Base64 { data, mime_type } = image_part.0 else {
+        panic!("expected base64 media source");
+    };
+    assert_eq!(data, "iVBORw0KGgoAAAANSUhEUg==");
+    assert_eq!(mime_type, "image/png");
+    assert_eq!(image_part.1.as_deref(), Some("image/png"));
+
+    // 回放：store:false 无链式锚点时全量重建，原生 image_generation_call 条目原样回传 input
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    let mut replay_meta = resp_meta.clone();
+    replay_meta.store = false;
+    replay_meta.response_id = None;
+    replay_meta.previous_response_id = None;
+    let mut asst_turn = Turn::assistant_turn(parsed.messages.clone());
+    asst_turn.meta.response = Some(replay_meta);
+    session.append_turn(Turn::user_turn(Message::text("draw a cat")));
+    session.append_turn(asst_turn);
+    session.append_turn(Turn::user_turn(Message::text("now make it realistic")));
+
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .expect("build body");
+    let inputs = body["input"].as_array().unwrap();
+    let replayed = inputs
+        .iter()
+        .find(|item| item["type"] == "image_generation_call")
+        .expect("replayed image_generation_call");
+    assert_eq!(replayed, &ig_item);
+}

@@ -5,8 +5,9 @@ use crate::provider::common::{
 };
 
 use crate::model::{
-    ContentPart, Message, ResponseMessageContent, ResponseOutputItem, ResponseReasoningContent,
-    ResponseReasoningSummary, ResponseTurnMeta, TokenUsage, ToolCall, TurnMeta,
+    ContentPart, MediaSource, Message, ResponseMessageContent, ResponseOutputItem,
+    ResponseReasoningContent, ResponseReasoningSummary, ResponseTurnMeta, TokenUsage, ToolCall,
+    TurnMeta,
 };
 use crate::provider::{ProviderError, ProviderResponse};
 
@@ -113,6 +114,28 @@ impl ResponseProvider {
                         name: name.clone(),
                         arguments: arguments.clone(),
                     }));
+                }
+                ResponseOutputItem::ImageGenerationCall {
+                    result,
+                    output_format,
+                    ..
+                } => {
+                    // 官方规范：result 为 base64 图像；output_format 缺省输出 png。
+                    // 未完成或失败的调用无 result，不投影
+                    if let Some(data) = result {
+                        let mime_type = match output_format.as_deref() {
+                            Some("webp") => "image/webp",
+                            Some("jpeg") => "image/jpeg",
+                            _ => "image/png",
+                        };
+                        parts.push(ContentPart::Image {
+                            source: MediaSource::Base64 {
+                                data: data.clone(),
+                                mime_type: mime_type.into(),
+                            },
+                            mime_type: Some(mime_type.into()),
+                        });
+                    }
                 }
             }
         }

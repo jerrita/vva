@@ -86,6 +86,27 @@ pub enum ResponseOutputItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         action: Option<ResponseWebSearchAction>,
     },
+    /// 图像生成 server tool 调用（image_generation 工具，官方规范字段一一对应）
+    ImageGenerationCall {
+        id: String,
+        status: String,
+        /// 生成的图像 base64（status 为 completed 时返回）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        /// 模型改写后的提示词
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revised_prompt: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_format: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        quality: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
