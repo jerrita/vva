@@ -112,9 +112,14 @@ export default function App() {
       .sessions()
       .then(list => {
         setSessions(list)
+        // 会话链接 /s/<id> 优先于本地上次会话
+        const urlSessionId = /^\/s\/([^/]+)$/.exec(location.pathname)?.[1] ?? null
         const storedActiveId = localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
-        if (storedActiveId && list.some(session => session.id === storedActiveId)) {
-          setActiveId(storedActiveId)
+        const initialId = [urlSessionId, storedActiveId].find(
+          id => id != null && list.some(session => session.id === id),
+        )
+        if (initialId) {
+          setActiveId(initialId)
         } else if (storedActiveId) {
           localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
         }
@@ -124,6 +129,7 @@ export default function App() {
     api.skills().then(response => setSkills(response.skills)).catch(() => {})
   }, [])
 
+  // 当前会话持久化到 localStorage，并同步地址栏 /s/<id>（链接直达，无路由）
   useEffect(() => {
     if (!sessionsLoaded) return
     if (activeId) {
@@ -131,6 +137,7 @@ export default function App() {
     } else {
       localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY)
     }
+    history.replaceState(null, '', activeId ? `/s/${activeId}` : '/')
   }, [activeId, sessionsLoaded])
 
   useEffect(() => {
