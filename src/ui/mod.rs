@@ -154,7 +154,7 @@ async fn run_app_loop(
                 .split(size);
 
             // 宽屏时 (>= 90 宽) 上半区切出右侧详情边栏，与主窗口齐平
-            let (chat_area, sidebar_area) = if size.width >= 90 {
+            let (chat_area, sidebar_area) = if size.width >= 90 && app.show_sidebar {
                 let cols = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Min(60), Constraint::Length(30)])

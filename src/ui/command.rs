@@ -89,6 +89,12 @@ pub static COMMANDS: &[SlashCommand] = &[
         example: "/clear",
     },
     SlashCommand {
+        name: "/sidebar",
+        aliases: &["/sb"],
+        description: "Toggle the right sidebar details panel",
+        example: "/sidebar",
+    },
+    SlashCommand {
         name: "/help",
         aliases: &["/h", "/?"],
         description: "Show command and keyboard shortcuts help",

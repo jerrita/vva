@@ -136,6 +136,9 @@ impl App {
             "/thinking" | "/think" | "/th" => {
                 self.toggle_thinking_display();
             }
+            "/sidebar" | "/sb" => {
+                self.show_sidebar = !self.show_sidebar;
+            }
             "/clear" | "/c" => {
                 self.delete_and_recreate_session().await;
             }
