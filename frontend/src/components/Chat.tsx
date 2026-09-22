@@ -1,6 +1,7 @@
 import type { ContentPart, Session, Turn } from '../types'
 import { CopyButton } from './CopyButton'
 import { IconFork, IconRevert } from './icons'
+import { useLightbox } from './Lightbox'
 import { Parts, mediaSourceUrl } from './Parts'
 
 /** 部件列表中的纯文本（消息原文与复制回答用） */
@@ -178,6 +179,7 @@ function UserBubble({
   onFork?: (index: number) => void
   onPreviewFile?: (path: string) => void
 }) {
+  const openLightbox = useLightbox()
   const actions = (
     <div className="turn-actions">
       <CopyButton text={turnText(turn)} />
@@ -211,12 +213,14 @@ function UserBubble({
             .flatMap(message => message.parts)
             .map((part, index) => {
               if (part.type === 'image') {
+                const url = mediaSourceUrl(part.source)
                 return (
                   <img
                     key={index}
-                    className="bubble-img"
-                    src={mediaSourceUrl(part.source)}
+                    className="bubble-img lightboxable"
+                    src={url}
                     alt=""
+                    onClick={() => openLightbox(url)}
                   />
                 )
               }

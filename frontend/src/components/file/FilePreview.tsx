@@ -4,6 +4,7 @@ import { api, toError } from '../../api'
 import type { RelatedFile, SessionFileResponse } from '../../types'
 import { CopyButton } from '../CopyButton'
 import { Markdown } from '../Markdown'
+import { useLightbox } from '../Lightbox'
 import {
   IconArrowLeft,
   IconDownload,
@@ -32,6 +33,7 @@ export function FilePreview({
   isDualPane,
   onClose,
 }: FilePreviewProps) {
+  const openLightbox = useLightbox()
   const [fileData, setFileData] = useState<SessionFileResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -126,7 +128,10 @@ export function FilePreview({
             <img
               src={`data:${fileData.mime_type};base64,${fileData.content}`}
               alt={fileData.name}
-              className="file-preview-image"
+              className="file-preview-image lightboxable"
+              onClick={() =>
+                openLightbox(`data:${fileData.mime_type};base64,${fileData.content}`)
+              }
             />
           </div>
         )

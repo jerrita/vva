@@ -10,6 +10,7 @@ import type {
   WebSearchSource,
 } from '../types'
 import { IconFile } from './icons'
+import { useLightbox } from './Lightbox'
 import { Markdown } from './Markdown'
 
 /** 图片数据源地址：URL 直连或 Base64 data URL */
@@ -384,6 +385,7 @@ function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: bool
 }
 
 function ImageGenerationView({ call, expanded }: { call: ImageGenerationCall; expanded: boolean }) {
+  const openLightbox = useLightbox()
   return (
     <details className="search-row image-gen-row" open={expanded}>
       <summary>
@@ -392,7 +394,14 @@ function ImageGenerationView({ call, expanded }: { call: ImageGenerationCall; ex
         <code className="search-target">{call.revised_prompt ?? ''}</code>
         <span className={`search-status ${call.status}`}>{call.status}</span>
       </summary>
-      {call.result && <img className="part-image" src={mediaSourceUrl(call.result)} alt="" />}
+      {call.result && (
+        <img
+          className="part-image lightboxable"
+          src={mediaSourceUrl(call.result)}
+          alt=""
+          onClick={() => openLightbox(mediaSourceUrl(call.result!))}
+        />
+      )}
     </details>
   )
 }
@@ -424,6 +433,7 @@ function Citations({ annotations }: { annotations: Annotation[] }) {
 }
 
 export function Part({ part, expanded }: { part: ContentPart; expanded: boolean }) {
+  const openLightbox = useLightbox()
   switch (part.type) {
     case 'text':
       return (
@@ -458,10 +468,17 @@ export function Part({ part, expanded }: { part: ContentPart; expanded: boolean 
       return <WebSearchView call={part} expanded={expanded} />
     case 'image_generation_call':
       return <ImageGenerationView call={part} expanded={expanded} />
-    case 'image':
+    case 'image': {
+      const url = mediaSourceUrl(part.source)
       return (
-        <img className="part-image" src={mediaSourceUrl(part.source)} alt="" />
+        <img
+          className="part-image lightboxable"
+          src={url}
+          alt=""
+          onClick={() => openLightbox(url)}
+        />
       )
+    }
   }
 }
 
