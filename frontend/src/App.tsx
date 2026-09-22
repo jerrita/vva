@@ -509,7 +509,14 @@ export default function App() {
           onChange={variant => changeVariant(variant || null)}
         />
       )}
-      <label className="chip-toggle" title="原生网络搜索">
+      <label
+        className="chip-toggle"
+        title={
+          snap && snap.external_web.length > 0
+            ? `外置搜索：${snap.external_web.join('+')}`
+            : '原生网络搜索'
+        }
+      >
         <input
           type="checkbox"
           checked={currentSearch}

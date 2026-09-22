@@ -117,9 +117,14 @@ pub fn render_input_area(
         .unwrap_or(workspace);
     let variant = variant.unwrap_or("default");
     let web = if app.view.session.web_search {
-        "web"
+        if app.view.external_web.is_empty() {
+            "web".to_string()
+        } else {
+            // 原生能力缺位由外置 provider 接管：状态行标注后端
+            format!("web:{}", app.view.external_web.join("+"))
+        }
     } else {
-        "web off"
+        "web off".to_string()
     };
     let think = "think (show)";
     let footer = chunks[1];

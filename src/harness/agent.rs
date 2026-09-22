@@ -38,8 +38,11 @@ pub(super) struct AgentEngine {
     pub provider: Arc<dyn Provider>,
     pub tools: ToolRegistry,
     pub options: CompletionOptions,
-    /// 能力协商通知：原生能力降级与外置 web 工具激活提示，任务启动时发布
+    /// 能力协商通知：原生能力降级提示，任务启动时发布
     pub notices: Vec<String>,
+    /// 外置 web 工具接管的后端名：原生能力缺位时由客户端工具补全，
+    /// 经 SessionView 发布，由状态栏标注而非聊天通知
+    pub external_web: Vec<String>,
     /// 当前模型的输入能力，供提交前校验用户附件
     pub(super) inputs: crate::config::resolver::InputCapabilities,
 }
@@ -111,6 +114,7 @@ impl AgentEngine {
         // 原生 web 能力缺位时以外置 provider 的客户端工具补全（配置错误在此显式报错）
         let mut notices = Vec::new();
         let mut external_search = false;
+        let mut activated: Vec<String> = Vec::new();
         if session.web_search {
             let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
             let native_search = options.enable_web_search && capabilities.supports_native_search;
@@ -121,26 +125,20 @@ impl AgentEngine {
             } else {
                 native_search && capabilities.server_tool_names.contains(&"web_search")
             };
-            let mut activated: Vec<String> = Vec::new();
             if !native_search && let Some(search) = &external.search {
                 tools.register(Arc::new(crate::tools::web::tool::WebSearchTool::new(
                     search.clone(),
                 )));
-                activated.push(format!("web_search ({})", search.name()));
+                activated.push(search.name().to_string());
                 external_search = true;
             }
             if !native_fetch && let Some(fetch) = &external.fetch {
                 tools.register(Arc::new(crate::tools::web::tool::WebFetchTool::new(
                     fetch.clone(),
                 )));
-                activated.push(format!("web_fetch ({})", fetch.name()));
+                activated.push(fetch.name().to_string());
             }
-            if !activated.is_empty() {
-                notices.push(format!(
-                    "External web tools active: {}.",
-                    activated.join(", ")
-                ));
-            }
+            activated.dedup();
         }
         // 亲和组切换：前一段原生状态（链锚点 / 签名块）无法回传，历史降维重建，显式告知
         let previous_scope = session.turns.iter().rev().find_map(|turn| {
@@ -175,6 +173,7 @@ impl AgentEngine {
             tools,
             options,
             notices,
+            external_web: activated,
             inputs,
         })
     }
@@ -378,9 +377,7 @@ mod tests {
         assert!(engine.tools.get("web_fetch").is_some());
         // 客户端工具接管时不再预留原生 server tool 名
         assert!(!engine.tools.is_server_tool("web_search"));
-        assert!(engine.notices.iter().any(|notice| {
-            notice.contains("External web tools active: web_search (tavily), web_fetch (local)")
-        }));
+        assert_eq!(engine.external_web, ["tavily", "local"]);
         assert!(
             !engine
                 .notices
@@ -400,6 +397,7 @@ mod tests {
         assert!(engine.tools.get("web_fetch").is_none());
         assert!(engine.tools.is_server_tool("web_search"));
         assert!(engine.notices.is_empty());
+        assert!(engine.external_web.is_empty());
 
         // 会话 web 开关关闭时一律不注册
         let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();

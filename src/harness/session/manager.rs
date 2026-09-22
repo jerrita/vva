@@ -81,6 +81,7 @@ impl SessionManager {
             session: Arc::new(session),
             draft: Vec::new(),
             notices: Vec::new(),
+            external_web: Vec::new(),
             state: RunState::Idle,
             persisted,
             pending_user_question: None,

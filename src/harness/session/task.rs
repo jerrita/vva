@@ -533,6 +533,7 @@ impl SessionTask {
                 self.event(AgentEvent::Notice(notice)).await;
             }
         }
+        self.view.external_web = engine.external_web.clone();
         let tools = engine.tools.definitions();
         let worked_started = Instant::now();
         loop {

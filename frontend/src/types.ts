@@ -173,6 +173,8 @@ export interface SessionSnapshot {
   state: string
   persisted: boolean
   notices: string[]
+  /** 外置 web 工具接管的后端名；空表示原生在位或未开启 */
+  external_web: string[]
   session: Session
   draft: ContentPart[]
   pending_user_question?: UserQuestionRequest | null
@@ -185,6 +187,7 @@ export interface SessionDelta {
   state: string
   persisted: boolean
   notices?: string[]
+  external_web?: string[]
   session?: Omit<Session, 'turns'>
   turns?: { from: number; items: Turn[] }
   draft?: {

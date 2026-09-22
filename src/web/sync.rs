@@ -66,6 +66,7 @@ pub(super) struct SessionSnapshot<'a> {
     state: String,
     persisted: bool,
     notices: &'a [String],
+    external_web: &'a [String],
     session: SessionData<'a>,
     draft: Vec<&'a ContentPart>,
     pending_user_question: &'a Option<UserQuestionRequest>,
@@ -78,6 +79,7 @@ impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
             state: view.state.status(),
             persisted: view.persisted,
             notices: &view.notices,
+            external_web: &view.external_web,
             session: SessionData {
                 info: SessionInfo::from(&*view.session),
                 turns: view.session.turns.iter().map(TurnView::from).collect(),
@@ -117,6 +119,8 @@ pub(super) struct SessionDelta<'a> {
     persisted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     notices: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    external_web: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     session: Option<SessionInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -204,6 +208,8 @@ impl<'a> SessionDelta<'a> {
             state: current.state.status(),
             persisted: current.persisted,
             notices: (previous.notices != current.notices).then_some(&current.notices),
+            external_web: (previous.external_web != current.external_web)
+                .then_some(&current.external_web),
             session,
             turns,
             draft,
@@ -227,6 +233,7 @@ mod tests {
             session: Arc::new(Session::new("/synthetic", None)),
             draft: vec![Arc::new(ContentPart::text("起点🙂"))],
             notices: Vec::new(),
+            external_web: Vec::new(),
             state: RunState::Responding,
             persisted: true,
             pending_user_question: None,

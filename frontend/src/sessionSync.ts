@@ -48,6 +48,7 @@ export function applySessionDelta(previous: SessionSnapshot, delta: SessionDelta
     state: delta.state,
     persisted: delta.persisted,
     notices: delta.notices ?? previous.notices,
+    external_web: delta.external_web ?? previous.external_web,
     session,
     draft,
     pending_user_question:

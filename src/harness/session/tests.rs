@@ -12,6 +12,7 @@ fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
         session: Arc::new(Session::new(workspace.clone(), None)),
         draft: Vec::new(),
         notices: Vec::new(),
+        external_web: Vec::new(),
         state: RunState::Idle,
         persisted: false,
         pending_user_question: None,
@@ -172,6 +173,7 @@ async fn parallel_tool_calls_run_concurrently_and_preserve_order() {
             ..Default::default()
         },
         notices: Vec::new(),
+        external_web: Vec::new(),
         inputs: Default::default(),
     };
     let (_tx, mut rx) = mpsc::channel(1);

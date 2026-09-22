@@ -33,6 +33,8 @@ pub struct SessionView {
     pub session: Arc<Session>,
     pub draft: Vec<Arc<ContentPart>>,
     pub notices: Vec<String>,
+    /// 外置 web 工具接管的后端名（原生能力缺位时），供状态栏标注
+    pub external_web: Vec<String>,
     pub state: RunState,
     pub persisted: bool,
     pub pending_user_question: Option<UserQuestionRequest>,
