@@ -1582,6 +1582,17 @@ fn test_agents_reminders_rendering_visibility() {
     assert!(full_output.contains("Load pdf-processing"));
     assert!(!full_output.contains("Open the file"));
     assert!(!full_output.contains("system-reminder"));
+
+    // 技能清单 reminder 不展示
+    let lines_before_skills = render.lines.len();
+    let part_skills = ContentPart::text(crate::system::format_skills_reminder(&[skill]));
+    append_parts(
+        &mut render,
+        Role::User,
+        std::slice::from_ref(&part_skills).iter(),
+        &mut state,
+    );
+    assert_eq!(render.lines.len(), lines_before_skills);
 }
 
 #[test]

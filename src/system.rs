@@ -220,6 +220,8 @@ pub enum AgentsReminderKind {
     Directory,
     /// /<skill_name> 直接加载的技能正文
     SkillLoaded,
+    /// 会话首条消息随行注入的技能清单
+    Skills,
 }
 
 /// 解析出的 AGENTS.md 系统提示提醒
@@ -304,6 +306,8 @@ pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
         AgentsReminderKind::Directory
     } else if open_tag.contains("type=\"skill-loaded\"") {
         AgentsReminderKind::SkillLoaded
+    } else if open_tag.contains("type=\"skills\"") {
+        AgentsReminderKind::Skills
     } else {
         return None;
     };
@@ -496,10 +500,10 @@ mod tests {
         assert_eq!(parsed.name, "pdf-processing");
         assert!(parsed.content.contains("<skill name=\"pdf-processing\""));
 
-        // 普通消息与 skills 清单 reminder 不被误判为 skill-loaded
         assert_eq!(parse_agents_reminder("plain prompt"), None);
         let list_reminder = format_skills_reminder(&[skill]);
-        assert_eq!(parse_agents_reminder(&list_reminder), None);
+        let parsed_list = parse_agents_reminder(&list_reminder).unwrap();
+        assert_eq!(parsed_list.kind, AgentsReminderKind::Skills);
     }
 
     #[test]

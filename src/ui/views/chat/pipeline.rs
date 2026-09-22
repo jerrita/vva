@@ -175,8 +175,9 @@ pub(crate) fn append_part(
             if let Some(reminder) = crate::system::parse_agents_reminder(text) {
                 match reminder.kind {
                     crate::system::AgentsReminderKind::Global
-                    | crate::system::AgentsReminderKind::Project => {
-                        // 全局与项目不展示
+                    | crate::system::AgentsReminderKind::Project
+                    | crate::system::AgentsReminderKind::Skills => {
+                        // 全局、项目与技能清单不展示
                     }
                     crate::system::AgentsReminderKind::Directory
                     | crate::system::AgentsReminderKind::SkillLoaded => {
@@ -385,6 +386,7 @@ pub(crate) fn is_empty_session(view: &SessionView) -> bool {
                                     r.kind,
                                     crate::system::AgentsReminderKind::Global
                                         | crate::system::AgentsReminderKind::Project
+                                        | crate::system::AgentsReminderKind::Skills
                                 )
                             })
                         }
