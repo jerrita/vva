@@ -211,7 +211,22 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
                 _ => pattern.to_string(),
             }
         }
-        "Shell" => json_str(&args, "intent")
+        "Shell" => {
+            let intent = json_str(&args, "intent")
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| arguments.to_string());
+            // 后台启动标注任务态，与前台执行区分
+            if args
+                .get("run_in_background")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                format!("{intent} (background)")
+            } else {
+                intent
+            }
+        }
+        "TaskOutput" | "TaskStop" => json_str(&args, "task_id")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
         _ => arguments.to_string(),
@@ -262,6 +277,9 @@ pub(super) fn tool_block_command(name: &str, arguments: &str) -> String {
         "Grep" => json_str(&args, "pattern")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
+        "TaskOutput" | "TaskStop" => json_str(&args, "task_id")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
         _ => arguments.to_string(),
     }
 }
@@ -279,6 +297,8 @@ pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
     match name {
         "Edit" | "Write" => Some(ToolExpand::Full),
         "Shell" => Some(ToolExpand::Preview),
+        // 后台任务工具：预览任务输出/停止结果，点击展开全文
+        "TaskOutput" | "TaskStop" => Some(ToolExpand::Preview),
         // 外置 web 工具对齐原生 WebSearchCall：仅一行 + 来源列表，不渲染输出块
         _ => None,
     }

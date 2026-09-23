@@ -36,6 +36,10 @@ fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
         ask_user_tx: mpsc::channel(1).0,
         ask_user_rx: mpsc::channel(1).1,
         pending_user_question: None,
+        tasks: Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
+            |_| {},
+        ))),
+        task_completions: Vec::new(),
     };
     (task, view_rx)
 }
@@ -156,6 +160,184 @@ impl crate::provider::Provider for ParallelProvider {
     ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
         self.complete(session, tools, options).await
     }
+}
+
+/// 等待后台任务达到期望终态（真实子进程，轮询 snapshot）
+async fn wait_for_task(
+    task: &SessionTask,
+    id: &str,
+    want: crate::tools::background::BackgroundStatus,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = task.tasks.snapshot(id).expect("task present").status;
+        if status == want {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background task stuck at {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn task_completion_injects_persisted_user_turn() {
+    let (mut task, _view) = event_task();
+    let root = task.view.session.workspace_root.clone();
+    task.store.save_header(&task.view.session).await.unwrap();
+    let id = task
+        .tasks
+        .spawn(
+            "watch build",
+            if cfg!(windows) {
+                "Write-Output done"
+            } else {
+                "echo done"
+            },
+            &root,
+        )
+        .unwrap();
+    wait_for_task(
+        &task,
+        &id,
+        crate::tools::background::BackgroundStatus::Exited { code: Some(0) },
+    )
+    .await;
+
+    // notify=true：运行中路径给 UI 短通知
+    task.queue_task_completion(id.clone(), true).await;
+    assert!(
+        task.view
+            .notices
+            .last()
+            .is_some_and(|notice| notice.contains("exited with code 0")),
+        "{:?}",
+        task.view.notices
+    );
+
+    task.drain_task_completions().await.unwrap();
+    assert!(task.task_completions.is_empty());
+    let text = task.view.session.turns.last().unwrap().text_content();
+    // 注入轮次为 background-task reminder：首行为状态，机器注入可识别
+    assert!(
+        text.contains("<system-reminder type=\"background-task\">"),
+        "{text}"
+    );
+    assert!(text.ends_with("</system-reminder>"), "{text}");
+    assert!(
+        text.contains("Background task 1 exited with code 0"),
+        "{text}"
+    );
+    assert!(text.contains("done"), "{text}");
+    assert!(text.contains("TaskOutput"), "{text}");
+    let loaded = task
+        .store
+        .load_session(&task.view.session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        loaded
+            .turns
+            .last()
+            .unwrap()
+            .text_content()
+            .contains("background-task")
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn drain_skips_vanished_task_without_error() {
+    let (mut task, _view) = event_task();
+    task.task_completions.push("404".into());
+
+    task.drain_task_completions().await.unwrap();
+
+    assert!(task.view.session.turns.is_empty());
+    assert!(task.task_completions.is_empty());
+    let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+}
+
+/// 直接返回文本的供应商桩：execute 注入通知后应立即收尾
+struct PlainTextProvider;
+
+#[async_trait::async_trait]
+impl crate::provider::Provider for PlainTextProvider {
+    fn name(&self) -> &str {
+        "plain-test"
+    }
+    fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+        Default::default()
+    }
+    async fn complete(
+        &self,
+        _: &Session,
+        _: &[crate::model::ToolDefinition],
+        _: &crate::provider::CompletionOptions,
+    ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
+        Ok(crate::provider::ProviderResponse {
+            messages: vec![Message::text("done")],
+            usage: None,
+            meta: Default::default(),
+        })
+    }
+    async fn complete_stream(
+        &self,
+        session: &Session,
+        tools: &[crate::model::ToolDefinition],
+        options: &crate::provider::CompletionOptions,
+        _: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
+        self.complete(session, tools, options).await
+    }
+}
+
+#[tokio::test]
+async fn execute_drains_completions_before_next_model_call() {
+    let (mut task, _view) = event_task();
+    let root = task.view.session.workspace_root.clone();
+    task.store.save_header(&task.view.session).await.unwrap();
+    let id = task
+        .tasks
+        .spawn(
+            "quick",
+            if cfg!(windows) { "exit 0" } else { "true" },
+            &root,
+        )
+        .unwrap();
+    wait_for_task(
+        &task,
+        &id,
+        crate::tools::background::BackgroundStatus::Exited { code: Some(0) },
+    )
+    .await;
+    // notify=false：空闲路径注入即刻可见，不发短通知
+    task.queue_task_completion(id, false).await;
+    assert!(task.view.notices.is_empty(), "{:?}", task.view.notices);
+
+    let engine = AgentEngine {
+        provider: Arc::new(PlainTextProvider),
+        tools: crate::tools::ToolRegistry::new(),
+        options: crate::provider::CompletionOptions::default(),
+        notices: Vec::new(),
+        external_web: Vec::new(),
+        inputs: Default::default(),
+    };
+    let (_tx, mut rx) = mpsc::channel(1);
+    let finished = task.execute(engine, &mut rx).await.unwrap();
+    assert!(finished);
+
+    let turns = &task.view.session.turns;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].role, Role::User);
+    assert!(turns[0].text_content().contains("background-task"));
+    assert!(crate::system::parse_agents_reminder(&turns[0].text_content()).is_some());
+    assert_eq!(turns[1].role, Role::Assistant);
+    assert_eq!(turns[1].text_content(), "done");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]

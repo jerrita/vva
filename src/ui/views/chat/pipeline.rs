@@ -201,6 +201,25 @@ pub(crate) fn append_part(
                             .lines
                             .extend(wrap_spans_to_lines(&spans, max_width, "", "   "));
                     }
+                    crate::system::AgentsReminderKind::BackgroundTask => {
+                        // 后台任务完成：单行灰色状态（首行），非用户消息
+                        let status = reminder.content.lines().next().unwrap_or_default().trim();
+                        if !status.is_empty() {
+                            let needs_separator = state.prev_reasoning || state.prev_text;
+                            state.prev_reasoning = false;
+                            state.prev_text = true;
+                            if needs_separator {
+                                render.lines.push(Line::from(""));
+                            }
+                            let spans = vec![Span::styled(
+                                status.to_string(),
+                                Style::default().fg(Color::Rgb(150, 150, 150)),
+                            )];
+                            render
+                                .lines
+                                .extend(wrap_spans_to_lines(&spans, max_width, "", "   "));
+                        }
+                    }
                 }
                 return;
             }

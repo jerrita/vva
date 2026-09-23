@@ -74,6 +74,15 @@ pub fn format_skill_load_reminder(skill: &Skill) -> String {
     )
 }
 
+/// 格式化后台任务完成通知为 <system-reminder> User Message 文本
+/// （正文首行为 UI 展示的状态行，其余为模型可见的输出详情）
+pub fn format_background_task_reminder(notification: &str) -> String {
+    format!(
+        "<system-reminder type=\"background-task\">\n{}\n</system-reminder>",
+        notification.trim()
+    )
+}
+
 fn get_current_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
@@ -222,6 +231,8 @@ pub enum AgentsReminderKind {
     SkillLoaded,
     /// 会话首条消息随行注入的技能清单
     Skills,
+    /// 后台任务完成通知（Shell run_in_background）
+    BackgroundTask,
 }
 
 /// 解析出的 AGENTS.md 系统提示提醒
@@ -308,6 +319,8 @@ pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
         AgentsReminderKind::SkillLoaded
     } else if open_tag.contains("type=\"skills\"") {
         AgentsReminderKind::Skills
+    } else if open_tag.contains("type=\"background-task\"") {
+        AgentsReminderKind::BackgroundTask
     } else {
         return None;
     };
@@ -504,6 +517,21 @@ mod tests {
         let list_reminder = format_skills_reminder(&[skill]);
         let parsed_list = parse_agents_reminder(&list_reminder).unwrap();
         assert_eq!(parsed_list.kind, AgentsReminderKind::Skills);
+    }
+
+    #[test]
+    fn format_and_parse_background_task_reminder() {
+        let notification =
+            "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 4 bytes";
+        let reminder = format_background_task_reminder(notification);
+        assert!(reminder.starts_with("<system-reminder type=\"background-task\">"));
+        assert!(reminder.ends_with("</system-reminder>"));
+
+        let parsed = parse_agents_reminder(&reminder).unwrap();
+        assert_eq!(parsed.kind, AgentsReminderKind::BackgroundTask);
+        let mut lines = parsed.content.lines();
+        assert_eq!(lines.next(), Some("Background task 1 exited with code 0"));
+        assert!(lines.next().is_some());
     }
 
     #[test]

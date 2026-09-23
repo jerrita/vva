@@ -54,6 +54,7 @@ impl AgentEngine {
         tool_outputs: PathBuf,
         hashline: Arc<crate::tools::hashline::HashlineSession>,
         ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
+        background: Arc<crate::tools::background::BackgroundTasks>,
         skills: Vec<crate::skills::Skill>,
     ) -> Result<Self, String> {
         let resolved = config
@@ -76,6 +77,17 @@ impl AgentEngine {
         tools.register(Arc::new(read));
         tools.register(Arc::new(crate::tools::ask_user::AskUserTool::new(
             ask_user_requests,
+        )));
+        // 后台任务工具随会话级注册表注入（Shell 覆盖注册以绑定 run_in_background）
+        tools.register(Arc::new(
+            crate::tools::shell::ShellTool::new(&session.workspace_root)
+                .with_background(background.clone()),
+        ));
+        tools.register(Arc::new(crate::tools::background::TaskOutputTool::new(
+            background.clone(),
+        )));
+        tools.register(Arc::new(crate::tools::background::TaskStopTool::new(
+            background,
         )));
         tools.register(Arc::new(crate::tools::skill::SkillTool::new(Arc::new(
             skills,
@@ -316,8 +328,23 @@ mod tests {
             std::env::temp_dir().join(format!("vva-agent-test-{}", uuid::Uuid::new_v4())),
             crate::tools::hashline::HashlineSession::new(),
             tx,
+            std::sync::Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
+                |_| {},
+            ))),
             Vec::new(),
         )
+    }
+
+    #[tokio::test]
+    async fn engine_registers_background_task_tools() {
+        let config = web_config(None);
+        let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();
+
+        assert!(engine.tools.get("TaskOutput").is_some());
+        assert!(engine.tools.get("TaskStop").is_some());
+        let shell = engine.tools.get("Shell").unwrap();
+        let property = &shell.parameters()["properties"]["run_in_background"];
+        assert_eq!(property["type"], "boolean");
     }
 
     fn web_config(annotation: Option<crate::config::model::ModelAnnotation>) -> AppConfig {

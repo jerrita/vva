@@ -1221,6 +1221,13 @@ body.resizing .chat-scroll {
   word-break: break-word;
 }
 
+/* 机器注入轮次（后台任务完成等）：弱化单行，非用户消息 */
+.system-line {
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* 用户消息内的图片附件缩略图 */
 .bubble-img {
   display: block;

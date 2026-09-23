@@ -78,7 +78,8 @@
    - 处理各家协议转换，通过泛型 SSE 流解码输出标准 `AgentEvent`。
 4. **执行与调度层 (`src/harness/`, `src/tools/`)**：
    - `AgentEngine` 组装 Provider、工具注册表与补全参数；
-   - `SessionTask` 是会话的唯一所有者，顺序处理提交、配置变更与取消，驱动多轮 Agent Loop 并落盘历史；`SessionManager` 只维护会话句柄表，CLI 与 TUI 共用该入口。
+   - `SessionTask` 是会话的唯一所有者，顺序处理提交、配置变更与取消，驱动多轮 Agent Loop 并落盘历史；`SessionManager` 只维护会话句柄表，CLI 与 TUI 共用该入口；
+   - Shell 支持 `run_in_background` 后台执行：任务在会话级注册表中 detached 运行（TaskOutput 查询 / TaskStop 停止），完成后经 `Command::TaskFinished` 注入用户通知轮次并自动续跑，任务随会话结束回收。
 5. **存储层 (`src/storage/`)**：
    - `JsonlSessionStore` 提供行级追加写的持久化方案，支持崩溃容灾与流式历史读取。
 6. **交互层 (`src/ui/`, `src/main.rs`)**：

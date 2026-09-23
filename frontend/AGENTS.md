@@ -48,7 +48,8 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；支持在输入框粘贴图片附件（Base64 随消息提交），气泡内以缩略图展示；悬停气泡显示操作行（复制原文、回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
 - **空态**：无会话时为 `.empty-stage` 居中版式（品牌大字 + 提示 + 项目选择 + 输入框），项目选择位于输入框上方，输入框样式与会话内一致；发首条消息即按所选项目创建会话。
 - **内容展示**：思考（`.reasoning-row`）、搜索（`.search-row`）与工具（`.tool-row`）均去卡片化，采用透明底与无边框设计；展开/收起经 `::details-content` + `interpolate-size` 高度过渡（Chromium 131+，不支持则直接切换）。
-- **工具展示**：`tool_call` 与其 `tool_result` 按 `tool_call_id` 配对，统一步调为 `.tool-row` 去卡片化样式（透明底无边框，状态 + 工具名 + 详情）。文件相关工具（Read / Write / Edit）单行展示路径与 diff 统计，点击调起右侧边栏预览；搜索匹配工具（Glob / Grep）单行展示模式与匹配数统计（如 `(xx matches)`），不展开具体内容；Shell 工具单行展示意图与命令，点击可展开输出结果。错误块保留 ✕ 标识与错误摘要。
+- **工具展示**：`tool_call` 与其 `tool_result` 按 `tool_call_id` 配对，统一步调为 `.tool-row` 去卡片化样式（透明底无边框，状态 + 工具名 + 详情）。文件相关工具（Read / Write / Edit）单行展示路径与 diff 统计，点击调起右侧边栏预览；搜索匹配工具（Glob / Grep）单行展示模式与匹配数统计（如 `(xx matches)`），不展开具体内容；Shell 工具单行展示意图与命令，点击可展开输出结果，后台启动在意图后标注 `(background)`；后台任务工具（TaskOutput / TaskStop）单行展示 task_id，点击可展开任务输出。错误块保留 ✕ 标识与错误摘要。
+- **机器注入轮次**：`<system-reminder>` 包装的用户轮次不渲染为用户气泡、无回退/分叉操作；`type="background-task"`（后台任务完成通知）展示为 `.system-line` 弱化单行（正文首行状态），并作为运行段折叠边界，其余 reminder 不展示。
 - **用时折叠**：纯文本行 `.worked`（`用时 Xm YYs ›`），非卡片；折叠粒度为整个运行段（两次用户消息之间的助手轮序列）——中间轮的思考/工具与文本消息均并入折叠，仅运行段最后一条助手消息正常展示（悬停显示复制操作，复制回答原文 Markdown），用时取末轮 `worked_ms`（整请求周期）；运行段进行中保持展开、结束自动收起，中断或含错误的段同样收起（失败标识在段内卡片摘要行），与最终回答之间以 `--border-soft` 弱分隔线区隔，展开后内部块与外部块同宽同层级，**不允许出现嵌套卡片**。
 - **引用注脚**：消息文本的 url_citation 渲染为 `.citations` 折叠行（`引用来源（N）`），按 URL 去重（对齐 TUI `search_citations`），默认收起，展开为编号列表。
 - **按钮体系**：`primary-button`/`send-button`（主色实心）、`ghost-button`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。

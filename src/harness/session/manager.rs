@@ -89,6 +89,15 @@ impl SessionManager {
         let (view_tx, view_rx) = watch::channel(Arc::new(view.clone()));
         let (commands, rx) = mpsc::channel(16);
         let (ask_user_tx, ask_user_rx) = mpsc::channel(4);
+        // 后台任务完成回投：通道饱和或会话已退出时丢弃，模型可经 TaskOutput 轮询自愈
+        let weak = commands.downgrade();
+        let tasks = Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
+            move |task_id| {
+                if let Some(tx) = weak.upgrade() {
+                    let _ = tx.try_send(Command::TaskFinished { task_id });
+                }
+            },
+        )));
         let task = SessionTask {
             view,
             view_tx,
@@ -106,6 +115,8 @@ impl SessionManager {
             ask_user_tx,
             ask_user_rx,
             pending_user_question: None,
+            tasks,
+            task_completions: Vec::new(),
         };
         tokio::spawn(task.run(rx));
         Arc::new(ManagedSession {

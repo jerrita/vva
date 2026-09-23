@@ -334,6 +334,48 @@ fn tool_preview_block_truncates_and_full_shows_all() {
 }
 
 #[test]
+fn background_task_reminder_renders_status_line_not_user_block() {
+    let text = crate::system::format_background_task_reminder(
+        "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 5 bytes",
+    );
+    let mut lines = Vec::new();
+    let mut state = RenderState::default();
+    append_parts(
+        &mut ChatRender {
+            lines: &mut lines,
+            links: &mut Vec::new(),
+            max_width: 80,
+            thinking_concise: false,
+            results: &HashMap::new(),
+            expand: &HashMap::new(),
+            hits: &mut Vec::new(),
+            thought_expand: &HashMap::new(),
+            thought_hits: &mut Vec::new(),
+            citations_expand: &HashMap::new(),
+            citations_hits: &mut Vec::new(),
+            response_hits: &mut Vec::new(),
+        },
+        Role::User,
+        [ContentPart::text(text)].iter(),
+        &mut state,
+    );
+
+    let rendered = joined(&lines);
+    assert!(
+        rendered.contains("Background task 1 exited with code 0"),
+        "{rendered}"
+    );
+    // 详情行与 reminder 标签不展示，也不是用户引用块（无色条）
+    assert!(!rendered.contains("intent: watch build"), "{rendered}");
+    assert!(!rendered.contains("system-reminder"), "{rendered}");
+    assert!(
+        lines
+            .iter()
+            .all(|line| { line.spans.iter().all(|span| !span.content.contains('▌')) })
+    );
+}
+
+#[test]
 fn test_user_block_copy_excludes_decoration() {
     let mut lines = Vec::new();
     push_user_block(

@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::Tool;
@@ -13,13 +14,21 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct ShellTool {
     working_dir: PathBuf,
+    background: Option<Arc<super::background::BackgroundTasks>>,
 }
 
 impl ShellTool {
     pub fn new(working_dir: impl Into<PathBuf>) -> Self {
         Self {
             working_dir: working_dir.into(),
+            background: None,
         }
+    }
+
+    /// 绑定会话级后台任务注册表，启用 run_in_background
+    pub fn with_background(mut self, tasks: Arc<super::background::BackgroundTasks>) -> Self {
+        self.background = Some(tasks);
+        self
     }
 }
 
@@ -27,6 +36,8 @@ impl ShellTool {
 struct ShellArgs {
     intent: String,
     command: String,
+    #[serde(default)]
+    run_in_background: bool,
 }
 
 #[async_trait]
@@ -44,7 +55,8 @@ impl Tool for ShellTool {
             "type": "object",
             "properties": {
                 "intent": { "type": "string", "description": "Required nonempty, brief explanation of what the command will accomplish, shown in the UI." },
-                "command": { "type": "string", "description": shell_command_hint() }
+                "command": { "type": "string", "description": shell_command_hint() },
+                "run_in_background": { "type": "boolean", "description": "Run detached with no timeout: returns a task id immediately while the command keeps running. Check status and output with TaskOutput, stop with TaskStop. You are notified when the task exits. Tasks die when the session ends; in one-shot CLI runs that is process exit." }
             },
             "required": ["intent", "command"]
         })
@@ -56,31 +68,47 @@ impl Tool for ShellTool {
             return Err("intent must not be empty".to_string());
         }
 
-        #[cfg(windows)]
-        let mut command = {
-            let wrapped = format!(
-                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; {}",
-                args.command
-            );
-            let mut command = tokio::process::Command::new("powershell");
-            command
-                .arg("-NoProfile")
-                .arg("-NonInteractive")
-                .arg("-ExecutionPolicy")
-                .arg("Bypass")
-                .arg("-Command")
-                .arg(&wrapped);
-            command
-        };
-        #[cfg(not(windows))]
-        let mut command = {
-            let mut command = tokio::process::Command::new("bash");
-            command.arg("-c").arg(&args.command);
-            command
-        };
+        if args.run_in_background {
+            let tasks = self.background.as_ref().ok_or_else(|| {
+                "Background execution is not available in this context".to_string()
+            })?;
+            let id = tasks.spawn(&args.intent, &args.command, &self.working_dir)?;
+            return Ok(format!(
+                "Background task started: {id}\nintent: {}\ncommand: {}\nNo timeout applies. Use TaskOutput with task_id \"{id}\" to check status and output; TaskStop to stop it. You will be notified when it exits.",
+                args.intent, args.command
+            ));
+        }
+
+        let mut command = build_shell_command(&args.command);
         command.current_dir(&self.working_dir);
         run_shell_command(command).await
     }
+}
+
+/// 组装平台相关的 shell 命令（bash -c / PowerShell 包装），前台与后台执行共用
+pub(crate) fn build_shell_command(command: &str) -> tokio::process::Command {
+    #[cfg(windows)]
+    let cmd = {
+        let wrapped = format!(
+            "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; [Console]::InputEncoding = [System.Text.Encoding]::UTF8; {}",
+            command
+        );
+        let mut cmd = tokio::process::Command::new("powershell");
+        cmd.arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-Command")
+            .arg(&wrapped);
+        cmd
+    };
+    #[cfg(not(windows))]
+    let cmd = {
+        let mut cmd = tokio::process::Command::new("bash");
+        cmd.arg("-c").arg(command);
+        cmd
+    };
+    cmd
 }
 
 /// 平台相关的工具描述与参数提示：条件编译区分 bash 与 PowerShell。
@@ -88,6 +116,7 @@ impl Tool for ShellTool {
 fn shell_description() -> &'static str {
     r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with non-interactive PowerShell (-NoProfile -NonInteractive), starting at the workspace root each time; shell state does not persist between calls.
 Provide a nonempty intent describing the purpose. Use PowerShell syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.
+For long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.
 Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
 }
 
@@ -95,6 +124,7 @@ Example arguments: {"intent":"Check working tree changes","command":"git status 
 fn shell_description() -> &'static str {
     r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with bash -c, starting at the workspace root each time; shell state does not persist between calls.
 Provide a nonempty intent describing the purpose. Use bash syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.
+For long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.
 Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
 }
 
@@ -179,5 +209,66 @@ mod tests {
         };
         let err = run_shell_command(cmd).await.unwrap_err();
         assert!(err.contains("42"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn background_spawn_returns_immediately_and_stays_running() {
+        let tasks = Arc::new(super::super::background::BackgroundTasks::new(Arc::new(
+            |_| {},
+        )));
+        let tool = ShellTool::new(std::env::temp_dir()).with_background(tasks.clone());
+        let command = if cfg!(windows) {
+            "Start-Sleep -Seconds 2"
+        } else {
+            "sleep 2"
+        };
+
+        let started = std::time::Instant::now();
+        let output = tool
+            .execute(
+                &serde_json::json!({
+                    "intent": "watch build",
+                    "command": command,
+                    "run_in_background": true
+                })
+                .to_string(),
+            )
+            .await
+            .expect("background spawn");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(output.contains("Background task started: "), "{output}");
+        let id = output
+            .lines()
+            .next()
+            .unwrap()
+            .trim_start_matches("Background task started: ")
+            .to_string();
+        assert_eq!(
+            tasks.snapshot(&id).expect("task registered").status,
+            super::super::background::BackgroundStatus::Running
+        );
+        tasks.stop(&id).unwrap();
+    }
+
+    #[tokio::test]
+    async fn background_without_registry_errors() {
+        let tool = ShellTool::new(std::env::temp_dir());
+        let error = tool
+            .execute(r#"{"intent":"x","command":"echo hi","run_in_background":true}"#)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "Background execution is not available in this context"
+        );
+    }
+
+    #[test]
+    fn parameters_declare_optional_run_in_background() {
+        let schema = ShellTool::new(std::env::temp_dir()).parameters();
+        let property = &schema["properties"]["run_in_background"];
+        assert_eq!(property["type"], "boolean");
+        let required = schema["required"].as_array().unwrap();
+        assert!(!required.iter().any(|key| key == "run_in_background"));
     }
 }

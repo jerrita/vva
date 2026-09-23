@@ -194,10 +194,17 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     case 'Shell': {
       const command = str(args.command)
       const intent = str(args.intent)
+      // 后台启动标注任务态，与前台执行区分
+      const background = args.run_in_background === true ? ' (background)' : ''
       return {
-        text: intent ?? '',
+        text: (intent ?? '') + background,
         shellCommand: command ?? undefined,
       }
+    }
+    case 'TaskOutput':
+    case 'TaskStop': {
+      const taskId = str(args.task_id)
+      return { text: taskId ?? truncate(call.arguments, 88) }
     }
     default:
       return { text: truncate(call.arguments, 88) }
@@ -226,8 +233,11 @@ function ToolGroupView({
   const isError = result?.is_error ?? false
   const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
   const isShell = call.name === 'Shell'
-  // 可展开 = 有输出可看（Shell 输出 / 错误详情）
-  const hasOutput = Boolean(isShell && result && result.content.trim()) || Boolean(isError && result)
+  const isTaskTool = call.name === 'TaskOutput' || call.name === 'TaskStop'
+  // 可展开 = 有输出可看（Shell 输出 / 后台任务输出 / 错误详情）
+  const hasOutput =
+    Boolean((isShell || isTaskTool) && result && result.content.trim()) ||
+    Boolean(isError && result)
   const shownPath = detail.displayPath ?? detail.filePath
 
   if (!hasOutput) {

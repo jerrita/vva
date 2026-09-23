@@ -104,7 +104,8 @@ src/
 │   └── mod.rs              # SkillFrontmatter 强类型解析与校验、discover_skills (全局 ~/.vva/skills、~/.agents/skills + 项目 .vva/skills、.agents/skills，优先级 项目 .vva > 项目 .agents > 全局 .vva > 全局 .agents，同名后者覆盖前者)
 ├── tools/                  # Coding 工具集
 │   ├── mod.rs              # Tool Trait 与 ToolRegistry
-│   ├── shell.rs            # Shell 执行 (超时/输出上限/退出码检查)
+│   ├── shell.rs            # Shell 执行 (前台超时/输出上限/退出码检查 + run_in_background 后台执行)
+│   ├── background.rs       # 后台任务注册表 (TaskOutput / TaskStop 工具，内存态、随会话结束回收)
 │   ├── filesystem/         # Read、Write、Edit、Glob、Grep 与共享基建 (路径解析/目录遍历/brace 展开/unified diff)
 │   │   ├── mod.rs          # 共享辅助与 parse_args 解析、各工具 re-export
 │   │   ├── read.rs         # Read (分页/媒体嗅探/hashline 快照/内容版本号)
@@ -135,7 +136,7 @@ src/
 │       ├── view.rs         # SessionView 只读快照与 RunState
 │       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议
 │       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换
-│       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止)
+│       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止/后台任务完成注入与续跑)
 ├── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── app/                # App 响应式控制器、状态机与子系统调度
     │   ├── mod.rs          # App 结构体定义、生命周期与模块导出

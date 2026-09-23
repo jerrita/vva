@@ -1,5 +1,6 @@
 pub mod apply_patch;
 pub mod ask_user;
+pub mod background;
 pub mod filesystem;
 pub mod hashline;
 pub mod shell;

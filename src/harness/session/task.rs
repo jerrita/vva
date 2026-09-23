@@ -20,6 +20,10 @@ pub(super) struct SessionTask {
     pub(super) ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
     pub(super) ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
     pub(super) pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
+    /// 会话级后台任务注册表（Shell run_in_background），随会话结束回收
+    pub(super) tasks: Arc<crate::tools::background::BackgroundTasks>,
+    /// 已完成、尚未注入会话的后台任务 id（轮次间隙注入）
+    pub(super) task_completions: Vec<String>,
 }
 
 /// 提交前校验附件：图片先过输入能力，File 校验 MIME 一致性
@@ -343,26 +347,35 @@ impl SessionTask {
         Ok(())
     }
 
+    /// 组装本轮流次的引擎：工具输出目录就绪后装配注册表与供应商
+    async fn build_engine(
+        &mut self,
+        skills: Vec<crate::skills::Skill>,
+    ) -> Result<AgentEngine, String> {
+        let tool_outputs = self
+            .store
+            .ensure_tool_outputs(&self.view.session.workspace_root)
+            .await
+            .map_err(|e| e.to_string())?;
+        AgentEngine::new(
+            &self.config,
+            &self.view.session,
+            tool_outputs,
+            self.hashline.clone(),
+            self.ask_user_tx.clone(),
+            self.tasks.clone(),
+            skills,
+        )
+    }
+
     pub(super) async fn start(
         &mut self,
         prompt: &str,
         images: Vec<ContentPart>,
     ) -> Result<AgentEngine, String> {
         self.view.notices.clear();
-        let tool_outputs = self
-            .store
-            .ensure_tool_outputs(&self.view.session.workspace_root)
-            .await
-            .map_err(|e| e.to_string())?;
         let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
-        let engine = AgentEngine::new(
-            &self.config,
-            &self.view.session,
-            tool_outputs,
-            self.hashline.clone(),
-            self.ask_user_tx.clone(),
-            skills.clone(),
-        )?;
+        let engine = self.build_engine(skills.clone()).await?;
         // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
         validate_attachments(&engine, &images)?;
         let generate = self.view.session.title.is_none();
@@ -464,6 +477,41 @@ impl SessionTask {
         }));
     }
 
+    /// 后台任务完成：id 入队等待轮次间隙注入完整内容（background-task reminder）；
+    /// notify 时先给 UI 一条短通知（仅运行中路径，空闲路径注入轮次即刻可见）
+    pub(super) async fn queue_task_completion(&mut self, task_id: String, notify: bool) {
+        if notify {
+            let notice = self
+                .tasks
+                .snapshot(&task_id)
+                .map(|snapshot| {
+                    format!(
+                        "Background task {} {}",
+                        snapshot.id,
+                        crate::tools::background::status_line(&snapshot.status)
+                    )
+                })
+                .unwrap_or_else(|| format!("Background task {task_id} finished"));
+            self.event(AgentEvent::Notice(notice)).await;
+        }
+        self.task_completions.push(task_id);
+    }
+
+    /// 将已完成后台任务的完整通知作为用户轮次注入会话（下一次模型调用可见）
+    pub(super) async fn drain_task_completions(&mut self) -> Result<(), String> {
+        for task_id in std::mem::take(&mut self.task_completions) {
+            match self.tasks.snapshot(&task_id) {
+                Some(snapshot) => {
+                    let text = crate::tools::background::format_notification(&snapshot);
+                    self.append(Turn::new(Role::User, vec![Message::text(text)]))
+                        .await?;
+                }
+                None => tracing::warn!("Background task {task_id} vanished before notification"),
+            }
+        }
+        Ok(())
+    }
+
     /// 网络与工具等待期间处理设置和取消；磁盘提交在本任务中顺序完成。
     /// 流式增量以 PUBLISH_INTERVAL 为节奏发布，慢于终端重绘频率即无可见差异。
     async fn drive<T>(
@@ -489,6 +537,9 @@ impl SessionTask {
                         self.handle_configure(model, variant, search, reply).await;
                     }
                     Some(Command::Title(title)) => self.handle_title(title).await,
+                    Some(Command::TaskFinished { task_id }) => {
+                        self.queue_task_completion(task_id, true).await;
+                    }
                     Some(Command::Submit { reply, .. }) | Some(Command::Revert { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
                     Some(Command::AnswerUser { request_id, answers, reply }) => {
                         let _ = reply.send(self.answer_user(request_id, answers).await);
@@ -537,6 +588,7 @@ impl SessionTask {
         let tools = engine.tools.definitions();
         let worked_started = Instant::now();
         loop {
+            self.drain_task_completions().await?;
             self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
@@ -736,6 +788,48 @@ impl SessionTask {
         close
     }
 
+    /// 连续执行轮次：后台任务在轮次间隙完成时自动续跑，直到队列清空或轮次终止。
+    /// 用户中止与供应商错误不自动续跑，队列留给下次 Submit 注入。
+    async fn run_turns(
+        &mut self,
+        engine: AgentEngine,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> Result<bool, String> {
+        let mut engine = Some(engine);
+        loop {
+            let result = self
+                .execute(engine.take().expect("engine set at loop entry"), commands)
+                .await;
+            match result {
+                Err(error) => return Err(error),
+                Ok(false) => return Ok(false),
+                Ok(true) => {
+                    if self.task_completions.is_empty() {
+                        return Ok(true);
+                    }
+                    let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
+                    engine = Some(self.build_engine(skills).await?);
+                }
+            }
+        }
+    }
+
+    /// 轮次收尾：状态复位、终态事件、CLI 通道释放与停止请求处理；
+    /// 返回是否终止会话任务
+    async fn finish_turn(&mut self, result: Result<bool, String>) -> bool {
+        self.view.state = RunState::Idle;
+        match result {
+            Ok(true) => self.event(AgentEvent::Finished).await,
+            Ok(false) => self.event(AgentEvent::Aborted).await,
+            Err(error) => self.event(AgentEvent::Error(error)).await,
+        }
+        self.cli = None;
+        if let Some((delete, reply)) = self.stop_request.take() {
+            return self.stop(delete, reply).await;
+        }
+        false
+    }
+
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         while let Some(command) = commands.recv().await {
             match command {
@@ -756,17 +850,8 @@ impl SessionTask {
                         }
                     };
                     self.cli = events;
-                    let result = self.execute(engine, &mut commands).await;
-                    self.view.state = RunState::Idle;
-                    match result {
-                        Ok(true) => self.event(AgentEvent::Finished).await,
-                        Ok(false) => self.event(AgentEvent::Aborted).await,
-                        Err(error) => self.event(AgentEvent::Error(error)).await,
-                    }
-                    self.cli = None;
-                    if let Some((delete, reply)) = self.stop_request.take()
-                        && self.stop(delete, reply).await
-                    {
+                    let result = self.run_turns(engine, &mut commands).await;
+                    if self.finish_turn(result).await {
                         break;
                     }
                 }
@@ -779,6 +864,23 @@ impl SessionTask {
                     self.handle_configure(model, variant, search, reply).await;
                 }
                 Command::Title(title) => self.handle_title(title).await,
+                Command::TaskFinished { task_id } => {
+                    // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次（无需短通知）
+                    self.queue_task_completion(task_id, false).await;
+                    let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
+                    match self.build_engine(skills).await {
+                        Ok(engine) => {
+                            let result = self.run_turns(engine, &mut commands).await;
+                            if self.finish_turn(result).await {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            // 通知保留在队列，下次 Submit 注入
+                            self.event(AgentEvent::Error(error)).await;
+                        }
+                    }
+                }
                 Command::Revert { turn_index, reply } => {
                     let _ = reply.send(self.revert(turn_index).await);
                 }
@@ -795,5 +897,6 @@ impl SessionTask {
         if let Some(task) = self.title_task {
             task.abort();
         }
+        self.tasks.shutdown();
     }
 }

@@ -28,6 +28,10 @@ pub enum Command {
         reply: Reply,
     },
     Title(String),
+    /// 后台任务完成：注入通知轮次并自动续跑（无应答，monitor 经 WeakSender 投递）
+    TaskFinished {
+        task_id: String,
+    },
 }
 
 pub struct ManagedSession {
