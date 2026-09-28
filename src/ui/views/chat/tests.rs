@@ -334,7 +334,7 @@ fn tool_preview_block_truncates_and_full_shows_all() {
 }
 
 #[test]
-fn background_task_reminder_renders_status_line_not_user_block() {
+fn background_task_reminder_not_rendered() {
     let text = crate::system::format_background_task_reminder(
         "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 5 bytes",
     );
@@ -360,12 +360,12 @@ fn background_task_reminder_renders_status_line_not_user_block() {
         &mut state,
     );
 
+    // 后台任务完成通知不渲染（完成信号经 Notice 通知），也不落入用户引用块
     let rendered = joined(&lines);
     assert!(
-        rendered.contains("Background task 1 exited with code 0"),
+        !rendered.contains("Background task 1 exited with code 0"),
         "{rendered}"
     );
-    // 详情行与 reminder 标签不展示，也不是用户引用块（无色条）
     assert!(!rendered.contains("intent: watch build"), "{rendered}");
     assert!(!rendered.contains("system-reminder"), "{rendered}");
     assert!(

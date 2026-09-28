@@ -395,20 +395,9 @@ fn turn_is_system_reminder(turn: &crate::model::Turn) -> bool {
     })
 }
 
-/// 运行段边界：真实用户消息与后台任务通知；AGENTS/技能 reminder 随行注入不算
+/// 运行段边界：真实用户消息；机器注入 reminder（含后台任务通知）随行注入不算
 fn turn_is_user_boundary(turn: &crate::model::Turn) -> bool {
-    turn.role == crate::model::Role::User
-        && !turn.messages.iter().any(|m| {
-            m.parts.iter().any(|p| match p {
-                crate::model::ContentPart::Text { text, .. } => {
-                    matches!(
-                        crate::system::parse_agents_reminder(text).map(|r| r.kind),
-                        Some(kind) if kind != crate::system::AgentsReminderKind::BackgroundTask
-                    )
-                }
-                _ => false,
-            })
-        })
+    turn.role == crate::model::Role::User && !turn_is_system_reminder(turn)
 }
 
 fn final_reply_range(turn: &crate::model::Turn) -> Option<(usize, usize)> {
