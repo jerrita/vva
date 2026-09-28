@@ -389,6 +389,13 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     } else {
         spans.push(Span::styled(detail, detail_style));
     }
+    if let Some(task_id) = result.and_then(|result| result.background_task_id.as_deref())
+        && let Some(notice) = render.notices.iter().find(|notice| {
+            matches!(&notice.kind, crate::harness::NoticeKind::Task { task_id: id } if id == task_id)
+        })
+    {
+        spans.push(Span::styled(format!(" · {}", notice.text), detail_style));
+    }
     let header_start = render.lines.len();
     let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
     render.lines.extend(wrapped);

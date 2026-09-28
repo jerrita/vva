@@ -148,9 +148,16 @@ async fn run_app_loop(
             let text_rows = input_lines.clamp(1, max_text_rows);
             let input_area_height = (text_rows as u16) + 3;
 
+            let feedback = views::input_area::feedback_lines(app, size.width as usize);
+            let feedback_height =
+                (feedback.len() as u16).min(size.height.saturating_sub(input_area_height + 5));
             let rows = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(5), Constraint::Length(input_area_height)])
+                .constraints([
+                    Constraint::Min(5),
+                    Constraint::Length(feedback_height),
+                    Constraint::Length(input_area_height),
+                ])
                 .split(size);
 
             // 宽屏时 (>= 90 宽) 上半区切出右侧详情边栏，与主窗口齐平
@@ -167,10 +174,15 @@ async fn run_app_loop(
 
             render_chat(app, frame, chat_area);
 
+            let feedback_skip = feedback.len().saturating_sub(feedback_height as usize);
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(feedback).scroll((feedback_skip as u16, 0)),
+                rows[1],
+            );
             render_input_area(
                 app,
                 frame,
-                rows[1],
+                rows[2],
                 session_model,
                 session_variant.as_deref(),
                 &session_workspace,
@@ -720,7 +732,7 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
         ModalAction::SwitchSession(id) => {
             app.modal = ActiveModal::None;
             if let Err(error) = app.switch_to_session(&id).await {
-                app.notices.push(error);
+                app.feedback.push(error);
             }
         }
         ModalAction::DeleteSession(id) => {
@@ -736,9 +748,9 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
                             state.remove_session(&id);
                         }
                     }
-                    Err(error) => app.notices.push(error),
+                    Err(error) => app.feedback.push(error),
                 },
-                Err(error) => app.notices.push(error),
+                Err(error) => app.feedback.push(error),
             }
         }
         ModalAction::SwitchModel(spec) => {
@@ -794,10 +806,31 @@ fn is_ctrl_key(key: &crossterm::event::KeyEvent, canonical: char) -> bool {
 async fn handle_escape(app: &mut App) {
     if app.active_session.is_running() {
         if let Err(error) = app.active_session.abort_current().await {
-            app.notices.push(error);
+            app.feedback.push(error);
         }
     } else {
-        escape_clear(app);
+        let has_selection = app.input.selection.is_some()
+            || !app.input.is_empty()
+            || app.chat.selection.is_some()
+            || app.sidebar.selection.is_some();
+        if has_selection {
+            escape_clear(app);
+        } else {
+            app.feedback.clear();
+            let ids = app
+                .view
+                .notices
+                .iter()
+                .filter(|notice| matches!(notice.kind, crate::harness::NoticeKind::Session))
+                .map(|notice| notice.id.clone())
+                .collect::<Vec<_>>();
+            for id in ids {
+                if let Err(error) = app.active_session.dismiss_notice(id).await {
+                    app.feedback.push(error);
+                }
+            }
+            app.refresh_view();
+        }
     }
 }
 
@@ -823,7 +856,7 @@ async fn handle_abort_or_quit(app: &mut App) {
         app.clear_input();
     } else if app.active_session.is_running() {
         if let Err(error) = app.active_session.abort_current().await {
-            app.notices.push(error);
+            app.feedback.push(error);
         }
     } else {
         app.should_quit = true;

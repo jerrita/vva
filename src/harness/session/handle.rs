@@ -43,9 +43,9 @@ pub enum Command {
         reply: Reply,
     },
     Title(String),
-    /// 关闭一条运行通知横幅（按快照下标，发布间仅追加故下标稳定）
+    /// 通过稳定身份关闭会话提示
     DismissNotice {
-        index: usize,
+        id: String,
         reply: Reply,
     },
     /// 后台任务完成：注入通知轮次并自动续跑（无应答，monitor 经 WeakSender 投递）
@@ -178,8 +178,8 @@ impl ManagedSession {
     }
 
     /// 关闭一条运行通知横幅
-    pub async fn dismiss_notice(&self, index: usize) -> Result<(), String> {
-        self.request(|reply| Command::DismissNotice { index, reply })
+    pub async fn dismiss_notice(&self, id: String) -> Result<(), String> {
+        self.request(|reply| Command::DismissNotice { id, reply })
             .await
     }
 

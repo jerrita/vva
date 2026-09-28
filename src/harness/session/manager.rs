@@ -113,7 +113,6 @@ impl SessionManager {
             dirty: false,
             cli: None,
             stop_request: None,
-            notified: HashSet::new(),
             title_task: None,
             text_parts: HashMap::new(),
             ask_user_tx,

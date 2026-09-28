@@ -7,7 +7,7 @@ use super::selection::SelectionTracker;
 use crate::model::Session;
 use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
-    ChatRender, RenderState, append_notices, append_parts, collect_tool_results,
+    ChatRender, RenderState, append_parts, append_turn_outcome, collect_tool_results,
     extract_selected_text, is_empty_session,
 };
 
@@ -162,7 +162,7 @@ pub struct ChatCache {
     width: usize,
     thinking_concise: bool,
     responses_collapsed: bool,
-    notices: usize,
+    notices: Vec<crate::harness::Notice>,
     history_lines: usize,
     render_state: RenderState,
     tool_expand: HashMap<String, ToolExpand>,
@@ -207,7 +207,7 @@ impl ChatCache {
 }
 
 impl super::App {
-    /// 历史随会话快照和布局失效，草稿与通知随视图版本更新。
+    /// 历史随会话快照和布局失效，草稿随视图版本更新，关联反馈变化使历史失效。
     pub fn refresh_chat_lines(&mut self, width: usize) {
         let width = width.max(20);
         let results = collect_tool_results(&self.view);
@@ -222,6 +222,7 @@ impl super::App {
             || cache.thought_expand != self.thought_expand
             || cache.response_expand != self.response_expand
             || cache.citations_expand != self.citations_expand
+            || cache.notices != self.view.notices
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
@@ -274,6 +275,7 @@ impl super::App {
                         && Some(turn_index) == first_collapsed_assistant;
                     let collapsible = is_response_turn && has_work && response_elapsed_ms.is_some();
                     let mut render = ChatRender {
+                        notices: &self.view.notices,
                         lines: &mut self.chat.lines,
                         links: &mut self.chat.links,
                         max_width: width,
@@ -303,13 +305,13 @@ impl super::App {
                             &mut cache.render_state,
                         );
                         if turn.role == crate::model::Role::Assistant {
-                            cache.response_hits.push(ResponseHit {
+                            render.response_hits.push(ResponseHit {
                                 id: response_group_id
                                     .filter(|_| collapsible)
                                     .unwrap_or(&turn.id)
                                     .to_string(),
                                 line_start,
-                                line_end: self.chat.lines.len(),
+                                line_end: render.lines.len(),
                                 collapsed: false,
                                 collapsible,
                             });
@@ -328,6 +330,7 @@ impl super::App {
                             &mut cache.render_state,
                         );
                     }
+                    append_turn_outcome(&mut render, &turn.id);
                     if turn.role == crate::model::Role::User && !turn_is_system_reminder(turn) {
                         cache.user_hits.push(UserMessageHit {
                             turn_index,
@@ -347,16 +350,17 @@ impl super::App {
             cache.response_expand.clone_from(&self.response_expand);
             cache.citations_expand.clone_from(&self.citations_expand);
             cache.draft.reset();
-        } else if cache.revision == self.view.revision && cache.notices == self.notices.len() {
+        } else if cache.revision == self.view.revision {
             return;
         }
-        // 草稿与通知区：历史边界之后增量渲染，未变部件与已提交行不重算
+        // 草稿区：历史边界之后增量渲染，未变部件与已提交行不重算
         let draft = self.view.draft.clone();
         let empty_session = is_empty_session(&self.view);
         let history_lines = cache.history_lines;
         let mut state = cache.render_state;
         {
             let mut render = ChatRender {
+                notices: &self.view.notices,
                 lines: &mut self.chat.lines,
                 links: &mut self.chat.links,
                 max_width: width,
@@ -377,10 +381,12 @@ impl super::App {
                 &mut state,
                 empty_session,
             );
-            append_notices(&mut render, &self.notices, &state);
+            if state.prev_text {
+                render.lines.push(ratatui::text::Line::from(""));
+            }
         }
         cache.revision = self.view.revision;
-        cache.notices = self.notices.len();
+        cache.notices.clone_from(&self.view.notices);
     }
 }
 

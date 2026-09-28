@@ -132,6 +132,7 @@ fn test_anthropic_tool_results_merged_into_single_user_turn() {
     session.append_turn(Turn::new(
         Role::Tool,
         vec![Message::tool_result(ToolResult {
+            background_task_id: None,
             attachments: Vec::new(),
             tool_call_id: "call_1".into(),
             content: "file contents".into(),
@@ -141,6 +142,7 @@ fn test_anthropic_tool_results_merged_into_single_user_turn() {
     session.append_turn(Turn::new(
         Role::Tool,
         vec![Message::tool_result(ToolResult {
+            background_task_id: None,
             attachments: Vec::new(),
             tool_call_id: "call_2".into(),
             content: "command output".into(),

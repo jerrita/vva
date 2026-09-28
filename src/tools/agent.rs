@@ -170,6 +170,23 @@ impl Tool for AgentTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
+        self.run(arguments).await.map(|(text, _)| text)
+    }
+
+    async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
+        match self.run(&call.arguments).await {
+            Ok((text, task_id)) => {
+                let mut result = crate::model::ToolResult::success(&call.id, text);
+                result.background_task_id = task_id;
+                result
+            }
+            Err(error) => crate::model::ToolResult::error(&call.id, error),
+        }
+    }
+}
+
+impl AgentTool {
+    async fn run(&self, arguments: &str) -> Result<(String, Option<String>), String> {
         let args: AgentArgs = parse_args(arguments, "Agent")?;
         let def = self
             .defs
@@ -193,11 +210,14 @@ impl Tool for AgentTool {
             )
             .await?;
         if args.run_in_background {
-            return Ok(format!(
-                "Background agent started: {} (type: {})\ndescription: {}\nIt runs in its \
+            return Ok((
+                format!(
+                    "Background agent started: {} (type: {})\ndescription: {}\nIt runs in its \
                  own session; its final message will be injected here as a system reminder when \
                  it finishes.",
-                launch.session_id, def.name, args.description
+                    launch.session_id, def.name, args.description
+                ),
+                Some(launch.session_id),
             ));
         }
         let report = self
@@ -214,7 +234,7 @@ impl Tool for AgentTool {
                 report.session_id, def.name
             ));
         }
-        Ok(report.text)
+        Ok((report.text, None))
     }
 }
 

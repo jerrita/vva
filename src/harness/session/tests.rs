@@ -30,7 +30,6 @@ fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
         dirty: false,
         cli: None,
         stop_request: None,
-        notified: HashSet::new(),
         title_task: None,
         text_parts: HashMap::new(),
         ask_user_tx: mpsc::channel(1).0,
@@ -250,13 +249,13 @@ async fn task_completion_injects_persisted_user_turn() {
     )
     .await;
 
-    // notify=true：运行中路径给 UI 短通知
-    task.queue_task_completion(id.clone(), true).await;
+    // 完成状态关联任务身份
+    task.queue_task_completion(id.clone()).await;
     assert!(
         task.view
             .notices
             .last()
-            .is_some_and(|notice| notice.contains("exited with code 0")),
+            .is_some_and(|notice| notice.text.contains("exited with code 0")),
         "{:?}",
         task.view.notices
     );
@@ -358,9 +357,9 @@ async fn execute_drains_completions_before_next_model_call() {
         crate::tools::background::BackgroundStatus::Exited { code: Some(0) },
     )
     .await;
-    // notify=false：空闲路径注入即刻可见，不发短通知
-    task.queue_task_completion(id, false).await;
-    assert!(task.view.notices.is_empty(), "{:?}", task.view.notices);
+    // 空闲路径也发布任务完成状态
+    task.queue_task_completion(id).await;
+    assert_eq!(task.view.notices.len(), 1);
 
     let engine = AgentEngine {
         provider: Arc::new(PlainTextProvider),
@@ -1517,4 +1516,55 @@ async fn failed_or_aborted_turn_has_no_old_answer_and_cancels_pending_deliveries
         assert_eq!(task.turn_seq, 1);
         let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
     }
+}
+
+#[tokio::test]
+async fn notice_lifecycle_uses_identity_and_current_capabilities() {
+    let (mut task, view) = event_task();
+    task.event(AgentEvent::Notice("First feedback".into()))
+        .await;
+    let first = task.view.notices[0].id.clone();
+    task.event(AgentEvent::Notice("Second feedback".into()))
+        .await;
+    let second = task.view.notices[1].id.clone();
+    task.dismiss_notice(&first).unwrap();
+    task.dismiss_notice(&first).unwrap();
+    assert_eq!(view.borrow().notices[0].id, second);
+
+    task.event(AgentEvent::Capabilities(vec!["Feature unavailable".into()]))
+        .await;
+    let capability = task.view.notices.last().unwrap().id.clone();
+    task.event(AgentEvent::Capabilities(vec!["Feature unavailable".into()]))
+        .await;
+    assert_eq!(task.view.notices.last().unwrap().id, capability);
+    task.event(AgentEvent::Capabilities(vec![
+        "Different limitation".into(),
+    ]))
+    .await;
+    assert_eq!(task.view.notices.len(), 2);
+    assert_eq!(
+        task.view.notices.last().unwrap().text,
+        "Different limitation"
+    );
+    task.event(AgentEvent::Capabilities(Vec::new())).await;
+    assert_eq!(task.view.notices.len(), 1);
+    assert_eq!(task.view.notices[0].id, second);
+}
+
+#[tokio::test]
+async fn turn_failure_keeps_its_anchor_when_another_turn_starts() {
+    let (mut task, _) = event_task();
+    let request = Turn::user_turn(Message::text("First request"));
+    let id = request.id.clone();
+    Arc::make_mut(&mut task.view.session).append_turn(request);
+    task.view
+        .draft
+        .push(Arc::new(ContentPart::text("Partial response")));
+    task.event(AgentEvent::Error("Request failed".into())).await;
+    Arc::make_mut(&mut task.view.session)
+        .append_turn(Turn::user_turn(Message::text("Next request")));
+    assert!(task.view.draft.is_empty());
+    assert!(
+        matches!(&task.view.notices[0].kind, NoticeKind::Turn { turn_id, aborted: false } if turn_id == &id)
+    );
 }

@@ -24,6 +24,9 @@ impl ToolCall {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolResult {
     pub tool_call_id: String,
+    /// 后台执行的任务或子会话身份，用于关联运行状态。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_task_id: Option<String>,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MediaContent>,
@@ -35,6 +38,7 @@ impl ToolResult {
     pub fn success(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
+            background_task_id: None,
             content: content.into(),
             is_error: false,
             attachments: Vec::new(),
@@ -44,6 +48,7 @@ impl ToolResult {
     pub fn error(tool_call_id: impl Into<String>, error_message: impl Into<String>) -> Self {
         Self {
             tool_call_id: tool_call_id.into(),
+            background_task_id: None,
             content: error_message.into(),
             is_error: true,
             attachments: Vec::new(),

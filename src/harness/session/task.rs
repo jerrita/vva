@@ -13,7 +13,6 @@ pub(super) struct SessionTask {
     pub(super) cli: Option<mpsc::Sender<AgentEvent>>,
     /// 待处理的停止请求 (是否删除, 应答)，当前轮次结束后执行
     pub(super) stop_request: Option<(bool, Reply)>,
-    pub(super) notified: HashSet<String>,
     pub(super) title_task: Option<tokio::task::JoinHandle<()>>,
     /// 响应内文本标识到草稿部件的映射，供增量与引用共同定位。
     pub(super) text_parts: HashMap<String, usize>,
@@ -247,13 +246,49 @@ impl SessionTask {
             }
             AgentEvent::ToolFinished { .. } => {}
             AgentEvent::AskUser(_) => {}
-            AgentEvent::Notice(text) | AgentEvent::Error(text) => {
-                self.view.notices.push(text.clone())
+            AgentEvent::Notice(text) => {
+                self.view
+                    .notices
+                    .push(Notice::new(text.clone(), NoticeKind::Session));
+            }
+            AgentEvent::Capabilities(texts) => {
+                let previous = std::mem::take(&mut self.view.notices);
+                self.view.notices = previous
+                    .iter()
+                    .filter(|notice| !matches!(notice.kind, NoticeKind::Capability))
+                    .cloned()
+                    .collect();
+                for text in texts {
+                    let notice = previous
+                        .iter()
+                        .find(|notice| {
+                            matches!(notice.kind, NoticeKind::Capability) && &notice.text == text
+                        })
+                        .cloned()
+                        .unwrap_or_else(|| Notice::new(text.clone(), NoticeKind::Capability));
+                    self.view.notices.push(notice);
+                }
+            }
+            AgentEvent::TaskCompleted { task_id, text } => {
+                if let Some(notice) = self.view.notices.iter_mut().find(|notice| {
+                    matches!(&notice.kind, NoticeKind::Task { task_id: id } if id == task_id)
+                }) {
+                    notice.text.clone_from(text);
+                } else {
+                    self.view.notices.push(Notice::new(
+                        text.clone(),
+                        NoticeKind::Task { task_id: task_id.clone() },
+                    ));
+                }
+            }
+            AgentEvent::Error(text) => {
+                self.view.draft.clear();
+                self.record_outcome(text.clone(), false);
             }
             AgentEvent::Aborted => {
                 // 未落盘的草稿随取消一并丢弃，界面与存储保持一致
                 self.view.draft.clear();
-                self.view.notices.push("Turn aborted.".into());
+                self.record_outcome("Turn aborted.".into(), true);
             }
             AgentEvent::Finished => {}
         }
@@ -287,8 +322,8 @@ impl SessionTask {
             return Ok(());
         }
         let mut session = (*self.view.session).clone();
-        if model.is_some() || variant.is_some() {
-            let previous_model = session.current_model.clone();
+        let selection_changed = model.is_some() || variant.is_some();
+        if selection_changed {
             let target = model.as_deref().unwrap_or(&session.current_model);
             let selected = variant.unwrap_or_else(|| session.current_variant.clone());
             let resolved = self
@@ -297,26 +332,28 @@ impl SessionTask {
                 .map_err(|e| e.to_string())?;
             resolved.input_capabilities().validate_session(&session)?;
             session.set_model(resolved.full_spec, selected);
-            // 切换模型即能力/亲和状态变迁：允许通知重新发布（状态变迁发射语义）
-            if previous_model != session.current_model {
-                self.notified.clear();
-            }
-            AppState::persist_selection(
-                &self.state_path,
-                &session.current_model,
-                session.current_variant.as_deref(),
-            );
         }
         if let Some(search) = search {
             session.set_web_search(search);
         }
+        let skills = crate::skills::discover_skills(&session.workspace_root);
+        let engine = self.build_engine_for(&session, skills).await?;
         if self.view.persisted {
             self.store
                 .save_header(&session)
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        if selection_changed {
+            AppState::persist_selection(
+                &self.state_path,
+                &session.current_model,
+                session.current_variant.as_deref(),
+            );
+        }
         self.replace_session(session);
+        self.view.external_web = engine.external_web;
+        self.event(AgentEvent::Capabilities(engine.notices)).await;
         Ok(())
     }
 
@@ -353,6 +390,12 @@ impl SessionTask {
                 .map_err(|e| e.to_string())?;
         }
         self.view.draft.clear();
+        self.view.notices.retain(|notice| match &notice.kind {
+            NoticeKind::Turn { turn_id, .. } => session.turns.iter().any(|turn| &turn.id == turn_id),
+            NoticeKind::Task { task_id } => session.turns.iter().flat_map(|turn| &turn.messages)
+                .flat_map(|message| &message.parts).any(|part| matches!(part, ContentPart::ToolResult(result) if result.background_task_id.as_ref() == Some(task_id))),
+            _ => true,
+        });
         self.replace_session(session);
         Ok(())
     }
@@ -362,15 +405,23 @@ impl SessionTask {
         &mut self,
         skills: Vec<crate::skills::Skill>,
     ) -> Result<AgentEngine, String> {
+        self.build_engine_for(&self.view.session, skills).await
+    }
+
+    async fn build_engine_for(
+        &self,
+        session: &Session,
+        skills: Vec<crate::skills::Skill>,
+    ) -> Result<AgentEngine, String> {
         let tool_outputs = self
             .store
-            .ensure_tool_outputs(&self.view.session.workspace_root)
+            .ensure_tool_outputs(&session.workspace_root)
             .await
             .map_err(|e| e.to_string())?;
-        let agents = crate::agents::discover_agents(&self.view.session.workspace_root);
+        let agents = crate::agents::discover_agents(&session.workspace_root);
         AgentEngine::new(
             &self.config,
-            &self.view.session,
+            session,
             EngineDeps {
                 tool_outputs,
                 hashline: self.hashline.clone(),
@@ -388,7 +439,6 @@ impl SessionTask {
         prompt: &str,
         images: Vec<ContentPart>,
     ) -> Result<AgentEngine, String> {
-        self.view.notices.clear();
         let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
         let engine = self.build_engine(skills.clone()).await?;
         // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
@@ -515,22 +565,24 @@ impl SessionTask {
     }
 
     /// 后台任务完成：id 入队等待轮次间隙注入完整内容（background-task reminder）；
-    /// notify 时先给 UI 一条短通知（仅运行中路径，空闲路径注入轮次即刻可见）
-    pub(super) async fn queue_task_completion(&mut self, task_id: String, notify: bool) {
-        if notify {
-            let notice = self
-                .tasks
-                .snapshot(&task_id)
-                .map(|snapshot| {
-                    format!(
-                        "Background task {} {}",
-                        snapshot.id,
-                        crate::tools::background::status_line(&snapshot.status)
-                    )
-                })
-                .unwrap_or_else(|| format!("Background task {task_id} finished"));
-            self.event(AgentEvent::Notice(notice)).await;
-        }
+    /// 完成状态关联任务身份，忙闲路径共用。
+    pub(super) async fn queue_task_completion(&mut self, task_id: String) {
+        let notice = self
+            .tasks
+            .snapshot(&task_id)
+            .map(|snapshot| {
+                format!(
+                    "Background task {} {}",
+                    snapshot.id,
+                    crate::tools::background::status_line(&snapshot.status)
+                )
+            })
+            .unwrap_or_else(|| format!("Background task {task_id} finished"));
+        self.event(AgentEvent::TaskCompleted {
+            task_id: task_id.clone(),
+            text: notice,
+        })
+        .await;
         self.task_completions.push(task_id);
     }
 
@@ -550,14 +602,13 @@ impl SessionTask {
     }
 
     /// 后台子代理完成：入队等待轮次间隙注入最终消息；
-    /// notify 时先给 UI 一条短通知（仅运行中路径）
-    pub(super) async fn queue_subagent_completion(&mut self, session_id: String, notify: bool) {
-        if notify {
-            self.event(AgentEvent::Notice(format!(
-                "Background agent {session_id} finished"
-            )))
-            .await;
-        }
+    /// 完成状态关联子会话身份，忙闲路径共用。
+    pub(super) async fn queue_subagent_completion(&mut self, session_id: String) {
+        self.event(AgentEvent::TaskCompleted {
+            task_id: session_id.clone(),
+            text: format!("Background agent {session_id} finished"),
+        })
+        .await;
         self.subagent_completions.push(session_id);
     }
 
@@ -603,14 +654,14 @@ impl SessionTask {
                         self.handle_configure(model, variant, search, reply).await;
                     }
                     Some(Command::Title(title)) => self.handle_title(title).await,
-                    Some(Command::DismissNotice { index, reply }) => {
-                        let _ = reply.send(self.dismiss_notice(index));
+                    Some(Command::DismissNotice { id, reply }) => {
+                        let _ = reply.send(self.dismiss_notice(&id));
                     }
                     Some(Command::TaskFinished { task_id }) => {
-                        self.queue_task_completion(task_id, true).await;
+                        self.queue_task_completion(task_id).await;
                     }
                     Some(Command::SubagentFinished { session_id }) => {
-                        self.queue_subagent_completion(session_id, true).await;
+                        self.queue_subagent_completion(session_id).await;
                     }
                     Some(Command::Deliver { delivery, reply }) => {
                         // 程序化消息不拒绝：入队待轮次结束后处理
@@ -651,12 +702,24 @@ impl SessionTask {
         }
     }
 
-    /// 关闭一条运行通知：按快照下标移除并即时发布（发布间通知仅追加，下标稳定）
-    fn dismiss_notice(&mut self, index: usize) -> Result<(), String> {
-        if index >= self.view.notices.len() {
-            return Err(format!("Notice {index} does not exist"));
-        }
-        self.view.notices.remove(index);
+    fn record_outcome(&mut self, text: String, aborted: bool) {
+        let kind = self
+            .view
+            .session
+            .turns
+            .last()
+            .map_or(NoticeKind::Session, |turn| NoticeKind::Turn {
+                turn_id: turn.id.clone(),
+                aborted,
+            });
+        self.view.notices.push(Notice::new(text, kind));
+    }
+
+    /// 通过稳定身份关闭提示；重复关闭保持幂等。
+    pub(super) fn dismiss_notice(&mut self, id: &str) -> Result<(), String> {
+        self.view
+            .notices
+            .retain(|notice| notice.id != id || matches!(notice.kind, NoticeKind::Capability));
         self.publish();
         Ok(())
     }
@@ -666,11 +729,8 @@ impl SessionTask {
         engine: AgentEngine,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<bool, String> {
-        for notice in engine.notices.clone() {
-            if self.notified.insert(notice.clone()) {
-                self.event(AgentEvent::Notice(notice)).await;
-            }
-        }
+        self.event(AgentEvent::Capabilities(engine.notices.clone()))
+            .await;
         self.view.external_web = engine.external_web.clone();
         let tools = engine.tools.definitions();
         let worked_started = Instant::now();
@@ -980,7 +1040,7 @@ impl SessionTask {
                         let _ = delivery.completion.send(Err(error.clone()));
                     }
                     self.cancel_deliveries(&error);
-                    self.event(AgentEvent::Error(error)).await;
+                    self.event(AgentEvent::Notice(error)).await;
                     return false;
                 }
             };
@@ -1050,12 +1110,12 @@ impl SessionTask {
                     self.handle_configure(model, variant, search, reply).await;
                 }
                 Command::Title(title) => self.handle_title(title).await,
-                Command::DismissNotice { index, reply } => {
-                    let _ = reply.send(self.dismiss_notice(index));
+                Command::DismissNotice { id, reply } => {
+                    let _ = reply.send(self.dismiss_notice(&id));
                 }
                 Command::TaskFinished { task_id } => {
-                    // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次（无需短通知）
-                    self.queue_task_completion(task_id, false).await;
+                    // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次
+                    self.queue_task_completion(task_id).await;
                     let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
                     match self.build_engine(skills).await {
                         Ok(engine) => {
@@ -1068,13 +1128,13 @@ impl SessionTask {
                         }
                         Err(error) => {
                             // 通知保留在队列，下次 Submit 注入
-                            self.event(AgentEvent::Error(error)).await;
+                            self.event(AgentEvent::Notice(error)).await;
                         }
                     }
                 }
                 Command::SubagentFinished { session_id } => {
                     // 空闲时收到子代理完成：入队后自动续跑，execute 首轮注入最终消息
-                    self.queue_subagent_completion(session_id, false).await;
+                    self.queue_subagent_completion(session_id).await;
                     let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
                     match self.build_engine(skills).await {
                         Ok(engine) => {
@@ -1086,7 +1146,7 @@ impl SessionTask {
                             }
                         }
                         Err(error) => {
-                            self.event(AgentEvent::Error(error)).await;
+                            self.event(AgentEvent::Notice(error)).await;
                         }
                     }
                 }

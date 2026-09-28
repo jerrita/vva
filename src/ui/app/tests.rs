@@ -870,8 +870,8 @@ async fn test_slash_skill_completion_and_invocation() {
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "timeout waiting for skill invocation turns, notices={:?}",
-            app.notices
+            "timeout waiting for skill invocation turns, feedback={:?}",
+            app.feedback
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }

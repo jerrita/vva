@@ -178,7 +178,7 @@ pub(crate) fn append_part(
                     | crate::system::AgentsReminderKind::Project
                     | crate::system::AgentsReminderKind::Skills
                     | crate::system::AgentsReminderKind::BackgroundTask => {
-                        // 全局、项目、技能清单与后台任务完成通知不展示（完成信号经 Notice 通知）
+                        // 全局、项目、技能清单与后台任务完成通知不展示（完成状态在工具块展示）
                     }
                     crate::system::AgentsReminderKind::Directory
                     | crate::system::AgentsReminderKind::SkillLoaded => {
@@ -417,19 +417,20 @@ pub(crate) fn push_empty_hint(render: &mut ChatRender<'_>) {
     ]));
 }
 
-pub(crate) fn append_notices(render: &mut ChatRender<'_>, notices: &[String], state: &RenderState) {
-    for text in notices {
-        render.lines.push(Line::from(""));
-        let spans = vec![Span::styled(
-            text.clone(),
-            Style::default()
-                .fg(Color::Rgb(200, 200, 200))
-                .add_modifier(Modifier::ITALIC),
-        )];
-        let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
-        render.lines.extend(wrapped);
-    }
-    if notices.is_empty() && state.prev_text {
-        render.lines.push(Line::from(""));
+pub(crate) fn append_turn_outcome(render: &mut ChatRender<'_>, turn_id: &str) {
+    for notice in render.notices {
+        if matches!(&notice.kind, crate::harness::NoticeKind::Turn { turn_id: id, .. } if id == turn_id)
+        {
+            render.lines.push(Line::from(""));
+            for text in notice.text.lines() {
+                let spans = [Span::styled(
+                    text.to_owned(),
+                    Style::default().fg(Color::Rgb(220, 120, 120)),
+                )];
+                render
+                    .lines
+                    .extend(wrap_spans_to_lines(&spans, render.max_width, "", "   "));
+            }
+        }
     }
 }

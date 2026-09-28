@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::harness::SessionView;
+use crate::harness::{Notice, SessionView};
 use crate::model::{
     ContentPart, Message, Role, Session, SessionHeader, TokenUsage, Turn, UserQuestionRequest,
 };
@@ -65,7 +65,7 @@ pub(super) struct SessionSnapshot<'a> {
     revision: u64,
     state: String,
     persisted: bool,
-    notices: &'a [String],
+    notices: &'a [Notice],
     external_web: &'a [String],
     session: SessionData<'a>,
     draft: Vec<&'a ContentPart>,
@@ -118,7 +118,7 @@ pub(super) struct SessionDelta<'a> {
     state: String,
     persisted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    notices: Option<&'a [String]>,
+    notices: Option<&'a [Notice]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     external_web: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -347,11 +347,15 @@ mod tests {
         let mut aborted = relocated.clone();
         aborted.revision += 1;
         aborted.draft.clear();
-        aborted.notices.push("aborted".into());
+        aborted.notices.push(Notice::new(
+            "aborted".into(),
+            crate::harness::NoticeKind::Session,
+        ));
         aborted.state = RunState::Idle;
         let update = delta(&relocated, &aborted);
         assert_eq!(update["draft"]["len"], 0);
-        assert_eq!(update["notices"], json!(["aborted"]));
+        assert_eq!(update["notices"][0]["text"], "aborted");
+        assert_eq!(update["notices"][0]["id"], aborted.notices[0].id);
     }
 
     #[test]

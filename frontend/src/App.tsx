@@ -375,14 +375,11 @@ export default function App() {
     }
   }, [activeId])
 
-  // 关闭通知横幅：本地乐观移除，服务端同步发布给全部订阅者
+  // 关闭结果通过会话快照同步给全部订阅者
   const dismissNotice = useCallback(
-    (index: number) => {
+    (id: string) => {
       if (!activeId) return
-      setSnap(prev =>
-        prev ? { ...prev, notices: prev.notices.filter((_, i) => i !== index) } : prev,
-      )
-      api.dismissNotice(activeId, index).catch(() => {})
+      api.dismissNotice(activeId, id).catch(e => setError(toError(e)))
     },
     [activeId],
   )
@@ -652,17 +649,19 @@ export default function App() {
         )}
         {snap && snap.notices.length > 0 && (
           <div className="banner notice">
-            {snap.notices.map((notice, index) => (
-              <div key={index} className="notice-row">
-                <button
-                  className="notice-dismiss"
-                  aria-label="关闭提示"
-                  title="关闭提示"
-                  onClick={() => dismissNotice(index)}
-                >
-                  <IconX size={12} />
-                </button>
-                <span className="notice-text">{notice}</span>
+            {snap.notices.map(notice => (
+              <div key={notice.id} className="notice-row">
+                {notice.kind !== 'capability' && (
+                  <button
+                    className="notice-dismiss"
+                    aria-label="关闭提示"
+                    title="关闭提示"
+                    onClick={() => dismissNotice(notice.id)}
+                  >
+                    <IconX size={12} />
+                  </button>
+                )}
+                <span className="notice-text">{notice.text}</span>
               </div>
             ))}
           </div>

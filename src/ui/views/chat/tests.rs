@@ -121,6 +121,7 @@ fn render_tools(
     let mut state = RenderState::default();
     append_parts(
         &mut ChatRender {
+            notices: &[],
             lines: &mut lines,
             links: &mut Vec::new(),
             max_width: width,
@@ -342,6 +343,7 @@ fn background_task_reminder_not_rendered() {
     let mut state = RenderState::default();
     append_parts(
         &mut ChatRender {
+            notices: &[],
             lines: &mut lines,
             links: &mut Vec::new(),
             max_width: 80,
@@ -360,7 +362,7 @@ fn background_task_reminder_not_rendered() {
         &mut state,
     );
 
-    // 后台任务完成通知不渲染（完成信号经 Notice 通知），也不落入用户引用块
+    // 后台任务完成通知不渲染（完成状态在工具块展示），也不落入用户引用块
     let rendered = joined(&lines);
     assert!(
         !rendered.contains("Background task 1 exited with code 0"),
@@ -416,6 +418,7 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     for turn in &app.view.session.turns {
         append_parts(
             &mut ChatRender {
+                notices: &[],
                 lines: &mut lines,
                 links: &mut Vec::new(),
                 max_width: width.max(20),
@@ -436,6 +439,7 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     }
     if is_empty_session(&app.view) {
         push_empty_hint(&mut ChatRender {
+            notices: &[],
             lines: &mut lines,
             links: &mut Vec::new(),
             max_width: width.max(20),
@@ -454,6 +458,7 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     for part in &app.view.draft {
         append_part(
             &mut ChatRender {
+                notices: &[],
                 lines: &mut lines,
                 links: &mut Vec::new(),
                 max_width: width.max(20),
@@ -473,24 +478,9 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             &mut state,
         );
     }
-    append_notices(
-        &mut ChatRender {
-            lines: &mut lines,
-            links: &mut Vec::new(),
-            max_width: width.max(20),
-            thinking_concise: app.thinking_concise,
-            results: &results,
-            expand: &app.tool_expand,
-            hits: &mut hits,
-            thought_expand: &app.thought_expand,
-            thought_hits: &mut thought_hits,
-            citations_expand: &app.citations_expand,
-            citations_hits: &mut citations_hits,
-            response_hits: &mut response_hits,
-        },
-        &app.notices,
-        &state,
-    );
+    if state.prev_text {
+        lines.push(Line::from(""));
+    }
     lines
 }
 
@@ -556,9 +546,9 @@ async fn test_chat_cache_preserves_history_and_layout() {
         check(app, 80);
         assert_eq!(history_text(app), history);
     }
-    app.notices.push("Local notice".into());
+    app.feedback.push("Local notice".into());
     check(app, 80);
-    app.notices.clear();
+    app.feedback.clear();
     check(app, 80);
     assert_eq!(history_text(app), history);
 
@@ -1518,6 +1508,7 @@ fn test_agents_reminders_rendering_visibility() {
     let mut citations_hits = Vec::new();
     let mut response_hits = Vec::new();
     let mut render = ChatRender {
+        notices: &[],
         lines: &mut lines,
         links: &mut links,
         max_width: 80,
@@ -1688,4 +1679,86 @@ fn external_web_fetch_renders_native_open_page_row() {
     );
     assert!(!text.contains("long page body"), "{text}");
     assert!(hits.is_empty());
+}
+
+#[tokio::test]
+async fn feedback_stays_outside_transcript_and_replaces_equal_length_content() {
+    use crate::harness::{Notice, NoticeKind};
+    let mut app = create_test_app().await;
+    app.feedback.push("Local feedback".into());
+    Arc::make_mut(&mut app.view).notices.push(Notice::new(
+        "First capability".into(),
+        NoticeKind::Capability,
+    ));
+    app.refresh_chat_lines(80);
+    assert!(!joined(&app.chat.lines).contains("capability"));
+    assert!(!joined(&app.chat.lines).contains("Local feedback"));
+    let panel = crate::ui::views::input_area::feedback_lines(&app, 80);
+    assert!(joined(&panel).contains("First capability"));
+    Arc::make_mut(&mut app.view).notices[0].text = "Other capability".into();
+    let panel = joined(&crate::ui::views::input_area::feedback_lines(&app, 80));
+    assert!(panel.contains("Other capability"));
+    assert!(!panel.contains("First capability"));
+    Arc::make_mut(&mut app.view).notices.clear();
+    assert_eq!(
+        joined(&crate::ui::views::input_area::feedback_lines(&app, 80)).trim(),
+        "Local feedback"
+    );
+}
+
+#[tokio::test]
+async fn turn_outcome_and_task_completion_render_at_their_owners() {
+    use crate::harness::{Notice, NoticeKind};
+    let mut app = create_test_app().await;
+    let first = crate::model::Turn::user_turn(crate::model::Message::text("First request"));
+    let first_id = first.id.clone();
+    let mut result = ToolResult::success("call-build", "Started");
+    result.background_task_id = Some("task-build".into());
+    let call = ToolCall::new(
+        "call-build",
+        "Shell",
+        r#"{"intent":"Build files","command":"build","run_in_background":true}"#,
+    );
+    let view = Arc::make_mut(&mut app.view);
+    let session = Arc::make_mut(&mut view.session);
+    session.turns = vec![
+        first,
+        crate::model::Turn::assistant_turn(vec![crate::model::Message::new(vec![
+            ContentPart::ToolCall(call),
+        ])]),
+        crate::model::Turn::new(Role::Tool, vec![crate::model::Message::tool_result(result)]),
+        crate::model::Turn::user_turn(crate::model::Message::text("Later request")),
+    ];
+    view.notices = vec![
+        Notice::new(
+            "Execution stopped".into(),
+            NoticeKind::Turn {
+                turn_id: first_id,
+                aborted: true,
+            },
+        ),
+        Notice::new(
+            "Build completed".into(),
+            NoticeKind::Task {
+                task_id: "task-build".into(),
+            },
+        ),
+    ];
+    app.refresh_chat_lines(120);
+    let text = joined(&app.chat.lines);
+    assert!(text.find("Execution stopped").unwrap() < text.find("Later request").unwrap());
+    let task_line = app
+        .chat
+        .lines
+        .iter()
+        .map(ToString::to_string)
+        .find(|line| line.contains("Build completed"))
+        .unwrap();
+    assert!(task_line.contains("Shell"));
+    assert!(text.find("Build completed").unwrap() < text.find("Later request").unwrap());
+    Arc::make_mut(&mut app.view).notices[1].text = "Build failed".into();
+    app.refresh_chat_lines(120);
+    let text = joined(&app.chat.lines);
+    assert!(text.contains("Build failed"));
+    assert!(!text.contains("Build completed"));
 }

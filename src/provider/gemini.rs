@@ -754,6 +754,7 @@ mod tests {
         session.append_turn(Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult {
+                background_task_id: None,
                 attachments: Vec::new(),
                 tool_call_id: "call_abc123".into(),
                 content: "file1.txt\nfile2.txt".into(),

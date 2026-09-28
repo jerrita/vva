@@ -294,3 +294,30 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
     let p = Paragraph::new(lines).block(block);
     frame.render_widget(p, popup_rect);
 }
+
+/// 提示区读取会话快照与本地反馈，不参与聊天历史缓存。
+pub(crate) fn feedback_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for text in app
+        .view
+        .notices
+        .iter()
+        .filter(|notice| notice.is_banner())
+        .map(|notice| &notice.text)
+        .chain(app.feedback.iter())
+    {
+        for line in text.lines() {
+            let spans = [Span::styled(
+                line.to_owned(),
+                Style::default().fg(Color::Yellow),
+            )];
+            lines.extend(crate::ui::markdown::wrap_spans_to_lines(
+                &spans,
+                width.max(1),
+                " ",
+                " ",
+            ));
+        }
+    }
+    lines
+}

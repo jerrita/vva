@@ -11,9 +11,9 @@ pub use handle::ManagedSession;
 use handle::{Command, CompletedTurn, DeliveryReceipt, PendingDelivery};
 pub use manager::SessionManager;
 use task::SessionTask;
-pub use view::{RunState, SessionView};
+pub use view::{Notice, NoticeKind, RunState, SessionView};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};

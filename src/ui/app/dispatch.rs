@@ -18,6 +18,7 @@ impl App {
         self.clear_input();
         self.clear_selections();
 
+        self.feedback.clear();
         // 处理斜杠命令
         if input_text.starts_with('/') {
             self.handle_slash_command(&input_text).await;
@@ -31,15 +32,14 @@ impl App {
     /// 提交普通用户 Prompt 到当前会话
     async fn submit_prompt(&mut self, prompt: &str) {
         self.auto_scroll = true;
-        self.notices.clear();
-        self.consumed_notices = 0;
+        self.feedback.clear();
 
         if let Err(e) = self
             .session_mgr
             .submit_prompt(self.active_session.clone(), prompt)
             .await
         {
-            self.notices.push(format!("Error: {e}"));
+            self.feedback.push(format!("Error: {e}"));
         }
         self.refresh_view();
     }
@@ -53,7 +53,7 @@ impl App {
             .configure(None, None, Some(enabled))
             .await
         {
-            self.notices.push(error);
+            self.feedback.push(error);
             return;
         }
         self.refresh_view();
@@ -103,7 +103,7 @@ impl App {
             }
             "/new" => {
                 if let Err(error) = self.new_session().await {
-                    self.notices.push(error);
+                    self.feedback.push(error);
                 }
             }
             "/model" | "/m" => {
@@ -153,7 +153,7 @@ impl App {
                 if crate::skills::match_invocation(cmd_line, &self.skills).is_some() {
                     self.submit_prompt(cmd_line).await;
                 } else {
-                    self.notices.push(format!(
+                    self.feedback.push(format!(
                         "Unknown command '{cmd}'. Type /help for available commands."
                     ));
                 }

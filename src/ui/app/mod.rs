@@ -37,10 +37,8 @@ pub struct App {
     pub active_session: Arc<ManagedSession>,
     pub view_rx: watch::Receiver<Arc<SessionView>>,
     pub view: Arc<SessionView>,
-    /// 界面通知流：本地提示与会话任务通知按到达顺序汇入同一份
-    pub notices: Vec<String>,
-    /// 已汇入的会话通知数量
-    pub consumed_notices: usize,
+    /// 本地操作反馈，下次提交或关闭时清理。
+    pub feedback: Vec<String>,
     pub input: InputBuffer,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
@@ -95,8 +93,7 @@ impl App {
             active_session: initial_session,
             view_rx,
             view,
-            notices: Vec::new(),
-            consumed_notices: 0,
+            feedback: Vec::new(),
             input: InputBuffer::new(),
             scroll_offset: 0,
             auto_scroll: true,

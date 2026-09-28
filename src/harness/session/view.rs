@@ -32,10 +32,42 @@ pub struct SessionView {
     pub revision: u64,
     pub session: Arc<Session>,
     pub draft: Vec<Arc<ContentPart>>,
-    pub notices: Vec<String>,
+    pub notices: Vec<Notice>,
     /// 外置 web 工具接管的后端名（原生能力缺位时），供状态栏标注
     pub external_web: Vec<String>,
     pub state: RunState,
     pub persisted: bool,
     pub pending_user_question: Option<UserQuestionRequest>,
+}
+
+/// 会话拥有的反馈，身份独立于文本和快照中的位置。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Notice {
+    pub id: String,
+    pub text: String,
+    #[serde(flatten)]
+    pub kind: NoticeKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NoticeKind {
+    Session,
+    Capability,
+    Turn { turn_id: String, aborted: bool },
+    Task { task_id: String },
+}
+
+impl Notice {
+    pub fn new(text: String, kind: NoticeKind) -> Self {
+        Self {
+            id: format!("notice_{}", uuid::Uuid::new_v4().simple()),
+            text,
+            kind,
+        }
+    }
+
+    pub fn is_banner(&self) -> bool {
+        matches!(self.kind, NoticeKind::Session | NoticeKind::Capability)
+    }
 }

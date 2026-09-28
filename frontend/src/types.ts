@@ -85,6 +85,7 @@ export interface ToolCall {
 
 export interface ToolResult {
   tool_call_id: string
+  background_task_id?: string
   content: string
   attachments?: MediaContent[]
   is_error: boolean
@@ -180,7 +181,7 @@ export interface SessionSnapshot {
   revision: number
   state: string
   persisted: boolean
-  notices: string[]
+  notices: Notice[]
   /** 外置 web 工具接管的后端名；空表示原生在位或未开启 */
   external_web: string[]
   session: Session
@@ -194,7 +195,7 @@ export interface SessionDelta {
   revision: number
   state: string
   persisted: boolean
-  notices?: string[]
+  notices?: Notice[]
   external_web?: string[]
   session?: Omit<Session, 'turns'>
   turns?: { from: number; items: Turn[] }
@@ -273,3 +274,10 @@ export interface FsEntriesResponse {
   entries: FsEntry[]
 }
 
+
+export type Notice = { id: string; text: string } & (
+  | { kind: 'session' }
+  | { kind: 'capability' }
+  | { kind: 'turn'; turn_id: string; aborted: boolean }
+  | { kind: 'task'; task_id: string }
+)

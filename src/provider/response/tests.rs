@@ -103,6 +103,7 @@ fn test_response_provider_previous_id_with_tool_call_output_pair() {
     session.append_turn(Turn::new(
         Role::Tool,
         vec![Message::tool_result(ToolResult {
+            background_task_id: None,
             attachments: Vec::new(),
             tool_call_id: "call_abc123".into(),
             content: "dir output".into(),
@@ -311,6 +312,7 @@ fn test_response_provider_cold_start_history_and_temperature_guard() {
     session.append_turn(Turn::new(
         Role::Tool,
         vec![Message::tool_result(ToolResult {
+            background_task_id: None,
             attachments: Vec::new(),
             tool_call_id: "c1".into(),
             content: "/home/project".into(),

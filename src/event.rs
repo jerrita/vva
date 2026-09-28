@@ -35,6 +35,13 @@ pub enum AgentEvent {
     ImageGenerationCall(ImageGenerationCall),
     /// 信息级通知（如能力协商降级说明），区别于 Error
     Notice(String),
+    /// 当前配置下的能力提示全集。
+    Capabilities(Vec<String>),
+    /// 后台完成状态关联任务身份。
+    TaskCompleted {
+        task_id: String,
+        text: String,
+    },
     Finished,
     /// 轮次被用户取消（区别于正常完成）
     Aborted,

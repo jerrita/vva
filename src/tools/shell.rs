@@ -63,6 +63,23 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
+        self.run(arguments).await.map(|(text, _)| text)
+    }
+
+    async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
+        match self.run(&call.arguments).await {
+            Ok((text, task_id)) => {
+                let mut result = crate::model::ToolResult::success(&call.id, text);
+                result.background_task_id = task_id;
+                result
+            }
+            Err(error) => crate::model::ToolResult::error(&call.id, error),
+        }
+    }
+}
+
+impl ShellTool {
+    async fn run(&self, arguments: &str) -> Result<(String, Option<String>), String> {
         let args: ShellArgs = parse_args(arguments, "Shell")?;
         if args.intent.trim().is_empty() {
             return Err("intent must not be empty".to_string());
@@ -73,15 +90,18 @@ impl Tool for ShellTool {
                 "Background execution is not available in this context".to_string()
             })?;
             let id = tasks.spawn(&args.intent, &args.command, &self.working_dir)?;
-            return Ok(format!(
-                "Background task started: {id}\nintent: {}\ncommand: {}\nNo timeout applies. Use TaskOutput with task_id \"{id}\" to check status and output; TaskStop to stop it. You will be notified when it exits.",
-                args.intent, args.command
+            return Ok((
+                format!(
+                    "Background task started: {id}\nintent: {}\ncommand: {}\nNo timeout applies. Use TaskOutput with task_id \"{id}\" to check status and output; TaskStop to stop it. You will be notified when it exits.",
+                    args.intent, args.command
+                ),
+                Some(id),
             ));
         }
 
         let mut command = build_shell_command(&args.command);
         command.current_dir(&self.working_dir);
-        run_shell_command(command).await
+        run_shell_command(command).await.map(|text| (text, None))
     }
 }
 
@@ -224,25 +244,20 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        let output = tool
-            .execute(
-                &serde_json::json!({
-                    "intent": "watch build",
-                    "command": command,
-                    "run_in_background": true
+        let result = tool
+            .execute_result(&crate::model::ToolCall::new(
+                "call-background",
+                "Shell",
+                serde_json::json!({
+                    "intent": "watch build", "command": command, "run_in_background": true
                 })
                 .to_string(),
-            )
-            .await
-            .expect("background spawn");
+            ))
+            .await;
         assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(output.contains("Background task started: "), "{output}");
-        let id = output
-            .lines()
-            .next()
-            .unwrap()
-            .trim_start_matches("Background task started: ")
-            .to_string();
+        assert!(!result.is_error, "{}", result.content);
+        assert!(result.content.contains("Background task started: "));
+        let id = result.background_task_id.expect("background task identity");
         assert_eq!(
             tasks.snapshot(&id).expect("task registered").status,
             super::super::background::BackgroundStatus::Running

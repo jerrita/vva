@@ -716,17 +716,17 @@ pub async fn abort_session(
 
 #[derive(Deserialize)]
 pub struct DismissNoticeRequest {
-    pub index: usize,
+    pub id: String,
 }
 
-/// 关闭一条运行通知横幅：按当前快照下标移除并发布
+/// 关闭一条运行通知横幅：按稳定 ID 移除并发布
 pub async fn dismiss_notice(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<DismissNoticeRequest>,
 ) -> Result<Response, Response> {
     let handle = session_handle(&state, &id).await?;
-    match handle.dismiss_notice(request.index).await {
+    match handle.dismiss_notice(request.id).await {
         Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
         Err(e) => Err(error(StatusCode::CONFLICT, e)),
     }

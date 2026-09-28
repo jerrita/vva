@@ -219,7 +219,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         Annotation::FileCitation { .. } => {}
                     },
-                    AgentEvent::Notice(notice) => {
+                    AgentEvent::Capabilities(notices) => {
+                        for notice in notices {
+                            eprintln!("\n⚠️  [Notice] {notice}");
+                        }
+                    }
+                    AgentEvent::TaskCompleted { text: notice, .. } | AgentEvent::Notice(notice) => {
                         eprintln!("\n⚠️  [Notice] {notice}");
                     }
                     AgentEvent::ToolExecuting { name, args } => {
