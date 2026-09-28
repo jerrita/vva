@@ -25,14 +25,6 @@ function reminderType(turn: Turn): string | null {
   return /type="([^"]*)"/.exec(openTag)?.[1] ?? null
 }
 
-/** background-task reminder 正文首行：后台任务完成状态 */
-function backgroundTaskStatus(turn: Turn): string {
-  const text = turnText(turn).trim()
-  const close = '</system-reminder>'
-  const body = text.slice(text.indexOf('>') + 1, text.length - close.length)
-  return body.trim().split('\n')[0] ?? ''
-}
-
 /** 历史轮次中的连续工作段（思考/搜索/工具与中间轮文本），折叠为一个用时行 */
 interface WorkGroup {
   parts: ContentPart[]
@@ -44,7 +36,6 @@ interface WorkGroup {
 
 type Item =
   | { kind: 'user'; turn: Turn; index: number }
-  | { kind: 'system'; turn: Turn; text: string }
   | { kind: 'work'; group: WorkGroup }
   | { kind: 'assistant'; turn: Turn; parts: ContentPart[] }
 
@@ -71,13 +62,9 @@ function buildItems(turns: Turn[]): Item[] {
     const turn = turns[index]
     if (turn.role === 'system') continue
     if (turn.role === 'user') {
-      const type = reminderType(turn)
-      if (type !== null) {
-        // 机器注入轮次：后台任务完成展示为弱化状态行（运行段边界），其余 reminder 不展示
-        if (type === 'background-task') {
-          flush()
-          items.push({ kind: 'system', turn, text: backgroundTaskStatus(turn) })
-        }
+      if (reminderType(turn) !== null) {
+        // 机器注入轮次（含 background-task）：一律不渲染，完成信号走 Notice 横幅；
+        // 轮隙不切断运行段折叠
         continue
       }
       flush()
@@ -308,7 +295,7 @@ export function Chat({
     // 遇 user 或 answer（运行段收尾）即停止，避免把上一轮工作段展开
     for (let index = items.length - 1; index >= 0; index--) {
       const kind = items[index].kind
-      if (kind === 'user' || kind === 'assistant' || kind === 'system') break
+      if (kind === 'user' || kind === 'assistant') break
       if (kind === 'work') {
         liveWork = index
         break
@@ -321,13 +308,6 @@ export function Chat({
   return (
     <div className="chat">
       {items.map((item, index) => {
-        if (item.kind === 'system') {
-          return (
-            <div key={item.turn.id} className="system-line">
-              {item.text}
-            </div>
-          )
-        }
         if (item.kind === 'user') {
           return (
             <UserBubble

@@ -1,8 +1,23 @@
+/// 工具权限使用统一名称；原生协议与外置工具保留各自的调用名称。
+pub(crate) fn tool_allowed(allowed: &[String], name: &str) -> bool {
+    fn identity(name: &str) -> &str {
+        match name {
+            "web_search" => "WebSearch",
+            "web_fetch" => "WebFetch",
+            "image_generation" => "ImageGen",
+            _ => name,
+        }
+    }
+    allowed.iter().any(|tool| identity(tool) == identity(name))
+}
+
+pub mod agent;
 pub mod apply_patch;
 pub mod ask_user;
 pub mod background;
 pub mod filesystem;
 pub mod hashline;
+pub mod session_ipc;
 pub mod shell;
 pub mod skill;
 pub mod web;
@@ -136,6 +151,12 @@ impl ToolRegistry {
 
     pub fn register(&mut self, tool: Arc<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
+    }
+
+    /// 按白名单裁剪工具集（subagent 会话按 agent 定义限制可用工具）
+    pub fn retain(&mut self, allowed: &[String]) {
+        self.tools.retain(|name, _| tool_allowed(allowed, name));
+        self.server_tools.retain(|name| tool_allowed(allowed, name));
     }
 
     /// 预留原生服务端工具名（来自 ProviderCapabilities::server_tool_names，

@@ -229,8 +229,36 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
         "TaskOutput" | "TaskStop" => json_str(&args, "task_id")
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| arguments.to_string()),
+        "Agent" => {
+            let agent = json_str(&args, "agent").unwrap_or("agent");
+            let description = json_str(&args, "description").unwrap_or("");
+            let background = args
+                .get("run_in_background")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            let suffix = if background { " (background)" } else { "" };
+            match description.is_empty() {
+                true => format!("{agent}{suffix}"),
+                false => format!("{agent} · {description}{suffix}"),
+            }
+        }
+        "SendMessage" => {
+            let session = json_str(&args, "session_id").unwrap_or("");
+            match json_str(&args, "text") {
+                Some(text) => format!("{session} · \"{}\"", truncate_chars(text, 40)),
+                None => session.to_string(),
+            }
+        }
+        "WaitSession" => json_str(&args, "session_id")
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| arguments.to_string()),
         _ => arguments.to_string(),
     }
+}
+
+/// 按显示字符数截断（工具摘要行用，不切多字节字符）
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
 }
 
 pub(super) fn ask_user_detail(args: &serde_json::Value) -> String {
@@ -299,6 +327,8 @@ pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
         "Shell" => Some(ToolExpand::Preview),
         // 后台任务工具：预览任务输出/停止结果，点击展开全文
         "TaskOutput" | "TaskStop" => Some(ToolExpand::Preview),
+        // 子代理工具：预览最终消息 / 投递回执，点击展开全文
+        "Agent" | "SendMessage" | "WaitSession" => Some(ToolExpand::Preview),
         // 外置 web 工具对齐原生 WebSearchCall：仅一行 + 来源列表，不渲染输出块
         _ => None,
     }

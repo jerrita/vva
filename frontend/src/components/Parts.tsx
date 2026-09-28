@@ -206,6 +206,21 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
       const taskId = str(args.task_id)
       return { text: taskId ?? truncate(call.arguments, 88) }
     }
+    case 'Agent': {
+      const agent = str(args.agent) ?? 'agent'
+      const description = str(args.description) ?? ''
+      const background = args.run_in_background === true ? ' (background)' : ''
+      return { text: description ? `${agent} · ${description}${background}` : `${agent}${background}` }
+    }
+    case 'SendMessage': {
+      const session = str(args.session_id) ?? ''
+      const text = str(args.text)
+      return { text: text ? `${session} · "${truncate(text, 40)}"` : session }
+    }
+    case 'WaitSession': {
+      const session = str(args.session_id)
+      return { text: session ?? truncate(call.arguments, 88) }
+    }
     default:
       return { text: truncate(call.arguments, 88) }
   }
@@ -234,9 +249,11 @@ function ToolGroupView({
   const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
   const isShell = call.name === 'Shell'
   const isTaskTool = call.name === 'TaskOutput' || call.name === 'TaskStop'
-  // 可展开 = 有输出可看（Shell 输出 / 后台任务输出 / 错误详情）
+  // 子代理工具：最终消息 / 投递回执可展开
+  const isAgentTool = call.name === 'Agent' || call.name === 'SendMessage' || call.name === 'WaitSession'
+  // 可展开 = 有输出可看（Shell 输出 / 后台任务输出 / 子代理输出 / 错误详情）
   const hasOutput =
-    Boolean((isShell || isTaskTool) && result && result.content.trim()) ||
+    Boolean((isShell || isTaskTool || isAgentTool) && result && result.content.trim()) ||
     Boolean(isError && result)
   const shownPath = detail.displayPath ?? detail.filePath
 

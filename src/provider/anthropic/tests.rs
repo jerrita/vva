@@ -439,6 +439,25 @@ fn test_anthropic_web_fetch_declaration_disabled_by_annotation() {
     assert_eq!(tools[0]["name"], "web_search");
 }
 
+#[test]
+fn web_fetch_can_be_declared_without_web_search() {
+    let provider = AnthropicProvider::new("test-key");
+    let session = Session::new(PathBuf::from("/tmp"), None);
+    let options = CompletionOptions {
+        model: "claude-haiku-4-5".into(),
+        enable_web_search: false,
+        enable_web_fetch: true,
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &[], &options)
+        .unwrap();
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "web_fetch");
+    assert_eq!(tools[0]["type"], "web_fetch_20260318");
+}
+
 /// 官方 web fetch 响应样例：调用对投影为 OpenPage，document 内容块回传保真
 #[test]
 fn test_anthropic_web_fetch_parse_and_native_echo() {

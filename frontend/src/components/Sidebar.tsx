@@ -5,6 +5,7 @@ import {
   IconArrowUp,
   IconFolderClosed,
   IconFolderOpen,
+  IconFork,
   IconPlus,
   IconX,
   IconZap,
@@ -13,7 +14,36 @@ export interface SessionGroup {
   project: string
   /** 项目 workspace 路径，用于分组内直接新建会话 */
   root: string
+  /** 扁平清单（含 subagent 会话），供计数与树构建 */
   sessions: SessionSummary[]
+  /** 会话树：subagent 会话嵌套在其父会话之下；孤儿（父会话不在列表）保持顶层 */
+  tree: SessionNode[]
+}
+
+/** 会话树节点 */
+export interface SessionNode {
+  session: SessionSummary
+  children: SessionNode[]
+}
+
+/**
+ * 按 parent 挂载子会话：输入需已按最新排序，子节点继承该顺序。
+ * 父会话不在集合（已删除）或指向自身时按顶层处理。
+ */
+export function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
+  const nodes = new Map<string, SessionNode>(
+    sessions.map(session => [session.id, { session, children: [] }]),
+  )
+  const roots: SessionNode[] = []
+  for (const node of nodes.values()) {
+    const parent = node.session.parent ? nodes.get(node.session.parent) : undefined
+    if (parent && parent !== node) {
+      parent.children.push(node)
+    } else {
+      roots.push(node)
+    }
+  }
+  return roots
 }
 
 export interface ProjectOption {
@@ -42,12 +72,12 @@ export function groupByProject(
       groups.set(session.workspace_root, [session])
     }
   }
-  const result = [...groups.entries()]
-    .map(list => ({
-      project: projectName(list[1][0].workspace_root),
-      root: list[0],
-      sessions: list[1].sort((a, b) => b.created_at.localeCompare(a.created_at)),
-    }))
+  const result = [...groups.entries()].map(list => ({
+    project: projectName(list[1][0].workspace_root),
+    root: list[0],
+    sessions: list[1].sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    tree: buildSessionTree(list[1]),
+  }))
   if (projectOrder.length === 0) {
     return result.sort((a, b) =>
       b.sessions[0].created_at.localeCompare(a.sessions[0].created_at),
@@ -240,6 +270,73 @@ function SkillsSection({ skills }: { skills: SkillEntry[] }) {
   )
 }
 
+/** 会话条目（含嵌套子会话）：subagent 会话缩进展示并带分支标记，状态点与顶层一致 */
+function SessionItem({
+  node,
+  depth,
+  activeId,
+  unreadIds,
+  onSelect,
+  onDelete,
+}: {
+  node: SessionNode
+  depth: number
+  activeId: string | null
+  unreadIds: Set<string>
+  onSelect: (id: string) => void
+  onDelete: (session: SessionSummary) => void
+}) {
+  const session = node.session
+  const generating = Boolean(session.state)
+  const unread = !generating && unreadIds.has(session.id)
+  const status = generating ? '正在生成' : unread ? '未读' : undefined
+  return (
+    <>
+      <div
+        className={`session-item${session.id === activeId ? ' active' : ''}${generating ? ' generating' : ''}${unread ? ' unread' : ''}${depth > 0 ? ' sub' : ''}`}
+        style={depth > 0 ? { marginLeft: depth * 16 } : undefined}
+        title={status ? `${session.title || '新对话'} · ${status}` : session.title || '新对话'}
+        onClick={() => onSelect(session.id)}
+      >
+        {depth > 0 && (
+          <span className="session-fork" title={`${session.agent || 'sub'} 子会话`}>
+            <IconFork size={11} />
+          </span>
+        )}
+        {(generating || unread) && (
+          <span
+            className={`session-status${generating ? ' generating' : ' unread'}`}
+            aria-label={status}
+          />
+        )}
+        <div className="session-title">{session.title || '新对话'}</div>
+        <button
+          className="session-delete"
+          title="删除会话"
+          aria-label="删除会话"
+          onClick={event => {
+            event.stopPropagation()
+            onDelete(session)
+          }}
+        >
+          <IconX size={13} />
+        </button>
+      </div>
+      {node.children.map(child => (
+        <SessionItem
+          key={child.session.id}
+          node={child}
+          depth={depth + 1}
+          activeId={activeId}
+          unreadIds={unreadIds}
+          onSelect={onSelect}
+          onDelete={onDelete}
+        />
+      ))}
+    </>
+  )
+}
+
 export function Sidebar({
   groups,
   projects,
@@ -400,38 +497,17 @@ export function Sidebar({
                 </button>
             </div>
             {!collapsed.has(group.project) &&
-              group.sessions.map(session => {
-                const generating = Boolean(session.state)
-                const unread = !generating && unreadIds.has(session.id)
-                const status = generating ? '正在生成' : unread ? '未读' : undefined
-                return (
-                  <div
-                    key={session.id}
-                    className={`session-item${session.id === activeId ? ' active' : ''}${generating ? ' generating' : ''}${unread ? ' unread' : ''}`}
-                    title={status ? `${session.title || '新对话'} · ${status}` : session.title || '新对话'}
-                    onClick={() => onSelect(session.id)}
-                  >
-                    {(generating || unread) && (
-                      <span
-                        className={`session-status${generating ? ' generating' : ' unread'}`}
-                        aria-label={status}
-                      />
-                    )}
-                    <div className="session-title">{session.title || '新对话'}</div>
-                    <button
-                      className="session-delete"
-                      title="删除会话"
-                      aria-label="删除会话"
-                      onClick={event => {
-                        event.stopPropagation()
-                        setPendingDelete(session)
-                      }}
-                    >
-                      <IconX size={13} />
-                    </button>
-                  </div>
-                )
-              })}
+              group.tree.map(node => (
+                <SessionItem
+                  key={node.session.id}
+                  node={node}
+                  depth={0}
+                  activeId={activeId}
+                  unreadIds={unreadIds}
+                  onSelect={onSelect}
+                  onDelete={setPendingDelete}
+                />
+              ))}
           </div>
         ))}
         <SkillsSection skills={skills} />

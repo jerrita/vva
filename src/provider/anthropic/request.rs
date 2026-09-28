@@ -16,23 +16,21 @@ impl AnthropicProvider {
     ) -> Result<serde_json::Value, ProviderError> {
         let mut api_tools: Vec<serde_json::Value> = Vec::new();
         // 核心原生优势：服务端代执行的 web_search / web_fetch（引用与结果块由服务端直接产出）
+        // _20260209 起默认经代码执行容器调用，显式声明直连。
+        let direct_callers = serde_json::json!(["direct"]);
         if options.enable_web_search {
-            // _20260209 起的版本默认经代码执行容器调用；模型无 programmatic tool
-            // calling 能力时必须显式声明直连，否则 API 返回 400
-            let direct_callers = serde_json::json!(["direct"]);
             api_tools.push(serde_json::json!({
                 "type": "web_search_20260318",
                 "name": "web_search",
                 "allowed_callers": direct_callers,
             }));
-            // 模型级 annotation 可关闭 web_fetch（未接线 web_fetch 的中转端点会整组丢弃工具声明）
-            if options.enable_web_fetch {
-                api_tools.push(serde_json::json!({
-                    "type": "web_fetch_20260318",
-                    "name": "web_fetch",
-                    "allowed_callers": direct_callers,
-                }));
-            }
+        }
+        if options.enable_web_fetch {
+            api_tools.push(serde_json::json!({
+                "type": "web_fetch_20260318",
+                "name": "web_fetch",
+                "allowed_callers": direct_callers,
+            }));
         }
         api_tools.extend(tools.iter().map(|tool| {
             serde_json::json!({"name": tool.name, "description": tool.description, "input_schema": tool.parameters})

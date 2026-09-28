@@ -7,8 +7,8 @@ mod task;
 mod tests;
 mod view;
 
-pub(super) use handle::Command;
 pub use handle::ManagedSession;
+use handle::{Command, CompletedTurn, DeliveryReceipt, PendingDelivery};
 pub use manager::SessionManager;
 use task::SessionTask;
 pub use view::{RunState, SessionView};
@@ -20,7 +20,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
-use super::agent::{AgentEngine, generate_title};
+use super::agent::{AgentEngine, EngineDeps, generate_title};
 use crate::config::{AppConfig, AppState};
 use crate::event::AgentEvent;
 use crate::model::{

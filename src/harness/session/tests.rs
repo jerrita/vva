@@ -40,8 +40,52 @@ fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
             |_| {},
         ))),
         task_completions: Vec::new(),
+        subagent_completions: Vec::new(),
+        pending_deliveries: Vec::new(),
+        turn_tx: watch::channel(CompletedTurn::default()).0,
+        turn_seq: 0,
+        turn_start: 0,
+        broker: Arc::new(StubBroker),
     };
     (task, view_rx)
+}
+
+/// 无编排能力的 broker 桩：SessionTask 单测路径不触发派生
+struct StubBroker;
+
+#[async_trait::async_trait]
+impl crate::tools::agent::SessionBroker for StubBroker {
+    async fn spawn_subagent(
+        &self,
+        _parent: &crate::tools::agent::SubagentContext,
+        _def: &crate::agents::AgentDef,
+        _prompt: &str,
+        _description: &str,
+        _background: bool,
+    ) -> Result<crate::tools::agent::SubagentLaunch, String> {
+        Err("stub broker".into())
+    }
+    async fn deliver(&self, _session_id: &str, _text: &str) -> Result<String, String> {
+        Err("stub broker".into())
+    }
+    async fn wait_turn(
+        &self,
+        _session_id: &str,
+        _seen_seq: u64,
+        _timeout: Option<std::time::Duration>,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        Err("stub broker".into())
+    }
+    async fn session_report(
+        &self,
+        _session_id: &str,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        Err("stub broker".into())
+    }
+    async fn abort_session(&self, _session_id: &str) -> Result<(), String> {
+        Err("stub broker".into())
+    }
+    async fn abort_children(&self, _parent_id: &str) {}
 }
 
 #[tokio::test]
@@ -543,7 +587,7 @@ async fn search_snapshots_update_in_place_and_publish_before_completion() {
     std::fs::remove_dir_all(&task.view.session.workspace_root).unwrap();
 }
 
-fn last_model_manager(dir: &Path) -> SessionManager {
+fn last_model_manager(dir: &Path) -> Arc<SessionManager> {
     let store = Arc::new(JsonlSessionStore::new(dir).unwrap());
     let mut config = AppConfig::default();
     config.settings.default = "openai/default_model".into();
@@ -554,7 +598,12 @@ fn last_model_manager(dir: &Path) -> SessionManager {
             ..Default::default()
         },
     );
-    SessionManager::new(store, config, dir, dir.join("state.json"))
+    Arc::new(SessionManager::new(
+        store,
+        config,
+        dir,
+        dir.join("state.json"),
+    ))
 }
 
 #[tokio::test]
@@ -605,7 +654,7 @@ async fn new_session_uses_last_selected_model() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-async fn seeded_session(dir: &Path) -> (SessionManager, Arc<ManagedSession>, String) {
+async fn seeded_session(dir: &Path) -> (Arc<SessionManager>, Arc<ManagedSession>, String) {
     let store = Arc::new(JsonlSessionStore::new(dir).unwrap());
     let mut session = Session::with_model(
         dir,
@@ -630,7 +679,12 @@ async fn seeded_session(dir: &Path) -> (SessionManager, Arc<ManagedSession>, Str
             ..Default::default()
         },
     );
-    let mgr = SessionManager::new(store, config, dir, dir.join("state.json"));
+    let mgr = Arc::new(SessionManager::new(
+        store,
+        config,
+        dir,
+        dir.join("state.json"),
+    ));
     let handle = mgr.get_or_load(&id).await.unwrap();
     (mgr, handle, id)
 }
@@ -718,7 +772,12 @@ async fn session_editor_frozen_at_create() {
             ..Default::default()
         },
     );
-    let mgr = SessionManager::new(store, config, &dir, dir.join("state.json"));
+    let mgr = Arc::new(SessionManager::new(
+        store,
+        config,
+        &dir,
+        dir.join("state.json"),
+    ));
     let handle = mgr
         .create_session("p/hashed".into(), None, None, true)
         .await
@@ -771,7 +830,12 @@ async fn session_editor_falls_back_to_settings_editor() {
             ..Default::default()
         },
     );
-    let mgr = SessionManager::new(store, config, &dir, dir.join("state.json"));
+    let mgr = Arc::new(SessionManager::new(
+        store,
+        config,
+        &dir,
+        dir.join("state.json"),
+    ));
 
     let plain = mgr
         .create_session("p/plain".into(), None, None, true)
@@ -835,4 +899,622 @@ async fn new_session_loads_project_agents_md() {
     assert!(project.content.contains("project instructions"));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- Subagent 调度与跨会话投递 ----
+
+/// 返回固定报告的 broker 桩：驱动 drain_subagent_completions 与 wait 路径
+struct ReportingBroker(crate::tools::agent::SubagentReport);
+
+#[async_trait::async_trait]
+impl crate::tools::agent::SessionBroker for ReportingBroker {
+    async fn spawn_subagent(
+        &self,
+        _parent: &crate::tools::agent::SubagentContext,
+        _def: &crate::agents::AgentDef,
+        _prompt: &str,
+        _description: &str,
+        _background: bool,
+    ) -> Result<crate::tools::agent::SubagentLaunch, String> {
+        Err("stub broker".into())
+    }
+    async fn deliver(&self, _session_id: &str, _text: &str) -> Result<String, String> {
+        Err("stub broker".into())
+    }
+    async fn wait_turn(
+        &self,
+        _session_id: &str,
+        _seen_seq: u64,
+        _timeout: Option<std::time::Duration>,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        Err("stub broker".into())
+    }
+    async fn session_report(
+        &self,
+        _session_id: &str,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        Ok(crate::tools::agent::SubagentReport {
+            session_id: self.0.session_id.clone(),
+            agent: self.0.agent.clone(),
+            title: self.0.title.clone(),
+            turn_seq: self.0.turn_seq,
+            error: None,
+            text: self.0.text.clone(),
+        })
+    }
+    async fn abort_session(&self, _session_id: &str) -> Result<(), String> {
+        Err("stub broker".into())
+    }
+    async fn abort_children(&self, _parent_id: &str) {}
+}
+
+/// 发起一次 ToolCall 的供应商桩：工具阶段挂起供 Stop 中止
+struct ToolCallProvider;
+
+#[async_trait::async_trait]
+impl crate::provider::Provider for ToolCallProvider {
+    fn name(&self) -> &str {
+        "tool-call-test"
+    }
+    fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+        Default::default()
+    }
+    async fn complete(
+        &self,
+        _: &Session,
+        _: &[crate::model::ToolDefinition],
+        _: &crate::provider::CompletionOptions,
+    ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
+        Ok(crate::provider::ProviderResponse {
+            messages: vec![Message::new(vec![ContentPart::ToolCall(
+                crate::model::ToolCall::new("call_hang", "Hang", "{}"),
+            )])],
+            usage: None,
+            meta: Default::default(),
+        })
+    }
+    async fn complete_stream(
+        &self,
+        session: &Session,
+        tools: &[crate::model::ToolDefinition],
+        options: &crate::provider::CompletionOptions,
+        _: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<crate::provider::ProviderResponse, crate::provider::ProviderError> {
+        self.complete(session, tools, options).await
+    }
+}
+
+/// 永不完成的工具：模拟长任务，验证 Stop 中止时的结果合成
+struct HangTool;
+
+#[async_trait::async_trait]
+impl crate::tools::Tool for HangTool {
+    fn name(&self) -> &str {
+        "Hang"
+    }
+    fn description(&self) -> &str {
+        "test tool that never finishes"
+    }
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object", "properties": {}})
+    }
+    async fn execute(&self, _arguments: &str) -> Result<String, String> {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        Ok(String::new())
+    }
+}
+
+#[tokio::test]
+async fn abort_during_tools_synthesizes_paired_error_results() {
+    let (mut task, _view) = event_task();
+    let root = task.view.session.workspace_root.clone();
+    task.store.save_header(&task.view.session).await.unwrap();
+    task.view.persisted = true;
+    let mut tools = crate::tools::ToolRegistry::new();
+    tools.register(Arc::new(HangTool));
+    let engine = AgentEngine {
+        provider: Arc::new(ToolCallProvider),
+        tools,
+        options: crate::provider::CompletionOptions::default(),
+        notices: Vec::new(),
+        external_web: Vec::new(),
+        inputs: Default::default(),
+    };
+    let (tx, mut rx) = mpsc::channel(4);
+    let stopper = tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let (reply, _) = oneshot::channel();
+        let _ = stopper
+            .send(Command::Stop {
+                delete: false,
+                reply,
+            })
+            .await;
+    });
+    let finished = task.execute(engine, &mut rx).await.unwrap();
+    assert!(!finished);
+
+    // assistant 轮携带 ToolCall，随后必须配对合成 error ToolResult（无悬空 tool_call）
+    let turns = &task.view.session.turns;
+    assert_eq!(turns.len(), 2);
+    assert_eq!(turns[0].role, Role::Assistant);
+    assert_eq!(turns[1].role, Role::Tool);
+    match turns[1].messages[0].parts[0] {
+        ContentPart::ToolResult(ref result) => {
+            assert_eq!(result.tool_call_id, "call_hang");
+            assert!(result.is_error);
+            assert!(result.content.contains("aborted"), "{}", result.content);
+        }
+        ref other => panic!("expected ToolResult, got {other:?}"),
+    }
+    let loaded = task
+        .store
+        .load_session(&task.view.session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.turns.len(), 2);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn deliver_while_running_is_queued_and_acked() {
+    let (mut task, _view) = event_task();
+    let (tx, mut rx) = mpsc::channel(4);
+    let (_events_tx, mut events_rx) = mpsc::channel::<AgentEvent>(1);
+    let (reply, reply_rx) = oneshot::channel();
+    tokio::spawn({
+        let tx = tx.clone();
+        async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = tx
+                .send(Command::Deliver {
+                    delivery: PendingDelivery {
+                        text: "hello".into(),
+                        completion: oneshot::channel().0,
+                    },
+                    reply,
+                })
+                .await;
+        }
+    });
+    let outcome = task
+        .drive(
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                7
+            },
+            &mut rx,
+            &mut events_rx,
+        )
+        .await;
+    assert_eq!(outcome, Some(7));
+    reply_rx.await.unwrap().unwrap();
+    assert_eq!(task.pending_deliveries.len(), 1);
+    assert_eq!(task.pending_deliveries[0].text, "hello");
+    let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+}
+
+#[tokio::test]
+async fn pending_deliveries_run_as_turns_and_bump_seq() {
+    let (mut task, _view) = event_task();
+    let seq_rx = task.turn_tx.subscribe();
+    let root = task.view.session.workspace_root.clone();
+    // 不可达端点：投递轮次快速失败（不出本机），验证冲刷机制而非补全结果
+    let mut config = AppConfig::default();
+    let mut models = std::collections::HashMap::new();
+    models.insert(
+        "m".into(),
+        crate::config::ModelConfig {
+            name: "M".into(),
+            ..Default::default()
+        },
+    );
+    config.providers.insert(
+        "p".into(),
+        crate::config::ProviderConfig {
+            api_key: "k".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            models,
+            ..Default::default()
+        },
+    );
+    task.config = Arc::new(config);
+    Arc::make_mut(&mut task.view.session).set_model("p/m".to_string(), None);
+    task.pending_deliveries.push(PendingDelivery {
+        text: "queued message".into(),
+        completion: oneshot::channel().0,
+    });
+    let (_tx, mut rx) = mpsc::channel(1);
+    let close = task.run_pending_deliveries(&mut rx).await;
+    assert!(!close);
+
+    let turns = &task.view.session.turns;
+    assert_eq!(turns.first().map(|turn| turn.role), Some(Role::System));
+    let last = turns.last().unwrap();
+    assert_eq!(last.role, Role::User);
+    assert_eq!(last.text_content(), "queued message");
+    assert!(task.pending_deliveries.is_empty());
+    // 供应商错误同样完成轮次：seq 递增唤醒等待者
+    assert_eq!(task.turn_seq, 1);
+    assert_eq!(seq_rx.borrow().seq, 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn drain_subagent_completions_injects_final_message_reminder() {
+    let (mut task, _view) = event_task();
+    task.store.save_header(&task.view.session).await.unwrap();
+    task.broker = Arc::new(ReportingBroker(crate::tools::agent::SubagentReport {
+        session_id: "sess_kid1".into(),
+        agent: "explore".into(),
+        title: "[explore] probe".into(),
+        turn_seq: 1,
+        error: None,
+        text: "found 3 matches".into(),
+    }));
+    task.subagent_completions.push("sess_kid1".into());
+    task.drain_subagent_completions().await.unwrap();
+
+    let text = task.view.session.turns.last().unwrap().text_content();
+    assert!(
+        text.contains("<system-reminder type=\"background-task\">"),
+        "{text}"
+    );
+    assert!(
+        text.contains("Background agent sess_kid1 (explore) finished."),
+        "{text}"
+    );
+    assert!(text.contains("found 3 matches"), "{text}");
+    assert!(task.subagent_completions.is_empty());
+    // 报告失败（会话消失）：跳过不报错
+    task.broker = Arc::new(StubBroker);
+    task.subagent_completions.push("sess_gone".into());
+    task.drain_subagent_completions().await.unwrap();
+    assert_eq!(task.view.session.turns.len(), 1);
+    let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+}
+
+/// 子代理派生链路（不可达端点让子会话轮次快速失败，不出本机）：
+/// 元数据落盘、注册表可见、wait_turn 返回空文本报告
+#[tokio::test]
+async fn spawn_subagent_creates_child_session_and_wait_reports() {
+    use crate::tools::agent::SessionBroker as _;
+    let dir = std::env::temp_dir().join(format!("vva-subagent-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let mut config = AppConfig::default();
+    config.settings.default = "p/m".into();
+    let mut models = std::collections::HashMap::new();
+    models.insert(
+        "m".into(),
+        crate::config::ModelConfig {
+            name: "M".into(),
+            ..Default::default()
+        },
+    );
+    config.providers.insert(
+        "p".into(),
+        crate::config::ProviderConfig {
+            api_key: "k".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            models,
+            ..Default::default()
+        },
+    );
+    let manager = Arc::new(SessionManager::new(
+        store,
+        config,
+        &dir,
+        dir.join("state.json"),
+    ));
+    let parent = manager
+        .create_session("p/m".into(), None, None, true)
+        .await
+        .unwrap();
+    let broker = super::manager::SessionBrokerHandle::new(manager.clone());
+    let def = crate::agents::AgentDef {
+        name: "explore".into(),
+        description: "test".into(),
+        model: None,
+        tools: vec!["Read".into()],
+        system_prompt: None,
+    };
+    let launch = broker
+        .spawn_subagent(
+            &crate::tools::agent::SubagentContext::from_session(&parent.snapshot().session),
+            &def,
+            "find things",
+            "probe",
+            false,
+        )
+        .await
+        .unwrap();
+
+    // 子会话已注册并可见
+    let report = broker.session_report(&launch.session_id).await.unwrap();
+    assert_eq!(report.agent, "explore");
+    assert_eq!(report.title, "[explore] probe");
+    // 元数据随 Header 持久化
+    let loaded = manager
+        .store()
+        .load_session(&launch.session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.agent.as_deref(), Some("explore"));
+    assert_eq!(loaded.parent.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(loaded.depth, 1);
+    assert_eq!(loaded.current_model, "p/m");
+
+    // 端点不可达：子会话轮次失败结束，wait_turn 返回空文本
+    let report = broker
+        .wait_turn(
+            &launch.session_id,
+            launch.turn_seq,
+            Some(Duration::from_secs(15)),
+        )
+        .await
+        .unwrap();
+    assert!(report.text.is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 深度超限拒绝派生
+#[tokio::test]
+async fn spawn_subagent_rejects_depth_overflow() {
+    use crate::tools::agent::SessionBroker as _;
+    let dir = std::env::temp_dir().join(format!("vva-subagent-depth-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let mut config = AppConfig::default();
+    config.settings.default = "p/m".into();
+    let mut models = std::collections::HashMap::new();
+    models.insert(
+        "m".into(),
+        crate::config::ModelConfig {
+            name: "M".into(),
+            ..Default::default()
+        },
+    );
+    config.providers.insert(
+        "p".into(),
+        crate::config::ProviderConfig {
+            api_key: "k".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            models,
+            ..Default::default()
+        },
+    );
+    let manager = Arc::new(SessionManager::new(
+        store,
+        config,
+        &dir,
+        dir.join("state.json"),
+    ));
+    let parent = manager
+        .create_session("p/m".into(), None, None, true)
+        .await
+        .unwrap();
+    let broker = super::manager::SessionBrokerHandle::new(manager.clone());
+    let mut context =
+        crate::tools::agent::SubagentContext::from_session(&parent.snapshot().session);
+    context.depth = crate::agents::MAX_SUBAGENT_DEPTH;
+    let def = crate::agents::AgentDef {
+        name: "general".into(),
+        description: "test".into(),
+        model: None,
+        tools: vec!["Read".into()],
+        system_prompt: None,
+    };
+    let error = broker
+        .spawn_subagent(&context, &def, "prompt", "desc", false)
+        .await
+        .unwrap_err();
+    assert!(error.contains("nesting depth"), "{error}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 投递回复先于 WaitSession 完成时，等待仍返回对应回执。
+#[tokio::test]
+async fn wait_turn_returns_delivered_reply_after_fast_completion() {
+    use crate::tools::agent::SessionBroker as _;
+    let dir = std::env::temp_dir().join(format!("vva-wait-receipt-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let mut config = AppConfig::default();
+    config.settings.default = "p/m".into();
+    let mut models = std::collections::HashMap::new();
+    models.insert(
+        "m".into(),
+        crate::config::ModelConfig {
+            name: "M".into(),
+            ..Default::default()
+        },
+    );
+    config.providers.insert(
+        "p".into(),
+        crate::config::ProviderConfig {
+            api_key: "k".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            models,
+            ..Default::default()
+        },
+    );
+    let manager = Arc::new(SessionManager::new(
+        store,
+        config,
+        &dir,
+        dir.join("state.json"),
+    ));
+    let parent = manager
+        .create_session("p/m".into(), None, None, true)
+        .await
+        .unwrap();
+    let broker = super::manager::SessionBrokerHandle::new(manager.clone());
+    let def = crate::agents::AgentDef {
+        name: "general".into(),
+        description: "test".into(),
+        model: None,
+        tools: vec!["Read".into()],
+        system_prompt: None,
+    };
+    let launch = broker
+        .spawn_subagent(
+            &crate::tools::agent::SubagentContext::from_session(&parent.snapshot().session),
+            &def,
+            "find things",
+            "probe",
+            false,
+        )
+        .await
+        .unwrap();
+    // 首轮（派生提示词）在不可达端点上快速失败结束
+    let first = broker
+        .wait_turn(
+            &launch.session_id,
+            launch.turn_seq,
+            Some(Duration::from_secs(15)),
+        )
+        .await
+        .unwrap();
+
+    // 子会话空闲：投递返回独立回执并触发回复轮。
+    let delivered = broker
+        .deliver(&launch.session_id, "reply ok")
+        .await
+        .unwrap();
+    assert!(delivered.starts_with("Delivered;"), "{delivered}");
+    // 等待回复轮结束，保留回执供后续 WaitSession 消费。
+    let handle = manager.get_or_load(&launch.session_id).await.unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while handle.turn_seq() <= first.turn_seq {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "reply turn did not finish"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // 复现竞态时序：WaitSession 在回复轮完成后才计算调用方计数
+    let stale_seen = broker
+        .session_report(&launch.session_id)
+        .await
+        .unwrap()
+        .turn_seq;
+    assert_eq!(stale_seen, first.turn_seq + 1);
+
+    // 回执保存本次回复轮报告，立即返回。
+    let reply = broker
+        .wait_turn(
+            &launch.session_id,
+            stale_seen,
+            Some(Duration::from_secs(15)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply.turn_seq, stale_seen);
+
+    // 回执消费后，下一次等待订阅新的完成轮次。
+    let started = std::time::Instant::now();
+    let again = broker
+        .wait_turn(&launch.session_id, stale_seen, Some(Duration::from_secs(1)))
+        .await;
+    assert!(again.is_err());
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 删除会话级联清理子会话：活跃与冷存的派生链递归删盘，无关会话保留
+#[tokio::test]
+async fn delete_session_cascades_to_child_sessions() {
+    let dir = std::env::temp_dir().join(format!("vva-delete-cascade-{}", uuid::Uuid::new_v4()));
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let manager = Arc::new(SessionManager::new(
+        store.clone(),
+        AppConfig::default(),
+        &dir,
+        dir.join("state.json"),
+    ));
+
+    let parent = Session::with_model(&dir, Some("parent".into()), "p/m", None, true);
+    let mut live_child = Session::with_model(&dir, Some("child".into()), "p/m", None, true);
+    live_child.parent = Some(parent.id.clone());
+    let mut cold_child = Session::with_model(&dir, Some("cold".into()), "p/m", None, true);
+    cold_child.parent = Some(parent.id.clone());
+    let mut grandchild = Session::with_model(&dir, Some("grand".into()), "p/m", None, true);
+    grandchild.parent = Some(live_child.id.clone());
+    let orphan = Session::with_model(&dir, Some("orphan".into()), "p/m", None, true);
+    for session in [&parent, &live_child, &cold_child, &grandchild, &orphan] {
+        store.save_header(session).await.unwrap();
+    }
+
+    let parent_handle = manager.get_or_load(&parent.id).await.unwrap();
+    let _live_handle = manager.get_or_load(&live_child.id).await.unwrap();
+
+    manager.delete_session(&parent_handle).await.unwrap();
+
+    assert!(
+        manager
+            .store()
+            .load_session(&parent.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        manager
+            .store()
+            .load_session(&live_child.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        manager
+            .store()
+            .load_session(&cold_child.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        manager
+            .store()
+            .load_session(&grandchild.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        manager
+            .store()
+            .load_session(&orphan.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn failed_or_aborted_turn_has_no_old_answer_and_cancels_pending_deliveries() {
+    for outcome in [Ok(false), Err("provider failure".to_string())] {
+        let (mut task, _) = event_task();
+        Arc::make_mut(&mut task.view.session)
+            .append_turn(Turn::assistant_turn(vec![Message::text("earlier answer")]));
+        task.turn_start = task.view.session.turns.len();
+        let (completion, receipt) = oneshot::channel();
+        task.pending_deliveries.push(PendingDelivery {
+            text: "queued request".into(),
+            completion,
+        });
+        assert!(!task.finish_turn(outcome).await);
+        assert!(receipt.await.unwrap().is_err());
+        assert!(task.pending_deliveries.is_empty());
+        assert!(task.turn_tx.borrow().text.is_empty());
+        assert!(task.turn_tx.borrow().error.is_some());
+        let (_, mut commands) = mpsc::channel(1);
+        assert!(!task.run_pending_deliveries(&mut commands).await);
+        assert_eq!(task.view.session.turns.len(), 1);
+        assert_eq!(task.turn_seq, 1);
+        let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+    }
 }

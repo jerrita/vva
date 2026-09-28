@@ -67,7 +67,20 @@ pub struct Session {
         skip_serializing_if = "EditorKind::is_replace"
     )]
     pub editor: EditorKind,
+    /// 父会话 id（subagent 会话指向派生它的会话）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// 派生本会话的 agent 定义名（`.vva/agents` 内置或自定义）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// subagent 嵌套深度（顶层会话为 0）
+    #[serde(default, skip_serializing_if = "is_zero_depth")]
+    pub depth: u8,
     pub turns: Vec<Turn>,
+}
+
+fn is_zero_depth(depth: &u8) -> bool {
+    *depth == 0
 }
 
 const SESSION_ID_SUFFIX_LEN: usize = 5;
@@ -101,6 +114,9 @@ impl Session {
             current_variant,
             web_search,
             editor: EditorKind::default(),
+            parent: None,
+            agent: None,
+            depth: 0,
             turns: Vec::new(),
         }
     }
@@ -181,6 +197,12 @@ pub struct SessionHeader {
         skip_serializing_if = "EditorKind::is_replace"
     )]
     pub editor: EditorKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_depth")]
+    pub depth: u8,
 }
 
 impl From<&Session> for SessionHeader {
@@ -194,6 +216,9 @@ impl From<&Session> for SessionHeader {
             current_variant: s.current_variant.clone(),
             web_search: s.web_search,
             editor: s.editor,
+            parent: s.parent.clone(),
+            agent: s.agent.clone(),
+            depth: s.depth,
         }
     }
 }
@@ -211,6 +236,9 @@ impl SessionHeader {
             current_variant: self.current_variant,
             web_search: self.web_search,
             editor: self.editor,
+            parent: self.parent,
+            agent: self.agent,
+            depth: self.depth,
             turns,
         }
     }
@@ -235,6 +263,12 @@ pub struct SessionSummary {
     pub current_model: String,
     pub current_variant: Option<String>,
     pub web_search: bool,
+    /// 父会话 id（subagent 会话指向派生它的会话；顶层会话为 None）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// 派生本会话的 agent 定义名（subagent 会话携带）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 impl SessionSummary {
@@ -249,6 +283,8 @@ impl SessionSummary {
             current_model: header.current_model,
             current_variant: header.current_variant,
             web_search: header.web_search,
+            parent: header.parent,
+            agent: header.agent,
         }
     }
 }

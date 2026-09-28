@@ -474,6 +474,17 @@ body.resizing .chat-scroll {
   font-weight: 500;
 }
 
+/* subagent 子会话：层级缩进经内联 margin-left 表达，分支标记弱化 */
+.session-fork {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--faint);
+}
+
+.session-item.active .session-fork {
+  color: var(--accent);
+}
+
 .session-title {
   flex: 1;
   min-width: 0;
@@ -1176,6 +1187,32 @@ body.resizing .chat-scroll {
 .banner.notice {
   color: var(--warning);
   background: var(--warning-soft);
+}
+
+.banner.notice .notice-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.banner.notice .notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.notice-dismiss {
+  flex-shrink: 0;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 5px;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.notice-dismiss:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* ---- 聊天区 ---- */

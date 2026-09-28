@@ -24,6 +24,16 @@ pub(super) struct SessionTask {
     pub(super) tasks: Arc<crate::tools::background::BackgroundTasks>,
     /// 已完成、尚未注入会话的后台任务 id（轮次间隙注入）
     pub(super) task_completions: Vec<String>,
+    /// 已完成、尚未注入会话的后台子代理 session id（轮次间隙注入最终消息）
+    pub(super) subagent_completions: Vec<String>,
+    /// 运行中到达的程序化消息及其独立完成回执
+    pub(super) pending_deliveries: Vec<PendingDelivery>,
+    /// 已完成轮次计数通道：每次 finish_turn 递增，供外部等待轮次结束
+    pub(super) turn_tx: watch::Sender<CompletedTurn>,
+    pub(super) turn_start: usize,
+    pub(super) turn_seq: u64,
+    /// 会话编排接口（子代理派生与跨会话投递）
+    pub(super) broker: Arc<dyn crate::tools::agent::SessionBroker>,
 }
 
 /// 提交前校验附件：图片先过输入能力，File 校验 MIME 一致性
@@ -357,14 +367,19 @@ impl SessionTask {
             .ensure_tool_outputs(&self.view.session.workspace_root)
             .await
             .map_err(|e| e.to_string())?;
+        let agents = crate::agents::discover_agents(&self.view.session.workspace_root);
         AgentEngine::new(
             &self.config,
             &self.view.session,
-            tool_outputs,
-            self.hashline.clone(),
-            self.ask_user_tx.clone(),
-            self.tasks.clone(),
-            skills,
+            EngineDeps {
+                tool_outputs,
+                hashline: self.hashline.clone(),
+                ask_user_requests: self.ask_user_tx.clone(),
+                background: self.tasks.clone(),
+                skills,
+                agents,
+                broker: self.broker.clone(),
+            },
         )
     }
 
@@ -423,6 +438,24 @@ impl SessionTask {
         .await
         .map_err(|e| e.to_string())?;
 
+        // 子代理会话：agent 定义的角色指令追加到基础 System Prompt
+        let agent_def = session
+            .agent
+            .as_deref()
+            .map(|name| {
+                crate::agents::discover_agents(&session.workspace_root)
+                    .into_iter()
+                    .find(|def| def.name == name)
+                    .ok_or_else(|| format!("Agent definition '{name}' is unavailable"))
+            })
+            .transpose()?;
+        let system = match agent_def
+            .as_ref()
+            .and_then(|def| def.system_prompt.as_deref())
+        {
+            Some(extra) => format!("{system}\n\n{extra}"),
+            None => system,
+        };
         session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
 
         let mut loaded_canonical = Vec::new();
@@ -443,7 +476,11 @@ impl SessionTask {
                 session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
             }
         }
-        if !skills.is_empty() {
+        // 子代理工具白名单未含 Skill 时不注入技能清单（指令与能力保持一致）
+        let skill_allowed = agent_def
+            .as_ref()
+            .is_none_or(|def| def.tools.iter().any(|tool| tool == "Skill"));
+        if !skills.is_empty() && skill_allowed {
             let reminder = crate::system::format_skills_reminder(skills);
             session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
         }
@@ -512,9 +549,38 @@ impl SessionTask {
         Ok(())
     }
 
+    /// 后台子代理完成：入队等待轮次间隙注入最终消息；
+    /// notify 时先给 UI 一条短通知（仅运行中路径）
+    pub(super) async fn queue_subagent_completion(&mut self, session_id: String, notify: bool) {
+        if notify {
+            self.event(AgentEvent::Notice(format!(
+                "Background agent {session_id} finished"
+            )))
+            .await;
+        }
+        self.subagent_completions.push(session_id);
+    }
+
+    /// 将后台子代理的最终消息通知作为用户轮次注入会话（下一次模型调用可见）
+    pub(super) async fn drain_subagent_completions(&mut self) -> Result<(), String> {
+        for session_id in std::mem::take(&mut self.subagent_completions) {
+            match self.broker.session_report(&session_id).await {
+                Ok(report) => {
+                    let text = crate::tools::agent::format_subagent_reminder(&report);
+                    self.append(Turn::new(Role::User, vec![Message::text(text)]))
+                        .await?;
+                }
+                Err(error) => {
+                    tracing::warn!("Subagent {session_id} report failed: {error}");
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 网络与工具等待期间处理设置和取消；磁盘提交在本任务中顺序完成。
     /// 流式增量以 PUBLISH_INTERVAL 为节奏发布，慢于终端重绘频率即无可见差异。
-    async fn drive<T>(
+    pub(super) async fn drive<T>(
         &mut self,
         future: impl Future<Output = T>,
         commands: &mut mpsc::Receiver<Command>,
@@ -537,8 +603,19 @@ impl SessionTask {
                         self.handle_configure(model, variant, search, reply).await;
                     }
                     Some(Command::Title(title)) => self.handle_title(title).await,
+                    Some(Command::DismissNotice { index, reply }) => {
+                        let _ = reply.send(self.dismiss_notice(index));
+                    }
                     Some(Command::TaskFinished { task_id }) => {
                         self.queue_task_completion(task_id, true).await;
+                    }
+                    Some(Command::SubagentFinished { session_id }) => {
+                        self.queue_subagent_completion(session_id, true).await;
+                    }
+                    Some(Command::Deliver { delivery, reply }) => {
+                        // 程序化消息不拒绝：入队待轮次结束后处理
+                        self.pending_deliveries.push(delivery);
+                        let _ = reply.send(Ok(()));
                     }
                     Some(Command::Submit { reply, .. }) | Some(Command::Revert { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
                     Some(Command::AnswerUser { request_id, answers, reply }) => {
@@ -574,6 +651,16 @@ impl SessionTask {
         }
     }
 
+    /// 关闭一条运行通知：按快照下标移除并即时发布（发布间通知仅追加，下标稳定）
+    fn dismiss_notice(&mut self, index: usize) -> Result<(), String> {
+        if index >= self.view.notices.len() {
+            return Err(format!("Notice {index} does not exist"));
+        }
+        self.view.notices.remove(index);
+        self.publish();
+        Ok(())
+    }
+
     pub(super) async fn execute(
         &mut self,
         engine: AgentEngine,
@@ -589,6 +676,7 @@ impl SessionTask {
         let worked_started = Instant::now();
         loop {
             self.drain_task_completions().await?;
+            self.drain_subagent_completions().await?;
             self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
@@ -658,6 +746,16 @@ impl SessionTask {
                 )
                 .await
             else {
+                // 中止：为未决 tool_call 合成错误结果，保持 tool_call / tool_result 配对完整；
+                // 前台子代理随父会话本轮中止联动停止
+                let results = calls
+                    .iter()
+                    .map(|call| {
+                        crate::model::ToolResult::error(&call.id, "Tool execution aborted by user")
+                    })
+                    .collect();
+                self.commit_tool_results(calls, results).await?;
+                self.broker.abort_children(&self.view.session.id).await;
                 return Ok(false);
             };
             let on_demand_agents = self.commit_tool_results(calls, results).await?;
@@ -775,6 +873,7 @@ impl SessionTask {
     }
 
     async fn stop(&mut self, delete: bool, reply: Reply) -> bool {
+        self.cancel_deliveries("Session stopped");
         let result = if delete && self.view.persisted {
             self.store
                 .delete_session(&self.view.session.id)
@@ -788,13 +887,14 @@ impl SessionTask {
         close
     }
 
-    /// 连续执行轮次：后台任务在轮次间隙完成时自动续跑，直到队列清空或轮次终止。
+    /// 连续执行轮次：后台任务与后台子代理在轮次间隙完成时自动续跑，直到队列清空或轮次终止。
     /// 用户中止与供应商错误不自动续跑，队列留给下次 Submit 注入。
     async fn run_turns(
         &mut self,
         engine: AgentEngine,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<bool, String> {
+        self.turn_start = self.view.session.turns.len();
         let mut engine = Some(engine);
         loop {
             let result = self
@@ -804,7 +904,7 @@ impl SessionTask {
                 Err(error) => return Err(error),
                 Ok(false) => return Ok(false),
                 Ok(true) => {
-                    if self.task_completions.is_empty() {
+                    if self.task_completions.is_empty() && self.subagent_completions.is_empty() {
                         return Ok(true);
                     }
                     let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
@@ -816,7 +916,25 @@ impl SessionTask {
 
     /// 轮次收尾：状态复位、终态事件、CLI 通道释放与停止请求处理；
     /// 返回是否终止会话任务
-    async fn finish_turn(&mut self, result: Result<bool, String>) -> bool {
+    pub(super) async fn finish_turn(&mut self, result: Result<bool, String>) -> bool {
+        let error = match &result {
+            Ok(true) => None,
+            Ok(false) => Some("Turn aborted".to_string()),
+            Err(error) => Some(error.clone()),
+        };
+        if let Some(error) = &error {
+            self.cancel_deliveries(error);
+        }
+        let text = if error.is_none() {
+            self.view.session.turns[self.turn_start..]
+                .iter()
+                .rev()
+                .find(|turn| turn.role == Role::Assistant)
+                .map(Turn::text_content)
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         self.view.state = RunState::Idle;
         match result {
             Ok(true) => self.event(AgentEvent::Finished).await,
@@ -824,8 +942,66 @@ impl SessionTask {
             Err(error) => self.event(AgentEvent::Error(error)).await,
         }
         self.cli = None;
+        // 已完成轮次计数递增，唤醒等待本轮结束的外部订阅者（Agent / WaitSession）
+        self.turn_seq += 1;
+        self.turn_tx.send_replace(CompletedTurn {
+            seq: self.turn_seq,
+            text,
+            error,
+        });
         if let Some((delete, reply)) = self.stop_request.take() {
             return self.stop(delete, reply).await;
+        }
+        false
+    }
+
+    fn cancel_deliveries(&mut self, error: &str) {
+        for delivery in std::mem::take(&mut self.pending_deliveries) {
+            let _ = delivery.completion.send(Err(error.into()));
+        }
+    }
+
+    /// 同一轮次间隙的投递合并处理，每个投递者获得该轮固定的完成报告。
+    pub(super) async fn run_pending_deliveries(
+        &mut self,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> bool {
+        while !self.pending_deliveries.is_empty() {
+            let deliveries = std::mem::take(&mut self.pending_deliveries);
+            let text = deliveries
+                .iter()
+                .map(|delivery| delivery.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let engine = match self.start(&text, Vec::new()).await {
+                Ok(engine) => engine,
+                Err(error) => {
+                    for delivery in deliveries {
+                        let _ = delivery.completion.send(Err(error.clone()));
+                    }
+                    self.cancel_deliveries(&error);
+                    self.event(AgentEvent::Error(error)).await;
+                    return false;
+                }
+            };
+            let result = self.run_turns(engine, commands).await;
+            let successful = matches!(result, Ok(true));
+            let close = self.finish_turn(result).await;
+            let completed = self.turn_tx.borrow().clone();
+            let report = crate::tools::agent::SubagentReport {
+                session_id: self.view.session.id.clone(),
+                agent: self.view.session.agent.clone().unwrap_or_default(),
+                title: self.view.session.title.clone().unwrap_or_default(),
+                turn_seq: completed.seq,
+                text: completed.text,
+                error: completed.error,
+            };
+            for delivery in deliveries {
+                let _ = delivery.completion.send(Ok(report.clone()));
+            }
+            if close || !successful {
+                return close;
+            }
         }
         false
     }
@@ -851,7 +1027,17 @@ impl SessionTask {
                     };
                     self.cli = events;
                     let result = self.run_turns(engine, &mut commands).await;
-                    if self.finish_turn(result).await {
+                    if self.finish_turn(result).await
+                        || self.run_pending_deliveries(&mut commands).await
+                    {
+                        break;
+                    }
+                }
+                Command::Deliver { delivery, reply } => {
+                    // 空闲时到达的程序化消息：立即作为下一轮执行
+                    let _ = reply.send(Ok(()));
+                    self.pending_deliveries.push(delivery);
+                    if self.run_pending_deliveries(&mut commands).await {
                         break;
                     }
                 }
@@ -864,6 +1050,9 @@ impl SessionTask {
                     self.handle_configure(model, variant, search, reply).await;
                 }
                 Command::Title(title) => self.handle_title(title).await,
+                Command::DismissNotice { index, reply } => {
+                    let _ = reply.send(self.dismiss_notice(index));
+                }
                 Command::TaskFinished { task_id } => {
                     // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次（无需短通知）
                     self.queue_task_completion(task_id, false).await;
@@ -871,12 +1060,32 @@ impl SessionTask {
                     match self.build_engine(skills).await {
                         Ok(engine) => {
                             let result = self.run_turns(engine, &mut commands).await;
-                            if self.finish_turn(result).await {
+                            if self.finish_turn(result).await
+                                || self.run_pending_deliveries(&mut commands).await
+                            {
                                 break;
                             }
                         }
                         Err(error) => {
                             // 通知保留在队列，下次 Submit 注入
+                            self.event(AgentEvent::Error(error)).await;
+                        }
+                    }
+                }
+                Command::SubagentFinished { session_id } => {
+                    // 空闲时收到子代理完成：入队后自动续跑，execute 首轮注入最终消息
+                    self.queue_subagent_completion(session_id, false).await;
+                    let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
+                    match self.build_engine(skills).await {
+                        Ok(engine) => {
+                            let result = self.run_turns(engine, &mut commands).await;
+                            if self.finish_turn(result).await
+                                || self.run_pending_deliveries(&mut commands).await
+                            {
+                                break;
+                            }
+                        }
+                        Err(error) => {
                             self.event(AgentEvent::Error(error)).await;
                         }
                     }

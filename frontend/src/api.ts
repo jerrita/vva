@@ -58,6 +58,9 @@ export const api = {
   fork: (id: string, turnIndex: number) =>
     request<SessionSnapshot>(`/api/sessions/${id}/fork`, json('POST', { turn_index: turnIndex })),
   abort: (id: string) => request<void>(`/api/sessions/${id}/abort`, { method: 'POST' }),
+  /** 关闭一条运行通知横幅（按快照下标） */
+  dismissNotice: (id: string, index: number) =>
+    request<void>(`/api/sessions/${id}/notices/dismiss`, json('POST', { index })),
   answerUser: (id: string, requestId: string, answers: UserAnswer[]) =>
     request<void>(`/api/sessions/${id}/answer`, json('POST', { request_id: requestId, answers })),
   configure: (id: string, body: ConfigureBody) =>

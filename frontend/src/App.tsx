@@ -11,7 +11,7 @@ import { Sash } from './components/Sash'
 import { Sidebar, groupByProject, projectName, type ProjectOption } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
 import { StatsPanel } from './components/StatsPanel'
-import { IconActivity, IconPanelLeft, IconPanelRight } from './components/icons'
+import { IconActivity, IconPanelLeft, IconPanelRight, IconX } from './components/icons'
 import { FileSidebar } from './components/FileSidebar'
 import { useComposerVisibility } from './hooks/useComposerVisibility'
 import { usePanelLayout } from './hooks/usePanelLayout'
@@ -177,12 +177,15 @@ export default function App() {
 
   // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次 / 运行态）
   const listKey = useRef('')
+  // 服务端清单尚未收录的本地会话（已创建未持久化）：轮询合并时保留
+  const localOnlyIds = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!snap || !snap.persisted) return
     const s = snap.session
     const key = `${s.id}|${s.title ?? ''}|${s.current_model}|${s.current_variant ?? ''}|${s.turns.length}|${snap.state}`
     if (key === listKey.current) return
     listKey.current = key
+    localOnlyIds.current.delete(s.id)
     const summary: SessionSummary = {
       id: s.id,
       title: s.title ?? null,
@@ -192,6 +195,8 @@ export default function App() {
       current_model: s.current_model,
       current_variant: s.current_variant ?? null,
       web_search: s.web_search,
+      parent: s.parent ?? null,
+      agent: s.agent ?? null,
       state: snap.state,
     }
     setSessions(prev => [summary, ...prev.filter(item => item.id !== s.id)])
@@ -243,6 +248,25 @@ export default function App() {
       for (const unsubscribe of unsubscribers) unsubscribe()
     }
   }, [runningWatchKey, setUnreadIds])
+
+  // 定期刷新列表：有生成中会话时 4s 快速跟进（新派生的 subagent 会话由引擎侧
+  // 创建，本地无通知）；全部空闲时 15s 兜底纠偏（如外部触发的运行态变化）
+  const anyGenerating = sessions.some(session => Boolean(session.state))
+  useEffect(() => {
+    const timer = setInterval(() => {
+      api
+        .sessions()
+        .then(list => {
+          setSessions(prev => {
+            for (const item of list) localOnlyIds.current.delete(item.id)
+            // 保留本地未持久化条目；服务端已消失的（含级联删除的子会话）随之移除
+            return [...list, ...prev.filter(item => localOnlyIds.current.has(item.id))]
+          })
+        })
+        .catch(() => {})
+    }, anyGenerating ? 4000 : 15000)
+    return () => clearInterval(timer)
+  }, [anyGenerating])
 
   const prevActiveRef = useRef<{ id: string | null; state: string }>({
     id: null,
@@ -327,6 +351,7 @@ export default function App() {
             workspace: draftProject || undefined,
           })
           id = created.session.id
+          localOnlyIds.current.add(id)
           setActiveId(id)
         }
         await api.submit(id, text, files)
@@ -349,6 +374,18 @@ export default function App() {
       setError(toError(e))
     }
   }, [activeId])
+
+  // 关闭通知横幅：本地乐观移除，服务端同步发布给全部订阅者
+  const dismissNotice = useCallback(
+    (index: number) => {
+      if (!activeId) return
+      setSnap(prev =>
+        prev ? { ...prev, notices: prev.notices.filter((_, i) => i !== index) } : prev,
+      )
+      api.dismissNotice(activeId, index).catch(() => {})
+    },
+    [activeId],
+  )
 
   const answerUser = useCallback(
     async (answers: UserAnswer[]) => {
@@ -404,6 +441,7 @@ export default function App() {
     async (id: string) => {
       try {
         await api.deleteSession(id)
+        localOnlyIds.current.delete(id)
         setSessions(prev => prev.filter(item => item.id !== id))
         if (activeId === id) setActiveId(null)
       } catch (e) {
@@ -615,7 +653,17 @@ export default function App() {
         {snap && snap.notices.length > 0 && (
           <div className="banner notice">
             {snap.notices.map((notice, index) => (
-              <div key={index}>{notice}</div>
+              <div key={index} className="notice-row">
+                <button
+                  className="notice-dismiss"
+                  aria-label="关闭提示"
+                  title="关闭提示"
+                  onClick={() => dismissNotice(index)}
+                >
+                  <IconX size={12} />
+                </button>
+                <span className="notice-text">{notice}</span>
+              </div>
             ))}
           </div>
         )}

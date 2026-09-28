@@ -167,6 +167,8 @@ mod tests {
             current_model: "model_a".into(),
             current_variant: None,
             web_search: false,
+            parent: None,
+            agent: None,
         };
 
         let s2 = SessionSummary {
@@ -178,6 +180,8 @@ mod tests {
             current_model: "model_a".into(),
             current_variant: None,
             web_search: false,
+            parent: None,
+            agent: None,
         };
 
         let s3 = SessionSummary {
@@ -189,6 +193,8 @@ mod tests {
             current_model: "model_b".into(),
             current_variant: None,
             web_search: false,
+            parent: None,
+            agent: None,
         };
 
         let mut modal = SessionsModalState::new(vec![s1, s2, s3], &ws_a);
@@ -235,6 +241,8 @@ mod tests {
                 current_model: "model".into(),
                 current_variant: None,
                 web_search: false,
+                parent: None,
+                agent: None,
             })
             .collect();
         let mut modal = SessionsModalState::new(sessions, &workspace);

@@ -172,12 +172,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
 
-            let manager = SessionManager::new(
+            let manager = Arc::new(SessionManager::new(
                 store.clone(),
                 app_config,
                 workspace,
                 vva_dir.join("state.json"),
-            );
+            ));
             let session = manager
                 .open_session(session_id.as_deref(), model, variant, web_search)
                 .await?;

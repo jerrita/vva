@@ -78,7 +78,7 @@ src/
 │   ├── content.rs          # 多模态 (Image)、搜索与 Annotation
 │   ├── message.rs          # Role 与 Message (内容分组值对象，仅持有 parts)
 │   ├── turn.rs             # Turn 与 TokenUsage
-│   ├── session.rs          # Session 与 JSONL 记录定义 (SessionHeader / JsonlRecord)
+│   ├── session.rs          # Session 与 JSONL 记录定义 (SessionHeader / JsonlRecord / subagent parent·agent·depth 标记)
 │   └── tool.rs             # ToolCall, ToolResult, ToolDefinition
 ├── storage/                # 存储抽象与实现
 │   ├── mod.rs              # SessionStore Trait
@@ -100,12 +100,16 @@ src/
 │   │   └── stream.rs       # SSE 流式事件累积处理器 (content blocks / usage / stop_reason)
 │   ├── gemini.rs           # Google Gemini API (Grounding 多 chunk 合并投影 + 代码沙盒 + 共享累积器)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
+├── agents/                 # Subagent 定义：YAML agent 类型解析与发现
+│   └── mod.rs              # AgentDef 强类型解析与校验、discover_agents (内置 general/explore + 全局 ~/.vva/agents、~/.agents/agents + 项目 .vva/agents、.agents/agents，同名后者覆盖前者)
 ├── skills/                 # Agent Skills (agentskills.io 规范：SKILL.md 技能包解析与发现)
 │   └── mod.rs              # SkillFrontmatter 强类型解析与校验、discover_skills (全局 ~/.vva/skills、~/.agents/skills + 项目 .vva/skills、.agents/skills，优先级 项目 .vva > 项目 .agents > 全局 .vva > 全局 .agents，同名后者覆盖前者)
 ├── tools/                  # Coding 工具集
-│   ├── mod.rs              # Tool Trait 与 ToolRegistry
+│   ├── mod.rs              # Tool Trait 与 ToolRegistry (register/retain 白名单裁剪)
+│   ├── agent.rs            # Agent 工具与 SessionBroker trait：派生 subagent 会话 (前台阻塞/后台回投) + SubagentReport/完成通知格式化
+│   ├── session_ipc.rs      # SendMessage / WaitSession 跨会话消息工具 (空闲触发轮次、忙时入队)
 │   ├── shell.rs            # Shell 执行 (前台超时/输出上限/退出码检查 + run_in_background 后台执行)
-│   ├── background.rs       # 后台任务注册表 (TaskOutput / TaskStop 工具，内存态、随会话结束回收)
+│   ├── background.rs       # 后台任务注册表 (TaskOutput / TaskStop 工具，TaskStop 兼停 sess_ 子会话，内存态、随会话结束回收)
 │   ├── filesystem/         # Read、Write、Edit、Glob、Grep 与共享基建 (路径解析/目录遍历/brace 展开/unified diff)
 │   │   ├── mod.rs          # 共享辅助与 parse_args 解析、各工具 re-export
 │   │   ├── read.rs         # Read (分页/媒体嗅探/hashline 快照/内容版本号)
@@ -130,13 +134,13 @@ src/
 │       └── block.rs        # `N*` 块操作启发式解析
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
-│   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions) 与 capability_notices 能力协商
+│   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions + EngineDeps 依赖注入) 与 capability_notices 能力协商；subagent 会话按 agent 定义裁剪工具
 │   └── session/            # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
 │       ├── mod.rs          # 模块导出 (SessionManager/ManagedSession/SessionView/RunState)
 │       ├── view.rs         # SessionView 只读快照与 RunState
-│       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议
-│       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换
-│       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止/后台任务完成注入与续跑)
+│       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议 (Submit/Deliver/SubagentFinished 等) 与 turn_seq 轮次计数
+│       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换 + SessionBrokerHandle (spawn_subagent/deliver/wait_turn 子代理编排)
+│       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止时合成未决工具结果/后台任务与子代理完成注入续跑/Deliver 邮箱冲刷)
 ├── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── app/                # App 响应式控制器、状态机与子系统调度
     │   ├── mod.rs          # App 结构体定义、生命周期与模块导出

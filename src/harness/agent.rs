@@ -47,16 +47,19 @@ pub(super) struct AgentEngine {
     pub(super) inputs: crate::config::resolver::InputCapabilities,
 }
 
+/// 引擎装配依赖：会话级共享句柄与每次构建时重新发现的清单
+pub(super) struct EngineDeps {
+    pub tool_outputs: PathBuf,
+    pub hashline: Arc<crate::tools::hashline::HashlineSession>,
+    pub ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
+    pub background: Arc<crate::tools::background::BackgroundTasks>,
+    pub skills: Vec<crate::skills::Skill>,
+    pub agents: Vec<crate::agents::AgentDef>,
+    pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
+}
+
 impl AgentEngine {
-    pub fn new(
-        config: &AppConfig,
-        session: &Session,
-        tool_outputs: PathBuf,
-        hashline: Arc<crate::tools::hashline::HashlineSession>,
-        ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
-        background: Arc<crate::tools::background::BackgroundTasks>,
-        skills: Vec<crate::skills::Skill>,
-    ) -> Result<Self, String> {
+    pub fn new(config: &AppConfig, session: &Session, deps: EngineDeps) -> Result<Self, String> {
         let resolved = config
             .resolve_model(&session.current_model, session.current_variant.as_deref())
             .map_err(|e| e.to_string())?;
@@ -64,9 +67,9 @@ impl AgentEngine {
         inputs.validate_session(session)?;
         let mut tools = ToolRegistry::with_editor_session(
             &session.workspace_root,
-            Some(tool_outputs),
+            Some(deps.tool_outputs),
             session.editor,
-            hashline,
+            deps.hashline,
         );
         let mut read = crate::tools::filesystem::ReadTool::new(&session.workspace_root)
             .with_inputs(inputs.clone())
@@ -76,23 +79,58 @@ impl AgentEngine {
         }
         tools.register(Arc::new(read));
         tools.register(Arc::new(crate::tools::ask_user::AskUserTool::new(
-            ask_user_requests,
+            deps.ask_user_requests,
         )));
         // 后台任务工具随会话级注册表注入（Shell 覆盖注册以绑定 run_in_background）
         tools.register(Arc::new(
             crate::tools::shell::ShellTool::new(&session.workspace_root)
-                .with_background(background.clone()),
+                .with_background(deps.background.clone()),
         ));
         tools.register(Arc::new(crate::tools::background::TaskOutputTool::new(
-            background.clone(),
+            deps.background.clone(),
         )));
-        tools.register(Arc::new(crate::tools::background::TaskStopTool::new(
-            background,
-        )));
+        tools.register(Arc::new(
+            crate::tools::background::TaskStopTool::new(deps.background)
+                .with_broker(deps.broker.clone()),
+        ));
         tools.register(Arc::new(crate::tools::skill::SkillTool::new(Arc::new(
-            skills,
+            deps.skills,
         ))));
+        // 子代理派生与跨会话投递（subagent 会话按定义白名单裁剪）
+        let agent_def = session
+            .agent
+            .as_deref()
+            .map(|name| {
+                deps.agents
+                    .iter()
+                    .find(|def| def.name == name)
+                    .cloned()
+                    .ok_or_else(|| format!("Agent definition '{name}' is unavailable"))
+            })
+            .transpose()?;
+        tools.register(Arc::new(crate::tools::agent::AgentTool::new(
+            deps.broker.clone(),
+            Arc::new(deps.agents),
+            crate::tools::agent::SubagentContext::from_session(session),
+        )));
+        tools.register(Arc::new(crate::tools::session_ipc::SendMessageTool::new(
+            deps.broker.clone(),
+        )));
+        tools.register(Arc::new(crate::tools::session_ipc::WaitSessionTool::new(
+            deps.broker,
+        )));
+        let allowed = |name: &str| {
+            agent_def
+                .as_ref()
+                .is_none_or(|def| crate::tools::tool_allowed(&def.tools, name))
+        };
+        let search_allowed = allowed("WebSearch");
+        let fetch_allowed = allowed("WebFetch");
         let provider = resolved.create_provider();
+        let capabilities = provider.capabilities();
+        // Responses 的 web_search 同时提供 open_page/find_in_page，须授权完整工具能力。
+        let bundled_fetch = capabilities.server_tool_names.contains(&"web_search")
+            && !capabilities.server_tool_names.contains(&"web_fetch");
         let affinity = resolved.affinity();
         let max_tokens = resolved
             .model_config
@@ -107,27 +145,36 @@ impl AgentEngine {
             model: resolved.model_id,
             max_tokens,
             reasoning_effort: resolved.selected_variant,
-            enable_web_search: session.web_search && resolved.model_config.declare_web_search(),
-            enable_web_fetch: resolved.model_config.declare_web_fetch(),
+            enable_web_search: session.web_search
+                && resolved.model_config.declare_web_search()
+                && search_allowed
+                && (!bundled_fetch || fetch_allowed),
+            enable_web_fetch: session.web_search
+                && resolved.model_config.declare_web_search()
+                && resolved.model_config.declare_web_fetch()
+                && fetch_allowed,
             service_tier: resolved.model_config.service_tier().map(str::to_string),
             affinity: Some(affinity.clone()),
             ..Default::default()
         };
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
         // 客户端调用时，注册表给出显式诊断而非误导性的 Tool not found
-        let capabilities = provider.capabilities();
-        if options.enable_web_search {
-            let mut server_tools = capabilities.server_tool_names.clone();
-            if !options.enable_web_fetch {
-                server_tools.retain(|name| *name != "web_fetch");
-            }
-            tools.reserve_server_tools(server_tools);
-        }
+        tools.reserve_server_tools(
+            capabilities
+                .server_tool_names
+                .iter()
+                .copied()
+                .filter(|name| match *name {
+                    "web_search" => options.enable_web_search,
+                    "web_fetch" => options.enable_web_fetch,
+                    _ => allowed(name),
+                }),
+        );
         // 原生 web 能力缺位时以外置 provider 的客户端工具补全（配置错误在此显式报错）
         let mut notices = Vec::new();
         let mut external_search = false;
         let mut activated: Vec<String> = Vec::new();
-        if session.web_search {
+        if session.web_search && (search_allowed || fetch_allowed) {
             let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
             let native_search = options.enable_web_search && capabilities.supports_native_search;
             // 独立 web_fetch server tool（Anthropic）按声明位；
@@ -137,20 +184,29 @@ impl AgentEngine {
             } else {
                 native_search && capabilities.server_tool_names.contains(&"web_search")
             };
-            if !native_search && let Some(search) = &external.search {
+            if search_allowed
+                && !native_search
+                && let Some(search) = &external.search
+            {
                 tools.register(Arc::new(crate::tools::web::tool::WebSearchTool::new(
                     search.clone(),
                 )));
                 activated.push(search.name().to_string());
                 external_search = true;
             }
-            if !native_fetch && let Some(fetch) = &external.fetch {
+            if fetch_allowed
+                && !native_fetch
+                && let Some(fetch) = &external.fetch
+            {
                 tools.register(Arc::new(crate::tools::web::tool::WebFetchTool::new(
                     fetch.clone(),
                 )));
                 activated.push(fetch.name().to_string());
             }
             activated.dedup();
+        }
+        if let Some(def) = &agent_def {
+            tools.retain(&def.tools);
         }
         // 亲和组切换：前一段原生状态（链锚点 / 签名块）无法回传，历史降维重建，显式告知
         let previous_scope = session.turns.iter().rev().find_map(|turn| {
@@ -321,18 +377,69 @@ mod tests {
 
     /// AgentEngine::new 的测试构造器：不发起网络请求
     fn build_engine(config: &AppConfig, session: &Session) -> Result<AgentEngine, String> {
+        build_engine_with_agents(config, session, crate::agents::builtin_agents())
+    }
+
+    fn build_engine_with_agents(
+        config: &AppConfig,
+        session: &Session,
+        agents: Vec<crate::agents::AgentDef>,
+    ) -> Result<AgentEngine, String> {
         let (tx, _rx) = mpsc::channel(1);
         AgentEngine::new(
             config,
             session,
-            std::env::temp_dir().join(format!("vva-agent-test-{}", uuid::Uuid::new_v4())),
-            crate::tools::hashline::HashlineSession::new(),
-            tx,
-            std::sync::Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
-                |_| {},
-            ))),
-            Vec::new(),
+            EngineDeps {
+                tool_outputs: std::env::temp_dir()
+                    .join(format!("vva-agent-test-{}", uuid::Uuid::new_v4())),
+                hashline: crate::tools::hashline::HashlineSession::new(),
+                ask_user_requests: tx,
+                background: Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
+                    |_| {},
+                ))),
+                skills: Vec::new(),
+                agents,
+                broker: Arc::new(StubBroker),
+            },
         )
+    }
+
+    /// 无编排能力的 broker 桩：engine 构建路径不触发网络与派生
+    struct StubBroker;
+
+    #[async_trait::async_trait]
+    impl crate::tools::agent::SessionBroker for StubBroker {
+        async fn spawn_subagent(
+            &self,
+            _parent: &crate::tools::agent::SubagentContext,
+            _def: &crate::agents::AgentDef,
+            _prompt: &str,
+            _description: &str,
+            _background: bool,
+        ) -> Result<crate::tools::agent::SubagentLaunch, String> {
+            Err("stub broker".into())
+        }
+        async fn deliver(&self, _session_id: &str, _text: &str) -> Result<String, String> {
+            Err("stub broker".into())
+        }
+        async fn wait_turn(
+            &self,
+            _session_id: &str,
+            _seen_seq: u64,
+            _timeout: Option<std::time::Duration>,
+        ) -> Result<crate::tools::agent::SubagentReport, String> {
+            Err("stub broker".into())
+        }
+        async fn session_report(
+            &self,
+            _session_id: &str,
+        ) -> Result<crate::tools::agent::SubagentReport, String> {
+            Err("stub broker".into())
+        }
+        async fn abort_session(&self, _session_id: &str) -> Result<(), String> {
+            Err("stub broker".into())
+        }
+        async fn abort_children(&self, _parent_id: &str) {}
     }
 
     #[tokio::test]
@@ -345,6 +452,119 @@ mod tests {
         let shell = engine.tools.get("Shell").unwrap();
         let property = &shell.parameters()["properties"]["run_in_background"];
         assert_eq!(property["type"], "boolean");
+    }
+
+    #[tokio::test]
+    async fn engine_registers_subagent_tools_for_top_level_sessions() {
+        let config = web_config(None);
+        let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();
+
+        assert!(engine.tools.get("Agent").is_some());
+        assert!(engine.tools.get("SendMessage").is_some());
+        assert!(engine.tools.get("WaitSession").is_some());
+        // agent 参数 enum 来自发现结果（含内置定义）
+        let agent = engine.tools.get("Agent").unwrap();
+        let parameters = agent.parameters();
+        let names: Vec<_> = parameters["properties"]["agent"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["explore", "general"]);
+    }
+
+    #[tokio::test]
+    async fn subagent_session_registry_is_pruned_to_def_allowlist() {
+        let config = web_config(None);
+        let mut session = session_for("p/nos", false);
+        session.agent = Some("explore".into());
+        session.parent = Some("sess_p0".into());
+        session.depth = 1;
+        let engine = build_engine(&config, &session).unwrap();
+
+        assert!(engine.tools.get("Read").is_some());
+        assert!(engine.tools.get("Glob").is_some());
+        assert!(engine.tools.get("Grep").is_some());
+        for pruned in [
+            "Shell",
+            "Write",
+            "Edit",
+            "Agent",
+            "SendMessage",
+            "WaitSession",
+        ] {
+            assert!(
+                engine.tools.get(pruned).is_none(),
+                "{pruned} should be pruned"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn subagent_missing_definition_is_rejected() {
+        let config = web_config(None);
+        let mut session = session_for("p/nos", true);
+        session.agent = Some("missing-agent".into());
+        let Err(error) = build_engine(&config, &session) else {
+            panic!("missing definition was accepted");
+        };
+        assert!(error.contains("Agent definition 'missing-agent' is unavailable"));
+    }
+
+    #[tokio::test]
+    async fn subagent_web_permissions_cover_native_and_external_tools() {
+        for provider_type in [
+            crate::config::ProviderType::Response,
+            crate::config::ProviderType::Anthropic,
+            crate::config::ProviderType::Gemini,
+        ] {
+            for native in [true, false] {
+                for (search, fetch) in [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let mut config = web_config(Some(crate::config::model::ModelAnnotation {
+                        web_search: Some(native),
+                        ..Default::default()
+                    }));
+                    config.providers.get_mut("p").unwrap().provider_type = Some(provider_type);
+                    let mut session = session_for("p/nos", true);
+                    session.agent = Some("restricted".into());
+                    let mut allowed = vec!["Read".to_string()];
+                    if search {
+                        allowed.push("WebSearch".into());
+                    }
+                    if fetch {
+                        allowed.push("WebFetch".into());
+                    }
+                    let defs = vec![crate::agents::AgentDef {
+                        name: "restricted".into(),
+                        description: "Restricted agent".into(),
+                        model: None,
+                        tools: allowed,
+                        system_prompt: None,
+                    }];
+                    let engine = build_engine_with_agents(&config, &session, defs).unwrap();
+                    if !search {
+                        assert!(!engine.options.enable_web_search);
+                        assert!(engine.tools.get("web_search").is_none());
+                        assert!(!engine.tools.is_server_tool("web_search"));
+                    }
+                    if !fetch {
+                        assert!(!engine.options.enable_web_fetch);
+                        assert!(engine.tools.get("web_fetch").is_none());
+                        assert!(!engine.tools.is_server_tool("web_fetch"));
+                    }
+                    if !native {
+                        assert_eq!(engine.tools.get("web_search").is_some(), search);
+                        assert_eq!(engine.tools.get("web_fetch").is_some(), fetch);
+                    }
+                    if native && provider_type == crate::config::ProviderType::Anthropic {
+                        assert_eq!(engine.options.enable_web_search, search);
+                        assert_eq!(engine.options.enable_web_fetch, fetch);
+                    }
+                }
+            }
+        }
     }
 
     fn web_config(annotation: Option<crate::config::model::ModelAnnotation>) -> AppConfig {

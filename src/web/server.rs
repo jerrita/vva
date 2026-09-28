@@ -58,6 +58,10 @@ pub async fn run_server(
         .route("/api/sessions/{id}/revert", post(api::revert_session))
         .route("/api/sessions/{id}/fork", post(api::fork_session))
         .route("/api/sessions/{id}/abort", post(api::abort_session))
+        .route(
+            "/api/sessions/{id}/notices/dismiss",
+            post(api::dismiss_notice),
+        )
         .route("/api/sessions/{id}/answer", post(api::answer_user))
         .route("/api/sessions/{id}/config", post(api::configure_session))
         .route("/api/sessions/{id}/events", get(api::stream_events))

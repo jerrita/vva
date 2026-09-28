@@ -152,6 +152,10 @@ export interface Session {
   current_variant?: string | null
   web_search: boolean
   editor?: 'replace' | 'patch' | 'hashline'
+  /** 父会话 id：subagent 会话指向派生它的会话 */
+  parent?: string | null
+  /** 派生本会话的 agent 定义名（subagent 会话携带） */
+  agent?: string | null
   turns: Turn[]
 }
 
@@ -164,6 +168,10 @@ export interface SessionSummary {
   current_model: string
   current_variant?: string | null
   web_search: boolean
+  /** 父会话 id：subagent 会话指向派生它的会话 */
+  parent?: string | null
+  /** 派生本会话的 agent 定义名（subagent 会话携带） */
+  agent?: string | null
   /** 运行状态文案；空或缺席表示空闲 */
   state?: string
 }

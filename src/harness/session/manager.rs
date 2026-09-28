@@ -11,6 +11,8 @@ pub struct SessionManager {
     workspace: PathBuf,
     state_path: PathBuf,
     sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
+    /// 前台子代理登记：父会话 id → 子会话 id（父会话被中止时联动中止）
+    foreground_children: Mutex<HashMap<String, Vec<String>>>,
 }
 
 impl SessionManager {
@@ -27,6 +29,7 @@ impl SessionManager {
             workspace: workspace.into(),
             state_path: state_path.into(),
             sessions: Mutex::new(HashMap::new()),
+            foreground_children: Mutex::new(HashMap::new()),
         }
     }
 
@@ -74,7 +77,7 @@ impl SessionManager {
         Ok(())
     }
 
-    fn spawn(&self, session: Session, persisted: bool) -> Arc<ManagedSession> {
+    fn spawn(self: &Arc<Self>, session: Session, persisted: bool) -> Arc<ManagedSession> {
         let id = session.id.clone();
         let view = SessionView {
             revision: 0,
@@ -98,6 +101,7 @@ impl SessionManager {
                 }
             },
         )));
+        let (turn_tx, turns) = watch::channel(CompletedTurn::default());
         let task = SessionTask {
             view,
             view_tx,
@@ -117,38 +121,47 @@ impl SessionManager {
             pending_user_question: None,
             tasks,
             task_completions: Vec::new(),
+            subagent_completions: Vec::new(),
+            pending_deliveries: Vec::new(),
+            turn_tx,
+            turn_seq: 0,
+            turn_start: 0,
+            broker: Arc::new(SessionBrokerHandle::new(self.clone())),
         };
         tokio::spawn(task.run(rx));
         Arc::new(ManagedSession {
             id,
             commands,
             view: view_rx,
+            turns,
         })
     }
 
-    pub async fn get_or_load(&self, id: &str) -> Result<Arc<ManagedSession>, String> {
-        let handle = {
-            let mut sessions = self.sessions.lock().await;
-            if let Some(session) = sessions.get(id) {
-                session.clone()
-            } else {
-                let session = self
-                    .store
-                    .load_session(id)
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("Session not found: {id}"))?;
-                let handle = self.spawn(session, true);
-                sessions.insert(id.into(), handle.clone());
-                handle
-            }
-        };
+    pub async fn get_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
+        let handle = self.live_or_load(id).await?;
         self.remember_session(&handle.snapshot().session);
         Ok(handle)
     }
 
+    /// 句柄表读取：内存未命中时从存储加载（不回写运行时偏好，供 broker 编排路径使用）
+    async fn live_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
+        let mut sessions = self.sessions.lock().await;
+        if let Some(session) = sessions.get(id) {
+            return Ok(session.clone());
+        }
+        let session = self
+            .store
+            .load_session(id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("Session not found: {id}"))?;
+        let handle = self.spawn(session, true);
+        sessions.insert(id.into(), handle.clone());
+        Ok(handle)
+    }
+
     pub async fn create_session(
-        &self,
+        self: &Arc<Self>,
         model: String,
         variant: Option<String>,
         title: Option<String>,
@@ -160,7 +173,7 @@ impl SessionManager {
 
     /// 在指定工作空间目录创建会话（Web 界面按项目创建时使用）
     pub async fn create_session_in(
-        &self,
+        self: &Arc<Self>,
         workspace: impl Into<PathBuf>,
         model: String,
         variant: Option<String>,
@@ -194,7 +207,7 @@ impl SessionManager {
     }
 
     pub async fn open_session(
-        &self,
+        self: &Arc<Self>,
         id: Option<&str>,
         model: Option<String>,
         variant: Option<String>,
@@ -255,7 +268,48 @@ impl SessionManager {
             })
             .await?;
         self.sessions.lock().await.remove(&handle.id);
+        self.delete_child_sessions(&handle.id).await;
         Ok(())
+    }
+
+    /// 级联删除 parent 会话的全部子会话（subagent 派生链递归）：
+    /// 活跃句柄经 Stop{delete} 停任务并删盘，冷会话直接删存储记录
+    async fn delete_child_sessions(&self, parent_id: &str) {
+        let children: Vec<String> = match self.store.list_sessions().await {
+            Ok(sessions) => sessions
+                .into_iter()
+                .filter(|session| session.parent.as_deref() == Some(parent_id))
+                .map(|session| session.id)
+                .collect(),
+            Err(error) => {
+                tracing::warn!("Child sessions of {parent_id} unavailable: {error}");
+                Vec::new()
+            }
+        };
+        for child_id in children {
+            let live = self.sessions.lock().await.get(&child_id).cloned();
+            match live {
+                Some(handle) => {
+                    if handle
+                        .request(|reply| Command::Stop {
+                            delete: true,
+                            reply,
+                        })
+                        .await
+                        .is_ok()
+                    {
+                        self.sessions.lock().await.remove(&child_id);
+                    } else {
+                        // 任务已退出：通道不可达，直接删除存储记录
+                        let _ = self.store.delete_session(&child_id).await;
+                    }
+                }
+                None => {
+                    let _ = self.store.delete_session(&child_id).await;
+                }
+            }
+            Box::pin(self.delete_child_sessions(&child_id)).await;
+        }
     }
 
     /// 内存句柄中非空闲会话的运行状态文案（与 Web 快照 `state` 同词）。
@@ -280,7 +334,7 @@ impl SessionManager {
 
     /// 从指定用户轮次处分叉：新会话持有该轮次之前的历史，原会话不变。
     pub async fn fork_session(
-        &self,
+        self: &Arc<Self>,
         source: &ManagedSession,
         turn_index: usize,
         title: String,
@@ -323,5 +377,373 @@ impl SessionManager {
             .await
             .insert(handle.id.clone(), handle.clone());
         Ok(handle)
+    }
+}
+
+/// tools 层 SessionBroker 的 harness 实现：派生子代理会话与跨会话投递。
+pub(super) struct SessionBrokerHandle {
+    manager: std::sync::Weak<SessionManager>,
+    /// 每个调用会话独立保存投递回执；超时后可再次等待。
+    receipts: Mutex<HashMap<String, std::collections::VecDeque<DeliveryReceipt>>>,
+}
+
+impl SessionBrokerHandle {
+    pub(super) fn new(manager: Arc<SessionManager>) -> Self {
+        Self {
+            manager: Arc::downgrade(&manager),
+            receipts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn manager(&self) -> Result<Arc<SessionManager>, String> {
+        self.manager
+            .upgrade()
+            .ok_or_else(|| "Session manager is closed".into())
+    }
+
+    async fn release_foreground_child(&self, child_id: &str) {
+        if let Some(manager) = self.manager.upgrade() {
+            let mut children = manager.foreground_children.lock().await;
+            for list in children.values_mut() {
+                list.retain(|id| id != child_id);
+            }
+            children.retain(|_, list| !list.is_empty());
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
+    async fn spawn_subagent(
+        &self,
+        parent: &crate::tools::agent::SubagentContext,
+        def: &crate::agents::AgentDef,
+        prompt: &str,
+        description: &str,
+        background: bool,
+    ) -> Result<crate::tools::agent::SubagentLaunch, String> {
+        let manager = self.manager()?;
+        if parent.depth >= crate::agents::MAX_SUBAGENT_DEPTH {
+            return Err(format!(
+                "Subagent nesting depth {} reached; maximum is {}",
+                crate::agents::MAX_SUBAGENT_DEPTH,
+                crate::agents::MAX_SUBAGENT_DEPTH
+            ));
+        }
+        let model = def
+            .model
+            .clone()
+            .unwrap_or_else(|| parent.current_model.clone());
+        let config = manager.app_config();
+        let resolved = config
+            .resolve_model(&model, parent.current_variant.as_deref())
+            .map_err(|e| e.to_string())?;
+        let mut session = Session::with_model(
+            &parent.workspace_root,
+            Some(format!("[{}] {}", def.name, description)),
+            resolved.full_spec,
+            parent.current_variant.clone(),
+            parent.web_search,
+        );
+        session.editor = resolved
+            .model_config
+            .editor()
+            .or(config.settings.editor)
+            .unwrap_or_default();
+        session.parent = Some(parent.parent_id.clone());
+        session.agent = Some(def.name.clone());
+        session.depth = parent.depth + 1;
+        manager.unique_session_id(&mut session).await?;
+        let handle = manager.spawn(session, false);
+        manager
+            .sessions
+            .lock()
+            .await
+            .insert(handle.id.clone(), handle.clone());
+        let turn_seq = handle.turn_seq();
+        // 后台回投 watcher 需在提交前建立订阅基线，避免漏掉首轮完成
+        let background_watcher = background.then(|| {
+            let mut turns = handle.turn_receiver();
+            let child_id = handle.id.clone();
+            let parent_id = parent.parent_id.clone();
+            let manager = Arc::downgrade(&manager);
+            tokio::spawn(async move {
+                // 仅回投首轮完成；后续轮次由 SendMessage/WaitSession 显式交互
+                if turns.changed().await.is_ok()
+                    && let Some(manager) = manager.upgrade()
+                {
+                    let parent = manager.sessions.lock().await.get(&parent_id).cloned();
+                    if let Some(parent) = parent {
+                        parent.notify_subagent_finished(child_id);
+                    }
+                }
+            })
+        });
+        if !background {
+            manager
+                .foreground_children
+                .lock()
+                .await
+                .entry(parent.parent_id.clone())
+                .or_default()
+                .push(handle.id.clone());
+        }
+        if let Err(error) = handle.submit(prompt, Vec::new(), None).await {
+            // 启动失败：回收空会话句柄与登记（任务随通道关闭退出）
+            manager.sessions.lock().await.remove(&handle.id);
+            self.release_foreground_child(&handle.id).await;
+            if let Some(watcher) = background_watcher {
+                watcher.abort();
+            }
+            return Err(format!("Subagent session failed to start: {error}"));
+        }
+        Ok(crate::tools::agent::SubagentLaunch {
+            session_id: handle.id.clone(),
+            turn_seq,
+        })
+    }
+
+    async fn deliver(&self, session_id: &str, text: &str) -> Result<String, String> {
+        let handle = self.manager()?.live_or_load(session_id).await?;
+        let running = handle.is_running();
+        let receipt = handle.deliver(text).await?;
+        self.receipts
+            .lock()
+            .await
+            .entry(session_id.into())
+            .or_default()
+            .push_back(receipt);
+        Ok(if running {
+            format!("Queued; session {session_id} is running and will process the message next.")
+        } else {
+            format!("Delivered; session {session_id} is processing the message.")
+        })
+    }
+
+    async fn wait_turn(
+        &self,
+        session_id: &str,
+        seen_seq: u64,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        let receipt = self
+            .receipts
+            .lock()
+            .await
+            .get_mut(session_id)
+            .and_then(|queue| queue.pop_front());
+        if let Some(mut receipt) = receipt {
+            let result = match timeout {
+                Some(duration) => match tokio::time::timeout(duration, &mut receipt).await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.receipts
+                            .lock()
+                            .await
+                            .entry(session_id.into())
+                            .or_default()
+                            .push_front(receipt);
+                        return Err(format!("Timed out waiting for session {session_id}"));
+                    }
+                },
+                None => receipt.await,
+            };
+            return result.map_err(|_| format!("Session {session_id} is closed"))?;
+        }
+        let handle = self.manager()?.live_or_load(session_id).await?;
+        let baseline = seen_seq;
+        let mut turns = handle.turn_receiver();
+        loop {
+            if turns.borrow_and_update().seq > baseline {
+                break;
+            }
+            let changed = turns.changed();
+            match timeout {
+                Some(duration) => tokio::time::timeout(duration, changed)
+                    .await
+                    .map_err(|_| format!("Timed out waiting for session {session_id}"))?
+                    .map_err(|_| format!("Session {session_id} is closed"))?,
+                None => changed
+                    .await
+                    .map_err(|_| format!("Session {session_id} is closed"))?,
+            }
+        }
+        self.release_foreground_child(session_id).await;
+        Ok(handle.report())
+    }
+
+    async fn session_report(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        let handle = self.manager()?.live_or_load(session_id).await?;
+        Ok(handle.report())
+    }
+
+    async fn abort_session(&self, session_id: &str) -> Result<(), String> {
+        let handle = self
+            .manager()?
+            .sessions
+            .lock()
+            .await
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| format!("Session {session_id} not found"))?;
+        if !handle.is_running() {
+            return Err(format!("Session {session_id} is not running"));
+        }
+        handle.abort_current().await
+    }
+
+    async fn abort_children(&self, parent_id: &str) {
+        let Some(manager) = self.manager.upgrade() else {
+            return;
+        };
+        let children = manager
+            .foreground_children
+            .lock()
+            .await
+            .remove(parent_id)
+            .unwrap_or_default();
+        for child in children {
+            let handle = manager.sessions.lock().await.get(&child).cloned();
+            if let Some(handle) = handle
+                && handle.is_running()
+            {
+                let _ = handle.abort_current().await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::jsonl::JsonlSessionStore;
+    use crate::tools::agent::{SessionBroker, SubagentReport};
+
+    fn manager() -> (Arc<SessionManager>, PathBuf) {
+        let root = std::env::temp_dir().join(format!("vva-broker-{}", uuid::Uuid::new_v4()));
+        let store = Arc::new(JsonlSessionStore::new(&root).unwrap());
+        let manager = Arc::new(SessionManager::new(
+            store,
+            AppConfig::default(),
+            &root,
+            root.join("state.json"),
+        ));
+        (manager, root)
+    }
+
+    #[tokio::test]
+    async fn releasing_manager_closes_session_tasks() {
+        let (manager, root) = manager();
+        let handle = manager.spawn(Session::new(&root, None), false);
+        let mut turns = handle.turn_receiver();
+        manager
+            .sessions
+            .lock()
+            .await
+            .insert(handle.id.clone(), handle.clone());
+        let weak = Arc::downgrade(&manager);
+        drop(handle);
+        drop(manager);
+        assert!(weak.upgrade().is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), turns.changed())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn delivery_receipts_are_isolated_and_survive_timeout_and_later_turns() {
+        let (manager, root) = manager();
+        let session = Session::new(&root, None);
+        let id = session.id.clone();
+        let (commands, mut rx) = mpsc::channel(4);
+        let (_, view) = watch::channel(Arc::new(SessionView {
+            revision: 0,
+            session: Arc::new(session),
+            draft: Vec::new(),
+            notices: Vec::new(),
+            external_web: Vec::new(),
+            state: RunState::Thinking,
+            persisted: false,
+            pending_user_question: None,
+        }));
+        let (turn_tx, turns) = watch::channel(CompletedTurn::default());
+        manager.sessions.lock().await.insert(
+            id.clone(),
+            Arc::new(ManagedSession {
+                id: id.clone(),
+                commands,
+                view,
+                turns,
+            }),
+        );
+        let first = SessionBrokerHandle::new(manager.clone());
+        let second = SessionBrokerHandle::new(manager.clone());
+        let (pending_tx, mut pending_rx) = mpsc::channel(2);
+        let actor = tokio::spawn(async move {
+            for _ in 0..2 {
+                let Some(Command::Deliver { delivery, reply }) = rx.recv().await else {
+                    panic!("expected delivery");
+                };
+                let _ = reply.send(Ok(()));
+                pending_tx.send(delivery).await.unwrap();
+            }
+        });
+        first.deliver(&id, "first request").await.unwrap();
+        second.deliver(&id, "second request").await.unwrap();
+        let a = pending_rx.recv().await.unwrap();
+        let b = pending_rx.recv().await.unwrap();
+        // 正在执行的旧轮完成，不能解除对排队投递的等待。
+        turn_tx.send_replace(CompletedTurn {
+            seq: 1,
+            text: "earlier result".into(),
+            error: None,
+        });
+        assert!(first.wait_turn(&id, 0, Some(Duration::ZERO)).await.is_err());
+        for (delivery, text) in [(a, "first reply"), (b, "second reply")] {
+            assert!(
+                delivery
+                    .completion
+                    .send(Ok(SubagentReport {
+                        session_id: id.clone(),
+                        agent: String::new(),
+                        title: String::new(),
+                        turn_seq: 2,
+                        text: text.into(),
+                        error: None,
+                    }))
+                    .is_ok()
+            );
+        }
+        // 后续轮次覆盖 watch 后，回执仍返回对应投递的固定结果。
+        turn_tx.send_replace(CompletedTurn {
+            seq: 3,
+            text: "later result".into(),
+            error: None,
+        });
+        assert_eq!(
+            second
+                .wait_turn(&id, 3, Some(Duration::from_secs(1)))
+                .await
+                .unwrap()
+                .text,
+            "second reply"
+        );
+        assert_eq!(
+            first
+                .wait_turn(&id, 3, Some(Duration::from_secs(1)))
+                .await
+                .unwrap()
+                .text,
+            "first reply"
+        );
+        actor.await.unwrap();
+        let _ = std::fs::remove_dir_all(root);
     }
 }

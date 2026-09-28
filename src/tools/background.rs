@@ -363,11 +363,21 @@ impl Tool for TaskOutputTool {
 /// 停止运行中的后台任务
 pub struct TaskStopTool {
     tasks: Arc<BackgroundTasks>,
+    broker: Option<Arc<dyn super::agent::SessionBroker>>,
 }
 
 impl TaskStopTool {
     pub fn new(tasks: Arc<BackgroundTasks>) -> Self {
-        Self { tasks }
+        Self {
+            tasks,
+            broker: None,
+        }
+    }
+
+    /// 绑定会话编排接口：task_id 命中 sess_ 会话 id 命名空间时路由到会话中止
+    pub fn with_broker(mut self, broker: Arc<dyn super::agent::SessionBroker>) -> Self {
+        self.broker = Some(broker);
+        self
     }
 }
 
@@ -378,14 +388,16 @@ impl Tool for TaskStopTool {
     }
 
     fn description(&self) -> &str {
-        "Stop a running background task started with Shell run_in_background. Stopped tasks do not produce a completion notification."
+        "Stop a running background task started with Shell run_in_background, or abort the \
+         current turn of a session (e.g. a background subagent) by passing its sess_ id as \
+         task_id. Stopped tasks do not produce a completion notification."
     }
 
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "task_id": { "type": "string", "description": "Task id returned by the background Shell call." }
+                "task_id": {"type": "string", "description": "Task id returned by the background Shell call, or a sess_ session id."}
             },
             "required": ["task_id"]
         })
@@ -393,6 +405,14 @@ impl Tool for TaskStopTool {
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         let args: TaskIdArgs = parse_args(arguments, "TaskStop")?;
+        if args.task_id.starts_with("sess_") {
+            let broker = self
+                .broker
+                .as_ref()
+                .ok_or_else(|| "Session control is not available in this context".to_string())?;
+            broker.abort_session(&args.task_id).await?;
+            return Ok(format!("Session {} turn aborted.", args.task_id));
+        }
         self.tasks.stop(&args.task_id)
     }
 }
