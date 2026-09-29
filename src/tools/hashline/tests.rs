@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 
-use super::parse::Op;
+use super::parse::{Anchor, Op, Payload};
 use super::session::*;
 use super::snapshot::*;
 use super::*;
@@ -181,24 +181,21 @@ fn parse_cut_shorthand_is_single_line_range() {
     assert_eq!(
         sections[0].ops,
         vec![
-            Op::Cut {
-                start: 5,
-                end: 5,
-                register: None,
+            Op {
+                anchor: Anchor::Range { start: 5, end: 5 },
+                payload: Payload::Cut(None),
             },
-            Op::Cut {
-                start: 2,
-                end: 2,
-                register: Some("buf".into()),
+            Op {
+                anchor: Anchor::Range { start: 2, end: 2 },
+                payload: Payload::Cut(Some("buf".into())),
             },
-            Op::Cut {
-                start: 3,
-                end: 7,
-                register: None,
+            Op {
+                anchor: Anchor::Range { start: 3, end: 7 },
+                payload: Payload::Cut(None),
             },
-            Op::CutBlock {
-                line: 4,
-                register: None,
+            Op {
+                anchor: Anchor::Block { line: 4 },
+                payload: Payload::Cut(None),
             },
         ]
     );
@@ -210,15 +207,13 @@ fn parse_cut_shorthand_named_register_paste() {
     assert_eq!(
         sections[0].ops,
         vec![
-            Op::Cut {
-                start: 5,
-                end: 5,
-                register: Some("head".into()),
+            Op {
+                anchor: Anchor::Range { start: 5, end: 5 },
+                payload: Payload::Cut(Some("head".into())),
             },
-            Op::PasteRange {
-                start: 1,
-                end: 2,
-                register: "head".into(),
+            Op {
+                anchor: Anchor::Range { start: 1, end: 2 },
+                payload: Payload::Register(Some("head".into())),
             },
         ]
     );

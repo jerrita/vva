@@ -44,38 +44,11 @@ pub fn provisional_title(prompt: &str) -> String {
     prompt.chars().take(40).collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Session {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    pub workspace_root: PathBuf,
-    pub created_at: DateTime<Utc>,
+    /// 持久化与投影的权威字段集：JSONL 首行、Web SessionInfo、SessionSummary 的唯一来源
+    pub header: SessionHeader,
     pub updated_at: DateTime<Utc>,
-    /// 当前选定的模型规格标识 (例如 "a/gpt-5.6-terra")
-    #[serde(default)]
-    pub current_model: String,
-    /// 当前选定的推理强度档位 (例如 Some("high"))
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_variant: Option<String>,
-    /// 是否开启原生网络搜索 / 实时 Grounding (保持工具挂载与 prompt cache 一致)
-    #[serde(default = "default_web_search")]
-    pub web_search: bool,
-    /// 本会话文件编辑协议（replace / patch / hashline），创建后固定
-    #[serde(
-        default = "missing_editor",
-        skip_serializing_if = "EditorKind::is_replace"
-    )]
-    pub editor: EditorKind,
-    /// 父会话 id（subagent 会话指向派生它的会话）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<String>,
-    /// 派生本会话的 agent 定义名（`.vva/agents` 内置或自定义）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-    /// subagent 嵌套深度（顶层会话为 0）
-    #[serde(default, skip_serializing_if = "is_zero_depth")]
-    pub depth: u8,
     pub turns: Vec<Turn>,
 }
 
@@ -105,18 +78,20 @@ impl Session {
     ) -> Self {
         let now = Utc::now();
         Self {
-            id: generate_session_id(),
-            title,
-            workspace_root: workspace_root.into(),
-            created_at: now,
+            header: SessionHeader {
+                id: generate_session_id(),
+                title,
+                workspace_root: workspace_root.into(),
+                created_at: now,
+                current_model: current_model.into(),
+                current_variant,
+                web_search,
+                editor: EditorKind::default(),
+                parent: None,
+                agent: None,
+                depth: 0,
+            },
             updated_at: now,
-            current_model: current_model.into(),
-            current_variant,
-            web_search,
-            editor: EditorKind::default(),
-            parent: None,
-            agent: None,
-            depth: 0,
             turns: Vec::new(),
         }
     }
@@ -134,14 +109,13 @@ impl Session {
 
     /// 更新会话当前绑定的模型与推理强度档位
     pub fn set_model(&mut self, model: impl Into<String>, variant: Option<String>) {
-        self.current_model = model.into();
-        self.current_variant = variant;
+        self.header.current_model = model.into();
+        self.header.current_variant = variant;
         self.updated_at = Utc::now();
     }
 
-    /// 更新会话原生网络搜索开启状态
     pub fn set_web_search(&mut self, web_search: bool) {
-        self.web_search = web_search;
+        self.header.web_search = web_search;
         self.updated_at = Utc::now();
     }
 
@@ -204,41 +178,12 @@ pub struct SessionHeader {
     #[serde(default, skip_serializing_if = "is_zero_depth")]
     pub depth: u8,
 }
-
-impl From<&Session> for SessionHeader {
-    fn from(s: &Session) -> Self {
-        Self {
-            id: s.id.clone(),
-            title: s.title.clone(),
-            workspace_root: s.workspace_root.clone(),
-            created_at: s.created_at,
-            current_model: s.current_model.clone(),
-            current_variant: s.current_variant.clone(),
-            web_search: s.web_search,
-            editor: s.editor,
-            parent: s.parent.clone(),
-            agent: s.agent.clone(),
-            depth: s.depth,
-        }
-    }
-}
-
 impl SessionHeader {
     /// 由持久化 Header 与已加载的轮次重建运行时会话（updated_at 以加载时刻计）
     pub fn into_session(self, turns: Vec<Turn>) -> Session {
         Session {
-            id: self.id,
-            title: self.title,
-            workspace_root: self.workspace_root,
-            created_at: self.created_at,
+            header: self,
             updated_at: Utc::now(),
-            current_model: self.current_model,
-            current_variant: self.current_variant,
-            web_search: self.web_search,
-            editor: self.editor,
-            parent: self.parent,
-            agent: self.agent,
-            depth: self.depth,
             turns,
         }
     }

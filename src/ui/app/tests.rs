@@ -24,7 +24,13 @@ async fn test_slash_command_model_execution() {
     // 2. 带参 /model 切换模型
     app.set_input("/model target_model");
     app.submit_input().await;
-    let curr = app.active_session.snapshot().session.current_model.clone();
+    let curr = app
+        .active_session
+        .snapshot()
+        .session
+        .header
+        .current_model
+        .clone();
     assert_eq!(curr, "openai/target_model");
 
     let _ = std::fs::remove_dir_all(&ta.temp_dir);
@@ -41,11 +47,12 @@ async fn test_clear_deletes_current_session_and_creates_new_one() {
 
     assert_ne!(app.active_session.id, previous_id);
     assert!(app.view.session.turns.is_empty());
-    assert!(app.active_session.snapshot().session.web_search);
+    assert!(app.active_session.snapshot().session.header.web_search);
     assert_eq!(
         app.active_session
             .snapshot()
             .session
+            .header
             .current_variant
             .as_deref(),
         Some("high")
@@ -66,11 +73,12 @@ async fn test_new_creates_session_and_keeps_current_one() {
 
     assert_ne!(app.active_session.id, previous_id);
     assert!(app.view.session.turns.is_empty());
-    assert!(app.active_session.snapshot().session.web_search);
+    assert!(app.active_session.snapshot().session.header.web_search);
     assert_eq!(
         app.active_session
             .snapshot()
             .session
+            .header
             .current_variant
             .as_deref(),
         Some("high")
@@ -127,6 +135,7 @@ async fn test_slash_command_variant_execution() {
         .active_session
         .snapshot()
         .session
+        .header
         .current_variant
         .clone();
     assert_eq!(curr, Some("high".to_string()));
@@ -138,6 +147,7 @@ async fn test_slash_command_variant_execution() {
         .active_session
         .snapshot()
         .session
+        .header
         .current_variant
         .clone();
     assert_eq!(curr_none.as_deref(), Some("none"));
@@ -145,7 +155,10 @@ async fn test_slash_command_variant_execution() {
     // 4. /variant default 不发送推理档位
     app.set_input("/variant default");
     app.submit_input().await;
-    assert_eq!(app.active_session.snapshot().session.current_variant, None);
+    assert_eq!(
+        app.active_session.snapshot().session.header.current_variant,
+        None
+    );
 
     // 5. 未配置 variants 的模型，模态框列表为空（不兜底）
     let session_no_vars = app
@@ -202,6 +215,7 @@ async fn test_cycle_variant_wraps_through_declared_order() {
             app.active_session
                 .snapshot()
                 .session
+                .header
                 .current_variant
                 .as_deref(),
             expected,
@@ -222,6 +236,7 @@ async fn test_cycle_variant_wraps_through_declared_order() {
             .active_session
             .snapshot()
             .session
+            .header
             .current_variant,
         None
     );
@@ -648,34 +663,34 @@ async fn test_session_resume_preserves_web_search_state() {
     // 3. 启动 App，以 Session 1 为初始会话
     let mut app = App::new(session_mgr.clone(), s1).await;
     // App 继承 Session 1 的 web_search: true
-    assert!(app.view.session.web_search);
+    assert!(app.view.session.header.web_search);
 
     // 4. 切换到 Session 2
     app.switch_to_session(&s2_id).await.unwrap();
     // App 状态切换为 Session 2 的 web_search: false
-    assert!(!app.view.session.web_search);
+    assert!(!app.view.session.header.web_search);
 
     // 5. 切换回 Session 1
     app.switch_to_session(&s1_id).await.unwrap();
     // 恢复 Session 1 时，状态与上一次保持一致为 true，避免 prompt cache 失效
-    assert!(app.view.session.web_search);
+    assert!(app.view.session.header.web_search);
 
     // 6. 执行 /web off 显式关闭 Session 1 的网络搜索
     app.set_input("/web off");
     app.submit_input().await;
-    assert!(!app.view.session.web_search);
+    assert!(!app.view.session.header.web_search);
 
     // 校验 Session 1 持久化存储中的 web_search 已同步更新为 false
     let loaded_s1 = store.load_session(&s1_id).await.unwrap().unwrap();
-    assert!(!loaded_s1.web_search);
+    assert!(!loaded_s1.header.web_search);
 
     // 7. 再次执行 /web on 开启 Session 1 的网络搜索
     app.set_input("/web on");
     app.submit_input().await;
-    assert!(app.view.session.web_search);
+    assert!(app.view.session.header.web_search);
 
     let loaded_s1_again = store.load_session(&s1_id).await.unwrap().unwrap();
-    assert!(loaded_s1_again.web_search);
+    assert!(loaded_s1_again.header.web_search);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -748,7 +763,7 @@ async fn test_user_message_hits_and_revert_fills_input() {
     session.append_turn(crate::model::Turn::assistant_turn(vec![
         crate::model::Message::text("a2"),
     ]));
-    let id = session.id.clone();
+    let id = session.header.id.clone();
     store.save_header(&session).await.unwrap();
     let session_mgr = Arc::new(SessionManager::new(
         store,
@@ -799,7 +814,7 @@ async fn test_fork_user_turn_creates_titled_session() {
     session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
         "second",
     )));
-    let origin_id = session.id.clone();
+    let origin_id = session.header.id.clone();
     store.save_header(&session).await.unwrap();
     let session_mgr = Arc::new(SessionManager::new(
         store,
@@ -812,9 +827,12 @@ async fn test_fork_user_turn_creates_titled_session() {
 
     app.fork_user_turn(3, "Branched".into()).await;
     assert_ne!(app.active_session.id, origin_id);
-    assert_eq!(app.view.session.title.as_deref(), Some("Branched"));
+    assert_eq!(app.view.session.header.title.as_deref(), Some("Branched"));
     assert_eq!(app.view.session.turns.len(), 3);
-    assert_eq!(app.view.session.current_variant.as_deref(), Some("high"));
+    assert_eq!(
+        app.view.session.header.current_variant.as_deref(),
+        Some("high")
+    );
 
     let origin = app.session_mgr.get_or_load(&origin_id).await.unwrap();
     assert_eq!(origin.snapshot().session.turns.len(), 4);

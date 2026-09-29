@@ -1,27 +1,14 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::ui::command::{COMMANDS, command_row};
-use crate::ui::views::modal_shell::{centered_rect, modal_block};
+use crate::ui::views::modal_shell::{ModalShellSpec, render_modal_shell};
 
 /// 渲染帮助与快捷键弹窗
 pub fn render_help_modal(frame: &mut Frame, area: Rect) {
-    let modal_rect = centered_rect(area, 74, 22);
-    frame.render_widget(Clear, modal_rect);
-
-    let block = modal_block(" Help & Keyboard Shortcuts ", Color::Cyan);
-
-    let inner = block.inner(modal_rect);
-    frame.render_widget(block, modal_rect);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
-        .split(inner);
-
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
         "Available Slash Commands:",
@@ -100,10 +87,7 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
         ),
     ]));
 
-    let p = Paragraph::new(lines);
-    frame.render_widget(p, chunks[0]);
-
-    let footer = Paragraph::new(Line::from(vec![
+    let footer = Line::from(vec![
         Span::styled(" Press ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "[Esc]",
@@ -122,6 +106,20 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
             " to close this dialog",
             Style::default().fg(Color::DarkGray),
         ),
-    ]));
-    frame.render_widget(footer, chunks[1]);
+    ]);
+
+    let content_area = render_modal_shell(
+        frame,
+        area,
+        ModalShellSpec {
+            title: " Help & Keyboard Shortcuts ",
+            accent: Color::Cyan,
+            width: 74,
+            height: 22,
+            header_height: 0,
+        },
+        Vec::new(),
+        footer,
+    );
+    frame.render_widget(Paragraph::new(lines), content_area);
 }

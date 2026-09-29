@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use super::Tool;
@@ -131,31 +132,35 @@ pub(crate) fn build_shell_command(command: &str) -> tokio::process::Command {
     cmd
 }
 
-/// 平台相关的工具描述与参数提示：条件编译区分 bash 与 PowerShell。
+/// 平台相关的工具描述与参数提示：一处条件编译选定平台名词，其余文本统一拼装。
 #[cfg(windows)]
-fn shell_description() -> &'static str {
-    r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with non-interactive PowerShell (-NoProfile -NonInteractive), starting at the workspace root each time; shell state does not persist between calls.
-Provide a nonempty intent describing the purpose. Use PowerShell syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.
-For long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.
-Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
-}
-
+const SHELL_NOUN: &str = "PowerShell";
 #[cfg(not(windows))]
-fn shell_description() -> &'static str {
-    r#"Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with bash -c, starting at the workspace root each time; shell state does not persist between calls.
-Provide a nonempty intent describing the purpose. Use bash syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.
-For long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.
-Example arguments: {"intent":"Check working tree changes","command":"git status --short"}."#
-}
+const SHELL_NOUN: &str = "bash";
 
 #[cfg(windows)]
-fn shell_command_hint() -> &'static str {
-    "Shell command executed from the workspace root. Use PowerShell syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string."
+const SHELL_INVOCATION: &str = "non-interactive PowerShell (-NoProfile -NonInteractive)";
+#[cfg(not(windows))]
+const SHELL_INVOCATION: &str = "bash -c";
+
+fn shell_description() -> &'static str {
+    static SHELL_DESCRIPTION: LazyLock<String> = LazyLock::new(|| {
+        [
+            "Run a command for builds, tests, version control, or other terminal operations. Prefer Read, Write, Edit, Glob, and Grep for their supported file operations. Executes with ",
+            SHELL_INVOCATION,
+            ", starting at the workspace root each time; shell state does not persist between calls.\nProvide a nonempty intent describing the purpose. Use ",
+            SHELL_NOUN,
+            " syntax and shell-quote paths containing spaces within command. Commands requiring interactive input are unsuitable. The timeout is 120 seconds. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.\nFor long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.\nExample arguments: {\"intent\":\"Check working tree changes\",\"command\":\"git status --short\"}.",
+        ]
+        .concat()
+    });
+    SHELL_DESCRIPTION.as_str()
 }
 
-#[cfg(not(windows))]
-fn shell_command_hint() -> &'static str {
-    "Shell command executed from the workspace root. Use bash syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string."
+fn shell_command_hint() -> String {
+    format!(
+        "Shell command executed from the workspace root. Use {SHELL_NOUN} syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string."
+    )
 }
 
 /// 执行已组装好的 shell 命令：stdout/stderr 拼接（STDERR 分节），非零退出码报错。

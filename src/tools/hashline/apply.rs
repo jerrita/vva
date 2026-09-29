@@ -1,7 +1,7 @@
 //! 补丁应用：分组、预检、行号校验、寄存器与落盘提交。
 
 use super::block;
-use super::parse::{FileOp, Op, Section, op_line};
+use super::parse::{Anchor, FileOp, Op, Payload, Section, op_line};
 use super::session::HashlineSession;
 use super::snapshot::report_update;
 use crate::tools::filesystem::{edit_lock, persist_edit, resolve_path, write_new_file};
@@ -336,12 +336,14 @@ struct Capture {
 
 fn capture(op: &Op, lines: &[&str], path: &str) -> Result<Option<Capture>, String> {
     let (start, end, register) = match op {
-        Op::Cut {
-            start,
-            end,
-            register,
+        Op {
+            anchor: Anchor::Range { start, end },
+            payload: Payload::Cut(register),
         } => (*start, *end, register.clone()),
-        Op::CutBlock { line, register } => {
+        Op {
+            anchor: Anchor::Block { line },
+            payload: Payload::Cut(register),
+        } => {
             let (start, end) = block::resolve_block(lines, *line, path)?;
             (start, end, register.clone())
         }
@@ -404,94 +406,44 @@ fn op_span(
     op_index: usize,
 ) -> Result<Span, String> {
     let require = |line: u32| require_seen(seen, line);
-    let (start, end, replacement) = match op {
-        Op::Replace { start, end, body } => {
-            let (lo, hi) = inclusive_range(*start, *end, lines.len())?;
-            require_range(seen, *start, *end)?;
-            (lo, hi, body.clone())
+    let (start, end) = match op.anchor {
+        Anchor::Range { start, end } => {
+            let (lo, hi) = inclusive_range(start, end, lines.len())?;
+            require_range(seen, start, end)?;
+            (lo, hi)
         }
-        Op::ReplaceBlock { line, body } => {
-            let (lo, hi) = block_span(lines, *line, path, Some(seen))?;
-            (lo, hi, body.clone())
+        Anchor::Block { line } => block_span(lines, line, path, seen)?,
+        Anchor::Before { line } => {
+            let at = line_index(line, lines.len())?;
+            require(line)?;
+            (at, at)
         }
-        Op::InsertBefore { line, body } => {
-            let at = line_index(*line, lines.len())?;
-            require(*line)?;
-            (at, at, body.clone())
+        Anchor::After { line } => {
+            let at = line_index(line, lines.len())? + 1;
+            require(line)?;
+            (at, at)
         }
-        Op::InsertAfter { line, body } => {
-            let at = line_index(*line, lines.len())? + 1;
-            require(*line)?;
-            (at, at, body.clone())
+        Anchor::AfterBlock { line } => {
+            let (_, at) = block_span(lines, line, path, seen)?;
+            (at, at)
         }
-        Op::InsertAfterBlock { line, body } => {
-            let (_, at) = block_span(lines, *line, path, Some(seen))?;
-            (at, at, body.clone())
-        }
-        Op::Append { body } => {
+        Anchor::Eof => {
             if let Some(last) = lines.len().checked_sub(1) {
                 require((last + 1) as u32)?;
             }
-            (lines.len(), lines.len(), body.clone())
+            (lines.len(), lines.len())
         }
-        Op::InsertBof { body } => {
+        Anchor::Bof => {
             if !lines.is_empty() {
                 require(1)?;
             }
-            (0, 0, body.clone())
+            (0, 0)
         }
-        Op::Cut { start, end, .. } => {
-            let (lo, hi) = inclusive_range(*start, *end, lines.len())?;
-            require_range(seen, *start, *end)?;
-            (lo, hi, Vec::new())
-        }
-        Op::CutBlock { line, .. } => {
-            let (lo, hi) = block_span(lines, *line, path, Some(seen))?;
-            (lo, hi, Vec::new())
-        }
-        Op::PasteBefore { line, register } => {
-            let at = line_index(*line, lines.len())?;
-            require(*line)?;
-            (at, at, registers.read(register.as_deref())?)
-        }
-        Op::PasteAfter { line, register } => {
-            let at = line_index(*line, lines.len())? + 1;
-            require(*line)?;
-            (at, at, registers.read(register.as_deref())?)
-        }
-        Op::PasteEof { register } => {
-            if let Some(last) = lines.len().checked_sub(1) {
-                require((last + 1) as u32)?;
-            }
-            (
-                lines.len(),
-                lines.len(),
-                registers.read(register.as_deref())?,
-            )
-        }
-        Op::PasteBof { register } => {
-            if !lines.is_empty() {
-                require(1)?;
-            }
-            (0, 0, registers.read(register.as_deref())?)
-        }
-        Op::PasteRange {
-            start,
-            end,
-            register,
-        } => {
-            let (lo, hi) = inclusive_range(*start, *end, lines.len())?;
-            require_range(seen, *start, *end)?;
-            (lo, hi, registers.read(Some(register))?)
-        }
-        Op::PasteBlock { line, register } => {
-            let (lo, hi) = block_span(lines, *line, path, Some(seen))?;
-            (lo, hi, registers.read(Some(register))?)
-        }
-        Op::PasteAfterBlock { line, register } => {
-            let (_, at) = block_span(lines, *line, path, Some(seen))?;
-            (at, at, registers.read(register.as_deref())?)
-        }
+    };
+    let replacement = match &op.payload {
+        Payload::Body(body) => body.clone(),
+        Payload::Register(register) => registers.read(register.as_deref())?,
+        Payload::Cut(_) => Vec::new(),
     };
     Ok(Span {
         start,
@@ -536,12 +488,10 @@ fn block_span(
     lines: &[&str],
     line: u32,
     path: &str,
-    seen: Option<&HashSet<u32>>,
+    seen: &HashSet<u32>,
 ) -> Result<(usize, usize), String> {
     let (start, end) = block::resolve_block(lines, line, path)?;
-    if let Some(seen) = seen {
-        require_range(seen, start, end)?;
-    }
+    require_range(seen, start, end)?;
     inclusive_range(start, end, lines.len())
 }
 

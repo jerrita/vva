@@ -90,7 +90,7 @@ impl crate::tools::agent::SessionBroker for StubBroker {
 #[tokio::test]
 async fn model_switch_checks_persisted_media_before_mutating_state() {
     let (mut task, _) = event_task();
-    let root = task.view.session.workspace_root.clone();
+    let root = task.view.session.header.workspace_root.clone();
     task.config = Arc::new(serde_json::from_value(serde_json::json!({
         "providers": {"test": {"models": {
             "vision": {"name": "Vision", "modalities": {"input": ["text", "image"]}},
@@ -104,7 +104,7 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
     task.store.save_header(&task.view.session).await.unwrap();
     task.view.session = Arc::new(
         task.store
-            .load_session(&task.view.session.id)
+            .load_session(&task.view.session.header.id)
             .await
             .unwrap()
             .unwrap(),
@@ -118,21 +118,22 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
         .unwrap_err();
     assert!(error.contains("does not support image input"));
     assert_eq!(task.view.revision, revision);
-    assert_eq!(task.view.session.current_model, "test/vision");
+    assert_eq!(task.view.session.header.current_model, "test/vision");
     assert!(!task.state_path.exists());
     assert_eq!(
         task.store
-            .load_session(&before.id)
+            .load_session(&before.header.id)
             .await
             .unwrap()
             .unwrap()
+            .header
             .current_model,
         "test/vision"
     );
     task.configure(Some("test/other".into()), None, None)
         .await
         .unwrap();
-    assert_eq!(task.view.session.current_model, "test/other");
+    assert_eq!(task.view.session.header.current_model, "test/other");
     assert_eq!(task.view.session.turns, before.turns);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -228,7 +229,7 @@ async fn wait_for_task(
 #[tokio::test]
 async fn task_completion_injects_persisted_user_turn() {
     let (mut task, _view) = event_task();
-    let root = task.view.session.workspace_root.clone();
+    let root = task.view.session.header.workspace_root.clone();
     task.store.save_header(&task.view.session).await.unwrap();
     let id = task
         .tasks
@@ -277,7 +278,7 @@ async fn task_completion_injects_persisted_user_turn() {
     assert!(text.contains("TaskOutput"), "{text}");
     let loaded = task
         .store
-        .load_session(&task.view.session.id)
+        .load_session(&task.view.session.header.id)
         .await
         .unwrap()
         .unwrap();
@@ -301,7 +302,7 @@ async fn drain_skips_vanished_task_without_error() {
 
     assert!(task.view.session.turns.is_empty());
     assert!(task.task_completions.is_empty());
-    let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+    let _ = std::fs::remove_dir_all(&task.view.session.header.workspace_root);
 }
 
 /// 直接返回文本的供应商桩：execute 注入通知后应立即收尾
@@ -341,7 +342,7 @@ impl crate::provider::Provider for PlainTextProvider {
 #[tokio::test]
 async fn execute_drains_completions_before_next_model_call() {
     let (mut task, _view) = event_task();
-    let root = task.view.session.workspace_root.clone();
+    let root = task.view.session.header.workspace_root.clone();
     task.store.save_header(&task.view.session).await.unwrap();
     let id = task
         .tasks
@@ -386,7 +387,7 @@ async fn execute_drains_completions_before_next_model_call() {
 #[tokio::test]
 async fn parallel_tool_calls_run_concurrently_and_preserve_order() {
     let (mut task, _) = event_task();
-    let root = task.view.session.workspace_root.clone();
+    let root = task.view.session.header.workspace_root.clone();
     task.store.save_header(&task.view.session).await.unwrap();
     let mut tools = crate::tools::ToolRegistry::new();
     tools.register(Arc::new(BarrierTool(tokio::sync::Barrier::new(2))));
@@ -489,7 +490,7 @@ async fn late_citations_target_text_id_and_deduplicate_only_exact_spans() {
     assert!(matches!(published.state, RunState::Responding));
     assert!(published.session.turns.is_empty());
     assert!(!published.persisted);
-    std::fs::remove_dir_all(&published.session.workspace_root).unwrap();
+    std::fs::remove_dir_all(&published.session.header.workspace_root).unwrap();
 }
 
 #[tokio::test]
@@ -520,14 +521,14 @@ async fn continued_text_after_search_moves_behind_work() {
             Arc::new(ContentPart::text("early later")),
         ]
     );
-    std::fs::remove_dir_all(&published.session.workspace_root).unwrap();
+    std::fs::remove_dir_all(&published.session.header.workspace_root).unwrap();
 }
 
 #[tokio::test]
 async fn search_snapshots_update_in_place_and_publish_before_completion() {
     let (mut task, mut view_rx) = event_task();
     let pending = WebSearchCall {
-        action: WebSearchAction::Search,
+        action: Some(WebSearchAction::Search),
         id: "search".into(),
         query: String::new(),
         status: SearchStatus::Pending,
@@ -583,7 +584,7 @@ async fn search_snapshots_update_in_place_and_publish_before_completion() {
         assert!(!published.persisted);
     }
     assert_eq!(initial.draft.len(), 1);
-    std::fs::remove_dir_all(&task.view.session.workspace_root).unwrap();
+    std::fs::remove_dir_all(&task.view.session.header.workspace_root).unwrap();
 }
 
 fn last_model_manager(dir: &Path) -> Arc<SessionManager> {
@@ -624,14 +625,17 @@ async fn new_session_uses_last_selected_model() {
         .await
         .unwrap();
     let snap = next.snapshot();
-    assert_eq!(snap.session.current_model, "openai/second");
-    assert_eq!(snap.session.current_variant.as_deref(), Some("low"));
+    assert_eq!(snap.session.header.current_model, "openai/second");
+    assert_eq!(snap.session.header.current_variant.as_deref(), Some("low"));
 
     let explicit = restarted
         .open_session(None, Some("openai/explicit".into()), None, None)
         .await
         .unwrap();
-    assert_eq!(explicit.snapshot().session.current_model, "openai/explicit");
+    assert_eq!(
+        explicit.snapshot().session.header.current_model,
+        "openai/explicit"
+    );
 
     let alpha = restarted
         .create_session("openai/alpha".into(), None, None, true)
@@ -647,7 +651,7 @@ async fn new_session_uses_last_selected_model() {
         .await
         .unwrap();
     assert_eq!(
-        after_switch.snapshot().session.current_model,
+        after_switch.snapshot().session.header.current_model,
         "openai/alpha"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -667,7 +671,7 @@ async fn seeded_session(dir: &Path) -> (Arc<SessionManager>, Arc<ManagedSession>
     session.append_turn(Turn::assistant_turn(vec![Message::text("a1")]));
     session.append_turn(Turn::user_turn(Message::text("second")));
     session.append_turn(Turn::assistant_turn(vec![Message::text("a2")]));
-    let id = session.id.clone();
+    let id = session.header.id.clone();
     store.save_header(&session).await.unwrap();
     let mut config = AppConfig::default();
     config.settings.default = "openai/default_model".into();
@@ -714,16 +718,19 @@ async fn fork_copies_prefix_and_leaves_origin() {
     let origin = handle.snapshot();
     let branch = forked.snapshot();
     assert_eq!(origin.session.turns.len(), 5);
-    assert_eq!(origin.session.title.as_deref(), Some("Origin"));
+    assert_eq!(origin.session.header.title.as_deref(), Some("Origin"));
     assert_eq!(branch.session.turns.len(), 3);
-    assert_eq!(branch.session.title.as_deref(), Some("Branched"));
-    assert_eq!(branch.session.current_model, "openai/default_model");
-    assert_eq!(branch.session.current_variant.as_deref(), Some("high"));
-    assert_eq!(branch.session.editor, origin.session.editor);
+    assert_eq!(branch.session.header.title.as_deref(), Some("Branched"));
+    assert_eq!(branch.session.header.current_model, "openai/default_model");
+    assert_eq!(
+        branch.session.header.current_variant.as_deref(),
+        Some("high")
+    );
+    assert_eq!(branch.session.header.editor, origin.session.header.editor);
     assert_ne!(forked.id, id);
     let loaded = mgr.store().load_session(&forked.id).await.unwrap().unwrap();
     assert_eq!(loaded.turns.len(), 3);
-    assert_eq!(loaded.title.as_deref(), Some("Branched"));
+    assert_eq!(loaded.header.title.as_deref(), Some("Branched"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -782,7 +789,7 @@ async fn session_editor_frozen_at_create() {
         .await
         .unwrap();
     assert_eq!(
-        handle.snapshot().session.editor,
+        handle.snapshot().session.header.editor,
         crate::model::EditorKind::Hashline
     );
     handle
@@ -790,8 +797,11 @@ async fn session_editor_frozen_at_create() {
         .await
         .unwrap();
     let snap = handle.snapshot();
-    assert_eq!(snap.session.current_model, "p/patched");
-    assert_eq!(snap.session.editor, crate::model::EditorKind::Hashline);
+    assert_eq!(snap.session.header.current_model, "p/patched");
+    assert_eq!(
+        snap.session.header.editor,
+        crate::model::EditorKind::Hashline
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -841,7 +851,7 @@ async fn session_editor_falls_back_to_settings_editor() {
         .await
         .unwrap();
     assert_eq!(
-        plain.snapshot().session.editor,
+        plain.snapshot().session.header.editor,
         crate::model::EditorKind::Patch
     );
 
@@ -851,7 +861,7 @@ async fn session_editor_falls_back_to_settings_editor() {
         .await
         .unwrap();
     assert_eq!(
-        hashed.snapshot().session.editor,
+        hashed.snapshot().session.header.editor,
         crate::model::EditorKind::Hashline
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1006,7 +1016,7 @@ impl crate::tools::Tool for HangTool {
 #[tokio::test]
 async fn abort_during_tools_synthesizes_paired_error_results() {
     let (mut task, _view) = event_task();
-    let root = task.view.session.workspace_root.clone();
+    let root = task.view.session.header.workspace_root.clone();
     task.store.save_header(&task.view.session).await.unwrap();
     task.view.persisted = true;
     let mut tools = crate::tools::ToolRegistry::new();
@@ -1049,7 +1059,7 @@ async fn abort_during_tools_synthesizes_paired_error_results() {
     }
     let loaded = task
         .store
-        .load_session(&task.view.session.id)
+        .load_session(&task.view.session.header.id)
         .await
         .unwrap()
         .unwrap();
@@ -1092,14 +1102,14 @@ async fn deliver_while_running_is_queued_and_acked() {
     reply_rx.await.unwrap().unwrap();
     assert_eq!(task.pending_deliveries.len(), 1);
     assert_eq!(task.pending_deliveries[0].text, "hello");
-    let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+    let _ = std::fs::remove_dir_all(&task.view.session.header.workspace_root);
 }
 
 #[tokio::test]
 async fn pending_deliveries_run_as_turns_and_bump_seq() {
     let (mut task, _view) = event_task();
     let seq_rx = task.turn_tx.subscribe();
-    let root = task.view.session.workspace_root.clone();
+    let root = task.view.session.header.workspace_root.clone();
     // 不可达端点：投递轮次快速失败（不出本机），验证冲刷机制而非补全结果
     let mut config = AppConfig::default();
     let mut models = std::collections::HashMap::new();
@@ -1172,7 +1182,7 @@ async fn drain_subagent_completions_injects_final_message_reminder() {
     task.subagent_completions.push("sess_gone".into());
     task.drain_subagent_completions().await.unwrap();
     assert_eq!(task.view.session.turns.len(), 1);
-    let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+    let _ = std::fs::remove_dir_all(&task.view.session.header.workspace_root);
 }
 
 /// 子代理派生链路（不可达端点让子会话轮次快速失败，不出本机）：
@@ -1241,10 +1251,10 @@ async fn spawn_subagent_creates_child_session_and_wait_reports() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loaded.agent.as_deref(), Some("explore"));
-    assert_eq!(loaded.parent.as_deref(), Some(parent.id.as_str()));
-    assert_eq!(loaded.depth, 1);
-    assert_eq!(loaded.current_model, "p/m");
+    assert_eq!(loaded.header.agent.as_deref(), Some("explore"));
+    assert_eq!(loaded.header.parent.as_deref(), Some(parent.id.as_str()));
+    assert_eq!(loaded.header.depth, 1);
+    assert_eq!(loaded.header.current_model, "p/m");
 
     // 端点不可达：子会话轮次失败结束，wait_turn 返回空文本
     let report = broker
@@ -1435,25 +1445,25 @@ async fn delete_session_cascades_to_child_sessions() {
 
     let parent = Session::with_model(&dir, Some("parent".into()), "p/m", None, true);
     let mut live_child = Session::with_model(&dir, Some("child".into()), "p/m", None, true);
-    live_child.parent = Some(parent.id.clone());
+    live_child.header.parent = Some(parent.header.id.clone());
     let mut cold_child = Session::with_model(&dir, Some("cold".into()), "p/m", None, true);
-    cold_child.parent = Some(parent.id.clone());
+    cold_child.header.parent = Some(parent.header.id.clone());
     let mut grandchild = Session::with_model(&dir, Some("grand".into()), "p/m", None, true);
-    grandchild.parent = Some(live_child.id.clone());
+    grandchild.header.parent = Some(live_child.header.id.clone());
     let orphan = Session::with_model(&dir, Some("orphan".into()), "p/m", None, true);
     for session in [&parent, &live_child, &cold_child, &grandchild, &orphan] {
         store.save_header(session).await.unwrap();
     }
 
-    let parent_handle = manager.get_or_load(&parent.id).await.unwrap();
-    let _live_handle = manager.get_or_load(&live_child.id).await.unwrap();
+    let parent_handle = manager.get_or_load(&parent.header.id).await.unwrap();
+    let _live_handle = manager.get_or_load(&live_child.header.id).await.unwrap();
 
     manager.delete_session(&parent_handle).await.unwrap();
 
     assert!(
         manager
             .store()
-            .load_session(&parent.id)
+            .load_session(&parent.header.id)
             .await
             .unwrap()
             .is_none()
@@ -1461,7 +1471,7 @@ async fn delete_session_cascades_to_child_sessions() {
     assert!(
         manager
             .store()
-            .load_session(&live_child.id)
+            .load_session(&live_child.header.id)
             .await
             .unwrap()
             .is_none()
@@ -1469,7 +1479,7 @@ async fn delete_session_cascades_to_child_sessions() {
     assert!(
         manager
             .store()
-            .load_session(&cold_child.id)
+            .load_session(&cold_child.header.id)
             .await
             .unwrap()
             .is_none()
@@ -1477,7 +1487,7 @@ async fn delete_session_cascades_to_child_sessions() {
     assert!(
         manager
             .store()
-            .load_session(&grandchild.id)
+            .load_session(&grandchild.header.id)
             .await
             .unwrap()
             .is_none()
@@ -1485,7 +1495,7 @@ async fn delete_session_cascades_to_child_sessions() {
     assert!(
         manager
             .store()
-            .load_session(&orphan.id)
+            .load_session(&orphan.header.id)
             .await
             .unwrap()
             .is_some()
@@ -1514,7 +1524,7 @@ async fn failed_or_aborted_turn_has_no_old_answer_and_cancels_pending_deliveries
         assert!(!task.run_pending_deliveries(&mut commands).await);
         assert_eq!(task.view.session.turns.len(), 1);
         assert_eq!(task.turn_seq, 1);
-        let _ = std::fs::remove_dir_all(&task.view.session.workspace_root);
+        let _ = std::fs::remove_dir_all(&task.view.session.header.workspace_root);
     }
 }
 

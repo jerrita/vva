@@ -52,9 +52,10 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
     let mut context_limit = None;
     let mut cost_cfg: Option<ModelCostConfig> = None;
 
-    if let Ok(resolved) =
-        app_config.resolve_model(&session.current_model, session.current_variant.as_deref())
-    {
+    if let Ok(resolved) = app_config.resolve_model(
+        &session.header.current_model,
+        session.header.current_variant.as_deref(),
+    ) {
         context_limit = resolved
             .model_config
             .limit

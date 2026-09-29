@@ -1,5 +1,15 @@
 use super::*;
 
+fn resolve_session_editor(
+    model_config: &crate::config::ModelConfig,
+    settings_editor: Option<crate::model::EditorKind>,
+) -> crate::model::EditorKind {
+    model_config
+        .editor()
+        .or(settings_editor)
+        .unwrap_or_default()
+}
+
 /// 只管理会话句柄；Session 的修改与存储由对应任务顺序执行。
 pub struct SessionManager {
     store: Arc<dyn SessionStore>,
@@ -60,25 +70,25 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 保证 `session.id` 在存储中唯一（冲突时重新生成，最多重试 8 次）。
+    /// 保证 `session.header.id` 在存储中唯一（冲突时重新生成，最多重试 8 次）。
     async fn unique_session_id(&self, session: &mut Session) -> Result<(), String> {
         for _ in 0..8 {
             if self
                 .store
-                .load_session(&session.id)
+                .load_session(&session.header.id)
                 .await
                 .map_err(|e| e.to_string())?
                 .is_none()
             {
                 return Ok(());
             }
-            session.id = crate::model::generate_session_id();
+            session.header.id = crate::model::generate_session_id();
         }
         Ok(())
     }
 
     fn spawn(self: &Arc<Self>, session: Session, persisted: bool) -> Arc<ManagedSession> {
-        let id = session.id.clone();
+        let id = session.header.id.clone();
         let view = SessionView {
             revision: 0,
             session: Arc::new(session),
@@ -190,11 +200,8 @@ impl SessionManager {
             .map_err(|e| e.to_string())?;
         let mut session =
             Session::with_model(&workspace, title, resolved.full_spec, variant, search);
-        session.editor = resolved
-            .model_config
-            .editor()
-            .or(config.settings.editor)
-            .unwrap_or_default();
+        session.header.editor =
+            resolve_session_editor(&resolved.model_config, config.settings.editor);
         self.unique_session_id(&mut session).await?;
         self.remember_session(&session);
         let handle = self.spawn(session, false);
@@ -254,8 +261,8 @@ impl SessionManager {
     fn remember_session(&self, session: &Session) {
         AppState::persist_selection(
             &self.state_path,
-            &session.current_model,
-            session.current_variant.as_deref(),
+            &session.header.current_model,
+            session.header.current_variant.as_deref(),
         );
     }
 
@@ -355,13 +362,13 @@ impl SessionManager {
             title.to_string()
         };
         let mut session = Session::with_model(
-            origin.workspace_root.clone(),
+            origin.header.workspace_root.clone(),
             Some(title),
-            origin.current_model.clone(),
-            origin.current_variant.clone(),
-            origin.web_search,
+            origin.header.current_model.clone(),
+            origin.header.current_variant.clone(),
+            origin.header.web_search,
         );
-        session.editor = origin.editor;
+        session.header.editor = origin.header.editor;
         self.unique_session_id(&mut session).await?;
         session.turns = origin.turns[..turn_index].to_vec();
         session.updated_at = chrono::Utc::now();
@@ -444,14 +451,11 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             parent.current_variant.clone(),
             parent.web_search,
         );
-        session.editor = resolved
-            .model_config
-            .editor()
-            .or(config.settings.editor)
-            .unwrap_or_default();
-        session.parent = Some(parent.parent_id.clone());
-        session.agent = Some(def.name.clone());
-        session.depth = parent.depth + 1;
+        session.header.editor =
+            resolve_session_editor(&resolved.model_config, config.settings.editor);
+        session.header.parent = Some(parent.parent_id.clone());
+        session.header.agent = Some(def.name.clone());
+        session.header.depth = parent.depth + 1;
         manager.unique_session_id(&mut session).await?;
         let handle = manager.spawn(session, false);
         manager
@@ -525,6 +529,15 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         seen_seq: u64,
         timeout: Option<std::time::Duration>,
     ) -> Result<crate::tools::agent::SubagentReport, String> {
+        async fn wait_timeout<F: Future>(
+            timeout: Option<std::time::Duration>,
+            fut: F,
+        ) -> Result<F::Output, tokio::time::error::Elapsed> {
+            match timeout {
+                Some(duration) => tokio::time::timeout(duration, fut).await,
+                None => Ok(fut.await),
+            }
+        }
         let receipt = self
             .receipts
             .lock()
@@ -532,20 +545,17 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             .get_mut(session_id)
             .and_then(|queue| queue.pop_front());
         if let Some(mut receipt) = receipt {
-            let result = match timeout {
-                Some(duration) => match tokio::time::timeout(duration, &mut receipt).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        self.receipts
-                            .lock()
-                            .await
-                            .entry(session_id.into())
-                            .or_default()
-                            .push_front(receipt);
-                        return Err(format!("Timed out waiting for session {session_id}"));
-                    }
-                },
-                None => receipt.await,
+            let result = match wait_timeout(timeout, &mut receipt).await {
+                Ok(result) => result,
+                Err(_) => {
+                    self.receipts
+                        .lock()
+                        .await
+                        .entry(session_id.into())
+                        .or_default()
+                        .push_front(receipt);
+                    return Err(format!("Timed out waiting for session {session_id}"));
+                }
             };
             return result.map_err(|_| format!("Session {session_id} is closed"))?;
         }
@@ -557,15 +567,10 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
                 break;
             }
             let changed = turns.changed();
-            match timeout {
-                Some(duration) => tokio::time::timeout(duration, changed)
-                    .await
-                    .map_err(|_| format!("Timed out waiting for session {session_id}"))?
-                    .map_err(|_| format!("Session {session_id} is closed"))?,
-                None => changed
-                    .await
-                    .map_err(|_| format!("Session {session_id} is closed"))?,
-            }
+            wait_timeout(timeout, changed)
+                .await
+                .map_err(|_| format!("Timed out waiting for session {session_id}"))?
+                .map_err(|_| format!("Session {session_id} is closed"))?;
         }
         self.release_foreground_child(session_id).await;
         Ok(handle.report())
@@ -660,7 +665,7 @@ mod tests {
     async fn delivery_receipts_are_isolated_and_survive_timeout_and_later_turns() {
         let (manager, root) = manager();
         let session = Session::new(&root, None);
-        let id = session.id.clone();
+        let id = session.header.id.clone();
         let (commands, mut rx) = mpsc::channel(4);
         let (_, view) = watch::channel(Arc::new(SessionView {
             revision: 0,

@@ -2,6 +2,7 @@
 
 use super::user_block::*;
 use super::*;
+use crate::ui::spans::split_spans_by_hit;
 
 pub(super) fn selectable_columns(line: &Line) -> (usize, usize) {
     let is_user_block = line
@@ -132,37 +133,17 @@ pub(crate) fn apply_selection_highlight_offset(
         let mut col = 0;
 
         for span in old_spans {
-            let mut cur_buf = String::new();
-            let mut cur_is_selected: Option<bool> = None;
-
-            for ch in span.content.chars() {
-                let is_selected =
-                    char_in_column_range(ch, col, range) && char_in_column_range(ch, col, bounds);
-
-                match cur_is_selected {
-                    Some(sel) if sel == is_selected => {
-                        cur_buf.push(ch);
-                    }
-                    Some(sel) => {
-                        let style = if sel { SELECTION_STYLE } else { span.style };
-                        new_spans.push(Span::styled(std::mem::take(&mut cur_buf), style));
-                        cur_buf.push(ch);
-                        cur_is_selected = Some(is_selected);
-                    }
-                    None => {
-                        cur_buf.push(ch);
-                        cur_is_selected = Some(is_selected);
-                    }
-                }
-                col += ch.width().unwrap_or(0);
-            }
-
-            if let Some(sel) = cur_is_selected
-                && !cur_buf.is_empty()
-            {
-                let style = if sel { SELECTION_STYLE } else { span.style };
-                new_spans.push(Span::styled(cur_buf, style));
-            }
+            new_spans.extend(split_spans_by_hit(
+                &span.content,
+                span.style,
+                SELECTION_STYLE,
+                |_, ch| {
+                    let hit = char_in_column_range(ch, col, range)
+                        && char_in_column_range(ch, col, bounds);
+                    col += ch.width().unwrap_or(0);
+                    hit
+                },
+            ));
         }
 
         line.spans = new_spans;

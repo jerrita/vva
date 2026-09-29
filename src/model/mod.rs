@@ -63,7 +63,11 @@ mod tests {
     #[test]
     fn session_id_suffix_is_five_hex_chars() {
         let session = Session::new(PathBuf::from("/home/user/project"), None);
-        let suffix = session.id.strip_prefix("sess_").expect("sess_ prefix");
+        let suffix = session
+            .header
+            .id
+            .strip_prefix("sess_")
+            .expect("sess_ prefix");
         assert_eq!(suffix.len(), 5);
         assert!(suffix.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')));
     }

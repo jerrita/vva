@@ -5,6 +5,7 @@ mod hyperlinks;
 pub mod input;
 pub mod markdown;
 pub mod modals;
+mod spans;
 pub mod text;
 pub mod views;
 
@@ -134,10 +135,10 @@ async fn run_app_loop(
     loop {
         let view = app.view.clone();
         let session = &view.session;
-        let session_id = &session.id;
-        let session_model = &session.current_model;
-        let session_variant = &session.current_variant;
-        let session_workspace = session.workspace_root.display().to_string();
+        let session_id = &session.header.id;
+        let session_model = &session.header.current_model;
+        let session_variant = &session.header.current_variant;
+        let session_workspace = session.header.workspace_root.display().to_string();
 
         let frame = terminal.draw(|frame| {
             let size = frame.area();

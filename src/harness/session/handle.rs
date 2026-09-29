@@ -7,6 +7,23 @@ pub(super) struct CompletedTurn {
     pub error: Option<String>,
 }
 
+impl CompletedTurn {
+    pub(super) fn subagent_report(
+        &self,
+        session_id: String,
+        session: &Session,
+    ) -> crate::tools::agent::SubagentReport {
+        crate::tools::agent::SubagentReport {
+            session_id,
+            agent: session.header.agent.clone().unwrap_or_default(),
+            title: session.header.title.clone().unwrap_or_default(),
+            turn_seq: self.seq,
+            text: self.text.clone(),
+            error: self.error.clone(),
+        }
+    }
+}
+
 pub(super) type DeliveryResult = Result<crate::tools::agent::SubagentReport, String>;
 pub(super) type DeliveryReceipt = oneshot::Receiver<DeliveryResult>;
 
@@ -96,14 +113,7 @@ impl ManagedSession {
     pub(super) fn report(&self) -> crate::tools::agent::SubagentReport {
         let view = self.snapshot();
         let completed = self.turns.borrow();
-        crate::tools::agent::SubagentReport {
-            session_id: self.id.clone(),
-            agent: view.session.agent.clone().unwrap_or_default(),
-            title: view.session.title.clone().unwrap_or_default(),
-            turn_seq: completed.seq,
-            text: completed.text.clone(),
-            error: completed.error.clone(),
-        }
+        completed.subagent_report(self.id.clone(), &view.session)
     }
 
     /// 后台子代理完成回投（watcher 调用）：通道饱和或会话退出时丢弃

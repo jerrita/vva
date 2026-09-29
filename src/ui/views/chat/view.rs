@@ -12,7 +12,7 @@ fn chat_text_width(area: Rect) -> usize {
 }
 
 pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
-    let title = app.view.session.title.as_deref().unwrap_or("");
+    let title = app.view.session.header.title.as_deref().unwrap_or("");
     let block = panel_block()
         .title(session_title_line(app, title))
         .padding(Padding::new(1, 1, 1, 0));

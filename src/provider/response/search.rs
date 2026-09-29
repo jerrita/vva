@@ -11,7 +11,7 @@ pub(super) fn project_web_search_call(
     let status = match status {
         "in_progress" | "searching" => SearchStatus::Searching,
         "completed" => SearchStatus::Completed,
-        "failed" => SearchStatus::Failed,
+        "failed" | "incomplete" => SearchStatus::Failed,
         _ => {
             return Err(ProviderError::Protocol(format!(
                 "Invalid web search status: {status}"
@@ -20,33 +20,32 @@ pub(super) fn project_web_search_call(
     };
     let (action, query, sources) = match action {
         Some(ResponseWebSearchAction::Search {
-            query,
-            queries,
-            sources,
+            queries, sources, ..
         }) => (
-            WebSearchAction::Search,
-            query.clone().unwrap_or_else(|| queries.join(", ")),
+            Some(WebSearchAction::Search),
+            queries.join(", "),
             sources
                 .iter()
                 .map(|src| WebSearchSource::new(&src.url, &src.url, None))
                 .collect(),
         ),
         Some(ResponseWebSearchAction::OpenPage { url }) => (
-            WebSearchAction::OpenPage {
+            Some(WebSearchAction::OpenPage {
                 url: url.clone().unwrap_or_default(),
-            },
+            }),
             String::new(),
             Vec::new(),
         ),
         Some(ResponseWebSearchAction::FindInPage { url, pattern }) => (
-            WebSearchAction::FindInPage {
+            Some(WebSearchAction::FindInPage {
                 url: url.clone(),
                 pattern: pattern.clone(),
-            },
+            }),
             String::new(),
             Vec::new(),
         ),
-        None => (WebSearchAction::Search, String::new(), Vec::new()),
+        // 端点未下发动作：如实保留缺席（领域层 None），不伪造空 Search
+        None => (None, String::new(), Vec::new()),
     };
     Ok(WebSearchCall {
         id: id.to_string(),

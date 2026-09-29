@@ -41,6 +41,15 @@ pub(super) fn parse_args<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("Invalid arguments for {tool}: {error}"))
 }
 
+/// 逐行累加的字节偏移表（首元素为 0）：Edit diff 与 hashline 快照共用的行窗口定位。
+pub(crate) fn line_offsets(text: &str) -> Vec<usize> {
+    let mut offsets = vec![0];
+    for line in text.split_inclusive('\n') {
+        offsets.push(offsets.last().unwrap() + line.len());
+    }
+    offsets
+}
+
 fn strip_wrapping_quotes(mut value: &str) -> &str {
     loop {
         let bytes = value.as_bytes();

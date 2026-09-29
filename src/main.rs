@@ -88,15 +88,16 @@ enum SessionAction {
 /// 打印一次原生搜索调用的动作摘要（Run 流式输出与 Inspect 详情共用）
 fn print_search_action(prefix: &str, call: &WebSearchCall) {
     match &call.action {
-        WebSearchAction::Search => println!(
+        Some(WebSearchAction::Search) => println!(
             "{prefix}[web_search] {} ({} sources)",
             call.query,
             call.sources.len()
         ),
-        WebSearchAction::OpenPage { url } => println!("{prefix}[web_open] {url}"),
-        WebSearchAction::FindInPage { url, pattern } => {
+        Some(WebSearchAction::OpenPage { url }) => println!("{prefix}[web_open] {url}"),
+        Some(WebSearchAction::FindInPage { url, pattern }) => {
             println!("{prefix}[web_find] {url} / {pattern}")
         }
+        None => println!("{prefix}[web_search] (action not reported)"),
     }
 }
 
@@ -183,8 +184,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
             let view = session.snapshot();
             println!("🚀 [vva] Session ID: {}", session.id);
-            println!("📂 Workspace: {}", view.session.workspace_root.display());
-            println!("🎯 Session Model: {}", view.session.current_model);
+            println!(
+                "📂 Workspace: {}",
+                view.session.header.workspace_root.display()
+            );
+            println!("🎯 Session Model: {}", view.session.header.current_model);
             let (tx, mut rx) = mpsc::channel::<AgentEvent>(32);
             session.submit(&prompt, Vec::new(), Some(tx)).await?;
 
@@ -321,12 +325,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or_else(|| format!("Session not found: {session_id}"))?;
 
                 println!("=== Session Header ===");
-                println!("ID: {}", session.id);
-                println!("Title: {:?}", session.title);
-                println!("Workspace: {}", session.workspace_root.display());
-                println!("Selected Model: {}", session.current_model);
-                println!("Reasoning Variant: {:?}", session.current_variant);
-                println!("Created At: {}", session.created_at);
+                println!("ID: {}", session.header.id);
+                println!("Title: {:?}", session.header.title);
+                println!("Workspace: {}", session.header.workspace_root.display());
+                println!("Selected Model: {}", session.header.current_model);
+                println!("Reasoning Variant: {:?}", session.header.current_variant);
+                println!("Created At: {}", session.header.created_at);
 
                 println!("\n=== Turns ({}) ===", session.turns.len());
                 for (i, turn) in session.turns.iter().enumerate() {

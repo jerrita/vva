@@ -55,10 +55,10 @@ impl App {
         let handle = self
             .session_mgr
             .create_session(
-                session.current_model.clone(),
-                session.current_variant.clone(),
+                session.header.current_model.clone(),
+                session.header.current_variant.clone(),
                 None,
-                session.web_search,
+                session.header.web_search,
             )
             .await?;
         self.attach_session(handle);
@@ -98,10 +98,6 @@ impl App {
         self.modal = ActiveModal::Skills(SkillsModalState::new(skills));
     }
 
-    pub fn current_session_model(&self) -> String {
-        self.view.session.current_model.clone()
-    }
-
     pub async fn open_models_modal(&mut self) {
         let config = self.session_mgr.app_config();
         let mut models = Vec::new();
@@ -125,13 +121,13 @@ impl App {
         models.sort_by(|a, b| a.full_id.cmp(&b.full_id));
         self.modal = ActiveModal::Models(ModelsModalState::new(
             models,
-            &self.view.session.current_model,
+            &self.view.session.header.current_model,
         ));
     }
 
     pub async fn switch_model(&mut self, model: &str) {
         let config = self.session_mgr.app_config();
-        let variant = self.view.session.current_variant.clone();
+        let variant = self.view.session.header.current_variant.clone();
         let resolved = config
             .resolve_model(model, variant.as_deref())
             .or_else(|_| config.resolve_model(model, None));
@@ -155,8 +151,8 @@ impl App {
     pub async fn open_variants_modal(&mut self) {
         let items = self.variant_options();
         let (model, variant) = (
-            self.view.session.current_model.clone(),
-            self.view.session.current_variant.clone(),
+            self.view.session.header.current_model.clone(),
+            self.view.session.header.current_variant.clone(),
         );
         self.modal = ActiveModal::Variants(VariantsModalState::new(model, variant, items));
     }
@@ -164,7 +160,7 @@ impl App {
     /// 当前模型可用的推理档位选项（default 置首，与 /variant 弹窗同源）
     fn variant_options(&self) -> Vec<VariantItem> {
         let config = self.session_mgr.app_config();
-        let Ok(model) = config.resolve_model(&self.view.session.current_model, None) else {
+        let Ok(model) = config.resolve_model(&self.view.session.header.current_model, None) else {
             return Vec::new();
         };
         let Some(variants) = model.model_config.variants else {
@@ -197,8 +193,11 @@ impl App {
         if options.len() < 2 {
             return;
         }
-        let current = active_variant_index(&options, self.view.session.current_variant.as_deref())
-            .unwrap_or(0);
+        let current = active_variant_index(
+            &options,
+            self.view.session.header.current_variant.as_deref(),
+        )
+        .unwrap_or(0);
         let next = &options[(current + 1) % options.len()];
         let next_id = next.id.clone();
         self.switch_variant(next_id.as_deref()).await;
@@ -221,9 +220,9 @@ impl App {
     pub async fn open_config_modal(&mut self) {
         let session = &self.view.session;
         self.modal = ActiveModal::Config(ConfigModalState::new(
-            session.current_model.clone(),
-            session.current_variant.clone(),
-            session.web_search,
+            session.header.current_model.clone(),
+            session.header.current_variant.clone(),
+            session.header.web_search,
             self.thinking_concise,
         ));
     }
@@ -398,6 +397,7 @@ impl App {
         let default = self
             .view
             .session
+            .header
             .title
             .clone()
             .filter(|title| !title.is_empty())

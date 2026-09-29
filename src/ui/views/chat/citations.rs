@@ -40,12 +40,13 @@ pub(super) fn search_citations<'a>(
 }
 
 pub(super) fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
-    match &call.action {
-        WebSearchAction::Search => call.sources.iter().any(|source| source.url == url),
-        WebSearchAction::OpenPage { url: action_url }
-        | WebSearchAction::FindInPage {
+    match call.action.as_ref() {
+        Some(WebSearchAction::Search) => call.sources.iter().any(|source| source.url == url),
+        Some(WebSearchAction::OpenPage { url: action_url })
+        | Some(WebSearchAction::FindInPage {
             url: action_url, ..
-        } => action_url == url,
+        }) => action_url == url,
+        None => false,
     }
 }
 

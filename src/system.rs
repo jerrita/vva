@@ -86,7 +86,7 @@ pub fn format_background_task_reminder(notification: &str) -> String {
 fn get_current_date() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
-
+#[cfg(any(windows, target_os = "macos"))]
 fn run_command_output(program: &str, args: &[&str]) -> Option<String> {
     std::process::Command::new(program)
         .args(args)
@@ -186,8 +186,7 @@ fn get_os_info() -> String {
 
         let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .ok()
-            .map(|s| s.trim().to_string())
-            .or_else(|| run_command_output("uname", &["-r"]).map(|s| s.trim().to_string()));
+            .map(|s| s.trim().to_string());
 
         match (distro, kernel) {
             (Some(d), Some(k)) => format!("{d} (Kernel {k})"),

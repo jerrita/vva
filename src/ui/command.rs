@@ -3,7 +3,6 @@ pub struct SlashCommand {
     pub name: &'static str,
     pub aliases: &'static [&'static str],
     pub description: &'static str,
-    pub example: &'static str,
 }
 
 /// 命令补全候选：内置斜杠命令或已发现的 Agent Skill（/<skill_name> 直接加载）
@@ -38,73 +37,61 @@ pub static COMMANDS: &[SlashCommand] = &[
         name: "/sessions",
         aliases: &["/session"],
         description: "Select and resume a session (per project)",
-        example: "/sessions",
     },
     SlashCommand {
         name: "/skills",
         aliases: &["/skill"],
         description: "Browse discovered Agent Skills (SKILL.md)",
-        example: "/skills",
     },
     SlashCommand {
         name: "/new",
         aliases: &[],
         description: "Start a new session with the current configuration",
-        example: "/new",
     },
     SlashCommand {
         name: "/model",
         aliases: &["/m"],
         description: "Select model interactively or switch (/model <id>)",
-        example: "/model [model_id]",
     },
     SlashCommand {
         name: "/variant",
         aliases: &["/v", "/effort"],
         description: "Select reasoning variant interactively or switch (/variant <effort>)",
-        example: "/variant [effort]",
     },
     SlashCommand {
         name: "/config",
         aliases: &["/settings"],
         description: "View and adjust session configuration interactively",
-        example: "/config",
     },
     SlashCommand {
         name: "/search",
         aliases: &["/web"],
         description: "Toggle native web search grounding",
-        example: "/search [on|off]",
     },
     SlashCommand {
         name: "/thinking",
         aliases: &["/think", "/th"],
         description: "Toggle thinking display between concise (one line) and full",
-        example: "/thinking",
     },
     SlashCommand {
         name: "/clear",
         aliases: &["/c"],
         description: "Delete current session and start a new one",
-        example: "/clear",
     },
     SlashCommand {
         name: "/sidebar",
         aliases: &["/sb"],
         description: "Toggle the right sidebar details panel",
-        example: "/sidebar",
     },
     SlashCommand {
         name: "/help",
         aliases: &["/h", "/?"],
         description: "Show command and keyboard shortcuts help",
-        example: "/help",
     },
     SlashCommand {
         name: "/quit",
         aliases: &["/exit", "/q"],
         description: "Exit vva application",
-        example: "/quit",
     },
 ];
 

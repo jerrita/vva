@@ -47,7 +47,7 @@ struct SessionInfo {
 impl From<&Session> for SessionInfo {
     fn from(session: &Session) -> Self {
         Self {
-            header: SessionHeader::from(session),
+            header: session.header.clone(),
             updated_at: session.updated_at,
         }
     }
@@ -275,14 +275,14 @@ mod tests {
     #[test]
     fn changes_cover_skipped_revisions_commit_revert_and_metadata_clear() {
         let mut before = view();
-        Arc::make_mut(&mut before.session).current_variant = Some("high".into());
+        Arc::make_mut(&mut before.session).header.current_variant = Some("high".into());
         Arc::make_mut(&mut before.session).append_turn(Turn::user_turn(Message::text("sample")));
         let mut after = before.clone();
         after.revision = 12;
         after.draft.clear();
         after.state = RunState::Idle;
         let session = Arc::make_mut(&mut after.session);
-        session.current_variant = None;
+        session.header.current_variant = None;
         session.append_turn(Turn::assistant_turn(vec![Message::text("result")]));
         session.append_turn(Turn::new(Role::Tool, vec![Message::text("output")]));
         let update = delta(&before, &after);

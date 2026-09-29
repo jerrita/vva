@@ -377,22 +377,26 @@ function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: bool
       <summary>
         <span className="search-icon">⌕</span>
         <span className="search-label">
-          {call.action.type === 'open_page'
-            ? '打开网页'
-            : call.action.type === 'find_in_page'
-              ? '页内查找'
-              : '网络搜索'}
+          {call.action == null
+            ? '网络搜索'
+            : call.action.type === 'open_page'
+              ? '打开网页'
+              : call.action.type === 'find_in_page'
+                ? '页内查找'
+                : '网络搜索'}
         </span>
         <code className="search-target">
-          {call.action.type === 'open_page' ? (
-            <a href={call.action.url} target="_blank" rel="noreferrer">
-              {call.action.url}
-            </a>
-          ) : call.action.type === 'search' ? (
-            call.query
-          ) : (
-            call.action.url
-          )}
+          {call.action == null
+            ? '（动作未下发）'
+            : call.action.type === 'open_page' ? (
+              <a href={call.action.url} target="_blank" rel="noreferrer">
+                {call.action.url}
+              </a>
+            ) : call.action.type === 'search' ? (
+              call.query
+            ) : (
+              call.action.url
+            )}
         </code>
         <span className={`search-status ${call.status}`}>{call.status}</span>
       </summary>

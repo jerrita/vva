@@ -61,19 +61,22 @@ pub(super) struct EngineDeps {
 impl AgentEngine {
     pub fn new(config: &AppConfig, session: &Session, deps: EngineDeps) -> Result<Self, String> {
         let resolved = config
-            .resolve_model(&session.current_model, session.current_variant.as_deref())
+            .resolve_model(
+                &session.header.current_model,
+                session.header.current_variant.as_deref(),
+            )
             .map_err(|e| e.to_string())?;
         let inputs = resolved.input_capabilities();
         inputs.validate_session(session)?;
         let mut tools = ToolRegistry::with_editor_session(
-            &session.workspace_root,
+            &session.header.workspace_root,
             Some(deps.tool_outputs),
-            session.editor,
+            session.header.editor,
             deps.hashline,
         );
-        let mut read = crate::tools::filesystem::ReadTool::new(&session.workspace_root)
+        let mut read = crate::tools::filesystem::ReadTool::new(&session.header.workspace_root)
             .with_inputs(inputs.clone())
-            .with_editor(session.editor);
+            .with_editor(session.header.editor);
         if let Some(hashline) = tools.hashline_session() {
             read = read.with_hashline(hashline);
         }
@@ -83,7 +86,7 @@ impl AgentEngine {
         )));
         // 后台任务工具随会话级注册表注入（Shell 覆盖注册以绑定 run_in_background）
         tools.register(Arc::new(
-            crate::tools::shell::ShellTool::new(&session.workspace_root)
+            crate::tools::shell::ShellTool::new(&session.header.workspace_root)
                 .with_background(deps.background.clone()),
         ));
         tools.register(Arc::new(crate::tools::background::TaskOutputTool::new(
@@ -98,6 +101,7 @@ impl AgentEngine {
         ))));
         // 子代理派生与跨会话投递（subagent 会话按定义白名单裁剪）
         let agent_def = session
+            .header
             .agent
             .as_deref()
             .map(|name| {
@@ -145,11 +149,11 @@ impl AgentEngine {
             model: resolved.model_id,
             max_tokens,
             reasoning_effort: resolved.selected_variant,
-            enable_web_search: session.web_search
+            enable_web_search: session.header.web_search
                 && resolved.model_config.declare_web_search()
                 && search_allowed
                 && (!bundled_fetch || fetch_allowed),
-            enable_web_fetch: session.web_search
+            enable_web_fetch: session.header.web_search
                 && resolved.model_config.declare_web_search()
                 && resolved.model_config.declare_web_fetch()
                 && fetch_allowed,
@@ -174,7 +178,7 @@ impl AgentEngine {
         let mut notices = Vec::new();
         let mut external_search = false;
         let mut activated: Vec<String> = Vec::new();
-        if session.web_search && (search_allowed || fetch_allowed) {
+        if session.header.web_search && (search_allowed || fetch_allowed) {
             let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
             let native_search = options.enable_web_search && capabilities.supports_native_search;
             // 独立 web_fetch server tool（Anthropic）按声明位；
@@ -182,7 +186,7 @@ impl AgentEngine {
             let native_fetch = if capabilities.server_tool_names.contains(&"web_fetch") {
                 options.enable_web_fetch
             } else {
-                native_search && capabilities.server_tool_names.contains(&"web_search")
+                native_search && bundled_fetch
             };
             if search_allowed
                 && !native_search
@@ -478,9 +482,9 @@ mod tests {
     async fn subagent_session_registry_is_pruned_to_def_allowlist() {
         let config = web_config(None);
         let mut session = session_for("p/nos", false);
-        session.agent = Some("explore".into());
-        session.parent = Some("sess_p0".into());
-        session.depth = 1;
+        session.header.agent = Some("explore".into());
+        session.header.parent = Some("sess_p0".into());
+        session.header.depth = 1;
         let engine = build_engine(&config, &session).unwrap();
 
         assert!(engine.tools.get("Read").is_some());
@@ -505,7 +509,7 @@ mod tests {
     async fn subagent_missing_definition_is_rejected() {
         let config = web_config(None);
         let mut session = session_for("p/nos", true);
-        session.agent = Some("missing-agent".into());
+        session.header.agent = Some("missing-agent".into());
         let Err(error) = build_engine(&config, &session) else {
             panic!("missing definition was accepted");
         };
@@ -528,7 +532,7 @@ mod tests {
                     }));
                     config.providers.get_mut("p").unwrap().provider_type = Some(provider_type);
                     let mut session = session_for("p/nos", true);
-                    session.agent = Some("restricted".into());
+                    session.header.agent = Some("restricted".into());
                     let mut allowed = vec!["Read".to_string()];
                     if search {
                         allowed.push("WebSearch".into());

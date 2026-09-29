@@ -104,9 +104,10 @@ pub enum Annotation {
 pub struct WebSearchCall {
     pub id: String,
     pub query: String,
-    /// 已持久化的旧条目缺少动作字段，沿用其搜索展示。
-    #[serde(default)]
-    pub action: WebSearchAction,
+    /// None 表示端点未下发动作（流式中途或兼容端点收尾仍缺）；
+    /// 旧落盘条目缺少该字段时按 Some(Search) 兼容读取，新条目以 null 往返。
+    #[serde(default = "legacy_search_action")]
+    pub action: Option<WebSearchAction>,
     pub status: SearchStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<WebSearchSource>,
@@ -121,7 +122,7 @@ impl WebSearchCall {
         Self {
             id: id.into(),
             query: query.into(),
-            action: WebSearchAction::Search,
+            action: Some(WebSearchAction::Search),
             status: SearchStatus::Completed,
             sources,
         }
@@ -131,7 +132,7 @@ impl WebSearchCall {
     /// function_call_output / tool_result 携带搜索上下文跨亲和组流转
     pub fn result_text(&self) -> String {
         match &self.action {
-            WebSearchAction::Search => {
+            Some(WebSearchAction::Search) => {
                 if self.sources.is_empty() {
                     return format!("No results found for \"{}\".", self.query);
                 }
@@ -151,26 +152,21 @@ impl WebSearchCall {
                 }
                 text
             }
-            WebSearchAction::OpenPage { url } => format!("Fetched {url}."),
-            WebSearchAction::FindInPage { url, pattern } => {
+            Some(WebSearchAction::OpenPage { url }) => format!("Fetched {url}."),
+            Some(WebSearchAction::FindInPage { url, pattern }) => {
                 format!("Found \"{pattern}\" in {url}.")
             }
+            None => "No search action was reported.".to_string(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WebSearchAction {
-    #[default]
     Search,
-    OpenPage {
-        url: String,
-    },
-    FindInPage {
-        url: String,
-        pattern: String,
-    },
+    OpenPage { url: String },
+    FindInPage { url: String, pattern: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -180,6 +176,11 @@ pub enum SearchStatus {
     Searching,
     Completed,
     Failed,
+}
+
+/// 旧落盘条目缺少 action 字段时的兼容缺省：按既有展示语义回读为 Search
+fn legacy_search_action() -> Option<WebSearchAction> {
+    Some(WebSearchAction::Search)
 }
 
 /// 参考 OpenAI Responses API 规范的 image_generation_call.status 三值枚举
@@ -233,8 +234,28 @@ mod tests {
             "sources": [{"url": "https://example.com", "title": "Example"}]
         }))
         .unwrap();
-        assert_eq!(call.action, WebSearchAction::Search);
+        assert_eq!(call.action, Some(WebSearchAction::Search));
         assert_eq!(call.query, "query");
         assert_eq!(call.sources.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn actionless_search_roundtrips_as_null() {
+        let call = WebSearchCall {
+            id: "ws_new".into(),
+            query: String::new(),
+            action: None,
+            status: SearchStatus::Completed,
+            sources: Vec::new(),
+        };
+        let json = serde_json::to_value(&call).unwrap();
+        assert_eq!(json["action"], serde_json::Value::Null);
+        let back: WebSearchCall = serde_json::from_value(json).unwrap();
+        assert_eq!(back.action, None);
     }
 }

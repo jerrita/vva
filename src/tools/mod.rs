@@ -248,13 +248,43 @@ fn inline_or_spill(
         path.display()
     );
     if tool == "Shell" {
-        let mut end = MAX_INLINE_OUTPUT_BYTES;
-        while !content.is_char_boundary(end) {
-            end -= 1;
-        }
-        Ok(format!("{}\n\n{notice}", &content[..end]))
+        let head = truncate_utf8(
+            content.as_bytes(),
+            MAX_INLINE_OUTPUT_BYTES,
+            TruncateSide::Head,
+        );
+        Ok(format!("{}\n\n{notice}", head))
     } else {
         Ok(notice)
+    }
+}
+
+/// 截断方向：Head 保留头部、Tail 保留尾部。
+pub(crate) enum TruncateSide {
+    Head,
+    Tail,
+}
+
+/// UTF-8 安全按字节截断：Head 向前回退字符边界，Tail 向后越过 continuation 字节，lossy 解码。
+pub(crate) fn truncate_utf8(data: &[u8], limit: usize, side: TruncateSide) -> String {
+    match side {
+        TruncateSide::Head => {
+            if data.len() <= limit {
+                return String::from_utf8_lossy(data).into_owned();
+            }
+            let mut end = limit;
+            while end > 0 && (data[end] & 0xC0) == 0x80 {
+                end -= 1;
+            }
+            String::from_utf8_lossy(&data[..end]).into_owned()
+        }
+        TruncateSide::Tail => {
+            let mut start = data.len().saturating_sub(limit);
+            while start < data.len() && (data[start] & 0xC0) == 0x80 {
+                start += 1;
+            }
+            String::from_utf8_lossy(&data[start..]).into_owned()
+        }
     }
 }
 

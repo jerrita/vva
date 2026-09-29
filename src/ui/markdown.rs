@@ -635,43 +635,46 @@ pub(crate) fn render_markdown_open(
     renderer.finish()
 }
 
+/// 代码盒/表格边框共用灰
+const BOX_BORDER_STYLE: Style = Style::new().fg(Color::Rgb(100, 100, 110));
+/// 代码盒头部行固定装饰宽度：`   ┌── [tag] …┐` 中语言标签与补线之外的列数
+const CODE_BOX_HEADER_CHROME: usize = 11;
+/// 代码盒内容行两侧装饰宽度：`   │ … │`
+const CODE_BOX_BODY_CHROME: usize = 7;
+/// 代码盒尾部行装饰宽度：`   └…┘`
+const CODE_BOX_FOOTER_CHROME: usize = 5;
+
 /// 代码盒头部行（语言标签来自围栏 info string 或为空）
 pub(crate) fn code_box_header_line(lang: &str, max_width: usize) -> Line<'static> {
     let lang_tag = truncate(
         if lang.is_empty() { "code" } else { lang },
-        max_width.saturating_sub(12),
+        max_width.saturating_sub(CODE_BOX_HEADER_CHROME + 1),
     );
     let header_line = format!(
         "   ┌── [{lang_tag}] {}┐",
-        "─".repeat(max_width.saturating_sub(11 + lang_tag.width()))
+        "─".repeat(max_width.saturating_sub(CODE_BOX_HEADER_CHROME + lang_tag.width()))
     );
-    Line::from(vec![Span::styled(
-        header_line,
-        Style::default().fg(Color::Rgb(100, 100, 110)),
-    )])
+    Line::from(vec![Span::styled(header_line, BOX_BORDER_STYLE)])
 }
 
 /// 代码盒内容行（超宽截断，右侧补齐）
 pub(crate) fn code_box_line(content: &str, max_width: usize) -> Line<'static> {
-    let code_width = max_width.saturating_sub(7).max(13);
+    let code_width = max_width.saturating_sub(CODE_BOX_BODY_CHROME).max(13);
     let code_l = truncate(content, code_width);
     let padding = " ".repeat(code_width.saturating_sub(code_l.width()));
     Line::from(vec![
-        Span::styled("   │ ", Style::default().fg(Color::Rgb(100, 100, 110))),
+        Span::styled("   │ ", BOX_BORDER_STYLE),
         Span::styled(code_l, Style::default().fg(Color::Rgb(220, 225, 230))),
-        Span::styled(
-            format!("{padding} │"),
-            Style::default().fg(Color::Rgb(100, 100, 110)),
-        ),
+        Span::styled(format!("{padding} │"), BOX_BORDER_STYLE),
     ])
 }
 
 pub(crate) fn code_box_footer_line(max_width: usize) -> Line<'static> {
-    let footer_line = format!("   └{}┘", "─".repeat(max_width.saturating_sub(5)));
-    Line::from(vec![Span::styled(
-        footer_line,
-        Style::default().fg(Color::Rgb(100, 100, 110)),
-    )])
+    let footer_line = format!(
+        "   └{}┘",
+        "─".repeat(max_width.saturating_sub(CODE_BOX_FOOTER_CHROME))
+    );
+    Line::from(vec![Span::styled(footer_line, BOX_BORDER_STYLE)])
 }
 
 /// 表格边框行：`prefix` 起始（含缩进）、列间 `join`、末尾 `end`
@@ -716,7 +719,7 @@ fn render_table(rows: &[Vec<String>], max_width: usize, output: &mut Vec<Line<'s
         col_widths[widest] -= 1;
     }
 
-    let border_style = Style::default().fg(Color::Rgb(100, 100, 110));
+    let border_style = BOX_BORDER_STYLE;
     let header_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);

@@ -10,7 +10,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::Tool;
+use super::{Tool, TruncateSide, truncate_utf8};
 use crate::agents::AgentDef;
 use crate::model::Session;
 use crate::tools::filesystem::parse_args;
@@ -28,12 +28,12 @@ pub struct SubagentContext {
 impl SubagentContext {
     pub fn from_session(session: &Session) -> Self {
         Self {
-            parent_id: session.id.clone(),
-            workspace_root: session.workspace_root.clone(),
-            current_model: session.current_model.clone(),
-            current_variant: session.current_variant.clone(),
-            web_search: session.web_search,
-            depth: session.depth,
+            parent_id: session.header.id.clone(),
+            workspace_root: session.header.workspace_root.clone(),
+            current_model: session.header.current_model.clone(),
+            current_variant: session.header.current_variant.clone(),
+            web_search: session.header.web_search,
+            depth: session.header.depth,
         }
     }
 }
@@ -250,7 +250,11 @@ pub fn format_subagent_reminder(report: &SubagentReport) -> String {
     if !report.title.is_empty() {
         notification.push_str(&format!("\ntitle: {}", report.title));
     }
-    let text = truncate_head_bytes(&report.text, SUBAGENT_REMINDER_TEXT_BYTES);
+    let text = truncate_utf8(
+        report.text.as_bytes(),
+        SUBAGENT_REMINDER_TEXT_BYTES,
+        TruncateSide::Head,
+    );
     if let Some(error) = &report.error {
         notification.push_str(&format!("\nTurn ended: {error}"));
     } else if text.trim().is_empty() {
@@ -266,18 +270,6 @@ pub fn format_subagent_reminder(report: &SubagentReport) -> String {
         report.session_id
     ));
     crate::system::format_background_task_reminder(&notification)
-}
-
-/// 头部截断到字节上限且不切断 UTF-8 字符边界
-fn truncate_head_bytes(text: &str, limit: usize) -> String {
-    if text.len() <= limit {
-        return text.to_string();
-    }
-    let mut end = limit;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text[..end].to_string()
 }
 
 #[cfg(test)]
@@ -391,7 +383,7 @@ mod tests {
 
     #[test]
     fn head_truncation_keeps_valid_utf8() {
-        let truncated = truncate_head_bytes("好".repeat(100).as_str(), 10);
+        let truncated = truncate_utf8("好".repeat(100).as_bytes(), 10, TruncateSide::Head);
         assert!(truncated.chars().all(|ch| ch == '好'));
         assert_eq!(truncated.chars().count(), 3);
     }

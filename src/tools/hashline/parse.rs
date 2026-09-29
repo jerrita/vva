@@ -16,70 +16,41 @@ pub enum FileOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Op {
-    Replace {
-        start: u32,
-        end: u32,
-        body: Vec<String>,
-    },
-    ReplaceBlock {
-        line: u32,
-        body: Vec<String>,
-    },
-    InsertBefore {
-        line: u32,
-        body: Vec<String>,
-    },
-    InsertAfter {
-        line: u32,
-        body: Vec<String>,
-    },
-    InsertAfterBlock {
-        line: u32,
-        body: Vec<String>,
-    },
-    Append {
-        body: Vec<String>,
-    },
-    InsertBof {
-        body: Vec<String>,
-    },
-    Cut {
-        start: u32,
-        end: u32,
-        register: Option<String>,
-    },
-    CutBlock {
-        line: u32,
-        register: Option<String>,
-    },
-    PasteBefore {
-        line: u32,
-        register: Option<String>,
-    },
-    PasteAfter {
-        line: u32,
-        register: Option<String>,
-    },
-    PasteEof {
-        register: Option<String>,
-    },
-    PasteBof {
-        register: Option<String>,
-    },
-    PasteRange {
-        start: u32,
-        end: u32,
-        register: String,
-    },
-    PasteBlock {
-        line: u32,
-        register: String,
-    },
-    PasteAfterBlock {
-        line: u32,
-        register: Option<String>,
-    },
+pub struct Op {
+    pub anchor: Anchor,
+    pub payload: Payload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Anchor {
+    Range { start: u32, end: u32 },
+    Block { line: u32 },
+    Before { line: u32 },
+    After { line: u32 },
+    AfterBlock { line: u32 },
+    Eof,
+    Bof,
+}
+
+impl std::fmt::Display for Anchor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Range { start, end } => write!(f, "{start}.={end}"),
+            Self::Block { line } => write!(f, "{line}*"),
+            Self::Before { line } => write!(f, "<{line}"),
+            Self::After { line } => write!(f, ">{line}"),
+            Self::AfterBlock { line } => write!(f, ">{line}*"),
+            Self::Eof => write!(f, ">$"),
+            Self::Bof => write!(f, "<1"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    Body(Vec<String>),
+    Register(Option<String>),
+    Cut(Option<String>),
 }
 
 const BEGIN: &str = "*** Begin Patch";
@@ -195,18 +166,20 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
             let Some(body) = section.body.as_mut() else {
                 let hint = match section.ops.last() {
                     Some(
-                        op @ (Op::PasteBefore { .. }
-                        | Op::PasteAfter { .. }
-                        | Op::PasteEof { .. }
-                        | Op::PasteBof { .. }
-                        | Op::PasteRange { .. }
-                        | Op::PasteBlock { .. }
-                        | Op::PasteAfterBlock { .. }),
+                        op @ Op {
+                            payload: Payload::Register(_),
+                            ..
+                        },
                     ) => format!(
                         "; the preceding {} is a register paste; drop the `+` rows",
                         op_line(op)
                     ),
-                    Some(op @ (Op::Cut { .. } | Op::CutBlock { .. })) => format!(
+                    Some(
+                        op @ Op {
+                            payload: Payload::Cut(_),
+                            ..
+                        },
+                    ) => format!(
                         "; {} takes no body rows; use PUT with `:` for replacement",
                         op_line(op)
                     ),
@@ -233,43 +206,12 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
     Ok(sections)
 }
 
-/// PUT 操作对应的定位器写法，用于空 body 错误的 CUT 建议。
-fn put_locator_display(op: &Op) -> String {
-    match op {
-        Op::Replace { start, end, .. } => format!("{start}.={end}"),
-        Op::ReplaceBlock { line, .. } => format!("{line}*"),
-        Op::InsertBefore { line, .. } | Op::PasteBefore { line, .. } => format!("<{line}"),
-        Op::InsertAfter { line, .. } | Op::PasteAfter { line, .. } => format!(">{line}"),
-        Op::InsertAfterBlock { line, .. } | Op::PasteAfterBlock { line, .. } => {
-            format!(">{line}*")
-        }
-        Op::Append { .. } | Op::PasteEof { .. } => ">$".into(),
-        Op::InsertBof { .. } | Op::PasteBof { .. } => "<1".into(),
-        Op::Cut { start, end, .. } => format!("{start}.={end}"),
-        Op::CutBlock { line, .. } => format!("{line}*"),
-        Op::PasteRange { start, end, .. } => format!("{start}.={end}"),
-        Op::PasteBlock { line, .. } => format!("{line}*"),
-    }
-}
 /// 操作在补丁文本中的原始写法，用于错误信息中的定位提示。
 pub(super) fn op_line(op: &Op) -> String {
-    match op {
-        Op::Replace { start, end, .. } => format!("PUT {start}.={end}:"),
-        Op::ReplaceBlock { line, .. } => format!("PUT {line}*:"),
-        Op::InsertBefore { line, .. } => format!("PUT <{line}:"),
-        Op::InsertAfter { line, .. } => format!("PUT >{line}:"),
-        Op::InsertAfterBlock { line, .. } => format!("PUT >{line}*:"),
-        Op::Append { .. } => "PUT >$:".into(),
-        Op::InsertBof { .. } => "PUT <1:".into(),
-        Op::Cut { start, end, .. } => format!("CUT {start}.={end}"),
-        Op::CutBlock { line, .. } => format!("CUT {line}*"),
-        Op::PasteBefore { line, .. } => format!("PUT <{line} @…"),
-        Op::PasteAfter { line, .. } => format!("PUT >{line} @…"),
-        Op::PasteEof { .. } => "PUT >$ @…".into(),
-        Op::PasteBof { .. } => "PUT <1 @…".into(),
-        Op::PasteRange { start, end, .. } => format!("PUT {start}.={end} @…"),
-        Op::PasteBlock { line, .. } => format!("PUT {line}* @…"),
-        Op::PasteAfterBlock { line, .. } => format!("PUT >{line}* @…"),
+    match op.payload {
+        Payload::Body(_) => format!("PUT {}:", op.anchor),
+        Payload::Cut(_) => format!("CUT {}", op.anchor),
+        Payload::Register(_) => format!("PUT {} @…", op.anchor),
     }
 }
 
@@ -287,21 +229,20 @@ impl OpenSection {
             return Ok(());
         };
         if body.is_empty() {
-            let locator = self.ops.last().map(put_locator_display).unwrap_or_default();
+            let locator = self
+                .ops
+                .last()
+                .map(|op| op.anchor.to_string())
+                .unwrap_or_default();
             return Err(format!(
                 "invalid_arguments: line {line_num}: PUT with `:` requires one or more `+` body \
                  rows; for an empty replacement use CUT {locator}"
             ));
         }
-        let Some(
-            Op::Replace { body: slot, .. }
-            | Op::ReplaceBlock { body: slot, .. }
-            | Op::InsertBefore { body: slot, .. }
-            | Op::InsertAfter { body: slot, .. }
-            | Op::InsertAfterBlock { body: slot, .. }
-            | Op::Append { body: slot }
-            | Op::InsertBof { body: slot },
-        ) = self.ops.last_mut()
+        let Some(Op {
+            payload: Payload::Body(slot),
+            ..
+        }) = self.ops.last_mut()
         else {
             return Err(format!(
                 "invalid_arguments: line {line_num}: unexpected body rows; move the `+` rows under their PUT header"
@@ -420,61 +361,29 @@ fn parse_put(rest: &str, line_num: u32) -> Result<Hunk, String> {
     }
     let wants_body = colon;
     let locator_text = locator.to_string();
-    let op = match (locator, register, colon) {
-        (Locator::Line { line }, _, _) => {
+    let anchor = match locator {
+        Locator::Line { line } => {
             return Err(format!(
                 "invalid_arguments: line {line_num}: expected N.=M, N*, <N, >N, or >$; got \
                  \"{line}\""
             ));
         }
-        (Locator::Range { start, end }, None, true) => Op::Replace {
-            start,
-            end,
-            body: Vec::new(),
-        },
-        (Locator::Range { start, end }, Some(register), false) => Op::PasteRange {
-            start,
-            end,
-            register,
-        },
-        (Locator::Block { line }, None, true) => Op::ReplaceBlock {
-            line,
-            body: Vec::new(),
-        },
-        (Locator::Block { line }, Some(register), false) => Op::PasteBlock { line, register },
-        (Locator::Before { line: 1 }, None, true) => Op::InsertBof { body: Vec::new() },
-        (Locator::Before { line: 1 }, register, false) => Op::PasteBof { register },
-        (Locator::Before { line }, None, true) => Op::InsertBefore {
-            line,
-            body: Vec::new(),
-        },
-        (Locator::Before { line }, register, false) => Op::PasteBefore { line, register },
-        (Locator::After { line }, None, true) => Op::InsertAfter {
-            line,
-            body: Vec::new(),
-        },
-        (Locator::After { line }, register, false) => Op::PasteAfter { line, register },
-        (Locator::AfterBlock { line }, None, true) => Op::InsertAfterBlock {
-            line,
-            body: Vec::new(),
-        },
-        (Locator::AfterBlock { line }, register, false) => Op::PasteAfterBlock { line, register },
-        (Locator::Eof, None, true) => Op::Append { body: Vec::new() },
-        (Locator::Eof, register, false) => Op::PasteEof { register },
-        (Locator::Range { .. } | Locator::Block { .. }, None, false) => {
+        Locator::Anchor(Anchor::Before { line: 1 }) => Anchor::Bof,
+        Locator::Anchor(anchor) => anchor,
+    };
+    let payload = if colon {
+        Payload::Body(Vec::new())
+    } else {
+        if matches!(anchor, Anchor::Range { .. } | Anchor::Block { .. }) && register.is_none() {
             return Err(format!(
                 "invalid_arguments: line {line_num}: range/block paste requires a named \
                  @register; use `PUT {locator_text} @name`"
             ));
         }
-        (locator, Some(_), true) => {
-            return Err(format!(
-                "invalid_arguments: line {line_num}: {locator} register paste takes no body; \
-                 drop the trailing `:` and its body rows"
-            ));
-        }
+        Payload::Register(register)
     };
-    if let Op::Replace { start, end, .. } = &op
+    let op = Op { anchor, payload };
+    if let (Anchor::Range { start, end }, Payload::Body(_)) = (&op.anchor, &op.payload)
         && end < start
     {
         return Err(format!(
@@ -493,26 +402,30 @@ fn parse_cut(rest: &str, line_num: u32) -> Result<Hunk, String> {
         ));
     }
     let op = match locator {
-        Locator::Line { line } => Op::Cut {
-            start: line,
-            end: line,
-            register,
+        Locator::Line { line } => Op {
+            anchor: Anchor::Range {
+                start: line,
+                end: line,
+            },
+            payload: Payload::Cut(register),
         },
-        Locator::Range { start, end } => {
+        Locator::Anchor(Anchor::Range { start, end }) => {
             if end < start {
                 return Err(format!(
                     "invalid_arguments: line {line_num}: CUT end is before start; swap to \
                      `CUT {end}.={start}`"
                 ));
             }
-            Op::Cut {
-                start,
-                end,
-                register,
+            Op {
+                anchor: Anchor::Range { start, end },
+                payload: Payload::Cut(register),
             }
         }
-        Locator::Block { line } => Op::CutBlock { line, register },
-        other => {
+        Locator::Anchor(Anchor::Block { line }) => Op {
+            anchor: Anchor::Block { line },
+            payload: Payload::Cut(register),
+        },
+        Locator::Anchor(other) => {
             return Err(format!(
                 "invalid_arguments: line {line_num}: CUT requires N, N.=M or N*; got {other}"
             ));
@@ -526,25 +439,15 @@ fn parse_cut(rest: &str, line_num: u32) -> Result<Hunk, String> {
 
 #[derive(Debug)]
 enum Locator {
-    Range { start: u32, end: u32 },
     Line { line: u32 },
-    Block { line: u32 },
-    Before { line: u32 },
-    After { line: u32 },
-    AfterBlock { line: u32 },
-    Eof,
+    Anchor(Anchor),
 }
 
 impl std::fmt::Display for Locator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Range { start, end } => write!(f, "{start}.={end}"),
             Self::Line { line } => write!(f, "{line}"),
-            Self::Block { line } => write!(f, "{line}*"),
-            Self::Before { line } => write!(f, "<{line}"),
-            Self::After { line } => write!(f, ">{line}"),
-            Self::AfterBlock { line } => write!(f, ">{line}*"),
-            Self::Eof => write!(f, ">$"),
+            Self::Anchor(anchor) => write!(f, "{anchor}"),
         }
     }
 }
@@ -583,24 +486,24 @@ fn parse_locator(rest: &str, line_num: u32) -> Result<(Locator, &str), String> {
     if let Some(after) = rest.strip_prefix('>') {
         let after = after.trim_start();
         if let Some(tail) = after.strip_prefix('$') {
-            return Ok((Locator::Eof, tail));
+            return Ok((Locator::Anchor(Anchor::Eof), tail));
         }
         let (line, used) = parse_lid(after, line_num)?;
         let tail = &after[used..];
         if let Some(tail) = tail.strip_prefix('*') {
-            return Ok((Locator::AfterBlock { line }, tail));
+            return Ok((Locator::Anchor(Anchor::AfterBlock { line }), tail));
         }
-        return Ok((Locator::After { line }, tail));
+        return Ok((Locator::Anchor(Anchor::After { line }), tail));
     }
     if let Some(after) = rest.strip_prefix('<') {
         let after = after.trim_start();
         let (line, used) = parse_lid(after, line_num)?;
-        return Ok((Locator::Before { line }, &after[used..]));
+        return Ok((Locator::Anchor(Anchor::Before { line }), &after[used..]));
     }
     let (start, used) = parse_lid(rest, line_num)?;
     let tail = &rest[used..];
     if let Some(tail) = tail.strip_prefix("*") {
-        return Ok((Locator::Block { line: start }, tail));
+        return Ok((Locator::Anchor(Anchor::Block { line: start }), tail));
     }
     if let Some(tail) = tail.strip_prefix(".=") {
         let (end, used) = parse_lid(tail, line_num)?;
@@ -609,7 +512,7 @@ fn parse_locator(rest: &str, line_num: u32) -> Result<(Locator, &str), String> {
                 "invalid_arguments: line {line_num}: range spans more than {MAX_RANGE} lines"
             ));
         }
-        return Ok((Locator::Range { start, end }, &tail[used..]));
+        return Ok((Locator::Anchor(Anchor::Range { start, end }), &tail[used..]));
     }
     if tail.is_empty()
         || tail.starts_with(|c: char| c.is_whitespace())

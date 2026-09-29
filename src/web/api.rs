@@ -404,7 +404,7 @@ pub async fn get_session_file(
     Query(query): Query<SessionFileQuery>,
 ) -> Result<Response, Response> {
     let handle = session_handle(&state, &id).await?;
-    let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
+    let workspace = std::path::PathBuf::from(&handle.snapshot().session.header.workspace_root);
     Ok(read_file_from_workspace(&workspace, &query.path).await)
 }
 
@@ -424,7 +424,7 @@ pub async fn download_session_file(
     Query(query): Query<SessionFileQuery>,
 ) -> Result<Response, Response> {
     let handle = session_handle(&state, &id).await?;
-    let workspace = std::path::PathBuf::from(&handle.snapshot().session.workspace_root);
+    let workspace = std::path::PathBuf::from(&handle.snapshot().session.header.workspace_root);
     download_file_from_workspace(&workspace, &query.path).await
 }
 

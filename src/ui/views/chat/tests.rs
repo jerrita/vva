@@ -1092,12 +1092,12 @@ async fn test_open_and_find_match_action_urls() {
     let mut app = create_test_app().await;
     let url = "https://www.example.com/page";
     let mut open = WebSearchCall::completed("open", "unused query", vec![]);
-    open.action = WebSearchAction::OpenPage { url: url.into() };
+    open.action = Some(WebSearchAction::OpenPage { url: url.into() });
     let mut find = WebSearchCall::completed("find", "unused query", vec![]);
-    find.action = WebSearchAction::FindInPage {
+    find.action = Some(WebSearchAction::FindInPage {
         url: url.into(),
         pattern: "matching words".into(),
-    };
+    });
     let view = Arc::make_mut(&mut app.view);
     view.revision += 1;
     view.draft = vec![

@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 
-use super::Tool;
 use super::filesystem::parse_args;
+use super::{Tool, TruncateSide, truncate_utf8};
 
 /// 单个任务的输出保留上限（超出丢弃头部，仅保尾部）
 pub const BACKGROUND_BUFFER_CAP: usize = 256 * 1024;
@@ -195,7 +195,7 @@ impl BackgroundTasks {
             status: inner.status.clone(),
             total_bytes: inner.output.total,
             truncated: inner.output.truncated(),
-            tail: tail_string(&inner.output.data, TASK_OUTPUT_TAIL),
+            tail: truncate_utf8(&inner.output.data, TASK_OUTPUT_TAIL, TruncateSide::Tail),
         })
     }
 
@@ -259,15 +259,6 @@ fn spawn_reader(
     }))
 }
 
-/// 取尾部字节并保证不切断 UTF-8 字符边界（越过前导 continuation 字节）
-fn tail_string(data: &[u8], limit: usize) -> String {
-    let mut start = data.len().saturating_sub(limit);
-    while start < data.len() && (data[start] & 0xC0) == 0x80 {
-        start += 1;
-    }
-    String::from_utf8_lossy(&data[start..]).into_owned()
-}
-
 /// 完成通知轮次正文：以 background-task reminder 注入会话，
 /// 首行为状态（UI 展示用），其余为模型可见的输出详情
 pub fn format_notification(snapshot: &TaskSnapshot) -> String {
@@ -284,7 +275,11 @@ pub fn format_notification(snapshot: &TaskSnapshot) -> String {
             " (buffer keeps last {BACKGROUND_BUFFER_CAP} bytes; earlier output discarded)"
         ));
     }
-    let tail = tail_string(snapshot.tail.as_bytes(), NOTIFY_TAIL_BYTES);
+    let tail = truncate_utf8(
+        snapshot.tail.as_bytes(),
+        NOTIFY_TAIL_BYTES,
+        TruncateSide::Tail,
+    );
     if !tail.is_empty() {
         notification.push_str(&format!(
             "\n--- tail (last {NOTIFY_TAIL_BYTES} bytes) ---\n{tail}"
@@ -473,7 +468,7 @@ mod tests {
     fn tail_string_respects_char_boundaries() {
         // 多字节字符跨截断点时不 panic 且不产生半个字符
         let data: Vec<u8> = "好".repeat(4096).into_bytes();
-        let tail = tail_string(&data, TASK_OUTPUT_TAIL);
+        let tail = truncate_utf8(&data, TASK_OUTPUT_TAIL, TruncateSide::Tail);
         assert!(tail.len() <= TASK_OUTPUT_TAIL + 3);
         assert!(tail.chars().all(|ch| ch == '好'));
     }

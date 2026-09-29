@@ -91,12 +91,15 @@ fn collect_on_demand_agents(
     }
     let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;
     let path_str = args.get("path").and_then(|p| p.as_str())?;
-    let file_path = crate::tools::filesystem::resolve_path(&session.workspace_root, path_str);
-    let agents_path = crate::system::find_directory_agents_md(&session.workspace_root, &file_path)?;
+    let file_path =
+        crate::tools::filesystem::resolve_path(&session.header.workspace_root, path_str);
+    let agents_path =
+        crate::system::find_directory_agents_md(&session.header.workspace_root, &file_path)?;
     let ws_canonical = session
+        .header
         .workspace_root
         .canonicalize()
-        .unwrap_or_else(|_| session.workspace_root.clone());
+        .unwrap_or_else(|_| session.header.workspace_root.clone());
     let agents_canonical = agents_path
         .canonicalize()
         .unwrap_or_else(|_| agents_path.clone());
@@ -304,7 +307,7 @@ impl SessionTask {
 
     pub(super) async fn append(&mut self, turn: Turn) -> Result<(), String> {
         self.store
-            .append_turn(&self.view.session.id, &turn)
+            .append_turn(&self.view.session.header.id, &turn)
             .await
             .map_err(|e| e.to_string())?;
         Arc::make_mut(&mut self.view.session).append_turn(turn);
@@ -324,8 +327,8 @@ impl SessionTask {
         let mut session = (*self.view.session).clone();
         let selection_changed = model.is_some() || variant.is_some();
         if selection_changed {
-            let target = model.as_deref().unwrap_or(&session.current_model);
-            let selected = variant.unwrap_or_else(|| session.current_variant.clone());
+            let target = model.as_deref().unwrap_or(&session.header.current_model);
+            let selected = variant.unwrap_or_else(|| session.header.current_variant.clone());
             let resolved = self
                 .config
                 .resolve_model(target, selected.as_deref())
@@ -336,7 +339,7 @@ impl SessionTask {
         if let Some(search) = search {
             session.set_web_search(search);
         }
-        let skills = crate::skills::discover_skills(&session.workspace_root);
+        let skills = crate::skills::discover_skills(&session.header.workspace_root);
         let engine = self.build_engine_for(&session, skills).await?;
         if self.view.persisted {
             self.store
@@ -347,8 +350,8 @@ impl SessionTask {
         if selection_changed {
             AppState::persist_selection(
                 &self.state_path,
-                &session.current_model,
-                session.current_variant.as_deref(),
+                &session.header.current_model,
+                session.header.current_variant.as_deref(),
             );
         }
         self.replace_session(session);
@@ -362,7 +365,7 @@ impl SessionTask {
             return Ok(());
         }
         let mut session = (*self.view.session).clone();
-        session.title = Some(title);
+        session.header.title = Some(title);
         self.store
             .save_header(&session)
             .await
@@ -401,13 +404,6 @@ impl SessionTask {
     }
 
     /// 组装本轮流次的引擎：工具输出目录就绪后装配注册表与供应商
-    async fn build_engine(
-        &mut self,
-        skills: Vec<crate::skills::Skill>,
-    ) -> Result<AgentEngine, String> {
-        self.build_engine_for(&self.view.session, skills).await
-    }
-
     async fn build_engine_for(
         &self,
         session: &Session,
@@ -415,10 +411,10 @@ impl SessionTask {
     ) -> Result<AgentEngine, String> {
         let tool_outputs = self
             .store
-            .ensure_tool_outputs(&session.workspace_root)
+            .ensure_tool_outputs(&session.header.workspace_root)
             .await
             .map_err(|e| e.to_string())?;
-        let agents = crate::agents::discover_agents(&session.workspace_root);
+        let agents = crate::agents::discover_agents(&session.header.workspace_root);
         AgentEngine::new(
             &self.config,
             session,
@@ -439,11 +435,13 @@ impl SessionTask {
         prompt: &str,
         images: Vec<ContentPart>,
     ) -> Result<AgentEngine, String> {
-        let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
-        let engine = self.build_engine(skills.clone()).await?;
+        let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
+        let engine = self
+            .build_engine_for(&self.view.session, skills.clone())
+            .await?;
         // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
         validate_attachments(&engine, &images)?;
-        let generate = self.view.session.title.is_none();
+        let generate = self.view.session.header.title.is_none();
         if !self.view.persisted {
             self.persist_new_session(&skills, prompt, generate).await?;
         }
@@ -473,7 +471,7 @@ impl SessionTask {
         generate: bool,
     ) -> Result<(), String> {
         let mut session = (*self.view.session).clone();
-        let workspace = session.workspace_root.clone();
+        let workspace = session.header.workspace_root.clone();
         let scratch = self
             .store
             .ensure_scratch(&workspace)
@@ -490,10 +488,11 @@ impl SessionTask {
 
         // 子代理会话：agent 定义的角色指令追加到基础 System Prompt
         let agent_def = session
+            .header
             .agent
             .as_deref()
             .map(|name| {
-                crate::agents::discover_agents(&session.workspace_root)
+                crate::agents::discover_agents(&session.header.workspace_root)
                     .into_iter()
                     .find(|def| def.name == name)
                     .ok_or_else(|| format!("Agent definition '{name}' is unavailable"))
@@ -535,7 +534,7 @@ impl SessionTask {
             session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
         }
         if generate {
-            session.title = Some(crate::model::provisional_title(prompt));
+            session.header.title = Some(crate::model::provisional_title(prompt));
         }
         self.store
             .save_header(&session)
@@ -549,7 +548,7 @@ impl SessionTask {
     /// 后台小模型生成正式标题，完成后经 Title 命令回写会话
     fn spawn_title_task(&mut self, prompt: &str) {
         let config = self.config.clone();
-        let model = self.view.session.current_model.clone();
+        let model = self.view.session.header.current_model.clone();
         let prompt = prompt.to_string();
         let commands = self.commands.clone();
         self.title_task = Some(tokio::spawn(async move {
@@ -815,13 +814,15 @@ impl SessionTask {
                     })
                     .collect();
                 self.commit_tool_results(calls, results).await?;
-                self.broker.abort_children(&self.view.session.id).await;
+                self.broker
+                    .abort_children(&self.view.session.header.id)
+                    .await;
                 return Ok(false);
             };
             let on_demand_agents = self.commit_tool_results(calls, results).await?;
             for (agents_path, content) in on_demand_agents {
                 let reminder = crate::system::format_directory_agents_reminder(
-                    &self.view.session.workspace_root,
+                    &self.view.session.header.workspace_root,
                     &agents_path,
                     &content,
                 );
@@ -844,7 +845,7 @@ impl SessionTask {
             if !result.attachments.is_empty() {
                 let inputs = self
                     .config
-                    .resolve_model(&self.view.session.current_model, None)
+                    .resolve_model(&self.view.session.header.current_model, None)
                     .map_err(|error| error.to_string())?
                     .input_capabilities();
                 if let Some(error) = result
@@ -936,7 +937,7 @@ impl SessionTask {
         self.cancel_deliveries("Session stopped");
         let result = if delete && self.view.persisted {
             self.store
-                .delete_session(&self.view.session.id)
+                .delete_session(&self.view.session.header.id)
                 .await
                 .map_err(|e| e.to_string())
         } else {
@@ -967,8 +968,9 @@ impl SessionTask {
                     if self.task_completions.is_empty() && self.subagent_completions.is_empty() {
                         return Ok(true);
                     }
-                    let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
-                    engine = Some(self.build_engine(skills).await?);
+                    let skills =
+                        crate::skills::discover_skills(&self.view.session.header.workspace_root);
+                    engine = Some(self.build_engine_for(&self.view.session, skills).await?);
                 }
             }
         }
@@ -1047,15 +1049,10 @@ impl SessionTask {
             let result = self.run_turns(engine, commands).await;
             let successful = matches!(result, Ok(true));
             let close = self.finish_turn(result).await;
-            let completed = self.turn_tx.borrow().clone();
-            let report = crate::tools::agent::SubagentReport {
-                session_id: self.view.session.id.clone(),
-                agent: self.view.session.agent.clone().unwrap_or_default(),
-                title: self.view.session.title.clone().unwrap_or_default(),
-                turn_seq: completed.seq,
-                text: completed.text,
-                error: completed.error,
-            };
+            let report = self
+                .turn_tx
+                .borrow()
+                .subagent_report(self.view.session.header.id.clone(), &self.view.session);
             for delivery in deliveries {
                 let _ = delivery.completion.send(Ok(report.clone()));
             }
@@ -1064,6 +1061,27 @@ impl SessionTask {
             }
         }
         false
+    }
+
+    /// 空闲时收到完成通知：入队后自动续跑；返回真表示终止会话任务
+    async fn run_completion_turn(
+        &mut self,
+        commands: &mut mpsc::Receiver<Command>,
+        enqueue: impl std::ops::AsyncFnOnce(&mut Self),
+    ) -> bool {
+        enqueue(self).await;
+        let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
+        match self.build_engine_for(&self.view.session, skills).await {
+            Ok(engine) => {
+                let result = self.run_turns(engine, commands).await;
+                self.finish_turn(result).await || self.run_pending_deliveries(commands).await
+            }
+            // 通知保留在队列，下次 Submit 注入
+            Err(error) => {
+                self.event(AgentEvent::Notice(error)).await;
+                false
+            }
+        }
     }
 
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
@@ -1115,39 +1133,17 @@ impl SessionTask {
                 }
                 Command::TaskFinished { task_id } => {
                     // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次
-                    self.queue_task_completion(task_id).await;
-                    let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
-                    match self.build_engine(skills).await {
-                        Ok(engine) => {
-                            let result = self.run_turns(engine, &mut commands).await;
-                            if self.finish_turn(result).await
-                                || self.run_pending_deliveries(&mut commands).await
-                            {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            // 通知保留在队列，下次 Submit 注入
-                            self.event(AgentEvent::Notice(error)).await;
-                        }
+                    let enqueue = async |task: &mut Self| task.queue_task_completion(task_id).await;
+                    if self.run_completion_turn(&mut commands, enqueue).await {
+                        break;
                     }
                 }
                 Command::SubagentFinished { session_id } => {
                     // 空闲时收到子代理完成：入队后自动续跑，execute 首轮注入最终消息
-                    self.queue_subagent_completion(session_id).await;
-                    let skills = crate::skills::discover_skills(&self.view.session.workspace_root);
-                    match self.build_engine(skills).await {
-                        Ok(engine) => {
-                            let result = self.run_turns(engine, &mut commands).await;
-                            if self.finish_turn(result).await
-                                || self.run_pending_deliveries(&mut commands).await
-                            {
-                                break;
-                            }
-                        }
-                        Err(error) => {
-                            self.event(AgentEvent::Notice(error)).await;
-                        }
+                    let enqueue =
+                        async |task: &mut Self| task.queue_subagent_completion(session_id).await;
+                    if self.run_completion_turn(&mut commands, enqueue).await {
+                        break;
                     }
                 }
                 Command::Revert { turn_index, reply } => {

@@ -107,18 +107,15 @@ fn write_record(file: &mut File, record: &JsonlRecord) -> Result<(), StoreError>
 }
 
 fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError> {
-    let dir = project_dir(base_dir, &session.workspace_root);
-    let path = dir.join(session_file_name(&session.id));
+    let dir = project_dir(base_dir, &session.header.workspace_root);
+    let path = dir.join(session_file_name(&session.header.id));
     ensure_subdir_sync(&dir, SCRATCH_DIR)?;
     ensure_subdir_sync(&dir, TOOL_OUTPUTS_DIR)?;
 
     // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
     let temp_path = path.with_extension("jsonl.tmp");
     let mut file = File::create(&temp_path)?;
-    write_record(
-        &mut file,
-        &JsonlRecord::Header(SessionHeader::from(session)),
-    )?;
+    write_record(&mut file, &JsonlRecord::Header(session.header.clone()))?;
     for turn in &session.turns {
         write_record(&mut file, &JsonlRecord::Turn(Box::new(turn.clone())))?;
     }
@@ -129,7 +126,7 @@ fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError
 
     fs::rename(&temp_path, &path)?;
 
-    let legacy = base_dir.join(session_file_name(&session.id));
+    let legacy = base_dir.join(session_file_name(&session.header.id));
     if legacy != path && legacy.is_file() {
         fs::remove_file(legacy)?;
     }
@@ -332,7 +329,7 @@ mod tests {
             .push(ContentPart::image_url("https://example.com/err.png"));
         let user_turn = Turn::user_turn(user_msg);
         store
-            .append_turn(&session.id, &user_turn)
+            .append_turn(&session.header.id, &user_turn)
             .await
             .expect("append user turn");
 
@@ -347,27 +344,31 @@ mod tests {
         ])]);
         assistant_turn.meta.response = Some(ResponseTurnMeta::new("resp_001xyz"));
         store
-            .append_turn(&session.id, &assistant_turn)
+            .append_turn(&session.header.id, &assistant_turn)
             .await
             .expect("append assistant turn");
 
         // 重新加载并校验
         let loaded = store
-            .load_session(&session.id)
+            .load_session(&session.header.id)
             .await
             .expect("load session")
             .expect("session found");
-        assert_eq!(loaded.id, session.id);
-        assert_eq!(loaded.title, Some("Bugfix task".into()));
-        assert_eq!(loaded.current_model, "a/gpt-5.6-terra");
-        assert_eq!(loaded.current_variant.as_deref(), Some("high"));
-        assert_eq!(loaded.editor, crate::model::EditorKind::Hashline);
-        assert!(loaded.web_search);
+        assert_eq!(loaded.header.id, session.header.id);
+        assert_eq!(loaded.header.title, Some("Bugfix task".into()));
+        assert_eq!(loaded.header.current_model, "a/gpt-5.6-terra");
+        assert_eq!(loaded.header.current_variant.as_deref(), Some("high"));
+        assert_eq!(loaded.header.editor, crate::model::EditorKind::Hashline);
+        assert!(loaded.header.web_search);
         assert_eq!(loaded.turns.len(), 2);
         assert_eq!(loaded.latest_openai_response_id(None), Some("resp_001xyz"));
 
         let project = temp_dir.join(project_key(Path::new("/tmp/repo")));
-        assert!(project.join(format!("{}.jsonl", session.id)).is_file());
+        assert!(
+            project
+                .join(format!("{}.jsonl", session.header.id))
+                .is_file()
+        );
         assert!(project.join(SCRATCH_DIR).is_dir());
         assert!(project.join(TOOL_OUTPUTS_DIR).is_dir());
         let scratch = store
@@ -383,7 +384,7 @@ mod tests {
 
         let summaries = store.list_sessions().await.expect("list sessions");
         assert_eq!(summaries.len(), 1);
-        assert_eq!(summaries[0].id, session.id);
+        assert_eq!(summaries[0].id, session.header.id);
         assert_eq!(summaries[0].current_model, "a/gpt-5.6-terra");
         assert_eq!(summaries[0].current_variant.as_deref(), Some("high"));
         assert!(summaries[0].web_search);
@@ -406,8 +407,8 @@ mod tests {
         let dir_a = temp_dir.join(project_key(Path::new("/tmp/project_a")));
         let dir_b = temp_dir.join(project_key(Path::new("/tmp/project_b")));
         assert_ne!(dir_a, dir_b);
-        assert!(dir_a.join(format!("{}.jsonl", a.id)).is_file());
-        assert!(dir_b.join(format!("{}.jsonl", b.id)).is_file());
+        assert!(dir_a.join(format!("{}.jsonl", a.header.id)).is_file());
+        assert!(dir_b.join(format!("{}.jsonl", b.header.id)).is_file());
         assert!(dir_a.join(SCRATCH_DIR).is_dir());
         assert!(dir_b.join(SCRATCH_DIR).is_dir());
 

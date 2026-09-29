@@ -63,7 +63,7 @@ export type SearchStatus = 'pending' | 'searching' | 'completed' | 'failed'
 export interface WebSearchCall {
   id: string
   query: string
-  action: WebSearchAction
+  action?: WebSearchAction
   status: SearchStatus
   sources?: WebSearchSource[]
 }

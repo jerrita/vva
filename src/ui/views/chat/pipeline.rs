@@ -261,12 +261,7 @@ pub(crate) fn append_part(
             }
         }
         (Role::Assistant, ContentPart::ToolCall(call)) => {
-            let needs_separator = state.prev_reasoning || state.prev_text || prev_web;
-            state.prev_reasoning = false;
-            state.prev_text = false;
-            if needs_separator {
-                render.lines.push(Line::from(""));
-            }
+            push_part_separator(render, state, prev_web);
             push_tool_call(render, call);
         }
         (Role::Tool, ContentPart::ToolResult(_)) => {
@@ -274,12 +269,7 @@ pub(crate) fn append_part(
             state.prev_text = false;
         }
         (Role::Assistant, ContentPart::ImageGenerationCall(call)) => {
-            let needs_separator = state.prev_reasoning || state.prev_text;
-            state.prev_reasoning = false;
-            state.prev_text = false;
-            if needs_separator {
-                render.lines.push(Line::from(""));
-            }
+            push_part_separator(render, state, false);
             let mut detail = match call.status {
                 ImageGenerationStatus::InProgress => "in_progress",
                 ImageGenerationStatus::Completed => "completed",
@@ -290,50 +280,24 @@ pub(crate) fn append_part(
                 detail.push(' ');
                 detail.push_str(prompt);
             }
-            let spans = vec![
-                Span::styled(
-                    "image_gen",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
-            ];
-            let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-            render.lines.extend(wrapped);
+            push_labeled_row(render, "image_gen", detail, max_width);
         }
         (Role::Assistant, ContentPart::WebSearchCall(call)) => {
-            let needs_separator = state.prev_reasoning || state.prev_text;
-            state.prev_reasoning = false;
-            state.prev_text = false;
+            push_part_separator(render, state, false);
             let (label, detail) = match &call.action {
-                WebSearchAction::Search => (
+                Some(WebSearchAction::Search) => (
                     "web_search",
                     format!("{} ({} sources)", call.query, call.sources.len()),
                 ),
-                WebSearchAction::OpenPage { url } => ("web_open", url.clone()),
-                WebSearchAction::FindInPage { url, pattern } => {
+                Some(WebSearchAction::OpenPage { url }) => ("web_open", url.clone()),
+                Some(WebSearchAction::FindInPage { url, pattern }) => {
                     ("web_find", format!("{url} / {pattern}"))
                 }
+                None => ("web_search", "(action not reported)".to_string()),
             };
-            if needs_separator {
-                render.lines.push(Line::from(""));
-            }
-            let spans = vec![
-                Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
-            ];
-            let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
-            render.lines.extend(wrapped);
+            push_labeled_row(render, label, detail, max_width);
 
-            if matches!(call.action, WebSearchAction::OpenPage { .. }) {
+            if matches!(&call.action, Some(WebSearchAction::OpenPage { .. })) {
                 return;
             }
 
@@ -342,24 +306,7 @@ pub(crate) fn append_part(
                 if !call_covers_url(call, url) {
                     continue;
                 }
-                let domain = url_display_domain(url);
-                let title = title.trim();
-                let title = if title.is_empty() || title == *url {
-                    domain
-                } else {
-                    title
-                };
-                let domain = truncate(domain, max_width.saturating_sub(4) / 2);
-                let right_w = domain.width();
-                let title_max = max_width.saturating_sub(3 + right_w + 1);
-                let title = truncate(title, title_max);
-                let pad = title_max - title.width() + 1;
-                render.lines.push(Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
-                ]));
+                push_source_row(render.lines, url, title, max_width);
             }
         }
         (Role::Assistant, ContentPart::Text { text, annotations }) => {
@@ -373,6 +320,65 @@ pub(crate) fn append_part(
         // WebSearchCall 等未渲染的 part 不打断思考分组的连续性
         _ => {}
     }
+}
+
+/// 思考/正文之后的部件分隔：必要时插入空行并清零分组标记
+fn push_part_separator(render: &mut ChatRender<'_>, state: &mut RenderState, extra: bool) {
+    let needs_separator = state.prev_reasoning || state.prev_text || extra;
+    state.prev_reasoning = false;
+    state.prev_text = false;
+    if needs_separator {
+        render.lines.push(Line::from(""));
+    }
+}
+
+/// 黄色加粗标签 + 灰色详情的独立行
+fn push_labeled_row(
+    render: &mut ChatRender<'_>,
+    label: &'static str,
+    detail: String,
+    max_width: usize,
+) {
+    let spans = vec![
+        Span::styled(
+            label,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
+    ];
+    let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
+    render.lines.extend(wrapped);
+}
+
+/// 来源行：左标题（空标题或原 URL 退回域名）、右对齐域名；
+/// 原生 WebSearchCall 与外置 web_search 工具共用
+pub(super) fn push_source_row(
+    lines: &mut Vec<Line<'static>>,
+    url: &str,
+    title: &str,
+    max_width: usize,
+) {
+    let domain = url_display_domain(url);
+    let title = title.trim();
+    let title = if title.is_empty() || title == url {
+        domain
+    } else {
+        title
+    };
+    let domain = truncate(domain, max_width.saturating_sub(4) / 2);
+    let right_w = domain.width();
+    let title_max = max_width.saturating_sub(3 + right_w + 1);
+    let title = truncate(title, title_max);
+    let pad = title_max - title.width() + 1;
+    lines.push(Line::from(vec![
+        Span::raw("   "),
+        Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
+        Span::raw(" ".repeat(pad)),
+        Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
+    ]));
 }
 
 pub(crate) fn is_empty_session(view: &SessionView) -> bool {

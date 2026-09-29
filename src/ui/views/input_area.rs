@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::ui::app::App;
 use crate::ui::command::command_row;
+use crate::ui::spans::split_spans_by_hit;
 use crate::ui::views::modal_shell::selected_row_style;
 use crate::ui::views::{PANEL_BORDER, panel_block};
 
@@ -116,7 +117,7 @@ pub fn render_input_area(
         .and_then(|name| name.to_str())
         .unwrap_or(workspace);
     let variant = variant.unwrap_or("default");
-    let web = if app.view.session.web_search {
+    let web = if app.view.session.header.web_search {
         if app.view.external_web.is_empty() {
             "web".to_string()
         } else {
@@ -148,7 +149,7 @@ pub fn render_input_area(
             Span::styled(" • ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 web,
-                Style::default().fg(if app.view.session.web_search {
+                Style::default().fg(if app.view.session.header.web_search {
                     Color::Green
                 } else {
                     Color::DarkGray
@@ -190,38 +191,10 @@ fn line_selection_spans(
     normal: Style,
     selected: Style,
 ) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut chunk = String::new();
-    let mut in_sel: Option<bool> = None;
-
-    for (local_idx, c) in line_str.chars().enumerate() {
-        let global_idx = char_offset + local_idx;
-        let hit = global_idx >= selection.0 && global_idx < selection.1;
-        if in_sel == Some(hit) {
-            chunk.push(c);
-        } else {
-            if !chunk.is_empty() {
-                let style = if in_sel == Some(true) {
-                    selected
-                } else {
-                    normal
-                };
-                spans.push(Span::styled(std::mem::take(&mut chunk), style));
-            }
-            chunk.push(c);
-            in_sel = Some(hit);
-        }
-    }
-
-    if !chunk.is_empty() {
-        let style = if in_sel == Some(true) {
-            selected
-        } else {
-            normal
-        };
-        spans.push(Span::styled(chunk, style));
-    }
-    spans
+    split_spans_by_hit(line_str, normal, selected, |idx, _| {
+        let global_idx = char_offset + idx;
+        global_idx >= selection.0 && global_idx < selection.1
+    })
 }
 
 /// 渲染命令/技能建议浮层（置于输入框上方，支持上下键高亮、Tab 快速补全）

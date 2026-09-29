@@ -100,21 +100,14 @@ impl GeminiProvider {
                                 ContentPart::Image {
                                     source: MediaSource::Base64 { data, mime_type },
                                     ..
-                                } => {
-                                    parts_arr.push(serde_json::json!({
-                                        "inline_data": {
-                                            "mime_type": mime_type,
-                                            "data": data
-                                        }
-                                    }));
                                 }
-                                ContentPart::File {
+                                | ContentPart::File {
                                     source: MediaSource::Base64 { data, mime_type },
                                     ..
                                 } => {
                                     parts_arr.push(serde_json::json!({
-                                        "inline_data": {
-                                            "mime_type": mime_type,
+                                        "inlineData": {
+                                            "mimeType": mime_type,
                                             "data": data
                                         }
                                     }));
@@ -218,7 +211,7 @@ impl GeminiProvider {
                 .map(|t| serde_json::json!({"name": t.name, "description": t.description, "parameters": t.parameters}))
                 .collect();
             tools_list.push(serde_json::json!({
-                "function_declarations": function_declarations
+                "functionDeclarations": function_declarations
             }));
         }
 
@@ -226,19 +219,15 @@ impl GeminiProvider {
             body["tools"] = serde_json::Value::Array(tools_list);
         }
 
-        let mut gen_config = serde_json::json!({});
+        let mut gen_config = serde_json::Map::new();
         if let Some(temp) = options.temperature {
-            gen_config["temperature"] = serde_json::json!(temp);
+            gen_config.insert("temperature".to_string(), serde_json::json!(temp));
         }
         if let Some(max_tokens) = options.max_tokens {
-            gen_config["maxOutputTokens"] = serde_json::json!(max_tokens);
+            gen_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
         }
-        if gen_config
-            .as_object()
-            .map(|m| !m.is_empty())
-            .unwrap_or(false)
-        {
-            body["generationConfig"] = gen_config;
+        if !gen_config.is_empty() {
+            body["generationConfig"] = serde_json::Value::Object(gen_config);
         }
 
         Ok(body)
@@ -446,7 +435,7 @@ impl GeminiAccumulator {
                 }
                 None => {
                     self.search_call = Some(WebSearchCall {
-                        action: WebSearchAction::Search,
+                        action: Some(WebSearchAction::Search),
                         id: format!("gemini_search_{}", uuid::Uuid::new_v4().simple()),
                         query: joined,
                         status: SearchStatus::Completed,

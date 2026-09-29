@@ -510,9 +510,9 @@ fn test_anthropic_web_fetch_parse_and_native_echo() {
             assert_eq!(call.id, "srvtoolu_fetch_1");
             assert_eq!(
                 call.action,
-                WebSearchAction::OpenPage {
+                Some(WebSearchAction::OpenPage {
                     url: "https://example.com/article".into()
-                }
+                })
             );
             assert_eq!(call.status, SearchStatus::Completed);
             assert!(call.sources.is_empty());

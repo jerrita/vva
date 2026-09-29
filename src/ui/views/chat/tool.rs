@@ -1,7 +1,7 @@
 //! 工具调用头部行：逐工具摘要与展开状态判定。
 
 use super::*;
-use super::{citations::*, state::*, tool_block::*};
+use super::{pipeline::push_source_row, state::*, tool_block::*};
 use crate::ui::text::truncate;
 
 pub(super) fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -245,7 +245,7 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
         "SendMessage" => {
             let session = json_str(&args, "session_id").unwrap_or("");
             match json_str(&args, "text") {
-                Some(text) => format!("{session} · \"{}\"", truncate_chars(text, 40)),
+                Some(text) => format!("{session} · \"{}\"", truncate(text, 40)),
                 None => session.to_string(),
             }
         }
@@ -254,11 +254,6 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
             .unwrap_or_else(|| arguments.to_string()),
         _ => arguments.to_string(),
     }
-}
-
-/// 按显示字符数截断（工具摘要行用，不切多字节字符）
-fn truncate_chars(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
 }
 
 pub(super) fn ask_user_detail(args: &serde_json::Value) -> String {
@@ -403,23 +398,7 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     // 外置 web 搜索与原生 WebSearchCall 同构：行下直接展示来源列表（title 居左、域名居右）
     if call.name == "web_search" && !is_error {
         for (title, url) in result.map(web_sources).unwrap_or_default() {
-            let domain = url_display_domain(&url);
-            let title = if title.trim().is_empty() || title.trim() == url {
-                domain
-            } else {
-                title.trim()
-            };
-            let domain = truncate(domain, render.max_width.saturating_sub(4) / 2);
-            let right_w = domain.width();
-            let title_max = render.max_width.saturating_sub(3 + right_w + 1);
-            let title = truncate(title, title_max);
-            let pad = title_max - title.width() + 1;
-            render.lines.push(Line::from(vec![
-                Span::raw("   "),
-                Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
-                Span::raw(" ".repeat(pad)),
-                Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
-            ]));
+            push_source_row(render.lines, &url, &title, render.max_width);
         }
     }
     let mut truncated = false;

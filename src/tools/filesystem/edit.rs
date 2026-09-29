@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use super::Tool;
+use super::line_offsets;
 use super::parse_args;
 use super::read::content_version;
 use super::resolve_path;
@@ -148,13 +149,6 @@ impl EditPlan {
 }
 
 pub(super) fn edit_diff(path: &Path, original: &str, plan: &EditPlan) -> String {
-    fn line_offsets(text: &str) -> Vec<usize> {
-        let mut offsets = vec![0];
-        for line in text.split_inclusive('\n') {
-            offsets.push(offsets.last().unwrap() + line.len());
-        }
-        offsets
-    }
     fn window(offsets: &[usize], range: &std::ops::Range<usize>) -> std::ops::Range<usize> {
         let start = offsets
             .partition_point(|&offset| offset <= range.start)

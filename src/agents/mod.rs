@@ -134,22 +134,13 @@ pub fn parse_agent_file(path: &Path) -> Result<AgentDef, String> {
 }
 
 /// 全局定义目录（优先级升序）：~/.agents > ~/.vva
-fn global_agent_dirs() -> [Option<PathBuf>; 2] {
-    match crate::config::home_dir() {
-        Some(home) => [
-            Some(home.join(".agents").join("agents")),
-            Some(home.join(".vva").join("agents")),
-        ],
-        None => [None, None],
-    }
+fn global_agent_dirs() -> Vec<PathBuf> {
+    crate::discover::global_dirs("agents")
 }
 
 /// 项目定义目录（优先级升序）：.agents > .vva
 fn project_agent_dirs(workspace: &Path) -> [PathBuf; 2] {
-    [
-        workspace.join(".agents").join("agents"),
-        workspace.join(".vva").join("agents"),
-    ]
+    crate::discover::project_dirs(workspace, "agents")
 }
 
 /// 发现内置与文件系统定义：按 name 排序返回，同名时后扫描的目录覆盖先扫描的
@@ -160,7 +151,7 @@ pub fn discover_agents(workspace: &Path) -> Vec<AgentDef> {
     for def in builtin_agents() {
         by_name.insert(def.name.clone(), def);
     }
-    let mut dirs: Vec<PathBuf> = global_agent_dirs().into_iter().flatten().collect();
+    let mut dirs = global_agent_dirs();
     dirs.extend(project_agent_dirs(workspace));
     for dir in dirs {
         collect_agents(&dir, &mut by_name);
@@ -200,25 +191,7 @@ fn collect_agents(dir: &Path, out: &mut BTreeMap<String, AgentDef>) {
 /// name 约束与 skills 一致：1-64 字符，仅小写字母/数字与非连续连字符，
 /// 显式声明时必须与文件主干一致
 fn validate_name(name: &str, stem: &str) -> Result<(), String> {
-    let valid = !name.is_empty()
-        && name.chars().count() <= 64
-        && name.split('-').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        });
-    if !valid {
-        return Err(format!(
-            "Invalid agent name '{name}': must be 1-64 lowercase letters, digits or single hyphens"
-        ));
-    }
-    if name != stem {
-        return Err(format!(
-            "Agent name '{name}' must match its file name '{stem}'"
-        ));
-    }
-    Ok(())
+    crate::discover::validate_name(name, stem, "agent", "file name")
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 
 use super::session::{HashlineSession, file_tag};
 use crate::tools::INLINE_OUTPUT_BUDGET;
-use crate::tools::filesystem::{ChangedRange, EditPlan, format_edit_result};
+use crate::tools::filesystem::{ChangedRange, EditPlan, format_edit_result, line_offsets};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -256,14 +256,6 @@ fn gap_marker(first: u32, last: u32, carried: &HashSet<u32>) -> String {
     } else {
         format!("[Lines {first}-{last} not displayed this session; Read before editing]\n")
     }
-}
-
-fn line_offsets(text: &str) -> Vec<usize> {
-    let mut offsets = vec![0];
-    for line in text.split_inclusive('\n') {
-        offsets.push(offsets.last().unwrap() + line.len());
-    }
-    offsets
 }
 
 pub(super) fn numbered_preview(text: &str, changes: &[Change]) -> Vec<(u32, String)> {

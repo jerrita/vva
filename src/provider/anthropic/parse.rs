@@ -179,7 +179,7 @@ pub(super) fn project_search_call(
     };
     Ok(WebSearchCall {
         id: id.to_string(),
-        action: WebSearchAction::Search,
+        action: Some(WebSearchAction::Search),
         query,
         status,
         sources,
@@ -199,7 +199,7 @@ pub(super) fn project_fetch_call(
     };
     Ok(WebSearchCall {
         id: id.to_string(),
-        action: WebSearchAction::OpenPage { url },
+        action: Some(WebSearchAction::OpenPage { url }),
         query: String::new(),
         status,
         sources: Vec::new(),

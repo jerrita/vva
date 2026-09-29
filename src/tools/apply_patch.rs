@@ -58,7 +58,6 @@ struct UpdateChunk {
     change_context: Option<String>,
     old_lines: Vec<String>,
     new_lines: Vec<String>,
-    eof: bool,
 }
 
 impl UpdateChunk {
@@ -67,7 +66,6 @@ impl UpdateChunk {
             change_context,
             old_lines: Vec::new(),
             new_lines: Vec::new(),
-            eof: false,
         }
     }
 }
@@ -176,9 +174,8 @@ fn consume_line(
             } else if let Some(ctx) = update_line.strip_prefix(ATAT_CONTEXT) {
                 chunks.push(UpdateChunk::new(Some(ctx.to_string())));
             } else if update_line == END_OF_FILE {
-                if let Some(last) = chunks.last_mut() {
-                    last.eof = true;
-                }
+                // 语法保留：标记本身不再携带语义。上游 V4A 用它锚定 EOF 匹配；
+                // vva 匹配本就搜索全文，未命中按 not_found 显式报错，不再静默追加文件尾。
             } else if update_line.is_empty() {
                 push_context(&mut chunks, String::new());
             } else if let Some(rest) = line.strip_prefix('+') {
@@ -316,8 +313,7 @@ fn compute_replacements(
     let mut line_index = 0;
     for (i, chunk) in chunks.iter().enumerate() {
         if let Some(ctx) = &chunk.change_context {
-            let Some(idx) =
-                seek_sequence(original_lines, std::slice::from_ref(ctx), line_index, false)
+            let Some(idx) = seek_sequence(original_lines, std::slice::from_ref(ctx), line_index)
             else {
                 return Err(format!(
                     "hunk {}: not_found: @@ context `{ctx}` was not found. Read the file and retry.",
@@ -335,8 +331,7 @@ fn compute_replacements(
             replacements.push((insertion_idx, 0, chunk.new_lines.clone()));
             continue;
         }
-        let Some(start) = seek_sequence(original_lines, &chunk.old_lines, line_index, chunk.eof)
-        else {
+        let Some(start) = seek_sequence(original_lines, &chunk.old_lines, line_index) else {
             return Err(format!(
                 "hunk {}: not_found: hunk context did not match. Read the current file and copy exact lines.",
                 i + 1
@@ -348,7 +343,11 @@ fn compute_replacements(
     Ok(replacements)
 }
 
-fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
+/// 匹配语义对齐上游 openai/codex `codex-rs/apply-patch/src/seek_sequence.rs`：
+/// 逐级放宽（精确 → 忽略行尾空白 → 两侧 trim → Unicode 标点归一化），
+/// 上游注释称最后一级 "mirrors the fuzzy behaviour of `git apply"`。
+/// vva 扩展：start 起未命中时回退从 0 重搜（容忍乱序 hunk，仍要求真实命中）。
+fn seek_sequence(lines: &[String], pattern: &[String], start: usize) -> Option<usize> {
     if pattern.is_empty() {
         return Some(start.min(lines.len()));
     }
@@ -360,7 +359,7 @@ fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) 
     {
         return Some(idx);
     }
-    if eof { Some(lines.len()) } else { None }
+    None
 }
 
 fn seek_from(lines: &[String], pattern: &[String], start: usize) -> Option<usize> {
@@ -661,7 +660,7 @@ mod tests {
     fn seek_matches_unicode_quotes() {
         let lines = vec!["let s = \u{201C}hi\u{201D};".into()];
         let pattern = vec!["let s = \"hi\";".into()];
-        assert_eq!(seek_sequence(&lines, &pattern, 0, false), Some(0));
+        assert_eq!(seek_sequence(&lines, &pattern, 0), Some(0));
     }
 
     #[test]

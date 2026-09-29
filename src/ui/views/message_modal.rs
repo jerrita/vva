@@ -1,13 +1,11 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
 
 use crate::ui::modals::{ForkTitleState, MESSAGE_ACTIONS, MessageActionState};
 use crate::ui::views::modal_shell::{
-    ModalShellSpec, centered_rect, footer_hints, list_row_affix, modal_block, render_modal_list,
-    render_modal_shell,
+    ModalShellSpec, footer_hints, list_row_affix, render_modal_list, render_modal_shell,
 };
 
 /// 渲染用户消息 Revert / Fork 选择弹窗，返回列表区供鼠标命中
@@ -69,49 +67,37 @@ pub fn render_message_action_modal(
 
 /// 渲染 Fork 标题编辑弹窗
 pub fn render_fork_title_modal(state: &ForkTitleState, frame: &mut Frame, area: Rect) {
-    let modal_rect = centered_rect(area, 60, 8);
-    frame.render_widget(Clear, modal_rect);
-    let block = modal_block(" Fork Session ", Color::Cyan);
-    let inner = block.inner(modal_rect);
-    frame.render_widget(block, modal_rect);
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "  New session title:",
-            Style::default().fg(Color::DarkGray),
-        ))),
-        chunks[0],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(
-                state.title.text.clone(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("_", Style::default().fg(Color::Cyan)),
-        ])),
-        chunks[1],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
+    render_modal_shell(
+        frame,
+        area,
+        ModalShellSpec {
+            title: " Fork Session ",
+            accent: Color::Cyan,
+            width: 60,
+            height: 8,
+            header_height: 2,
+        },
+        vec![
+            Line::from(Span::styled(
+                "  New session title:",
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    state.title.text.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("_", Style::default().fg(Color::Cyan)),
+            ]),
+        ],
+        Line::from(vec![
             Span::styled(" [Enter] ", Style::default().fg(Color::Green)),
             Span::styled("Fork  ", Style::default().fg(Color::DarkGray)),
             Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
             Span::styled("Back", Style::default().fg(Color::DarkGray)),
-        ])),
-        chunks[3],
+        ]),
     );
 }

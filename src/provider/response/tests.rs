@@ -150,7 +150,7 @@ fn test_response_provider_parse_with_search_and_citations() {
                 "status": "completed",
                 "action": {
                     "type": "search",
-                    "query": "tokyo weather",
+                    "queries": ["tokyo weather"],
                     "sources": [
                         {
                             "type": "url",
@@ -260,7 +260,7 @@ fn test_response_provider_parse_preserves_output_order() {
                 "status": "completed",
                 "action": {
                     "type": "search",
-                    "query": "Claude Code updates",
+                    "queries": ["Claude Code updates"],
                     "sources": [{"type": "url", "url": "https://code.claude.com"}]
                 }
             }
@@ -512,7 +512,7 @@ fn test_response_provider_store_false_falls_back_to_full_history() {
                 "status": "completed",
                 "action": {
                     "type": "search",
-                    "query": "example query",
+                    "queries": ["example query"],
                     "sources": []
                 }
             },
@@ -580,7 +580,7 @@ fn test_response_provider_store_false_falls_back_to_full_history() {
         .expect("build body");
     assert!(body.get("previous_response_id").is_none());
     assert!(body.get("store").is_none());
-    assert_eq!(body["prompt_cache_key"], session.id);
+    assert_eq!(body["prompt_cache_key"], session.header.id);
     assert_eq!(
         body["include"],
         serde_json::json!([
@@ -599,7 +599,10 @@ fn test_response_provider_store_false_falls_back_to_full_history() {
     // 回传 input 的 reasoning item 必须携带 summary 字段（即使为空数组）
     assert_eq!(input_items[1]["summary"], serde_json::json!([]));
     assert_eq!(input_items[2]["type"], "web_search_call");
-    assert_eq!(input_items[2]["action"]["query"], "example query");
+    assert_eq!(
+        input_items[2]["action"]["queries"],
+        serde_json::json!(["example query"])
+    );
     assert_eq!(input_items[3]["role"], "assistant");
     assert_eq!(input_items[3]["phase"], "final_answer");
     assert_eq!(input_items[3]["content"][0]["text"], "第一轮示例答复。");
@@ -682,7 +685,7 @@ async fn test_stream_search_and_citations_arrive_before_completion() {
     let mut handler = ResponseStreamHandler::new(&provider, Some(tx));
     let search = serde_json::json!({
         "id": "ws_1", "type": "web_search_call", "status": "completed",
-        "action": {"type": "search", "query": "Rust release",
+        "action": {"type": "search", "queries": ["Rust release"],
             "sources": [{"type": "url", "url": "https://www.rust-lang.org/"}]}
     });
     handler
@@ -782,7 +785,7 @@ async fn test_stream_handler_reports_web_search_call_on_item_done() {
                 "type": "web_search_call",
                 "id": "ws_1",
                 "status": "completed",
-                "action": {"type": "search", "query": "example topic"}
+                "action": {"type": "search", "queries": ["example topic"]}
             }
         }))
         .await
@@ -791,7 +794,7 @@ async fn test_stream_handler_reports_web_search_call_on_item_done() {
         Ok(AgentEvent::WebSearchCall(call)) => {
             assert_eq!(call.id, "ws_1");
             assert_eq!(call.query, "example topic");
-            assert_eq!(call.action, WebSearchAction::Search);
+            assert_eq!(call.action, Some(WebSearchAction::Search));
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -821,9 +824,9 @@ async fn test_stream_handler_reports_web_search_call_on_item_done() {
         Ok(AgentEvent::WebSearchCall(call)) => {
             assert_eq!(
                 call.action,
-                WebSearchAction::OpenPage {
+                Some(WebSearchAction::OpenPage {
                     url: "https://example.com/article".into(),
-                }
+                })
             );
             assert!(call.query.is_empty());
             assert!(call.sources.is_empty());
@@ -874,7 +877,7 @@ async fn test_web_actions_match_stream_final_and_storage() {
     let ContentPart::WebSearchCall(search) = &streamed[0] else {
         unreachable!()
     };
-    assert_eq!(search.action, WebSearchAction::Search);
+    assert_eq!(search.action, Some(WebSearchAction::Search));
     assert_eq!(search.query, "query A, query B");
     assert_eq!(search.sources.len(), 2);
     let ContentPart::WebSearchCall(open) = &streamed[1] else {
@@ -882,9 +885,9 @@ async fn test_web_actions_match_stream_final_and_storage() {
     };
     assert_eq!(
         open.action,
-        WebSearchAction::OpenPage {
+        Some(WebSearchAction::OpenPage {
             url: "https://example.com/a".into()
-        }
+        })
     );
     assert!(open.sources.is_empty());
     let ContentPart::WebSearchCall(find) = &streamed[2] else {
@@ -892,10 +895,10 @@ async fn test_web_actions_match_stream_final_and_storage() {
     };
     assert_eq!(
         find.action,
-        WebSearchAction::FindInPage {
+        Some(WebSearchAction::FindInPage {
             url: "https://example.com/a".into(),
             pattern: "battery".into(),
-        }
+        })
     );
     assert!(find.sources.is_empty());
     let final_response = provider
@@ -935,7 +938,7 @@ async fn test_open_page_url_optional_per_spec() {
         };
         assert_eq!(
             call.action,
-            WebSearchAction::OpenPage { url: String::new() }
+            Some(WebSearchAction::OpenPage { url: String::new() })
         );
 
         let (tx, mut rx) = mpsc::channel(4);
@@ -955,7 +958,7 @@ async fn test_open_page_url_optional_per_spec() {
 }
 
 #[tokio::test]
-async fn test_missing_web_search_action_projects_empty_search_and_warns() {
+async fn test_missing_web_search_action_projects_actionless_call() {
     let provider = ResponseProvider::new("test-key");
     let item = serde_json::json!({
         "type": "web_search_call",
@@ -973,10 +976,11 @@ async fn test_missing_web_search_action_projects_empty_search_and_warns() {
     let ContentPart::WebSearchCall(call) = &parsed.messages[0].parts[0] else {
         panic!("expected web search call");
     };
-    assert_eq!(call.action, WebSearchAction::Search);
+    assert_eq!(call.action, None);
     assert!(call.query.is_empty());
     assert!(call.sources.is_empty());
 
+    // 流式 done 事件同样如实投影缺席，且不再发 Notice
     let (tx, mut rx) = mpsc::channel(4);
     let mut handler = ResponseStreamHandler::new(&provider, Some(tx));
     handler
@@ -988,13 +992,12 @@ async fn test_missing_web_search_action_projects_empty_search_and_warns() {
         .unwrap();
     assert!(matches!(
         rx.try_recv(),
-        Ok(AgentEvent::WebSearchCall(WebSearchCall { query, sources, .. }))
-            if query.is_empty() && sources.is_empty()
+        Ok(AgentEvent::WebSearchCall(WebSearchCall {
+            action: None,
+            ..
+        }))
     ));
-    assert!(matches!(
-        rx.try_recv(),
-        Ok(AgentEvent::Notice(message)) if message.contains("omitted action")
-    ));
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -1005,13 +1008,13 @@ async fn test_stream_item_done_sources_survive_completed_aggregation() {
     let done_items = [
         serde_json::json!({
             "type": "web_search_call", "id": "ws_0", "status": "completed",
-            "action": {"type": "search", "query": "query A", "sources": [
+            "action": {"type": "search", "queries": ["query A"], "sources": [
                 {"type": "url", "url": "https://a.example/1"}
             ]}
         }),
         serde_json::json!({
             "type": "web_search_call", "id": "ws_1", "status": "completed",
-            "action": {"type": "search", "query": "query B", "sources": [
+            "action": {"type": "search", "queries": ["query B"], "sources": [
                 {"type": "url", "url": "https://b.example/2"}
             ]}
         }),
@@ -1050,11 +1053,11 @@ async fn test_stream_item_done_sources_survive_completed_aggregation() {
                 "output": [
                     {
                         "type": "web_search_call", "id": "ws_0", "status": "completed",
-                        "action": {"type": "search", "query": "query A", "sources": union}
+                        "action": {"type": "search", "queries": ["query A"], "sources": union}
                     },
                     {
                         "type": "web_search_call", "id": "ws_1", "status": "completed",
-                        "action": {"type": "search", "query": "query B", "sources": union}
+                        "action": {"type": "search", "queries": ["query B"], "sources": union}
                     },
                     {
                         "type": "web_search_call", "id": "ws_open", "status": "completed",
@@ -1095,9 +1098,9 @@ async fn test_stream_item_done_sources_survive_completed_aggregation() {
     };
     assert_eq!(
         open.action,
-        WebSearchAction::OpenPage {
+        Some(WebSearchAction::OpenPage {
             url: "https://a.example/1".into()
-        }
+        })
     );
     assert!(open.sources.is_empty());
 
@@ -1219,9 +1222,9 @@ fn test_response_provider_web_search_call_replays_per_tool_surface() {
 
     // open_page 随原生 web_search 回放，不降为客户端 web_fetch
     let mut open = WebSearchCall::completed("ws_open", "", Vec::new());
-    open.action = WebSearchAction::OpenPage {
+    open.action = Some(WebSearchAction::OpenPage {
         url: "https://example.com/article".into(),
-    };
+    });
     session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
         ContentPart::WebSearchCall(open),
     ])]));

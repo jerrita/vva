@@ -178,13 +178,13 @@ pub(crate) fn web_call_surface(
     server_tools: &[&'static str],
 ) -> Option<WebCallSurface> {
     let (native_name, client_name, input) = match &call.action {
-        crate::model::WebSearchAction::Search => (
+        Some(crate::model::WebSearchAction::Search) => (
             "web_search",
             "web_search",
             serde_json::json!({ "query": call.query }),
         ),
-        crate::model::WebSearchAction::OpenPage { url }
-        | crate::model::WebSearchAction::FindInPage { url, .. } => {
+        Some(crate::model::WebSearchAction::OpenPage { url })
+        | Some(crate::model::WebSearchAction::FindInPage { url, .. }) => {
             let native_name = if server_tools.contains(&"web_fetch") {
                 "web_fetch"
             } else {
@@ -192,6 +192,9 @@ pub(crate) fn web_call_surface(
             };
             (native_name, "web_fetch", serde_json::json!({ "url": url }))
         }
+        // 动作未下发的条目无法在任何协议形态下如实回传，跨亲和组重建时丢弃；
+        // 同源 Responses 回放走 TurnMeta.output_items 原样条目，不受影响。
+        None => return None,
     };
     let native_enabled = match native_name {
         "web_search" => options.enable_web_search,

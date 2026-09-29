@@ -87,7 +87,7 @@ impl App {
         let view_rx = initial_session.subscribe();
         let view = initial_session.snapshot();
         let stats = compute_stats(&view.session, &session_mgr.app_config());
-        let skills = crate::skills::discover_skills(&view.session.workspace_root);
+        let skills = crate::skills::discover_skills(&view.session.header.workspace_root);
         Self {
             session_mgr,
             active_session: initial_session,

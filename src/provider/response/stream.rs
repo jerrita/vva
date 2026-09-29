@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use tokio::sync::mpsc;
@@ -24,7 +24,6 @@ pub(super) struct ResponseStreamHandler<'a> {
     pub(super) event_count: u64,
     /// `output_item.done` 投影：领域 WebSearchCall 的条目快照（含当时 sources）
     streamed_searches: HashMap<String, WebSearchCall>,
-    warned_missing_search_actions: HashSet<String>,
 }
 
 impl<'a> ResponseStreamHandler<'a> {
@@ -41,17 +40,6 @@ impl<'a> ResponseStreamHandler<'a> {
             last_sequence_number: None,
             event_count: 0,
             streamed_searches: HashMap::new(),
-            warned_missing_search_actions: HashSet::new(),
-        }
-    }
-
-    async fn warn_missing_search_action(&mut self, id: &str) {
-        if self.warned_missing_search_actions.insert(id.to_string()) {
-            self.forwarder
-                .notice(format!(
-                    "Responses API web_search_call '{id}' omitted action; displaying an empty search."
-                ))
-                .await;
         }
     }
 
@@ -138,13 +126,9 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
                         let item: ResponseOutputItem =
                             from_value(item, "Responses API output item")?;
                         if let ResponseOutputItem::WebSearchCall { id, status, action } = item {
-                            let missing_action = action.is_none();
                             let call = project_web_search_call(&id, &status, action.as_ref())?;
                             self.streamed_searches.insert(call.id.clone(), call.clone());
                             self.forwarder.web_search_call(call).await;
-                            if missing_action {
-                                self.warn_missing_search_action(&id).await;
-                            }
                         }
                     }
                     "image_generation_call" => {
@@ -176,19 +160,6 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             "response.completed" => {
                 let resp_obj = require_value(&json, "response")?;
                 let mut parsed = self.provider.parse_response(resp_obj.clone())?;
-                for item in parsed
-                    .meta
-                    .response
-                    .iter()
-                    .flat_map(|meta| &meta.output_items)
-                {
-                    if let ResponseOutputItem::WebSearchCall {
-                        id, action: None, ..
-                    } = item
-                    {
-                        self.warn_missing_search_action(id).await;
-                    }
-                }
                 self.apply_streamed_searches(&mut parsed);
                 self.completed = Some(parsed);
                 Ok(())

@@ -5,15 +5,14 @@ use super::ResponseProvider;
 use crate::config::ProviderType;
 use crate::model::{
     ContentPart, MediaKind, MediaSource, Role, Session, ToolDefinition, WebSearchAction,
-    WebSearchCall,
 };
 use crate::provider::common::{WebCallSurface, web_call_surface};
 use crate::provider::{CompletionOptions, Provider, ProviderError};
 
 /// 领域动作 → Responses API web_search_call.action
-fn web_search_action_json(call: &WebSearchCall) -> serde_json::Value {
-    match &call.action {
-        WebSearchAction::Search => serde_json::json!({ "type": "search", "query": call.query }),
+fn web_search_action_json(action: &WebSearchAction, query: &str) -> serde_json::Value {
+    match action {
+        WebSearchAction::Search => serde_json::json!({ "type": "search", "query": query }),
         WebSearchAction::OpenPage { url } => serde_json::json!({ "type": "open_page", "url": url }),
         WebSearchAction::FindInPage { url, pattern } => {
             serde_json::json!({ "type": "find_in_page", "url": url, "pattern": pattern })
@@ -180,12 +179,14 @@ impl ResponseProvider {
                                         tools,
                                         &self.capabilities().server_tool_names,
                                     ) {
-                                        Some(WebCallSurface::Native(..)) => {
+                                        Some(WebCallSurface::Native(..))
+                                            if let Some(action) = &call.action =>
+                                        {
                                             input_items.push(serde_json::json!({
                                                 "type": "web_search_call",
                                                 "id": call.id,
                                                 "status": "completed",
-                                                "action": web_search_action_json(call),
+                                                "action": web_search_action_json(action, &call.query),
                                             }));
                                         }
                                         Some(WebCallSurface::Client(name, input)) => {
@@ -201,6 +202,7 @@ impl ResponseProvider {
                                                 "output": call.result_text(),
                                             }));
                                         }
+                                        Some(WebCallSurface::Native(..)) => {}
                                         None => {}
                                     }
                                 }
@@ -250,7 +252,7 @@ impl ResponseProvider {
         let mut body = serde_json::json!({
             "model": options.model,
             "input": input_items,
-            "prompt_cache_key": session.id,
+            "prompt_cache_key": session.header.id,
         });
 
         let mut include = Vec::new();

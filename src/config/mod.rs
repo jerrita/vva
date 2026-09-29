@@ -17,6 +17,14 @@ pub use state::{AppState, runtime_state_path};
 /// 必须是不带 provider 前缀的裸模型名，使环境变量路由（OPENAI_API_KEY 直连）仍可解析。
 pub const DEFAULT_MODEL_SPEC: &str = "openai/gpt-5.6-terra";
 
+/// 项目配置候选文件名（相对 base 目录按序尝试；NotFound 错误提示共用此列表）
+const PROJECT_CONFIG_CANDIDATES: [&str; 4] = [
+    "vva.jsonc",
+    "vva.json",
+    ".vva/config.jsonc",
+    ".vva/config.json",
+];
+
 impl AppConfig {
     /// 将环境变量入口转换为与文件配置相同的供应商配置。
     pub fn from_env() -> Self {
@@ -101,7 +109,7 @@ pub fn load_config_with_workspace(
         .unwrap_or_default();
     let global_config = load_first_config(&global_paths)?;
 
-    // 2. 加载项目配置 (custom_path, VVA_CONFIG, 或 workspace/cwd 目录下的 vva.jsonc/config.jsonc 等)
+    // 2. 加载项目配置 (custom_path, VVA_CONFIG, 或 workspace/cwd 目录下的 vva.jsonc/vva.json/.vva/config.jsonc/.vva/config.json)
     let project_config = {
         if let Some(p) = custom_path {
             let p = expand_tilde(p);
@@ -117,15 +125,10 @@ pub fn load_config_with_workspace(
             let base_dir = workspace
                 .map(PathBuf::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-            let candidates: Vec<PathBuf> = [
-                "vva.jsonc",
-                "vva.json",
-                ".vva/config.jsonc",
-                ".vva/config.json",
-            ]
-            .iter()
-            .map(|name| base_dir.join(name))
-            .collect();
+            let candidates: Vec<PathBuf> = PROJECT_CONFIG_CANDIDATES
+                .iter()
+                .map(|name| base_dir.join(name))
+                .collect();
             load_first_config(&candidates)?
         }
     };
@@ -140,8 +143,11 @@ pub fn load_config_with_workspace(
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect();
-            searched.push("vva.jsonc".to_string());
-            searched.push("config.jsonc".to_string());
+            searched.extend(
+                PROJECT_CONFIG_CANDIDATES
+                    .iter()
+                    .map(|name| name.to_string()),
+            );
             Err(ConfigError::NotFound(searched))
         }
     }

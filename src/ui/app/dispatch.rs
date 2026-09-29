@@ -47,7 +47,7 @@ impl App {
     /// 设置或切换原生网络搜索（/search 命令与 Config 弹窗共用）：
     /// 更新会话字段、持久化 Header、同步弹窗显示并输出系统提示
     pub async fn set_web_search(&mut self, target: Option<bool>) {
-        let enabled = target.unwrap_or(!self.view.session.web_search);
+        let enabled = target.unwrap_or(!self.view.session.header.web_search);
         if let Err(error) = self
             .active_session
             .configure(None, None, Some(enabled))
@@ -61,7 +61,7 @@ impl App {
         if let ActiveModal::Config(cm) = &mut self.modal {
             cm.update_item_value(
                 ConfigItemKind::WebSearch,
-                if self.view.session.web_search {
+                if self.view.session.header.web_search {
                     "Enabled"
                 } else {
                     "Disabled"

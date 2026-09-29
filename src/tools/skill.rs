@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 
+use super::filesystem::parse_args;
 use crate::skills::Skill;
 
 /// Skill 工具：渐进披露第二层，按 name 加载技能的 SKILL.md 全文指令。
@@ -52,8 +53,7 @@ impl crate::tools::Tool for SkillTool {
         struct Arguments {
             name: String,
         }
-        let args: Arguments = serde_json::from_str(arguments)
-            .map_err(|error| format!("Invalid Skill arguments: {error}"))?;
+        let args: Arguments = parse_args(arguments, "Skill")?;
         let skill = self
             .skills
             .iter()
