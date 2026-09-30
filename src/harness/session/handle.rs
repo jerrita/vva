@@ -180,11 +180,16 @@ impl ManagedSession {
     }
 
     pub async fn abort_current(&self) -> Result<(), String> {
-        self.request(|reply| Command::Stop {
-            delete: false,
-            reply,
-        })
-        .await
+        self.stop(false).await
+    }
+
+    /// 停止会话任务并删除其存储记录
+    pub(super) async fn delete(&self) -> Result<(), String> {
+        self.stop(true).await
+    }
+
+    async fn stop(&self, delete: bool) -> Result<(), String> {
+        self.request(|reply| Command::Stop { delete, reply }).await
     }
 
     /// 关闭一条运行通知横幅

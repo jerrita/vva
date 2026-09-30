@@ -145,6 +145,20 @@ impl SessionManager {
         })
     }
 
+    /// 启动会话任务并登记句柄
+    async fn spawn_registered(
+        self: &Arc<Self>,
+        session: Session,
+        persisted: bool,
+    ) -> Arc<ManagedSession> {
+        let handle = self.spawn(session, persisted);
+        self.sessions
+            .lock()
+            .await
+            .insert(handle.id.clone(), handle.clone());
+        handle
+    }
+
     pub async fn get_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
         let handle = self.live_or_load(id).await?;
         self.remember_session(&handle.snapshot().session);
@@ -203,12 +217,7 @@ impl SessionManager {
             resolve_session_editor(&resolved.model_config, config.settings.editor);
         self.unique_session_id(&mut session).await?;
         self.remember_session(&session);
-        let handle = self.spawn(session, false);
-        self.sessions
-            .lock()
-            .await
-            .insert(handle.id.clone(), handle.clone());
-        Ok(handle)
+        Ok(self.spawn_registered(session, false).await)
     }
 
     pub async fn open_session(
@@ -266,12 +275,7 @@ impl SessionManager {
     }
 
     pub async fn delete_session(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
-        handle
-            .request(|reply| Command::Stop {
-                delete: true,
-                reply,
-            })
-            .await?;
+        handle.delete().await?;
         self.sessions.lock().await.remove(&handle.id);
         self.delete_child_sessions(&handle.id).await;
         Ok(())
@@ -295,14 +299,7 @@ impl SessionManager {
             let live = self.sessions.lock().await.get(&child_id).cloned();
             match live {
                 Some(handle) => {
-                    if handle
-                        .request(|reply| Command::Stop {
-                            delete: true,
-                            reply,
-                        })
-                        .await
-                        .is_ok()
-                    {
+                    if handle.delete().await.is_ok() {
                         self.sessions.lock().await.remove(&child_id);
                     } else {
                         // 任务已退出：通道不可达，直接删除存储记录
@@ -376,12 +373,7 @@ impl SessionManager {
             .await
             .map_err(|e| e.to_string())?;
         self.remember_session(&session);
-        let handle = self.spawn(session, true);
-        self.sessions
-            .lock()
-            .await
-            .insert(handle.id.clone(), handle.clone());
-        Ok(handle)
+        Ok(self.spawn_registered(session, true).await)
     }
 }
 
@@ -456,12 +448,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         session.header.agent = Some(def.name.clone());
         session.header.depth = parent.depth + 1;
         manager.unique_session_id(&mut session).await?;
-        let handle = manager.spawn(session, false);
-        manager
-            .sessions
-            .lock()
-            .await
-            .insert(handle.id.clone(), handle.clone());
+        let handle = manager.spawn_registered(session, false).await;
         let turn_seq = handle.turn_seq();
         // 后台回投 watcher 需在提交前建立订阅基线，避免漏掉首轮完成
         let background_watcher = background.then(|| {
@@ -559,10 +546,9 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             return result.map_err(|_| format!("Session {session_id} is closed"))?;
         }
         let handle = self.manager()?.live_or_load(session_id).await?;
-        let baseline = seen_seq;
         let mut turns = handle.turn_receiver();
         loop {
-            if turns.borrow_and_update().seq > baseline {
+            if turns.borrow_and_update().seq > seen_seq {
                 break;
             }
             let changed = turns.changed();

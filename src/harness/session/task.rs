@@ -183,6 +183,20 @@ impl SessionTask {
         new_index
     }
 
+    /// 同身份的草稿部件原位替换，否则追加
+    fn upsert_draft_part(&mut self, part: ContentPart, is_same: impl Fn(&ContentPart) -> bool) {
+        let part = Arc::new(part);
+        match self
+            .view
+            .draft
+            .iter()
+            .position(|existing| is_same(existing))
+        {
+            Some(index) => self.view.draft[index] = part,
+            None => self.view.draft.push(part),
+        }
+    }
+
     pub(super) async fn event(&mut self, event: AgentEvent) {
         // 文本与思考增量按节流发布，其余事件改变结构或状态，立即发布
         let is_delta = matches!(event, AgentEvent::Thought(_) | AgentEvent::Text { .. });
@@ -194,16 +208,9 @@ impl SessionTask {
         match &event {
             AgentEvent::Thought(text) => {
                 self.view.state = RunState::Thinking;
-                let append_new = match self.view.draft.last() {
-                    Some(part) => !matches!(&**part, ContentPart::Reasoning { .. }),
-                    None => true,
-                };
-                if append_new {
-                    self.view.draft.push(Arc::new(ContentPart::reasoning(text, None)));
-                } else if let ContentPart::Reasoning { content, .. } =
-                    Arc::make_mut(self.view.draft.last_mut().expect("checked above"))
-                {
-                    content.push_str(text);
+                match self.view.draft.last_mut().map(Arc::make_mut) {
+                    Some(ContentPart::Reasoning { content, .. }) => content.push_str(text),
+                    _ => self.view.draft.push(Arc::new(ContentPart::reasoning(text, None))),
                 }
             }
             AgentEvent::Text { delta, .. } => {
@@ -225,57 +232,34 @@ impl SessionTask {
             AgentEvent::ToolExecuting { name, .. } => {
                 self.view.state = RunState::Tool(name.clone())
             }
-            AgentEvent::WebSearchCall(call) => {
-                if let Some(index) = self
-                    .view
-                    .draft
-                    .iter()
-                    .position(|part| matches!(&**part, ContentPart::WebSearchCall(existing) if existing.id == call.id))
-                {
-                    self.view.draft[index] = Arc::new(ContentPart::WebSearchCall(call.clone()));
-                } else {
-                    self.view.draft.push(Arc::new(ContentPart::WebSearchCall(call.clone())));
-                }
-            }
-            AgentEvent::ImageGenerationCall(call) => {
-                if let Some(index) = self
-                    .view
-                    .draft
-                    .iter()
-                    .position(|part| matches!(&**part, ContentPart::ImageGenerationCall(existing) if existing.id == call.id))
-                {
-                    self.view.draft[index] =
-                        Arc::new(ContentPart::ImageGenerationCall(call.clone()));
-                } else {
-                    self.view
-                        .draft
-                        .push(Arc::new(ContentPart::ImageGenerationCall(call.clone())));
-                }
-            }
-            AgentEvent::ToolFinished { .. } => {}
-            AgentEvent::AskUser(_) => {}
+            AgentEvent::WebSearchCall(call) => self.upsert_draft_part(
+                ContentPart::WebSearchCall(call.clone()),
+                |part| matches!(part, ContentPart::WebSearchCall(existing) if existing.id == call.id),
+            ),
+            AgentEvent::ImageGenerationCall(call) => self.upsert_draft_part(
+                ContentPart::ImageGenerationCall(call.clone()),
+                |part| matches!(part, ContentPart::ImageGenerationCall(existing) if existing.id == call.id),
+            ),
+            AgentEvent::ToolFinished { .. } | AgentEvent::AskUser(_) | AgentEvent::Finished => {}
             AgentEvent::Notice(text) => {
                 self.view
                     .notices
                     .push(Notice::new(text.clone(), NoticeKind::Session));
             }
             AgentEvent::Capabilities(texts) => {
-                let previous = std::mem::take(&mut self.view.notices);
-                self.view.notices = previous
-                    .iter()
-                    .filter(|notice| !matches!(notice.kind, NoticeKind::Capability))
-                    .cloned()
-                    .collect();
+                // 能力提示整体替换，文案未变的沿用原提示 (保持稳定 id)
+                let (mut previous, mut kept): (Vec<_>, Vec<_>) =
+                    std::mem::take(&mut self.view.notices)
+                        .into_iter()
+                        .partition(|notice| matches!(notice.kind, NoticeKind::Capability));
                 for text in texts {
-                    let notice = previous
-                        .iter()
-                        .find(|notice| {
-                            matches!(notice.kind, NoticeKind::Capability) && &notice.text == text
-                        })
-                        .cloned()
-                        .unwrap_or_else(|| Notice::new(text.clone(), NoticeKind::Capability));
-                    self.view.notices.push(notice);
+                    let notice = match previous.iter().position(|notice| &notice.text == text) {
+                        Some(index) => previous.swap_remove(index),
+                        None => Notice::new(text.clone(), NoticeKind::Capability),
+                    };
+                    kept.push(notice);
                 }
+                self.view.notices = kept;
             }
             AgentEvent::TaskCompleted { task_id, text } => {
                 if let Some(notice) = self.view.notices.iter_mut().find(|notice| {
@@ -298,7 +282,6 @@ impl SessionTask {
                 self.view.draft.clear();
                 self.record_outcome("Turn aborted.".into(), true);
             }
-            AgentEvent::Finished => {}
         }
         if is_delta {
             self.dirty = true;
@@ -433,6 +416,12 @@ impl SessionTask {
                 broker: self.broker.clone(),
             },
         )
+    }
+
+    /// 以当前会话组装引擎 (重新发现技能)
+    async fn build_engine(&self) -> Result<AgentEngine, String> {
+        let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
+        self.build_engine_for(&self.view.session, skills).await
     }
 
     pub(super) async fn start(
@@ -655,11 +644,12 @@ impl SessionTask {
                 _ = publish_tick.tick() => self.publish_throttled(),
                 command = commands.recv() => match command {
                     Some(Command::Configure { model, variant, search, reply }) => {
-                        self.handle_configure(model, variant, search, reply).await;
+                        let _ = reply.send(self.configure(model, variant, search).await);
                     }
                     Some(Command::Title(title)) => self.handle_title(title).await,
                     Some(Command::DismissNotice { id, reply }) => {
-                        let _ = reply.send(self.dismiss_notice(&id));
+                        self.dismiss_notice(&id);
+                        let _ = reply.send(Ok(()));
                     }
                     Some(Command::TaskFinished { task_id }) => {
                         self.queue_task_completion(task_id).await;
@@ -688,17 +678,6 @@ impl SessionTask {
         }
     }
 
-    /// Configure 命令在运行中 (drive) 与空闲 (run) 两条路径共用同一处理
-    async fn handle_configure(
-        &mut self,
-        model: Option<String>,
-        variant: Option<Option<String>>,
-        search: Option<bool>,
-        reply: Reply,
-    ) {
-        let _ = reply.send(self.configure(model, variant, search).await);
-    }
-
     /// Title 命令在运行中 (drive) 与空闲 (run) 两条路径共用同一处理
     async fn handle_title(&mut self, title: String) {
         if let Err(error) = self.title(title).await {
@@ -720,12 +699,11 @@ impl SessionTask {
     }
 
     /// 通过稳定身份关闭提示；重复关闭保持幂等。
-    pub(super) fn dismiss_notice(&mut self, id: &str) -> Result<(), String> {
+    pub(super) fn dismiss_notice(&mut self, id: &str) {
         self.view
             .notices
             .retain(|notice| notice.id != id || matches!(notice.kind, NoticeKind::Capability));
         self.publish();
-        Ok(())
     }
 
     pub(super) async fn execute(
@@ -759,12 +737,9 @@ impl SessionTask {
                 .messages
                 .iter()
                 .flat_map(|m| &m.parts)
-                .filter_map(|p| {
-                    if let ContentPart::ToolCall(call) = p {
-                        Some(call.clone())
-                    } else {
-                        None
-                    }
+                .filter_map(|p| match p {
+                    ContentPart::ToolCall(call) => Some(call.clone()),
+                    _ => None,
                 })
                 .collect();
             let mut turn = Turn::assistant_turn(response.messages);
@@ -968,8 +943,7 @@ impl SessionTask {
             {
                 return Ok(outcome);
             }
-            let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
-            engine = self.build_engine_for(&self.view.session, skills).await?;
+            engine = self.build_engine().await?;
         }
     }
 
@@ -1064,8 +1038,7 @@ impl SessionTask {
         enqueue: impl std::ops::AsyncFnOnce(&mut Self),
     ) -> bool {
         enqueue(self).await;
-        let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
-        match self.build_engine_for(&self.view.session, skills).await {
+        match self.build_engine().await {
             Ok(engine) => {
                 let result = self.run_turns(engine, commands).await;
                 self.finish_turn(result).await || self.run_pending_deliveries(commands).await
@@ -1119,11 +1092,12 @@ impl SessionTask {
                     search,
                     reply,
                 } => {
-                    self.handle_configure(model, variant, search, reply).await;
+                    let _ = reply.send(self.configure(model, variant, search).await);
                 }
                 Command::Title(title) => self.handle_title(title).await,
                 Command::DismissNotice { id, reply } => {
-                    let _ = reply.send(self.dismiss_notice(&id));
+                    self.dismiss_notice(&id);
+                    let _ = reply.send(Ok(()));
                 }
                 Command::TaskFinished { task_id } => {
                     // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次
