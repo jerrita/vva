@@ -22,9 +22,6 @@
   --bubble-user-text: #f0ecfa;
   --code-bg: #efeaf8;
   --code-header: #e8e1f4;
-  --tl-red: #ff5f57;
-  --tl-yellow: #febc2e;
-  --tl-green: #28c840;
   --hl-comment: #948aad;
   --hl-punct: #6a6187;
   --hl-keyword: #8a3fd6;
@@ -75,9 +72,6 @@
     --bubble-user-text: #241d3a;
     --code-bg: #241f33;
     --code-header: #2b2540;
-    --tl-red: #ff5f57;
-    --tl-yellow: #febc2e;
-    --tl-green: #28c840;
     --hl-comment: #7d739c;
     --hl-punct: #a79dbd;
     --hl-keyword: #c79bf0;
@@ -162,6 +156,13 @@ button {
   border: none;
   padding: 0;
   cursor: pointer;
+}
+
+/* 键盘聚焦环：统一为紫罗兰描边（鼠标点击不触发） */
+:where(button, a, summary, [role='button'], [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
 }
 
 /* 全部折叠行使用自绘指示符，隐藏原生 marker */
@@ -381,7 +382,9 @@ body.resizing .chat-scroll {
 }
 
 .group-label:hover .group-hide,
-.group-label:hover .group-new {
+.group-label:hover .group-new,
+.group-label:focus-within .group-hide,
+.group-label:focus-within .group-new {
   display: inline-flex;
 }
 
@@ -492,7 +495,26 @@ body.resizing .chat-scroll {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 18px;
+}
+
+/* 相对创建时间：与删除按钮同位，悬停/聚焦时让位 */
+.session-time {
+  flex-shrink: 0;
+  min-width: 22px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  text-align: right;
+}
+
+.session-item.active .session-time {
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.session-item:hover .session-time,
+.session-item:focus-within .session-time {
+  visibility: hidden;
 }
 
 .session-delete {
@@ -506,8 +528,25 @@ body.resizing .chat-scroll {
   border-radius: 6px;
 }
 
-.session-item:hover .session-delete {
+.session-item:hover .session-delete,
+.session-item:focus-within .session-delete {
   display: inline-flex;
+}
+
+/* 分组折叠行：与会话标题左缘对齐的弱化文字按钮 */
+.group-more {
+  display: block;
+  width: 100%;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: left;
+  transition: color 0.15s;
+}
+
+.group-more:hover {
+  color: var(--accent);
 }
 
 .session-delete:hover {
@@ -562,13 +601,11 @@ body.resizing .chat-scroll {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 10px 14px 16px;
-  border-top: 1px solid var(--border);
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  margin: 0 8px;
+  padding: 10px 10px 14px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1771,7 +1808,7 @@ div.tool-row {
   overflow-y: hidden;
 }
 
-/* ---- macOS 代码窗口 ---- */
+/* ---- 代码块：语言名 + 复制的细标题栏 ---- */
 
 .code-window {
   margin: 0.9em 0;
@@ -1782,36 +1819,12 @@ div.tool-row {
 }
 
 .code-window-bar {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 12px;
+  padding: 3px 6px 3px 12px;
   background: var(--code-header);
   border-bottom: 1px solid var(--border-soft);
-}
-
-.code-window-dots {
-  display: flex;
-  gap: 6px;
-}
-
-.code-window-dots i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-
-.code-window-dots i:nth-child(1) {
-  background: var(--tl-red);
-}
-
-.code-window-dots i:nth-child(2) {
-  background: var(--tl-yellow);
-}
-
-.code-window-dots i:nth-child(3) {
-  background: var(--tl-green);
 }
 
 .code-window-title {
@@ -1822,8 +1835,7 @@ div.tool-row {
 }
 
 .code-window-actions {
-  grid-column: 3;
-  justify-self: end;
+  margin-left: auto;
   display: flex;
 }
 
@@ -1998,10 +2010,35 @@ div.tool-row {
   gap: 10px;
 }
 
+.empty-brand {
+  margin-bottom: 10px;
+}
+
+/* 项目行：文件夹 + 项目名下拉 + 完整路径，明示会话落在哪个工作区 */
 .empty-project {
   width: 100%;
   display: flex;
   align-items: center;
+  gap: 2px;
+  padding-left: 8px;
+  color: var(--accent);
+}
+
+.empty-project .chip-trigger {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 260px;
+}
+
+.empty-project-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
 }
 
 .empty-composer > .composer {
@@ -3233,7 +3270,9 @@ div.tool-row {
   }
 
   .session-status.generating,
-  .status-chip .dot {
+  .status-chip .dot,
+  .main,
+  .session-group {
     animation: none;
   }
 }

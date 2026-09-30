@@ -3,6 +3,7 @@ import { Children, isValidElement, memo, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import rehypeHighlight from "rehype-highlight";
+import remarkCjkFriendly from "remark-cjk-friendly";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { normalizeMathDelimiters } from "../utils/math";
@@ -18,7 +19,7 @@ function childText(node: ReactNode): string {
   return "";
 }
 
-/** pre → macOS 窗口：圆点标题栏（语言名 + 复制）+ 高亮代码体；展示公式退回普通 pre */
+/** pre → 代码块：细标题栏（语言名 + 复制）+ 高亮代码体；展示公式退回普通 pre */
 function CodeWindow({ children }: { children?: ReactNode }) {
   const code = Children.toArray(children).find(isValidElement);
   if (typeof code?.type !== "string" || code.type !== "code") {
@@ -32,12 +33,7 @@ function CodeWindow({ children }: { children?: ReactNode }) {
   return (
     <div className="code-window">
       <div className="code-window-bar">
-        <span className="code-window-dots" aria-hidden>
-          <i />
-          <i />
-          <i />
-        </span>
-        {lang && <span className="code-window-title">{lang}</span>}
+        <span className="code-window-title">{lang ?? "code"}</span>
         <span className="code-window-actions">
           <CopyButton text={childText(children)} />
         </span>
@@ -74,7 +70,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={[remarkGfm, remarkCjkFriendly, remarkMath]}
         rehypePlugins={[
           rehypeHighlight,
           [rehypeKatex, { throwOnError: false }]

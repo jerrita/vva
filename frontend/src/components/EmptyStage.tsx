@@ -1,5 +1,6 @@
 import { ChipSelect } from './ChipSelect'
 import { Composer } from './Composer'
+import { IconFolderOpen } from './icons'
 import type { ReactNode } from 'react'
 import type { FileAttachment, SkillEntry } from '../types'
 import type { ProjectOption } from './Sidebar'
@@ -16,7 +17,7 @@ interface EmptyStageProps {
   onStop: () => void
 }
 
-/** 空态：无会话时的居中版式（品牌大字 + 提示 + 项目选择 + 输入框）。 */
+/** 空态：无会话时的居中版式（品牌大字 + 项目选择与路径 + 输入框）。 */
 export function EmptyStage({
   projects,
   defaultRoot,
@@ -28,18 +29,24 @@ export function EmptyStage({
   onSend,
   onStop,
 }: EmptyStageProps) {
+  const root = draftProject || defaultRoot || ''
   return (
     <div className="empty-stage">
       <div className="empty-brand">vva</div>
-      <div className="empty-hint">选择项目，输入任务开始 · Enter 发送</div>
       <div className="empty-composer">
         <div className="empty-project">
+          <IconFolderOpen size={15} />
           <ChipSelect
-            title="项目"
-            value={draftProject || defaultRoot || ''}
+            title="切换项目"
+            value={root}
             options={projects.map(project => ({ value: project.root, label: project.name }))}
             onChange={onDraftProjectChange}
           />
+          {root && (
+            <span className="empty-project-path" title={root}>
+              {root}
+            </span>
+          )}
         </div>
         <Composer
           running={running}

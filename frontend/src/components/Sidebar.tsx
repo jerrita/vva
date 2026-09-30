@@ -8,6 +8,7 @@ import {
   IconFolderOpen,
   IconFork,
   IconPlus,
+  IconSettings,
   IconX,
   IconZap,
 } from './icons'
@@ -90,6 +91,38 @@ export function groupByProject(
       (order.get(a.root) ?? projectOrder.length) -
       (order.get(b.root) ?? projectOrder.length),
   )
+}
+
+/** 分组默认展示的顶层会话数；其余折叠到「还有 N 条」行 */
+const GROUP_PREVIEW = 6
+
+/** 会话创建时间的紧凑相对表示（mono 元信息），超过 30 天回落为月-日 */
+function relativeTime(iso: string, now: number): string {
+  const minutes = Math.floor((now - Date.parse(iso)) / 60_000)
+  if (!(minutes >= 1)) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  if (days <= 30) return `${days}d`
+  const date = new Date(iso)
+  return `${date.getMonth() + 1}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+/** 以 Enter / 空格激活非 button 的可点击行（与原生按钮一致的键盘语义） */
+function activateOnKey(action: () => void) {
+  return (event: React.KeyboardEvent) => {
+    if (event.target !== event.currentTarget) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      action()
+    }
+  }
+}
+
+/** 节点自身或其子孙是否为当前会话 */
+function containsSession(node: SessionNode, id: string | null): boolean {
+  return node.session.id === id || node.children.some(child => containsSession(child, id))
 }
 
 /** 由项目名生成稳定的高辨识度颜色（紫罗兰色系内变化，保持整体统一） */
@@ -277,6 +310,7 @@ function SessionItem({
   depth,
   activeId,
   unreadIds,
+  now,
   onSelect,
   onDelete,
 }: {
@@ -284,6 +318,7 @@ function SessionItem({
   depth: number
   activeId: string | null
   unreadIds: Set<string>
+  now: number
   onSelect: (id: string) => void
   onDelete: (session: SessionSummary) => void
 }) {
@@ -297,7 +332,11 @@ function SessionItem({
         className={`session-item${session.id === activeId ? ' active' : ''}${generating ? ' generating' : ''}${unread ? ' unread' : ''}${depth > 0 ? ' sub' : ''}`}
         style={depth > 0 ? { marginLeft: depth * 16 } : undefined}
         title={status ? `${session.title || '新对话'} · ${status}` : session.title || '新对话'}
+        role="button"
+        tabIndex={0}
+        aria-current={session.id === activeId ? 'page' : undefined}
         onClick={() => onSelect(session.id)}
+        onKeyDown={activateOnKey(() => onSelect(session.id))}
       >
         {depth > 0 && (
           <span className="session-fork" title={`${session.agent || 'sub'} 子会话`}>
@@ -311,6 +350,9 @@ function SessionItem({
           />
         )}
         <div className="session-title">{session.title || '新对话'}</div>
+        <time className="session-time" dateTime={session.created_at}>
+          {relativeTime(session.created_at, now)}
+        </time>
         <button
           className="session-delete"
           title="删除会话"
@@ -330,10 +372,66 @@ function SessionItem({
           depth={depth + 1}
           activeId={activeId}
           unreadIds={unreadIds}
+          now={now}
           onSelect={onSelect}
           onDelete={onDelete}
         />
       ))}
+    </>
+  )
+}
+
+/** 分组内会话：默认展示最新 GROUP_PREVIEW 条顶层会话，当前会话所在节点始终可见 */
+function GroupSessions({
+  tree,
+  showAll,
+  onToggleAll,
+  activeId,
+  unreadIds,
+  now,
+  onSelect,
+  onDelete,
+}: {
+  tree: SessionNode[]
+  showAll: boolean
+  onToggleAll: () => void
+  activeId: string | null
+  unreadIds: Set<string>
+  now: number
+  onSelect: (id: string) => void
+  onDelete: (session: SessionSummary) => void
+}) {
+  const foldable = tree.length > GROUP_PREVIEW + 1
+  const visible =
+    showAll || !foldable
+      ? tree
+      : tree.filter(
+          (node, index) =>
+            index < GROUP_PREVIEW ||
+            containsSession(node, activeId) ||
+            unreadIds.has(node.session.id) ||
+            Boolean(node.session.state),
+        )
+  const hidden = tree.length - visible.length
+  return (
+    <>
+      {visible.map(node => (
+        <SessionItem
+          key={node.session.id}
+          node={node}
+          depth={0}
+          activeId={activeId}
+          unreadIds={unreadIds}
+          now={now}
+          onSelect={onSelect}
+          onDelete={onDelete}
+        />
+      ))}
+      {foldable && (showAll || hidden > 0) && (
+        <button className="group-more" onClick={onToggleAll}>
+          {showAll ? '收起' : `还有 ${hidden} 条`}
+        </button>
+      )}
     </>
   )
 }
@@ -373,6 +471,18 @@ export function Sidebar({
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [draggingRoot, setDraggingRoot] = useState<string | null>(null)
   const [dropTargetRoot, setDropTargetRoot] = useState<string | null>(null)
+  // 展开全部会话的项目（默认仅展示最新 GROUP_PREVIEW 条）
+  const [expanded, setExpanded] = usePersistentSet('vva.projects-expanded')
+  const listRef = useRef<HTMLElement>(null)
+  // 相对时间按分钟级粒度刷新即可，随会话清单轮询重渲染
+  const now = Date.now()
+
+  // 切换会话后把当前条目滚入可视区（侧栏列表较长时不丢失位置）
+  useEffect(() => {
+    listRef.current
+      ?.querySelector('.session-item.active')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [activeId])
 
   // Esc 关闭 / Enter 确认删除
   useEffect(() => {
@@ -414,7 +524,7 @@ export function Sidebar({
           onClose={() => setNewOpen(false)}
         />
       )}
-      <nav className="session-list">
+      <nav className="session-list" ref={listRef}>
         {visibleGroups.length === 0 && <div className="session-empty">暂无会话</div>}
         {visibleGroups.map((group, index) => (
            <div
@@ -436,7 +546,11 @@ export function Sidebar({
              <div
                className="group-label"
                onClick={() => setCollapsed(prev => toggled(prev, group.project))}
-               title={group.project}
+               onKeyDown={activateOnKey(() => setCollapsed(prev => toggled(prev, group.project)))}
+               role="button"
+               tabIndex={0}
+               aria-expanded={!collapsed.has(group.project)}
+               title={group.root}
                draggable
                onDragStart={event => {
                  event.dataTransfer.effectAllowed = 'move'
@@ -479,24 +593,25 @@ export function Sidebar({
                   <IconX size={12} />
                 </button>
             </div>
-            {!collapsed.has(group.project) &&
-              group.tree.map(node => (
-                <SessionItem
-                  key={node.session.id}
-                  node={node}
-                  depth={0}
-                  activeId={activeId}
-                  unreadIds={unreadIds}
-                  onSelect={onSelect}
-                  onDelete={setPendingDelete}
-                />
-              ))}
+            {!collapsed.has(group.project) && (
+              <GroupSessions
+                tree={group.tree}
+                showAll={expanded.has(group.root)}
+                onToggleAll={() => setExpanded(prev => toggled(prev, group.root))}
+                activeId={activeId}
+                unreadIds={unreadIds}
+                now={now}
+                onSelect={onSelect}
+                onDelete={setPendingDelete}
+              />
+            )}
           </div>
         ))}
         <SkillsSection skills={skills} />
       </nav>
-      <button className="sidebar-foot" onClick={onOpenSettings} title="全局设置">
-        Settings
+      <button className="sidebar-foot" onClick={onOpenSettings} title="编辑全局配置">
+        <IconSettings size={14} />
+        设置
       </button>
       {pendingDelete && (
         <div className="modal-overlay" onClick={() => setPendingDelete(null)}>
