@@ -40,6 +40,21 @@ pub struct SessionView {
     pub pending_user_question: Option<UserQuestionRequest>,
 }
 
+impl SessionView {
+    pub(super) fn new(session: Session, persisted: bool) -> Self {
+        Self {
+            revision: 0,
+            session: Arc::new(session),
+            draft: Vec::new(),
+            notices: Vec::new(),
+            external_web: Vec::new(),
+            state: RunState::Idle,
+            persisted,
+            pending_user_question: None,
+        }
+    }
+}
+
 /// 会话拥有的反馈，身份独立于文本和快照中的位置。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Notice {

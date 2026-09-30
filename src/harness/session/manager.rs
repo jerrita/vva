@@ -89,58 +89,23 @@ impl SessionManager {
 
     fn spawn(self: &Arc<Self>, session: Session, persisted: bool) -> Arc<ManagedSession> {
         let id = session.header.id.clone();
-        let view = SessionView {
-            revision: 0,
-            session: Arc::new(session),
-            draft: Vec::new(),
-            notices: Vec::new(),
-            external_web: Vec::new(),
-            state: RunState::Idle,
-            persisted,
-            pending_user_question: None,
-        };
-        let (view_tx, view_rx) = watch::channel(Arc::new(view.clone()));
         let (commands, rx) = mpsc::channel(16);
-        let (ask_user_tx, ask_user_rx) = mpsc::channel(4);
-        // 后台任务完成回投：通道饱和或会话已退出时丢弃，模型可经 TaskOutput 轮询自愈
-        let weak = commands.downgrade();
-        let tasks = Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
-            move |task_id| {
-                if let Some(tx) = weak.upgrade() {
-                    let _ = tx.try_send(Command::TaskFinished { task_id });
-                }
+        let (task, view, turns) = SessionTask::new(
+            session,
+            persisted,
+            TaskDeps {
+                store: self.store.clone(),
+                config: self.app_config(),
+                state_path: self.state_path.clone(),
+                broker: Arc::new(SessionBrokerHandle::new(self.clone())),
             },
-        )));
-        let (turn_tx, turns) = watch::channel(CompletedTurn::default());
-        let task = SessionTask {
-            view,
-            view_tx,
-            store: self.store.clone(),
-            config: self.app_config(),
-            hashline: crate::tools::hashline::HashlineSession::new(),
-            state_path: self.state_path.clone(),
-            commands: commands.downgrade(),
-            dirty: false,
-            cli: None,
-            stop_request: None,
-            title_task: None,
-            text_parts: HashMap::new(),
-            ask_user_tx,
-            ask_user_rx,
-            pending_user_question: None,
-            tasks,
-            task_completions: Vec::new(),
-            subagent_completions: Vec::new(),
-            pending_deliveries: Vec::new(),
-            turn_tx,
-            turn_start: 0,
-            broker: Arc::new(SessionBrokerHandle::new(self.clone())),
-        };
+            commands.downgrade(),
+        );
         tokio::spawn(task.run(rx));
         Arc::new(ManagedSession {
             id,
             commands,
-            view: view_rx,
+            view,
             turns,
         })
     }
@@ -342,7 +307,7 @@ impl SessionManager {
         title: String,
     ) -> Result<Arc<ManagedSession>, String> {
         if source.is_running() {
-            return Err("Session is currently running another prompt".into());
+            return Err(super::BUSY.into());
         }
         let origin = source.snapshot().session.clone();
         if turn_index >= origin.turns.len() {
@@ -652,16 +617,9 @@ mod tests {
         let session = Session::new(&root, None);
         let id = session.header.id.clone();
         let (commands, mut rx) = mpsc::channel(4);
-        let (_, view) = watch::channel(Arc::new(SessionView {
-            revision: 0,
-            session: Arc::new(session),
-            draft: Vec::new(),
-            notices: Vec::new(),
-            external_web: Vec::new(),
-            state: RunState::Thinking,
-            persisted: false,
-            pending_user_question: None,
-        }));
+        let mut running = SessionView::new(session, false);
+        running.state = RunState::Thinking;
+        let (_, view) = watch::channel(Arc::new(running));
         let (turn_tx, turns) = watch::channel(CompletedTurn::default());
         manager.sessions.lock().await.insert(
             id.clone(),
