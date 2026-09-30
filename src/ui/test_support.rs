@@ -7,9 +7,30 @@ use crate::ui::app::App;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// 带临时存储目录的 App；析构时清理目录
 pub(crate) struct TestApp {
     pub app: App,
     pub temp_dir: PathBuf,
+}
+
+impl std::ops::Deref for TestApp {
+    type Target = App;
+
+    fn deref(&self) -> &App {
+        &self.app
+    }
+}
+
+impl std::ops::DerefMut for TestApp {
+    fn deref_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+}
+
+impl Drop for TestApp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.temp_dir);
+    }
 }
 
 pub(crate) async fn create_test_app(
@@ -49,6 +70,22 @@ pub(crate) fn test_config() -> AppConfig {
 }
 
 impl App {
+    /// 提交一行输入（斜杠命令或普通 prompt）
+    pub(crate) async fn run(&mut self, input: &str) {
+        self.set_input(input);
+        self.submit_input().await;
+    }
+
+    /// 活跃会话当前的推理档位
+    pub(crate) fn current_variant(&self) -> Option<String> {
+        self.active_session
+            .snapshot()
+            .session
+            .header
+            .current_variant
+            .clone()
+    }
+
     pub(crate) fn add_part(&mut self, role: crate::model::Role, part: crate::model::ContentPart) {
         let view = Arc::make_mut(&mut self.view);
         view.revision += 1;

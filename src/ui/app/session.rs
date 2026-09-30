@@ -51,14 +51,14 @@ impl App {
 
     /// 用当前会话的配置创建并接管一个空会话。
     pub async fn new_session(&mut self) -> Result<(), String> {
-        let session = self.view.session.clone();
+        let header = &self.view.session.header;
         let handle = self
             .session_mgr
             .create_session(
-                session.header.current_model.clone(),
-                session.header.current_variant.clone(),
+                header.current_model.clone(),
+                header.current_variant.clone(),
                 None,
-                session.header.web_search,
+                header.web_search,
             )
             .await?;
         self.attach_session(handle);
@@ -250,19 +250,18 @@ impl App {
             return false;
         };
         let id = hit.id.clone();
-        let truncated = hit.truncated;
-        let full_only = hit.full_only;
-        let mode = self.tool_expand_at(&id, full_only);
-        if hit.contains_header(line) {
-            if mode == ToolExpand::Hidden {
-                self.tool_expand.insert(id, default_tool_mode(full_only));
+        let mode = self.tool_expand_at(&id, hit.full_only);
+        let next = if hit.contains_header(line) {
+            Some(if mode == ToolExpand::Hidden {
+                default_tool_mode(hit.full_only)
             } else {
-                self.tool_expand.insert(id, ToolExpand::Hidden);
-            }
-            return true;
-        }
-        if mode == ToolExpand::Preview && truncated {
-            self.tool_expand.insert(id, ToolExpand::Full);
+                ToolExpand::Hidden
+            })
+        } else {
+            (mode == ToolExpand::Preview && hit.truncated).then_some(ToolExpand::Full)
+        };
+        if let Some(next) = next {
+            self.tool_expand.insert(id, next);
         }
         true
     }
@@ -276,18 +275,13 @@ impl App {
             return false;
         }
         let id = hit.id.clone();
-        let mode = self.tool_expand_at(&id, hit.full_only);
-        match mode {
-            ToolExpand::Full if hit.full_only => {
-                self.tool_expand.insert(id, ToolExpand::Hidden);
-            }
-            ToolExpand::Full => {
-                self.tool_expand.insert(id, ToolExpand::Preview);
-            }
-            ToolExpand::Preview => {
-                self.tool_expand.insert(id, ToolExpand::Hidden);
-            }
-            ToolExpand::Hidden => {}
+        let next = match self.tool_expand_at(&id, hit.full_only) {
+            ToolExpand::Full if !hit.full_only => Some(ToolExpand::Preview),
+            ToolExpand::Full | ToolExpand::Preview => Some(ToolExpand::Hidden),
+            ToolExpand::Hidden => None,
+        };
+        if let Some(next) = next {
+            self.tool_expand.insert(id, next);
         }
         true
     }

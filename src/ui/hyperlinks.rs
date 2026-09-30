@@ -39,33 +39,11 @@ impl Hyperlinks {
         scroll: usize,
         enabled: bool,
     ) -> Vec<LinkUpdate> {
-        let mut current = BTreeMap::new();
-        if enabled {
-            for link in &pane.links {
-                let Some(row) = link.line.checked_sub(scroll) else {
-                    continue;
-                };
-                if row >= pane.area.height as usize || link.url.chars().any(char::is_control) {
-                    continue;
-                }
-                let Ok(url) = reqwest::Url::parse(&link.url) else {
-                    continue;
-                };
-                if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-                    continue;
-                }
-                let end = link
-                    .columns
-                    .end
-                    .min(pane.area.width.saturating_sub(1) as usize);
-                for col in link.columns.start..end {
-                    let position = (pane.area.y + row as u16, pane.area.x + col as u16);
-                    if buffer.cell((position.1, position.0)).is_some() {
-                        current.insert(position, url.to_string());
-                    }
-                }
-            }
-        }
+        let current = if enabled {
+            linked_cells(buffer, pane, scroll)
+        } else {
+            BTreeMap::new()
+        };
 
         let force_repaint = self.previous_area != Some(buffer.area);
         self.previous_area = Some(buffer.area);
@@ -113,6 +91,36 @@ impl Hyperlinks {
         self.previous = next;
         updates
     }
+}
+
+/// 视口内可点击的 http(s) 链接所覆盖的屏幕单元格 → 目标 URL
+fn linked_cells(buffer: &Buffer, pane: &TextPane, scroll: usize) -> BTreeMap<(u16, u16), String> {
+    let mut cells = BTreeMap::new();
+    for link in &pane.links {
+        let Some(row) = link.line.checked_sub(scroll) else {
+            continue;
+        };
+        if row >= pane.area.height as usize || link.url.chars().any(char::is_control) {
+            continue;
+        }
+        let Ok(url) = reqwest::Url::parse(&link.url) else {
+            continue;
+        };
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            continue;
+        }
+        let end = link
+            .columns
+            .end
+            .min(pane.area.width.saturating_sub(1) as usize);
+        for col in link.columns.start..end {
+            let position = (pane.area.y + row as u16, pane.area.x + col as u16);
+            if buffer.cell((position.1, position.0)).is_some() {
+                cells.insert(position, url.to_string());
+            }
+        }
+    }
+    cells
 }
 
 /// Ratatui diffs text/style only. Repaint linked cells from the completed frame so
