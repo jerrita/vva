@@ -4,7 +4,7 @@ use super::block;
 use super::parse::{Anchor, FileOp, Op, Payload, Section, op_line};
 use super::session::HashlineSession;
 use super::snapshot::report_update;
-use crate::tools::filesystem::{edit_lock, persist_edit, resolve_path, write_new_file};
+use crate::tools::filesystem::{persist_edit, resolve_path, with_edit_locks, write_new_file};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -538,28 +538,18 @@ fn commit_group(
         base_seen,
     } = prepared;
     match file_op {
-        Some(FileOp::Rem) => {
-            let lock = edit_lock(&canonical)?;
-            let _guard = lock
-                .lock()
-                .map_err(|_| "File mutation lock poisoned".to_string())?;
+        Some(FileOp::Rem) => with_edit_locks(&[&canonical], || {
             fs::remove_file(&canonical)
                 .map_err(|e| format!("Failed to delete {}: {e}", canonical.display()))?;
-            Ok(format!("Deleted file {}", label))
-        }
+            Ok(format!("Deleted file {label}"))
+        }),
         Some(FileOp::Move { dest }) => {
             let dest_path = move_dest(working_dir, &canonical, &dest)?;
-            let src_lock = edit_lock(&canonical)?;
-            let dest_lock = edit_lock(&dest_path)?;
-            let _g1 = src_lock
-                .lock()
-                .map_err(|_| "File mutation lock poisoned".to_string())?;
-            let _g2 = dest_lock
-                .lock()
-                .map_err(|_| "File mutation lock poisoned".to_string())?;
-            write_new_file(&dest_path, &updated)?;
-            fs::remove_file(&canonical)
-                .map_err(|e| format!("Failed to remove {}: {e}", canonical.display()))?;
+            with_edit_locks(&[&canonical, &dest_path], || {
+                write_new_file(&dest_path, &updated)?;
+                fs::remove_file(&canonical)
+                    .map_err(|e| format!("Failed to remove {}: {e}", canonical.display()))
+            })?;
             let dest_canonical = fs::canonicalize(&dest_path).unwrap_or(dest_path.clone());
             let dest_label = display_path(working_dir, &dest_path);
             report_update(
@@ -576,11 +566,9 @@ fn commit_group(
             if updated == original {
                 return Err("unchanged: edits produce no file changes".into());
             }
-            let lock = edit_lock(&canonical)?;
-            let _guard = lock
-                .lock()
-                .map_err(|_| "File mutation lock poisoned".to_string())?;
-            persist_edit(&canonical, &original, &updated)?;
+            with_edit_locks(&[&canonical], || {
+                persist_edit(&canonical, &original, &updated)
+            })?;
             report_update(
                 session, label, canonical, &original, &updated, changes, &base_seen,
             )

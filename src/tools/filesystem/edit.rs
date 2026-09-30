@@ -81,7 +81,7 @@ impl EditArgs {
 }
 
 // Weak entries share locks across registry/session instances without retaining files forever.
-pub(crate) fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
+fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
     let mut locks = LOCKS
         .get_or_init(Mutex::default)
@@ -91,6 +91,25 @@ pub(crate) fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
     let lock = locks.get(path).and_then(Weak::upgrade).unwrap_or_default();
     locks.insert(path.to_path_buf(), Arc::downgrade(&lock));
     Ok(lock)
+}
+
+/// 按序持有各路径的文件变更锁后执行 `f`（多路径时调用方保证一致的加锁顺序）。
+pub(crate) fn with_edit_locks<T>(
+    paths: &[&Path],
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let locks = paths
+        .iter()
+        .map(|path| edit_lock(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let _guards = locks
+        .iter()
+        .map(|lock| {
+            lock.lock()
+                .map_err(|_| "File mutation lock poisoned".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    f()
 }
 
 struct NormalizedText {
@@ -431,33 +450,31 @@ pub(crate) fn commit_text_edit(
 ) -> Result<String, String> {
     let path =
         fs::canonicalize(path).map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
-    let lock = edit_lock(&path)?;
-    let _guard = lock
-        .lock()
-        .map_err(|_| "File mutation lock poisoned".to_string())?;
-    let content =
-        fs::read_to_string(&path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
-    if content.contains('\0') {
-        return Err("Unsupported binary file".into());
-    }
-    let version = content_version(&content);
-    if expected_version.is_some_and(|expected| expected != version) {
-        return Err(format!(
-            "stale: expected_version does not match current version {version}; Read the target range and retry"
-        ));
-    }
-    let plan = apply(&content).map_err(|error| {
-        if emit_version {
-            format!("{error}\n[version: {version}]")
-        } else {
-            error
+    with_edit_locks(&[&path], || {
+        let content = fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+        if content.contains('\0') {
+            return Err("Unsupported binary file".into());
         }
-    })?;
-    if plan.updated == content {
-        return Err("unchanged: edits produce no file changes".into());
-    }
-    persist_edit(&path, &content, &plan.updated)?;
-    Ok(format_edit_result(&path, &content, &plan, emit_version))
+        let version = content_version(&content);
+        if expected_version.is_some_and(|expected| expected != version) {
+            return Err(format!(
+                "stale: expected_version does not match current version {version}; Read the target range and retry"
+            ));
+        }
+        let plan = apply(&content).map_err(|error| {
+            if emit_version {
+                format!("{error}\n[version: {version}]")
+            } else {
+                error
+            }
+        })?;
+        if plan.updated == content {
+            return Err("unchanged: edits produce no file changes".into());
+        }
+        persist_edit(&path, &content, &plan.updated)?;
+        Ok(format_edit_result(&path, &content, &plan, emit_version))
+    })
 }
 
 pub(crate) fn format_edit_result(

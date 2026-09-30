@@ -7,7 +7,8 @@ use super::snapshot::*;
 use super::*;
 use crate::model::EditorKind;
 use crate::tools::Tool;
-use crate::tools::filesystem::{ReadTool, WriteTool};
+use crate::tools::filesystem::{GrepTool, ReadTool, WriteTool};
+use std::sync::Arc;
 
 fn input(body: &str) -> String {
     serde_json::json!({ "input": body }).to_string()
@@ -15,8 +16,8 @@ fn input(body: &str) -> String {
 
 #[tokio::test]
 async fn unchanged_lines_carry_seen_status_across_edits() {
-    let root = std::env::temp_dir().join(format!("vva-hl-carry-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
     let text: String = (1..=200).map(|n| format!("row {n}\n")).collect();
     fs::write(root.join("sample"), &text).unwrap();
     let session = HashlineSession::new();
@@ -24,7 +25,7 @@ async fn unchanged_lines_carry_seen_status_across_edits() {
     let tag = session
         .record(canonical, &text, (10..=10).chain(140..=160))
         .unwrap();
-    let edit = HashlineEditTool::new(&root).with_session(session.clone());
+    let edit = HashlineEditTool::new(root).with_session(session.clone());
     let output = edit
         .execute(&input(&format!(
             "[sample#{tag}]\nPUT 10.=10:\n+a\n+b\n+c\n"
@@ -50,22 +51,21 @@ async fn unchanged_lines_carry_seen_status_across_edits() {
         .await
         .unwrap_err();
     assert!(unseen.contains("20..=20"), "{unseen}");
-    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]
 async fn write_registers_created_lines_for_edit() {
-    let root = std::env::temp_dir().join(format!("vva-hl-write-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
     let session = HashlineSession::new();
-    let write = WriteTool::new(&root).with_hashline(session.clone());
+    let write = WriteTool::new(root).with_hashline(session.clone());
     let out = write
         .execute(r#"{"path":"sample","content":"a\nb\nc\n"}"#)
         .await
         .unwrap();
     let header = out.lines().nth(1).unwrap();
     assert!(header.starts_with("[sample#"), "{out}");
-    let edit = HashlineEditTool::new(&root).with_session(session);
+    let edit = HashlineEditTool::new(root).with_session(session);
     edit.execute(&input(&format!("{header}\nPUT 2.=2:\n+B\n")))
         .await
         .unwrap();
@@ -73,7 +73,6 @@ async fn write_registers_created_lines_for_edit() {
         fs::read_to_string(root.join("sample")).unwrap(),
         "a\nB\nc\n"
     );
-    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]
@@ -190,41 +189,29 @@ fn previews_cover_deletions_and_elide_large_replacements() {
 }
 
 #[test]
-fn parse_cut_shorthand_is_single_line_range() {
+fn parse_cut_shorthand_ranges_and_registers() {
+    let cut = |start, end, register: Option<&str>| Op {
+        anchor: Anchor::Range { start, end },
+        payload: Payload::Cut(register.map(Into::into)),
+    };
     let sections = parse_patch("[a.rs#ABCD]\nCUT 5\nCUT 2 @buf\nCUT 3.=7\nCUT 4*\n").unwrap();
     assert_eq!(
         sections[0].ops,
         vec![
-            Op {
-                anchor: Anchor::Range { start: 5, end: 5 },
-                payload: Payload::Cut(None),
-            },
-            Op {
-                anchor: Anchor::Range { start: 2, end: 2 },
-                payload: Payload::Cut(Some("buf".into())),
-            },
-            Op {
-                anchor: Anchor::Range { start: 3, end: 7 },
-                payload: Payload::Cut(None),
-            },
+            cut(5, 5, None),
+            cut(2, 2, Some("buf")),
+            cut(3, 7, None),
             Op {
                 anchor: Anchor::Block { line: 4 },
                 payload: Payload::Cut(None),
             },
         ]
     );
-}
-
-#[test]
-fn parse_cut_shorthand_named_register_paste() {
     let sections = parse_patch("[a.rs#ABCD]\nCUT 5 @head\nPUT 1.=2 @head\n").unwrap();
     assert_eq!(
         sections[0].ops,
         vec![
-            Op {
-                anchor: Anchor::Range { start: 5, end: 5 },
-                payload: Payload::Cut(Some("head".into())),
-            },
+            cut(5, 5, Some("head")),
             Op {
                 anchor: Anchor::Range { start: 1, end: 2 },
                 payload: Payload::Register(Some("head".into())),
@@ -234,7 +221,7 @@ fn parse_cut_shorthand_named_register_paste() {
 }
 
 #[test]
-fn parse_rejects_malformed_put_and_cut_syntax() {
+fn parse_rejects_malformed_syntax_with_guidance() {
     for input in [
         "[a.rs#ABCD]\nPUT 5:\n+x\n",
         "[a.rs#ABCD]\nPUT 5\n",
@@ -251,104 +238,142 @@ fn parse_rejects_malformed_put_and_cut_syntax() {
     ] {
         assert!(parse_patch(input).is_err(), "{input}");
     }
+    for (input, fragment) in [
+        (
+            "[a.rs#ABCD]\nCUT 2 @blk\nPUT >1 @blk\n+oops\n",
+            "register paste",
+        ),
+        ("[a.rs#ABCD]\nCUT 2 @blk\n+oops\n", "takes no body rows"),
+        ("[a.rs#????]\nPUT 1.=1:\n+x\n", "not hexadecimal"),
+        ("[a.rs#AB]\nPUT 1.=1:\n+x\n", "4 hex characters"),
+    ] {
+        let error = parse_patch(input).unwrap_err();
+        assert!(error.contains(fragment), "{error}");
+    }
+}
+
+/// 临时工作区 + 共享 hashline 会话：Read / Edit 走同一快照登记。
+struct Fx {
+    dir: tempfile::TempDir,
+    session: Arc<HashlineSession>,
+}
+
+impl Fx {
+    fn new(files: &[(&str, &str)]) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, content) in files {
+            let path = dir.path().join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+        Self {
+            dir,
+            session: HashlineSession::new(),
+        }
+    }
+
+    fn text(&self, name: &str) -> String {
+        fs::read_to_string(self.dir.path().join(name)).unwrap()
+    }
+
+    fn read_tool(&self) -> ReadTool {
+        ReadTool::new(self.dir.path())
+            .with_editor(EditorKind::Hashline)
+            .with_hashline(self.session.clone())
+    }
+
+    fn grep_tool(&self) -> GrepTool {
+        GrepTool::new(self.dir.path())
+            .with_editor(EditorKind::Hashline)
+            .with_hashline(self.session.clone())
+    }
+
+    fn edit_tool(&self) -> HashlineEditTool {
+        HashlineEditTool::new(self.dir.path()).with_session(self.session.clone())
+    }
+
+    async fn read(&self, args: &str) -> String {
+        self.read_tool().execute(args).await.unwrap()
+    }
+
+    /// Read 整个文件并返回 `[PATH#TAG]` 头。
+    async fn header(&self, path: &str) -> String {
+        let shown = self.read(&format!(r#"{{"path":"{path}"}}"#)).await;
+        shown.lines().next().unwrap().to_string()
+    }
+
+    async fn apply(&self, patch: &str) -> Result<String, String> {
+        self.edit_tool().execute(&input(patch)).await
+    }
+
+    /// 读取 `path` 取得头后应用 `ops`。
+    async fn patch(&self, path: &str, ops: &str) -> Result<String, String> {
+        let header = self.header(path).await;
+        self.apply(&format!("{header}\n{ops}")).await
+    }
 }
 
 #[tokio::test]
-async fn read_then_put_replace_and_insert() {
-    let root = std::env::temp_dir().join(format!("vva-hl-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("sample"), "alpha\nbeta\ngamma\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(&root)
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"sample"}"#).await.unwrap();
-    assert!(shown.starts_with("[sample#"));
-    assert!(shown.contains("1:alpha"));
-    let tag = shown
-        .lines()
-        .next()
-        .unwrap()
-        .trim_start_matches("[sample#")
-        .trim_end_matches(']');
-    let edit = HashlineEditTool::new(&root).with_session(session);
-    edit.execute(&input(&format!(
-        "[sample#{tag}]\nPUT 1.=1:\n+ALPHA\nPUT >2:\n+mid\nPUT 3.=3:\n+GAMMA\n+TAIL\n"
-    )))
+async fn read_then_put_replace_insert_and_blocks() {
+    let fx = Fx::new(&[
+        ("sample", "alpha\nbeta\ngamma\n"),
+        ("blk", "fn greet() {\n    hi()\n}\ncall();\n"),
+        ("doc.md", "# T\n\n## A\nold body\n\n## B\nkeep\n"),
+        (
+            "t.py",
+            "def a():\n    s = \"\"\"\ncolumn zero doc\n\"\"\"\n    return 1\n",
+        ),
+        (
+            "sample.py",
+            "def one():\n    # body comment\n    return 1\n\ndef two():\n    return 2\n\nclass Three(Base):\n    pass\n\nafter()\n",
+        ),
+    ]);
+    let shown = fx.read(r#"{"path":"sample"}"#).await;
+    assert!(shown.starts_with("[sample#") && shown.contains("1:alpha"));
+    fx.patch(
+        "sample",
+        "PUT 1.=1:\n+ALPHA\nPUT >2:\n+mid\nPUT 3.=3:\n+GAMMA\n+TAIL\n",
+    )
+    .await
+    .unwrap();
+    assert_eq!(fx.text("sample"), "ALPHA\nbeta\nmid\nGAMMA\nTAIL\n");
+
+    fx.patch("blk", "PUT 1*:\n+fn greet() {\n+    hello()\n+}\n")
+        .await
+        .unwrap();
+    assert_eq!(fx.text("blk"), "fn greet() {\n    hello()\n}\ncall();\n");
+
+    fx.patch("doc.md", "PUT 3*:\n+## A\n+new body\n")
+        .await
+        .unwrap();
+    assert_eq!(fx.text("doc.md"), "# T\n\n## A\nnew body\n\n## B\nkeep\n");
+
+    fx.patch("t.py", "PUT 1*:\n+def a():\n+    return 2\n")
+        .await
+        .unwrap();
+    assert_eq!(fx.text("t.py"), "def a():\n    return 2\n");
+
+    fx.patch(
+        "sample.py",
+        "PUT 1*:\n+def one():\n+    return 10\nCUT 5* @two\nPUT >8*:\n+inserted()\nPUT >$ @two\n",
+    )
     .await
     .unwrap();
     assert_eq!(
-        fs::read_to_string(root.join("sample")).unwrap(),
-        "ALPHA\nbeta\nmid\nGAMMA\nTAIL\n"
+        fx.text("sample.py"),
+        "def one():\n    return 10\n\n\nclass Three(Base):\n    pass\ninserted()\n\nafter()\ndef two():\n    return 2\n"
     );
-    let _ = fs::remove_dir_all(root);
 }
 
 #[tokio::test]
-async fn put_star_replaces_brace_block() {
-    let root = std::env::temp_dir().join(format!("vva-hl-block-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("sample"), "fn greet() {\n    hi()\n}\ncall();\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(&root)
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"sample"}"#).await.unwrap();
-    let tag = shown
-        .lines()
-        .next()
-        .unwrap()
-        .trim_start_matches("[sample#")
-        .trim_end_matches(']');
-    let edit = HashlineEditTool::new(&root).with_session(session);
-    edit.execute(&input(&format!(
-        "[sample#{tag}]\nPUT 1*:\n+fn greet() {{\n+    hello()\n+}}\n"
-    )))
-    .await
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.join("sample")).unwrap(),
-        "fn greet() {\n    hello()\n}\ncall();\n"
-    );
-    let _ = fs::remove_dir_all(root);
-}
-
-#[tokio::test]
-async fn cut_paste_named_register() {
-    let root = std::env::temp_dir().join(format!("vva-hl-clip-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("a"), "one\ntwo\nthree\n").unwrap();
-    fs::write(root.join("b"), "keep\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(&root)
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let a = read.execute(r#"{"path":"a"}"#).await.unwrap();
-    let b = read.execute(r#"{"path":"b"}"#).await.unwrap();
-    let tag_a = a
-        .lines()
-        .next()
-        .unwrap()
-        .trim_start_matches("[a#")
-        .trim_end_matches(']');
-    let tag_b = b
-        .lines()
-        .next()
-        .unwrap()
-        .trim_start_matches("[b#")
-        .trim_end_matches(']');
-    let edit = HashlineEditTool::new(&root).with_session(session);
-    edit.execute(&input(&format!(
-        "[a#{tag_a}]\nCUT 1.=2 @head\n[b#{tag_b}]\nPUT <1 @head\n"
-    )))
-    .await
-    .unwrap();
-    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "three\n");
-    assert_eq!(
-        fs::read_to_string(root.join("b")).unwrap(),
-        "one\ntwo\nkeep\n"
-    );
-    let _ = fs::remove_dir_all(root);
+async fn cut_paste_named_register_across_files() {
+    let fx = Fx::new(&[("a", "one\ntwo\nthree\n"), ("b", "keep\n")]);
+    let (a, b) = (fx.header("a").await, fx.header("b").await);
+    fx.apply(&format!("{a}\nCUT 1.=2 @head\n{b}\nPUT <1 @head\n"))
+        .await
+        .unwrap();
+    assert_eq!(fx.text("a"), "three\n");
+    assert_eq!(fx.text("b"), "one\ntwo\nkeep\n");
 }
 
 #[test]
@@ -377,446 +402,80 @@ fn indentation_blocks_preserve_siblings_and_separators() {
     assert!(block::resolve_block(&["def one(): pass", "def two(): pass"], 1, "a.py").is_err());
 }
 
-#[tokio::test]
-async fn python_blocks_support_replace_cut_and_insert_after() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("sample.py"),
-        "def one():\n    # body comment\n    return 1\n\ndef two():\n    return 2\n\nclass Three(Base):\n    pass\n\nafter()\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"sample.py"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!(
-        "{header}\nPUT 1*:\n+def one():\n+    return 10\nCUT 5* @two\nPUT >8*:\n+inserted()\nPUT >$ @two\n"
-    )))
-    .await
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("sample.py")).unwrap(),
-        "def one():\n    return 10\n\n\nclass Three(Base):\n    pass\ninserted()\n\nafter()\ndef two():\n    return 2\n"
-    );
-}
-
 #[test]
 fn delimiter_scan_skips_strings_and_comments() {
-    let reported = ["fn f() {", "    let s = \"}\";", "    let t = 1;", "}"];
-    assert_eq!(block::resolve_block(&reported, 1, "a.rs"), Ok((1, 4)));
-
-    let line_comment = ["fn f() {", "    // }", "    x();", "}"];
-    assert_eq!(block::resolve_block(&line_comment, 1, "a.rs"), Ok((1, 4)));
-
-    let block_comment = ["fn f() {", "    /* } */", "    x();", "}"];
-    assert_eq!(block::resolve_block(&block_comment, 1, "a.rs"), Ok((1, 4)));
-
-    let same_line_single_quote = [
-        "def f():",
-        "    s = '}'",
-        "    x = 1",
-        "",
-        "def g():",
-        "    pass",
+    type Case<'a> = (&'a [&'a str], usize, &'a str, (usize, usize));
+    let cases: [Case; 7] = [
+        (
+            &["fn f() {", "    let s = \"}\";", "    let t = 1;", "}"],
+            1,
+            "a.rs",
+            (1, 4),
+        ),
+        (
+            &["fn f() {", "    // }", "    x();", "}"],
+            1,
+            "a.rs",
+            (1, 4),
+        ),
+        (
+            &["fn f() {", "    /* } */", "    x();", "}"],
+            1,
+            "a.rs",
+            (1, 4),
+        ),
+        (
+            &[
+                "def f():",
+                "    s = '}'",
+                "    x = 1",
+                "",
+                "def g():",
+                "    pass",
+            ],
+            1,
+            "a.py",
+            (1, 3),
+        ),
+        (
+            &["fn f<'a>(x: &'a str) {", "    x;", "}"],
+            1,
+            "a.rs",
+            (1, 3),
+        ),
+        (
+            &["#[derive(Debug)]", "struct S {", "    a: u8,", "}"],
+            2,
+            "a.rs",
+            (2, 4),
+        ),
+        (
+            &[
+                "def f():",
+                "    \"\"\"",
+                "    }",
+                "    \"\"\"",
+                "    return 1",
+                "",
+                "def g():",
+                "    pass",
+            ],
+            1,
+            "a.py",
+            (1, 5),
+        ),
     ];
-    assert_eq!(
-        block::resolve_block(&same_line_single_quote, 1, "a.py"),
-        Ok((1, 3))
-    );
-
-    let lifetime = ["fn f<'a>(x: &'a str) {", "    x;", "}"];
-    assert_eq!(block::resolve_block(&lifetime, 1, "a.rs"), Ok((1, 3)));
-
-    let attribute = ["#[derive(Debug)]", "struct S {", "    a: u8,", "}"];
-    assert_eq!(block::resolve_block(&attribute, 2, "a.rs"), Ok((2, 4)));
-
-    let docstring = [
-        "def f():",
-        "    \"\"\"",
-        "    }",
-        "    \"\"\"",
-        "    return 1",
-        "",
-        "def g():",
-        "    pass",
-    ];
-    assert_eq!(block::resolve_block(&docstring, 1, "a.py"), Ok((1, 5)));
-}
-
-#[tokio::test]
-async fn multi_section_mv_to_missing_directory_changes_nothing() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("p1.rs"), "alpha\nbeta\n").unwrap();
-    fs::write(root.path().join("p2.rs"), "x\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let p1 = read.execute(r#"{"path":"p1.rs"}"#).await.unwrap();
-    let p2 = read.execute(r#"{"path":"p2.rs"}"#).await.unwrap();
-    fn header(output: &str) -> &str {
-        output.lines().next().unwrap()
+    for (lines, line, path, want) in cases {
+        assert_eq!(
+            block::resolve_block(lines, line as u32, path),
+            Ok((want.0 as u32, want.1 as u32)),
+            "{lines:?}"
+        );
     }
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!(
-            "{}\nPUT 1.=1:\n+ALPHA\n{}\nMV missing_dir/renamed.rs\n",
-            header(&p1),
-            header(&p2)
-        )))
-        .await
-        .unwrap_err();
-    assert!(error.contains("does not exist"), "{error}");
-    assert!(error.contains("no files were changed"), "{error}");
-    assert_eq!(
-        fs::read_to_string(root.path().join("p1.rs")).unwrap(),
-        "alpha\nbeta\n"
-    );
-    assert_eq!(
-        fs::read_to_string(root.path().join("p2.rs")).unwrap(),
-        "x\n"
-    );
-    assert!(!root.path().join("missing_dir").exists());
-}
-
-#[tokio::test]
-async fn mv_bare_name_renames_in_source_directory() {
-    let root = tempfile::tempdir().unwrap();
-    fs::create_dir(root.path().join("sub")).unwrap();
-    fs::write(root.path().join("sub/orig.rs"), "one\ntwo\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"sub/orig.rs"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let report = edit
-        .execute(&input(&format!(
-            "{header}\nPUT 2.=2:\n+TWO\nMV renamed.rs\n"
-        )))
-        .await
-        .unwrap();
-    assert!(report.starts_with("[sub/renamed.rs#"), "{report}");
-    assert_eq!(
-        fs::read_to_string(root.path().join("sub/renamed.rs")).unwrap(),
-        "one\nTWO\n"
-    );
-    assert!(!root.path().join("sub/orig.rs").exists());
-    assert!(!root.path().join("renamed.rs").exists());
-}
-
-#[tokio::test]
-async fn mv_numeric_tokens_are_rejected_as_line_move_misread() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("sample"), "a\nb\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"sample"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nMV 1 5\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("line numbers"), "{error}");
-    assert!(error.contains("no files were changed"), "{error}");
-    assert_eq!(
-        fs::read_to_string(root.path().join("sample")).unwrap(),
-        "a\nb\n"
-    );
-}
-
-#[tokio::test]
-async fn partial_line_continuation_unlocks_edit() {
-    let root = tempfile::tempdir().unwrap();
-    let long_line = "x".repeat(40 * 1024);
-    fs::write(root.path().join("big.txt"), format!("short\n{long_line}\n")).unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let first = read
-        .execute(r#"{"path":"big.txt","offset":2,"limit":1}"#)
-        .await
-        .unwrap();
-    let marker = first.lines().last().unwrap();
-    assert!(marker.contains("[Partial line;"), "{marker}");
-    let byte_offset = marker
-        .split("byte_offset=")
-        .nth(1)
-        .and_then(|rest| rest.split(',').next())
-        .unwrap();
-    let second = read
-        .execute(&format!(
-            r#"{{"path":"big.txt","offset":2,"limit":1,"byte_offset":{byte_offset}}}"#
-        ))
-        .await
-        .unwrap();
-    assert!(second.contains("2:"), "{second}");
-    let header = first.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!("{header}\nPUT 2.=2:\n+replaced\n")))
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("big.txt")).unwrap(),
-        "short\nreplaced\n"
-    );
-}
-
-#[tokio::test]
-async fn cold_byte_offset_read_does_not_mark_line_seen() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("lines.txt"), "short\n0123456789abcdefgh\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read
-        .execute(r#"{"path":"lines.txt","offset":2,"limit":1,"byte_offset":10}"#)
-        .await
-        .unwrap();
-    assert!(shown.contains("2:abcdefgh"), "{shown}");
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nPUT 2.=2:\n+no\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("unseen"), "{error}");
-    assert!(error.contains("no files were changed"), "{error}");
-}
-
-#[tokio::test]
-async fn out_of_range_lines_report_existence_not_unseen() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("small.txt"), "a\nb\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"small.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nPUT 99.=100:\n+z\n")))
-        .await
-        .unwrap_err();
-    assert!(
-        error.contains("line 100 does not exist (file has 2 lines)"),
-        "{error}"
-    );
-    let error = edit
-        .execute(&input(&format!("{header}\nPUT >99:\n+z\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("line 99 does not exist"), "{error}");
-}
-
-#[tokio::test]
-async fn paste_inside_cut_range_gets_guidance_and_outside_anchor_works() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("reorder.txt"),
-        "h1\n{\n    a\n    b\n}\nh2\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"reorder.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nCUT 2* @blk\nPUT >4 @blk\n")))
-        .await
-        .unwrap_err();
-    assert!(
-        error.contains("overlap") && error.contains("inside the lines removed"),
-        "{error}"
-    );
-    assert!(error.contains(">5"), "{error}");
-    assert!(error.contains("no files were changed"), "{error}");
-    edit.execute(&input(&format!("{header}\nCUT 2* @blk\nPUT >6 @blk\n")))
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("reorder.txt")).unwrap(),
-        "h1\nh2\n{\n    a\n    b\n}\n"
-    );
-}
-
-#[tokio::test]
-async fn grep_clips_huge_line_and_partial_read_unlocks_edit() {
-    use crate::tools::filesystem::GrepTool;
-
-    let root = tempfile::tempdir().unwrap();
-    let long = "y".repeat(40 * 1024);
-    fs::write(
-        root.path().join("huge.txt"),
-        format!("head\n{long}\ntail\n"),
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let grep = GrepTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let out = grep
-        .execute(r#"{"pattern":"^y+$","path":"huge.txt"}"#)
-        .await
-        .unwrap();
-    assert!(
-        out.len() <= crate::tools::MAX_INLINE_OUTPUT_BYTES,
-        "{}",
-        out.len()
-    );
-    assert!(
-        out.contains("[Partial line; continue with Read offset=2, byte_offset="),
-        "{out}"
-    );
-    let header = out.lines().next().unwrap();
-    let byte_offset = out
-        .split("byte_offset=")
-        .nth(1)
-        .and_then(|rest| rest.split(',').next())
-        .unwrap();
-
-    let edit = HashlineEditTool::new(root.path()).with_session(session.clone());
-    let error = edit
-        .execute(&input(&format!("{header}\nPUT 2.=2:\n+replaced\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("unseen"), "{error}");
-
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    read.execute(&format!(
-        r#"{{"path":"huge.txt","offset":2,"limit":1,"byte_offset":{byte_offset}}}"#
-    ))
-    .await
-    .unwrap();
-    edit.execute(&input(&format!("{header}\nPUT 2.=2:\n+replaced\n")))
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("huge.txt")).unwrap(),
-        "head\nreplaced\ntail\n"
-    );
-}
-
-#[tokio::test]
-async fn grep_registers_fully_shown_lines() {
-    use crate::tools::filesystem::GrepTool;
-
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("find.txt"), "alpha\nbeta\ngamma\n").unwrap();
-    let session = HashlineSession::new();
-    let grep = GrepTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let out = grep
-        .execute(r#"{"pattern":"beta","path":"find.txt"}"#)
-        .await
-        .unwrap();
-    assert!(out.contains("2:beta"), "{out}");
-    let header = out.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!("{header}\nPUT 2.=2:\n+BETA\n")))
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("find.txt")).unwrap(),
-        "alpha\nBETA\ngamma\n"
-    );
 }
 
 #[test]
-fn body_row_after_register_paste_reports_paste_semantics() {
-    let error = parse_patch("[a.rs#ABCD]\nCUT 2 @blk\nPUT >1 @blk\n+oops\n").unwrap_err();
-    assert!(error.contains("register paste"), "{error}");
-    let error = parse_patch("[a.rs#ABCD]\nCUT 2 @blk\n+oops\n").unwrap_err();
-    assert!(error.contains("takes no body rows"), "{error}");
-}
-
-#[tokio::test]
-async fn preview_gap_markers_match_enforcement() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("six.txt"),
-        "one\ntwo\nthree\nfour\nfive\nsix\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"six.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap().to_string();
-    let edit = HashlineEditTool::new(root.path()).with_session(session.clone());
-    let report = edit
-        .execute(&input(&format!("{header}\nPUT 1.=1:\n+ONE\n")))
-        .await
-        .unwrap();
-    assert!(
-        report.contains("[Lines 5-6 unchanged; shown earlier, editable without Read]"),
-        "{report}"
-    );
-    assert!(!report.contains("Read before editing"), "{report}");
-    let new_header = report.lines().next().unwrap();
-    edit.execute(&input(&format!("{new_header}\nPUT 6.=6:\n+SIX\n")))
-        .await
-        .unwrap();
-
-    let root2 = tempfile::tempdir().unwrap();
-    fs::write(
-        root2.path().join("six.txt"),
-        "one\ntwo\nthree\nfour\nfive\nsix\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root2.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read
-        .execute(r#"{"path":"six.txt","offset":1,"limit":2}"#)
-        .await
-        .unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root2.path()).with_session(session);
-    let report = edit
-        .execute(&input(&format!("{header}\nPUT 2.=2:\n+TWO\n")))
-        .await
-        .unwrap();
-    assert!(
-        report.contains("not displayed this session; Read before editing]"),
-        "{report}"
-    );
-    let new_header = report.lines().next().unwrap();
-    let error = edit
-        .execute(&input(&format!("{new_header}\nPUT 6.=6:\n+SIX\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("unseen"), "{error}");
-}
-
-#[test]
-fn malformed_headers_report_tag_format() {
-    let error = parse_patch("[a.rs#????]\nPUT 1.=1:\n+x\n").unwrap_err();
-    assert!(error.contains("not hexadecimal"), "{error}");
-    let error = parse_patch("[a.rs#AB]\nPUT 1.=1:\n+x\n").unwrap_err();
-    assert!(error.contains("4 hex characters"), "{error}");
-}
-
-#[test]
-fn member_line_block_error_names_enclosing_opener() {
+fn block_errors_name_enclosing_opener() {
     let yaml = ["main:", "    call a", "    call b"];
     let error = block::resolve_block(&yaml, 2, "t20").unwrap_err();
     assert!(
@@ -838,157 +497,243 @@ fn member_line_block_error_names_enclosing_opener() {
 }
 
 #[tokio::test]
-async fn markdown_section_replace_preserves_separator_blank() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("doc.md"),
-        "# T\n\n## A\nold body\n\n## B\nkeep\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"doc.md"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!("{header}\nPUT 3*:\n+## A\n+new body\n")))
+async fn mv_variants() {
+    // 多 section 中 MV 目标目录缺失：预检失败，任何文件都不变
+    let fx = Fx::new(&[
+        ("p1.rs", "alpha\nbeta\n"),
+        ("p2.rs", "x\n"),
+        ("sub/orig.rs", "one\ntwo\n"),
+        ("sample", "a\nb\n"),
+    ]);
+    let (h1, h2) = (fx.header("p1.rs").await, fx.header("p2.rs").await);
+    let error = fx
+        .apply(&format!(
+            "{h1}\nPUT 1.=1:\n+ALPHA\n{h2}\nMV missing_dir/renamed.rs\n"
+        ))
+        .await
+        .unwrap_err();
+    assert!(error.contains("does not exist"), "{error}");
+    assert!(error.contains("no files were changed"), "{error}");
+    assert_eq!(fx.text("p1.rs"), "alpha\nbeta\n");
+    assert_eq!(fx.text("p2.rs"), "x\n");
+    assert!(!fx.dir.path().join("missing_dir").exists());
+
+    // 裸文件名在源文件所在目录内改名
+    let report = fx
+        .patch("sub/orig.rs", "PUT 2.=2:\n+TWO\nMV renamed.rs\n")
         .await
         .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("doc.md")).unwrap(),
-        "# T\n\n## A\nnew body\n\n## B\nkeep\n"
+    assert!(report.starts_with("[sub/renamed.rs#"), "{report}");
+    assert_eq!(fx.text("sub/renamed.rs"), "one\nTWO\n");
+    assert!(!fx.dir.path().join("sub/orig.rs").exists());
+    assert!(!fx.dir.path().join("renamed.rs").exists());
+
+    // 纯数字被视为行号误用；<dest> 包装被拒绝并提示
+    let error = fx.patch("sample", "MV 1 5\n").await.unwrap_err();
+    assert!(error.contains("line numbers"), "{error}");
+    assert!(error.contains("no files were changed"), "{error}");
+    assert_eq!(fx.text("sample"), "a\nb\n");
+    let error = fx.patch("sample", "MV <renamed.txt\n").await.unwrap_err();
+    assert!(error.contains("must not start with '<'"), "{error}");
+    assert!(error.contains("MV renamed.txt"), "{error}");
+    assert!(!fx.dir.path().join("<renamed.txt").exists());
+}
+
+#[tokio::test]
+async fn partial_line_continuation_unlocks_edit() {
+    let long_line = "x".repeat(40 * 1024);
+    let fx = Fx::new(&[("big.txt", &format!("short\n{long_line}\n"))]);
+    let first = fx.read(r#"{"path":"big.txt","offset":2,"limit":1}"#).await;
+    let marker = first.lines().last().unwrap();
+    assert!(marker.contains("[Partial line;"), "{marker}");
+    let byte_offset = marker
+        .split("byte_offset=")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap();
+    let second = fx
+        .read(&format!(
+            r#"{{"path":"big.txt","offset":2,"limit":1,"byte_offset":{byte_offset}}}"#
+        ))
+        .await;
+    assert!(second.contains("2:"), "{second}");
+    let header = first.lines().next().unwrap();
+    fx.apply(&format!("{header}\nPUT 2.=2:\n+replaced\n"))
+        .await
+        .unwrap();
+    assert_eq!(fx.text("big.txt"), "short\nreplaced\n");
+}
+
+#[tokio::test]
+async fn unseen_and_out_of_range_lines_are_reported() {
+    let fx = Fx::new(&[
+        ("lines.txt", "short\n0123456789abcdefgh\n"),
+        ("small.txt", "a\nb\n"),
+    ]);
+    // 冷 byte_offset 读取不把整行计为已见
+    let shown = fx
+        .read(r#"{"path":"lines.txt","offset":2,"limit":1,"byte_offset":10}"#)
+        .await;
+    assert!(shown.contains("2:abcdefgh"), "{shown}");
+    let header = shown.lines().next().unwrap();
+    let error = fx
+        .apply(&format!("{header}\nPUT 2.=2:\n+no\n"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("unseen"), "{error}");
+    assert!(error.contains("no files were changed"), "{error}");
+
+    // 越界行号报不存在而非 unseen
+    let error = fx
+        .patch("small.txt", "PUT 99.=100:\n+z\n")
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("line 100 does not exist (file has 2 lines)"),
+        "{error}"
     );
+    let error = fx.patch("small.txt", "PUT >99:\n+z\n").await.unwrap_err();
+    assert!(error.contains("line 99 does not exist"), "{error}");
+
+    // 空寄存器报错点名寄存器
+    let error = fx.patch("small.txt", "PUT >2 @cap\n").await.unwrap_err();
+    assert!(error.contains("register @cap is empty"), "{error}");
+}
+
+#[tokio::test]
+async fn paste_inside_cut_range_gets_guidance_and_outside_anchor_works() {
+    let fx = Fx::new(&[("reorder.txt", "h1\n{\n    a\n    b\n}\nh2\n")]);
+    let header = fx.header("reorder.txt").await;
+    let error = fx
+        .apply(&format!("{header}\nCUT 2* @blk\nPUT >4 @blk\n"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("overlap") && error.contains("inside the lines removed"),
+        "{error}"
+    );
+    assert!(error.contains(">5"), "{error}");
+    assert!(error.contains("no files were changed"), "{error}");
+    fx.apply(&format!("{header}\nCUT 2* @blk\nPUT >6 @blk\n"))
+        .await
+        .unwrap();
+    assert_eq!(fx.text("reorder.txt"), "h1\nh2\n{\n    a\n    b\n}\n");
+}
+
+#[tokio::test]
+async fn grep_clips_huge_line_and_partial_read_unlocks_edit() {
+    let long = "y".repeat(40 * 1024);
+    let fx = Fx::new(&[("huge.txt", &format!("head\n{long}\ntail\n"))]);
+    let out = fx
+        .grep_tool()
+        .execute(r#"{"pattern":"^y+$","path":"huge.txt"}"#)
+        .await
+        .unwrap();
+    assert!(
+        out.len() <= crate::tools::MAX_INLINE_OUTPUT_BYTES,
+        "{}",
+        out.len()
+    );
+    assert!(
+        out.contains("[Partial line; continue with Read offset=2, byte_offset="),
+        "{out}"
+    );
+    let header = out.lines().next().unwrap();
+    let byte_offset = out
+        .split("byte_offset=")
+        .nth(1)
+        .and_then(|rest| rest.split(',').next())
+        .unwrap();
+
+    let patch = format!("{header}\nPUT 2.=2:\n+replaced\n");
+    assert!(fx.apply(&patch).await.unwrap_err().contains("unseen"));
+    fx.read(&format!(
+        r#"{{"path":"huge.txt","offset":2,"limit":1,"byte_offset":{byte_offset}}}"#
+    ))
+    .await;
+    fx.apply(&patch).await.unwrap();
+    assert_eq!(fx.text("huge.txt"), "head\nreplaced\ntail\n");
+}
+
+#[tokio::test]
+async fn grep_registers_fully_shown_lines() {
+    let fx = Fx::new(&[("find.txt", "alpha\nbeta\ngamma\n")]);
+    let out = fx
+        .grep_tool()
+        .execute(r#"{"pattern":"beta","path":"find.txt"}"#)
+        .await
+        .unwrap();
+    assert!(out.contains("2:beta"), "{out}");
+    let header = out.lines().next().unwrap();
+    fx.apply(&format!("{header}\nPUT 2.=2:\n+BETA\n"))
+        .await
+        .unwrap();
+    assert_eq!(fx.text("find.txt"), "alpha\nBETA\ngamma\n");
+}
+
+#[tokio::test]
+async fn preview_gap_markers_match_enforcement() {
+    let six = "one\ntwo\nthree\nfour\nfive\nsix\n";
+    let fx = Fx::new(&[("six.txt", six)]);
+    let report = fx.patch("six.txt", "PUT 1.=1:\n+ONE\n").await.unwrap();
+    assert!(
+        report.contains("[Lines 5-6 unchanged; shown earlier, editable without Read]"),
+        "{report}"
+    );
+    assert!(!report.contains("Read before editing"), "{report}");
+    let new_header = report.lines().next().unwrap();
+    fx.apply(&format!("{new_header}\nPUT 6.=6:\n+SIX\n"))
+        .await
+        .unwrap();
+
+    let fx = Fx::new(&[("six.txt", six)]);
+    let shown = fx.read(r#"{"path":"six.txt","offset":1,"limit":2}"#).await;
+    let header = shown.lines().next().unwrap();
+    let report = fx
+        .apply(&format!("{header}\nPUT 2.=2:\n+TWO\n"))
+        .await
+        .unwrap();
+    assert!(
+        report.contains("not displayed this session; Read before editing]"),
+        "{report}"
+    );
+    let new_header = report.lines().next().unwrap();
+    let error = fx
+        .apply(&format!("{new_header}\nPUT 6.=6:\n+SIX\n"))
+        .await
+        .unwrap_err();
+    assert!(error.contains("unseen"), "{error}");
 }
 
 #[tokio::test]
 async fn append_to_empty_file_adds_trailing_newline() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("empty.txt"), "").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"empty.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!("{header}\nPUT >$:\n+first\n")))
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("empty.txt")).unwrap(),
-        "first\n"
-    );
-}
-
-#[tokio::test]
-async fn docstring_at_column_zero_stays_inside_block() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("t.py"),
-        "def a():\n    s = \"\"\"\ncolumn zero doc\n\"\"\"\n    return 1\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"t.py"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!(
-        "{header}\nPUT 1*:\n+def a():\n+    return 2\n"
-    )))
-    .await
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("t.py")).unwrap(),
-        "def a():\n    return 2\n"
-    );
+    let fx = Fx::new(&[("empty.txt", "")]);
+    fx.patch("empty.txt", "PUT >$:\n+first\n").await.unwrap();
+    assert_eq!(fx.text("empty.txt"), "first\n");
 }
 
 #[tokio::test]
 async fn bom_survives_line_one_replacement() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("bom.txt"), "\u{feff}first\nsecond\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"bom.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!("{header}\nPUT 1.=1:\n+FIRST\n")))
-        .await
-        .unwrap();
-    let disk = fs::read(root.path().join("bom.txt")).unwrap();
-    assert_eq!(&disk[..3], [0xef, 0xbb, 0xbf]);
-    assert_eq!(
-        String::from_utf8_lossy(&disk[3..]).to_string(),
-        "FIRST\nsecond\n"
-    );
-}
-
-#[tokio::test]
-async fn mv_angle_bracket_dest_rejected_but_wrapped_placeholder_unwrapped() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("src.txt"), "x\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"src.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nMV <renamed.txt\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("must not start with '<'"), "{error}");
-    assert!(error.contains("MV renamed.txt"), "{error}");
-    assert!(!root.path().join("<renamed.txt").exists());
+    let fx = Fx::new(&[("bom.txt", "\u{feff}first\nsecond\n")]);
+    fx.patch("bom.txt", "PUT 1.=1:\n+FIRST\n").await.unwrap();
+    assert_eq!(fx.text("bom.txt"), "\u{feff}FIRST\nsecond\n");
 }
 
 #[tokio::test]
 async fn stale_tag_printed_in_error_is_reusable() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("st.txt"), "a\nb\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"st.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    fs::write(root.path().join("st.txt"), "a\nb\nEXTERNAL\n").unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nPUT 1.=1:\n+A\n")))
+    let fx = Fx::new(&[("st.txt", "a\nb\n")]);
+    let header = fx.header("st.txt").await;
+    fs::write(fx.dir.path().join("st.txt"), "a\nb\nEXTERNAL\n").unwrap();
+    let error = fx
+        .apply(&format!("{header}\nPUT 1.=1:\n+A\n"))
         .await
         .unwrap_err();
     assert!(error.contains("stale"), "{error}");
     let tag = error.split("(now [st.txt#").nth(1).unwrap()[..4].to_string();
-    let error = edit
-        .execute(&input(&format!("[st.txt#{tag}]\nPUT 1.=1:\n+A\n")))
+    let error = fx
+        .apply(&format!("[st.txt#{tag}]\nPUT 1.=1:\n+A\n"))
         .await
         .unwrap_err();
     assert!(error.contains("unseen"), "{error}");
     assert!(!error.contains("not registered"), "{error}");
-}
-
-#[tokio::test]
-async fn empty_register_error_names_the_register() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(root.path().join("r.txt"), "a\nb\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"r.txt"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    let error = edit
-        .execute(&input(&format!("{header}\nPUT >2 @cap\n")))
-        .await
-        .unwrap_err();
-    assert!(error.contains("register @cap is empty"), "{error}");
 }
