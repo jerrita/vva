@@ -8,7 +8,7 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use super::Tool;
-use super::filesystem::parse_args;
+use super::parse_args;
 
 /// 单条命令的执行超时
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
@@ -68,14 +68,7 @@ impl Tool for ShellTool {
     }
 
     async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
-        match self.run(&call.arguments).await {
-            Ok((text, task_id)) => {
-                let mut result = crate::model::ToolResult::success(&call.id, text);
-                result.background_task_id = task_id;
-                result
-            }
-            Err(error) => crate::model::ToolResult::error(&call.id, error),
-        }
+        super::result_with_task(call, self.run(&call.arguments).await)
     }
 }
 

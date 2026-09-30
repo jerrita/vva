@@ -13,7 +13,7 @@ use serde::Deserialize;
 use super::{Tool, TruncateSide, truncate_utf8};
 use crate::agents::AgentDef;
 use crate::model::Session;
-use crate::tools::filesystem::parse_args;
+use crate::tools::parse_args;
 
 /// 派生上下文：父会话的定位与模型绑定信息
 pub struct SubagentContext {
@@ -174,14 +174,7 @@ impl Tool for AgentTool {
     }
 
     async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
-        match self.run(&call.arguments).await {
-            Ok((text, task_id)) => {
-                let mut result = crate::model::ToolResult::success(&call.id, text);
-                result.background_task_id = task_id;
-                result
-            }
-            Err(error) => crate::model::ToolResult::error(&call.id, error),
-        }
+        super::result_with_task(call, self.run(&call.arguments).await)
     }
 }
 

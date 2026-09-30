@@ -46,6 +46,29 @@ impl Default for WorkspaceToolDeps {
     }
 }
 
+/// 工具入参统一解析：JSON 失败时携带工具名报错。
+pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(
+    arguments: &str,
+    tool: &str,
+) -> Result<T, String> {
+    serde_json::from_str(arguments)
+        .map_err(|error| format!("Invalid arguments for {tool}: {error}"))
+}
+
+/// 后台派生类工具（Shell / Agent）的结果：成功时携带被派生的后台任务 id。
+pub(crate) fn result_with_task(
+    call: &ToolCall,
+    outcome: Result<(String, Option<String>), String>,
+) -> ToolResult {
+    match outcome {
+        Ok((text, task_id)) => ToolResult {
+            background_task_id: task_id,
+            ..ToolResult::success(&call.id, text)
+        },
+        Err(error) => ToolResult::error(&call.id, error),
+    }
+}
+
 pub const MAX_INLINE_OUTPUT_BYTES: usize = 32 * 1024;
 
 /// 工具输出的内联预算：为包装文案预留的余量。
@@ -94,11 +117,6 @@ impl ToolRegistry {
             tool_outputs: None,
             server_tools: HashSet::new(),
         }
-    }
-
-    /// 注册工作空间默认工具集（hashline 编辑协议）。
-    pub fn with_workspace_defaults(workspace: &Path, tool_outputs: Option<PathBuf>) -> Self {
-        Self::with_editor(workspace, tool_outputs, EditorKind::Hashline)
     }
 
     /// 按会话绑定的编辑协议注册 Read / Write 与对应编辑工具。

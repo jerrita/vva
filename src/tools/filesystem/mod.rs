@@ -32,15 +32,6 @@ const GLOB_OPTIONS: MatchOptions = MatchOptions {
     require_literal_leading_dot: false,
 };
 
-/// 工具入参统一解析：JSON 失败时携带工具名报错。
-pub(super) fn parse_args<T: serde::de::DeserializeOwned>(
-    arguments: &str,
-    tool: &str,
-) -> Result<T, String> {
-    serde_json::from_str(arguments)
-        .map_err(|error| format!("Invalid arguments for {tool}: {error}"))
-}
-
 /// 逐行累加的字节偏移表（首元素为 0）：Edit diff 与 hashline 快照共用的行窗口定位。
 pub(crate) fn line_offsets(text: &str) -> Vec<usize> {
     let mut offsets = vec![0];

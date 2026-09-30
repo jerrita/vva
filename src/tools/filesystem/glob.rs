@@ -1,10 +1,10 @@
 //! Glob 工具：模式文件枚举。
 
-use super::parse_args;
 use super::{
     MAX_RESULTS, Tool, collect_files, matches_any, parse_glob_patterns, relative_to, resolve_path,
     sort_by_mtime,
 };
+use crate::tools::parse_args;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::PathBuf;

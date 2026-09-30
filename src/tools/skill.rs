@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::filesystem::parse_args;
+use super::parse_args;
 use crate::skills::Skill;
 
 /// Skill 工具：渐进披露第二层，按 name 加载技能的 SKILL.md 全文指令。

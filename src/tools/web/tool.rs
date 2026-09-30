@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use super::{WebFetchProvider, WebSearchProvider};
 use crate::tools::Tool;
-use crate::tools::filesystem::parse_args;
+use crate::tools::parse_args;
 
 const DEFAULT_MAX_RESULTS: usize = 5;
 const MAX_RESULTS_CAP: usize = 20;
