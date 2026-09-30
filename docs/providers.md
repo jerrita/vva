@@ -93,7 +93,7 @@ pub trait Provider: Send + Sync {
 
 ## 4. Google Gemini API 适配器
 
-代码位置：[`src/provider/gemini.rs`](../src/provider/gemini.rs)
+代码位置：[`src/provider/gemini/`](../src/provider/gemini/)
 
 ### 4.1 原生 Google Search Grounding 投影
 - 原生启用 `tools: [{ "google_search": {} }]`；

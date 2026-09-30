@@ -8,19 +8,13 @@ mod tests;
 
 use async_trait::async_trait;
 
+use super::common::normalize_endpoint;
 use super::{CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse};
 use crate::event::AgentEvent;
 use crate::model::{Session, ToolDefinition};
 use crate::provider::http::{post_json, post_sse};
 use stream::ResponseStreamHandler;
 use tokio::sync::mpsc;
-
-/// 将当前亲和组写入轮次元数据：回放时据此判定原生状态可否复用
-fn stamp_scope(response: &mut ProviderResponse, scope: Option<String>) {
-    if let Some(meta) = response.meta.response.as_mut() {
-        meta.scope = scope;
-    }
-}
 
 /// OpenAI Responses API 适配器：previous_response_id 链式继承 + 原生搜索。
 pub struct ResponseProvider {
@@ -63,13 +57,13 @@ impl Provider for ResponseProvider {
     ) -> Result<ProviderResponse, ProviderError> {
         let body = self.build_request_body(session, tools, options)?;
         let response = post_json(
-            &self.normalized_endpoint(),
+            &normalize_endpoint(&self.base_url, "responses"),
             self.build_auth_headers()?,
             &body,
         )
         .await?;
         let mut parsed = self.parse_response(response)?;
-        stamp_scope(&mut parsed, options.affinity.clone());
+        parsed.stamp_scope(options.affinity.as_deref());
         Ok(parsed)
     }
 
@@ -85,7 +79,7 @@ impl Provider for ResponseProvider {
 
         let mut handler = ResponseStreamHandler::new(self, event_sender);
         let termination = post_sse(
-            &self.normalized_endpoint(),
+            &normalize_endpoint(&self.base_url, "responses"),
             self.build_auth_headers()?,
             &body,
             &mut handler,
@@ -93,7 +87,7 @@ impl Provider for ResponseProvider {
         .await?;
 
         if let Some(completed) = handler.completed.as_mut() {
-            stamp_scope(completed, options.affinity.clone());
+            completed.stamp_scope(options.affinity.as_deref());
         }
         handler.completed.ok_or_else(|| {
             let response_id = handler.response_id.as_deref().unwrap_or("unknown");

@@ -6,7 +6,7 @@ use crate::config::ProviderType;
 use crate::model::{
     ContentPart, MediaKind, MediaSource, Role, Session, ToolDefinition, WebSearchAction,
 };
-use crate::provider::common::{WebCallSurface, web_call_surface};
+use crate::provider::common::{WebCallSurface, header_value, web_call_surface};
 use crate::provider::{CompletionOptions, Provider, ProviderError};
 
 /// 领域动作 → Responses API web_search_call.action
@@ -21,20 +21,12 @@ fn web_search_action_json(action: &WebSearchAction, query: &str) -> serde_json::
 }
 
 impl ResponseProvider {
-    /// 规范化请求端点：base_url 无论是否携带 /responses 后缀，均收敛到唯一端点
-    pub(super) fn normalized_endpoint(&self) -> String {
-        let base = self.base_url.trim_end_matches('/');
-        let base = base.strip_suffix("/responses").unwrap_or(base);
-        format!("{base}/responses")
-    }
-
     /// Bearer 鉴权与 JSON Content-Type 头
     pub(super) fn build_auth_headers(&self) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .map_err(|e| ProviderError::Protocol(e.to_string()))?,
+            header_value(&format!("Bearer {}", self.api_key))?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         Ok(headers)

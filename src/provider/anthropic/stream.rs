@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use super::parse::{
     AnthropicUsageSnapshot, project_annotation, project_fetch_call, project_search_call,
 };
+use crate::event::AgentEvent;
 use crate::model::{
     AnthropicCitation, AnthropicContentBlock, AnthropicFetchResultContent,
     AnthropicSearchResultContent,
@@ -14,16 +16,24 @@ use crate::provider::common::{
     EventForwarder, from_value, require_str, require_u64, require_value,
 };
 use crate::provider::http::SseEventHandler;
+#[derive(Default)]
 pub(super) struct AnthropicStreamHandler {
-    pub(super) blocks: Vec<AnthropicContentBlock>,
+    blocks: Vec<AnthropicContentBlock>,
     /// tool_use / server_tool_use 的增量输入 JSON：官方规范以 input_json_delta 流式下发，
     /// 完整 JSON 由 finish 统一解析回填；server tool 结果块到达时提前解析配对
-    pub(super) partial_inputs: HashMap<usize, String>,
-    pub(super) usage: AnthropicUsageSnapshot,
-    pub(super) forwarder: EventForwarder,
+    partial_inputs: HashMap<usize, String>,
+    usage: AnthropicUsageSnapshot,
+    forwarder: EventForwarder,
 }
 
 impl AnthropicStreamHandler {
+    pub(super) fn new(sender: Option<mpsc::Sender<AgentEvent>>) -> Self {
+        Self {
+            forwarder: EventForwarder::new(sender),
+            ..Default::default()
+        }
+    }
+
     /// 保证 blocks 至少有 `len` 个槽位，不足处以空 Text 块占位
     fn ensure_block_slots(&mut self, len: usize) {
         while self.blocks.len() < len {

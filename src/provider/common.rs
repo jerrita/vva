@@ -3,6 +3,7 @@
 //! 本模块只承载与厂商无关的机械逻辑（各适配器逐行同构的部分），
 //! 不包含任何字段别名猜测或协议兜底——厂商专属语义留在各自适配器中。
 
+use reqwest::header::HeaderValue;
 use tokio::sync::mpsc;
 
 use super::{CompletionOptions, ProviderError};
@@ -22,7 +23,7 @@ impl EventForwarder {
     }
 
     /// 有订阅者时按背压语义转发（通道关闭视为无订阅者，忽略）
-    async fn send(&self, event: AgentEvent) {
+    pub async fn send(&self, event: AgentEvent) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(event).await;
         }
@@ -59,6 +60,18 @@ impl EventForwarder {
     pub async fn notice(&self, text: impl Into<String>) {
         self.send(AgentEvent::Notice(text.into())).await;
     }
+}
+
+/// 规范化请求端点：base_url 无论是否携带 `/{suffix}` 后缀，均收敛到唯一端点
+pub fn normalize_endpoint(base_url: &str, suffix: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    let base = base.strip_suffix(&format!("/{suffix}")).unwrap_or(base);
+    format!("{base}/{suffix}")
+}
+
+/// API key 转 Header 值：含非法字符即协议错误
+pub fn header_value(value: &str) -> Result<HeaderValue, ProviderError> {
+    HeaderValue::from_str(value).map_err(|e| ProviderError::Protocol(e.to_string()))
 }
 
 /// 严格读取必填 u64 字段：缺失或类型不符直接报协议错误
