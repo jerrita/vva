@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { RelatedFile } from '../types'
 import { TreeNode } from './file/TreeNode'
 import { FilePreview } from './file/FilePreview'
@@ -41,17 +41,10 @@ export function FileSidebar({
     if (!treeFilter.trim()) return null
     const query = treeFilter.toLowerCase().trim()
     const all = new Map<string, typeof rootEntries[number]>()
-    for (const e of rootEntries) {
+    for (const e of [...rootEntries, ...Object.values(dirChildren).flat()]) {
       all.set(e.path, e)
     }
-    for (const children of Object.values(dirChildren)) {
-      for (const e of children) {
-        all.set(e.path, e)
-      }
-    }
-    const matches = (name: string, path: string) =>
-      name.toLowerCase().includes(query) || path.toLowerCase().includes(query)
-    return [...all.values()].filter(e => matches(e.name, e.path))
+    return [...all.values()].filter(e => matchesFilter(e, query))
   }, [rootEntries, dirChildren, treeFilter])
 
   const filteredFiles = useMemo(() => {
@@ -100,10 +93,11 @@ export function FileSidebar({
                 </div>
               ) : (
                 filteredTreeEntries.map(file => (
-                  <button
+                  <FileItem
                     key={file.path}
-                    type="button"
-                    className={`file-item${file.path === activePath ? ' active' : ''}`}
+                    file={file}
+                    active={file.path === activePath}
+                    icon={file.is_dir ? <IconFolderClosed size={16} /> : <IconFile size={16} />}
                     onClick={() => {
                       if (file.is_dir) {
                         tree.expandDir(file.path)
@@ -112,19 +106,9 @@ export function FileSidebar({
                         onSelectPath(file.path)
                       }
                     }}
-                    title={file.path}
                   >
-                    <div className="file-item-icon">
-                      {file.is_dir ? <IconFolderClosed size={16} /> : <IconFile size={16} />}
-                    </div>
-                    <div className="file-item-text">
-                      <span className="file-item-name">{file.name}</span>
-                      {parentDir(file.path) && (
-                        <span className="file-item-dir">{parentDir(file.path)}</span>
-                      )}
-                    </div>
                     {!file.is_dir && <span className="file-tree-size">{fmtBytes(file.size)}</span>}
-                  </button>
+                  </FileItem>
                 ))
               )
             ) : rootEntries.length === 0 ? (
@@ -181,22 +165,13 @@ export function FileSidebar({
             </div>
           ) : (
             filteredFiles.map(file => (
-              <button
+              <FileItem
                 key={file.path}
-                type="button"
-                className={`file-item${file.path === activePath ? ' active' : ''}`}
+                file={file}
+                active={file.path === activePath}
+                icon={<IconFile size={16} />}
                 onClick={() => onSelectPath(file.path)}
-                title={file.path}
               >
-                <div className="file-item-icon">
-                  <IconFile size={16} />
-                </div>
-                <div className="file-item-text">
-                  <span className="file-item-name">{file.name}</span>
-                  {parentDir(file.path) && (
-                    <span className="file-item-dir">{parentDir(file.path)}</span>
-                  )}
-                </div>
                 <div className="file-item-badges">
                   {file.actions.map(action => (
                     <span key={action} className={`file-badge file-badge-${action}`}>
@@ -204,7 +179,7 @@ export function FileSidebar({
                     </span>
                   ))}
                 </div>
-              </button>
+              </FileItem>
             ))
           )}
         </div>
@@ -221,7 +196,7 @@ export function FileSidebar({
       aria-hidden={!open}
     >
       {/* 左侧：文件代码预览区（处于双栏模式或单独预览模式时展示） */}
-      {(isDualPane || (activePath && !isDualPane)) && (
+      {(isDualPane || activePath) && (
         <FilePreview
           sessionId={sessionId}
           workspace={workspace}
@@ -276,6 +251,38 @@ export function FileSidebar({
   )
 }
 
-function matchesFilter(file: RelatedFile, query: string): boolean {
+function matchesFilter(file: { name: string; path: string }, query: string): boolean {
   return file.name.toLowerCase().includes(query) || file.path.toLowerCase().includes(query)
+}
+
+/** 文件列表条目：图标 + 名称/父目录 + 尾部附加内容（大小 / 变动徽标） */
+function FileItem({
+  file,
+  active,
+  icon,
+  onClick,
+  children,
+}: {
+  file: { name: string; path: string }
+  active: boolean
+  icon: ReactNode
+  onClick: () => void
+  children?: ReactNode
+}) {
+  const dir = parentDir(file.path)
+  return (
+    <button
+      type="button"
+      className={`file-item${active ? ' active' : ''}`}
+      onClick={onClick}
+      title={file.path}
+    >
+      <div className="file-item-icon">{icon}</div>
+      <div className="file-item-text">
+        <span className="file-item-name">{file.name}</span>
+        {dir && <span className="file-item-dir">{dir}</span>}
+      </div>
+      {children}
+    </button>
+  )
 }

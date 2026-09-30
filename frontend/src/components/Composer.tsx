@@ -45,6 +45,11 @@ export function Composer({
       ? skills.filter(skill => skill.name.toLowerCase().startsWith(query.slice(1).toLowerCase()))
       : []
   const paletteOpen = skillMatches.length > 0 && !paletteClosed
+  const hasContent = text.trim() !== '' || files.length > 0 || uploadedFiles.length > 0
+  const resetPalette = () => {
+    setSkillIndex(0)
+    setPaletteClosed(false)
+  }
   const activeSkill = Math.min(skillIndex, Math.max(0, skillMatches.length - 1))
 
   useEffect(() => {
@@ -67,8 +72,7 @@ export function Composer({
   useImperativeHandle(ref, () => ({
     set: (value: string) => {
       setText(value)
-      setSkillIndex(0)
-      setPaletteClosed(false)
+      resetPalette()
       requestAnimationFrame(resize)
       textareaRef.current?.focus()
     },
@@ -140,16 +144,14 @@ export function Composer({
   }
 
   const send = () => {
-    const trimmed = text.trim()
-    if ((!trimmed && files.length === 0 && uploadedFiles.length === 0) || running || uploading > 0) return
-    const prompt = [trimmed, ...uploadedFiles.map(file => `文件已保存到 scratch：${file.path}`)]
+    if (!hasContent || running || uploading > 0) return
+    const prompt = [text.trim(), ...uploadedFiles.map(file => `文件已保存到 scratch：${file.path}`)]
       .filter(Boolean).join('\n\n')
     onSend(prompt, files)
     setText('')
     setFiles([])
     setUploadedFiles([])
-    setSkillIndex(0)
-    setPaletteClosed(false)
+    resetPalette()
     requestAnimationFrame(resize)
   }
 
@@ -262,8 +264,7 @@ export function Composer({
         placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
-          setSkillIndex(0)
-          setPaletteClosed(false)
+          resetPalette()
           resize()
         }}
         onKeyDown={onKeyDown}
@@ -292,7 +293,7 @@ export function Composer({
             <IconStop size={15} />
           </button>
         ) : (
-          <button className="send-button" onClick={send} disabled={(!text.trim() && files.length === 0 && uploadedFiles.length === 0) || uploading > 0} title="发送" aria-label="发送">
+          <button className="send-button" onClick={send} disabled={!hasContent || uploading > 0} title="发送" aria-label="发送">
             <IconArrowUp size={17} />
           </button>
         )}

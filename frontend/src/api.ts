@@ -31,6 +31,13 @@ export interface ConfigureBody {
   search?: boolean
 }
 
+/** 工作区文件查询串：workspace 缺省时由服务端回退默认目录 */
+function fsQuery(path: string, workspace?: string): string {
+  const params = new URLSearchParams({ path })
+  if (workspace) params.set('workspace', workspace)
+  return params.toString()
+}
+
 export const api = {
   models: () => request<ModelsResponse>('/api/models'),
   skills: () => request<SkillsResponse>('/api/skills'),
@@ -80,18 +87,12 @@ export const api = {
     return request<FsEntriesResponse>(`/api/fs/entries${qs ? `?${qs}` : ''}`)
   },
   /** 读取指定工作区文件内容 */
-  fsFile: (path: string, workspace?: string) => {
-    const params = new URLSearchParams({ path })
-    if (workspace) params.set('workspace', workspace)
-    return request<SessionFileResponse>(`/api/fs/file?${params.toString()}`)
-  },
+  fsFile: (path: string, workspace?: string) =>
+    request<SessionFileResponse>(`/api/fs/file?${fsQuery(path, workspace)}`),
   sessionFileDownloadUrl: (id: string, path: string) =>
     `/api/sessions/${encodeURIComponent(id)}/download?path=${encodeURIComponent(path)}`,
-  fsFileDownloadUrl: (path: string, workspace?: string) => {
-    const params = new URLSearchParams({ path })
-    if (workspace) params.set('workspace', workspace)
-    return `/api/fs/download?${params.toString()}`
-  },
+  fsFileDownloadUrl: (path: string, workspace?: string) =>
+    `/api/fs/download?${fsQuery(path, workspace)}`,
   /** 全局配置文件原文（JSONC）；文件不存在时 content 为 null */
   getConfig: () => request<{ path: string; content: string | null }>('/api/config'),
   /** 保存全局配置：后端校验解析通过后落盘并热重载 */
