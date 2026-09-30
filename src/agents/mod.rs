@@ -108,14 +108,7 @@ pub fn parse_agent_file(path: &Path) -> Result<AgentDef, String> {
         .map_err(|error| format!("Invalid agent definition {}: {error}", path.display()))?;
     let name = file.name.unwrap_or_else(|| stem.to_string());
     validate_name(&name, stem)?;
-    if file.description.trim().is_empty() {
-        return Err(format!("Agent '{name}' has an empty description"));
-    }
-    if file.description.chars().count() > 1024 {
-        return Err(format!(
-            "Agent '{name}' description exceeds 1024 characters"
-        ));
-    }
+    crate::discover::validate_description(&file.description, "agent", &name)?;
     if file.tools.is_empty() {
         return Err(format!("Agent '{name}' must allow at least one tool"));
     }

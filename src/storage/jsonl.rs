@@ -28,12 +28,7 @@ pub fn project_key(workspace: &Path) -> String {
     let mut key = String::new();
     for ch in resolved.to_string_lossy().chars() {
         match ch {
-            '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' => {
-                if !key.ends_with('-') {
-                    key.push('-');
-                }
-            }
-            c if c.is_control() => {
+            c if c.is_control() || "/\\:<>\"|?*".contains(c) => {
                 if !key.ends_with('-') {
                     key.push('-');
                 }

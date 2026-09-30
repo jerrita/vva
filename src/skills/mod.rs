@@ -95,18 +95,7 @@ pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
         .map_err(|error| format!("Invalid SKILL.md frontmatter: {error}"))?;
 
     validate_name(&frontmatter.name, dir_name)?;
-    if frontmatter.description.trim().is_empty() {
-        return Err(format!(
-            "Skill '{}' has an empty description",
-            frontmatter.name
-        ));
-    }
-    if frontmatter.description.chars().count() > 1024 {
-        return Err(format!(
-            "Skill '{}' description exceeds 1024 characters",
-            frontmatter.name
-        ));
-    }
+    crate::discover::validate_description(&frontmatter.description, "skill", &frontmatter.name)?;
     if frontmatter
         .compatibility
         .as_deref()
@@ -132,12 +121,12 @@ pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
 }
 
 /// 全局技能目录（优先级升序）：~/.agents > ~/.vva
-pub fn global_skills_dirs() -> Vec<PathBuf> {
+fn global_skills_dirs() -> Vec<PathBuf> {
     crate::discover::global_dirs("skills")
 }
 
 /// 项目技能目录（优先级升序）：.agents > .vva
-pub fn project_skills_dirs(workspace: &Path) -> [PathBuf; 2] {
+fn project_skills_dirs(workspace: &Path) -> [PathBuf; 2] {
     crate::discover::project_dirs(workspace, "skills")
 }
 

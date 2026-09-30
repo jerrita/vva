@@ -62,18 +62,13 @@ pub struct AppConfig {
 impl AppConfig {
     /// 合并配置：以 self 为基础（全局配置），叠加 project（项目配置），项目配置优先级高于全局配置
     pub fn merge(mut self, project: AppConfig) -> Self {
-        if !project.settings.default.is_empty() {
-            self.settings.default = project.settings.default;
+        let (base, over) = (&mut self.settings, project.settings);
+        if !over.default.is_empty() {
+            base.default = over.default;
         }
-        if project.settings.small_model.is_some() {
-            self.settings.small_model = project.settings.small_model;
-        }
-        if project.settings.editor.is_some() {
-            self.settings.editor = project.settings.editor;
-        }
-        if project.settings.web.is_some() {
-            self.settings.web = project.settings.web;
-        }
+        base.small_model = over.small_model.or(base.small_model.take());
+        base.editor = over.editor.or(base.editor);
+        base.web = over.web.or(base.web.take());
 
         for (p_id, p_cfg) in project.providers {
             self.providers.entry(p_id).or_default().merge(p_cfg);
@@ -237,9 +232,7 @@ pub struct ProviderConfig {
 impl ProviderConfig {
     /// 项目配置中已声明的协议、非空连接参数与同名模型覆盖全局配置。
     fn merge(&mut self, project: Self) {
-        if let Some(provider_type) = project.provider_type {
-            self.provider_type = Some(provider_type);
-        }
+        self.provider_type = project.provider_type.or(self.provider_type);
         if !project.base_url.is_empty() {
             self.base_url = project.base_url;
         }
