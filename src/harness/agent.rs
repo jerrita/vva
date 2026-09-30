@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::model::{Message, Role, Session, Turn};
 use crate::provider::{CompletionOptions, Provider};
-use crate::tools::ToolRegistry;
+use crate::tools::{ToolRegistry, WorkspaceToolDeps};
 use tokio::sync::mpsc;
 
 /// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）。
@@ -68,27 +68,19 @@ impl AgentEngine {
             .map_err(|e| e.to_string())?;
         let inputs = resolved.input_capabilities();
         inputs.validate_session(session)?;
-        let mut tools = ToolRegistry::with_editor_session(
+        let mut tools = ToolRegistry::with_workspace_tools(
             &session.header.workspace_root,
             Some(deps.tool_outputs),
             session.header.editor,
-            deps.hashline,
+            WorkspaceToolDeps {
+                hashline: deps.hashline,
+                inputs: inputs.clone(),
+                background: Some(deps.background.clone()),
+            },
         );
-        let mut read = crate::tools::filesystem::ReadTool::new(&session.header.workspace_root)
-            .with_inputs(inputs.clone())
-            .with_editor(session.header.editor);
-        if let Some(hashline) = tools.hashline_session() {
-            read = read.with_hashline(hashline);
-        }
-        tools.register(Arc::new(read));
         tools.register(Arc::new(crate::tools::ask_user::AskUserTool::new(
             deps.ask_user_requests,
         )));
-        // 后台任务工具随会话级注册表注入（Shell 覆盖注册以绑定 run_in_background）
-        tools.register(Arc::new(
-            crate::tools::shell::ShellTool::new(&session.header.workspace_root)
-                .with_background(deps.background.clone()),
-        ));
         tools.register(Arc::new(crate::tools::background::TaskOutputTool::new(
             deps.background.clone(),
         )));

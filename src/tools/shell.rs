@@ -241,7 +241,15 @@ mod tests {
         let tasks = Arc::new(super::super::background::BackgroundTasks::new(Arc::new(
             |_| {},
         )));
-        let tool = ShellTool::new(std::env::temp_dir()).with_background(tasks.clone());
+        let registry = crate::tools::ToolRegistry::with_workspace_tools(
+            &std::env::temp_dir(),
+            None,
+            crate::model::EditorKind::Replace,
+            crate::tools::WorkspaceToolDeps {
+                background: Some(tasks.clone()),
+                ..Default::default()
+            },
+        );
         let command = if cfg!(windows) {
             "Start-Sleep -Seconds 2"
         } else {
@@ -249,8 +257,8 @@ mod tests {
         };
 
         let started = std::time::Instant::now();
-        let result = tool
-            .execute_result(&crate::model::ToolCall::new(
+        let result = registry
+            .execute_call(&crate::model::ToolCall::new(
                 "call-background",
                 "Shell",
                 serde_json::json!({

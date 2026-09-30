@@ -29,6 +29,23 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// 工作空间工具装配依赖；hashline 快照与后台任务由会话持有。
+pub(crate) struct WorkspaceToolDeps {
+    pub hashline: Arc<hashline::HashlineSession>,
+    pub inputs: crate::config::resolver::InputCapabilities,
+    pub background: Option<Arc<background::BackgroundTasks>>,
+}
+
+impl Default for WorkspaceToolDeps {
+    fn default() -> Self {
+        Self {
+            hashline: hashline::HashlineSession::new(),
+            inputs: Default::default(),
+            background: None,
+        }
+    }
+}
+
 pub const MAX_INLINE_OUTPUT_BYTES: usize = 32 * 1024;
 
 /// 工具输出的内联预算：为包装文案预留的余量。
@@ -68,7 +85,6 @@ pub struct ToolRegistry {
     /// 原生服务端工具名（web_search / web_fetch 等）：声明给 API 端点由其代执行，
     /// 本注册表不可执行；模型误发起同名客户端调用时用于产出显式诊断
     server_tools: HashSet<String>,
-    hashline: Option<Arc<hashline::HashlineSession>>,
 }
 
 impl ToolRegistry {
@@ -77,12 +93,7 @@ impl ToolRegistry {
             tools: BTreeMap::new(),
             tool_outputs: None,
             server_tools: HashSet::new(),
-            hashline: None,
         }
-    }
-
-    pub fn hashline_session(&self) -> Option<Arc<hashline::HashlineSession>> {
-        self.hashline.clone()
     }
 
     /// 注册工作空间默认工具集（hashline 编辑协议）。
@@ -96,36 +107,27 @@ impl ToolRegistry {
         tool_outputs: Option<PathBuf>,
         editor: EditorKind,
     ) -> Self {
-        Self::with_editor_session(
+        Self::with_workspace_tools(
             workspace,
             tool_outputs,
             editor,
-            hashline::HashlineSession::new(),
+            WorkspaceToolDeps::default(),
         )
     }
 
-    pub(crate) fn with_editor_session(
+    pub(crate) fn with_workspace_tools(
         workspace: &Path,
         tool_outputs: Option<PathBuf>,
         editor: EditorKind,
-        session: Arc<hashline::HashlineSession>,
+        deps: WorkspaceToolDeps,
     ) -> Self {
         let mut registry = Self::new();
         registry.tool_outputs = tool_outputs;
-        let hashline = (editor == EditorKind::Hashline).then_some(session);
-        registry.hashline = hashline.clone();
-        let mut read = crate::tools::filesystem::ReadTool::new(workspace).with_editor(editor);
+        let mut read = crate::tools::filesystem::ReadTool::new(workspace)
+            .with_editor(editor)
+            .with_inputs(deps.inputs);
         let mut grep = crate::tools::filesystem::GrepTool::new(workspace).with_editor(editor);
-        if let Some(session) = hashline.clone() {
-            read = read.with_hashline(session.clone());
-            grep = grep.with_hashline(session);
-        }
-        registry.register(Arc::new(read));
         let mut write = crate::tools::filesystem::WriteTool::new(workspace);
-        if let Some(session) = hashline.clone() {
-            write = write.with_hashline(session);
-        }
-        registry.register(Arc::new(write));
         match editor {
             EditorKind::Replace => {
                 registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
@@ -136,16 +138,23 @@ impl ToolRegistry {
                 )));
             }
             EditorKind::Hashline => {
-                let mut edit = crate::tools::hashline::HashlineEditTool::new(workspace);
-                if let Some(session) = hashline {
-                    edit = edit.with_session(session);
-                }
+                read = read.with_hashline(deps.hashline.clone());
+                grep = grep.with_hashline(deps.hashline.clone());
+                write = write.with_hashline(deps.hashline.clone());
+                let edit = crate::tools::hashline::HashlineEditTool::new(workspace)
+                    .with_session(deps.hashline);
                 registry.register(Arc::new(edit));
             }
         }
+        registry.register(Arc::new(read));
+        registry.register(Arc::new(write));
         registry.register(Arc::new(crate::tools::filesystem::GlobTool::new(workspace)));
         registry.register(Arc::new(grep));
-        registry.register(Arc::new(crate::tools::shell::ShellTool::new(workspace)));
+        let mut shell = crate::tools::shell::ShellTool::new(workspace);
+        if let Some(background) = deps.background {
+            shell = shell.with_background(background);
+        }
+        registry.register(Arc::new(shell));
         registry
     }
 

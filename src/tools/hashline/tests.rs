@@ -78,12 +78,19 @@ async fn write_registers_created_lines_for_edit() {
 
 #[tokio::test]
 async fn rebuilt_registry_retains_reads_and_reports_missing_ranges() {
-    use crate::tools::ToolRegistry;
+    use crate::tools::{ToolRegistry, WorkspaceToolDeps};
     let root = tempfile::tempdir().unwrap();
     fs::write(root.path().join("sample"), "a\nb\nc\nd\ne\n").unwrap();
     let session = HashlineSession::new();
-    let registry =
-        ToolRegistry::with_editor_session(root.path(), None, EditorKind::Hashline, session.clone());
+    let registry = ToolRegistry::with_workspace_tools(
+        root.path(),
+        None,
+        EditorKind::Hashline,
+        WorkspaceToolDeps {
+            hashline: session.clone(),
+            ..Default::default()
+        },
+    );
     registry
         .get("Read")
         .unwrap()
@@ -91,8 +98,15 @@ async fn rebuilt_registry_retains_reads_and_reports_missing_ranges() {
         .await
         .unwrap();
     drop(registry);
-    let registry =
-        ToolRegistry::with_editor_session(root.path(), None, EditorKind::Hashline, session);
+    let registry = ToolRegistry::with_workspace_tools(
+        root.path(),
+        None,
+        EditorKind::Hashline,
+        WorkspaceToolDeps {
+            hashline: session,
+            ..Default::default()
+        },
+    );
     let shown = registry
         .get("Read")
         .unwrap()

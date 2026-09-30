@@ -96,15 +96,19 @@ async fn read_binary_is_gated_and_persists_bytes() {
     .unwrap();
     let call = ToolCall::new("image_read", "Read", r#"{"path":"sample.png"}"#);
     assert!(ReadTool::new(&root).execute_result(&call).await.is_error);
-    let mut registry =
-        crate::tools::ToolRegistry::with_workspace_defaults(&root, Some(root.join("outputs")));
-    registry.register(std::sync::Arc::new(ReadTool::new(&root).with_inputs(
-        InputCapabilities {
-            model: "test/vision".into(),
-            modalities: vec!["image".into()],
-            protocol: crate::config::ProviderType::Response,
+    let registry = crate::tools::ToolRegistry::with_workspace_tools(
+        &root,
+        Some(root.join("outputs")),
+        crate::model::EditorKind::Hashline,
+        crate::tools::WorkspaceToolDeps {
+            inputs: InputCapabilities {
+                model: "test/vision".into(),
+                modalities: vec!["image".into()],
+                protocol: crate::config::ProviderType::Response,
+            },
+            ..Default::default()
         },
-    )));
+    );
     let result = registry.execute_call(&call).await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.attachments[0].data, data);
