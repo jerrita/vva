@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
-import { loadFlag, storeFlag, usePersistentState } from './usePersistentState'
+import { usePersistentFlag } from './usePersistentState'
 import type { RefObject } from 'react'
 import type { SidebarStats } from '../types'
 
@@ -17,11 +17,7 @@ export function useStatsPanel(options: {
 }) {
   const { activeId, turnCount, contentKey, scrollRef } = options
   const [stats, setStats] = useState<SidebarStats | null>(null)
-  const [statsCollapsed, setStatsCollapsed] = usePersistentState(
-    'vva.stats-collapsed',
-    loadFlag('vva.stats-collapsed'),
-    storeFlag,
-  )
+  const [statsCollapsed, setStatsCollapsed] = usePersistentFlag('vva.stats-collapsed')
   const [statsAutoHidden, setStatsAutoHidden] = useState(false)
   const [statsPinned, setStatsPinned] = useState(false)
   const statsPanelRef = useRef<HTMLDivElement>(null)

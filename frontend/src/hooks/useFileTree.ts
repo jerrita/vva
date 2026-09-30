@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, toError } from '../api'
 import type { FsEntry } from '../types'
+import { toggled } from './usePersistentState'
 
 interface DirectoryCache {
   children: Record<string, FsEntry[]>
@@ -101,15 +102,7 @@ export function useFileTree(workspace: string | null | undefined, enabled: boole
 
   const toggleDir = useCallback(
     (path: string) => {
-      setExpandedDirs(prev => {
-        const next = new Set(prev)
-        if (next.has(path)) {
-          next.delete(path)
-        } else {
-          next.add(path)
-        }
-        return next
-      })
+      setExpandedDirs(prev => toggled(prev, path))
       fetchDir(path)
     },
     [fetchDir],

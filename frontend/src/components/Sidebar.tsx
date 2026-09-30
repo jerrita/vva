@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import { toggled, usePersistentSet } from '../hooks/usePersistentState'
 import type { SessionSummary, SkillEntry } from '../types'
 import {
   IconArrowUp,
@@ -367,17 +368,11 @@ export function Sidebar({
   onOpenSettings: () => void
 }) {
   // 每项目折叠状态持久化
-  const [collapsed, setCollapsed] = useState<Set<string>>(
-    () => new Set(JSON.parse(localStorage.getItem('vva.projects-collapsed') ?? '[]') as string[]),
-  )
+  const [collapsed, setCollapsed] = usePersistentSet('vva.projects-collapsed')
   const [newOpen, setNewOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null)
   const [draggingRoot, setDraggingRoot] = useState<string | null>(null)
   const [dropTargetRoot, setDropTargetRoot] = useState<string | null>(null)
-
-  useEffect(() => {
-    localStorage.setItem('vva.projects-collapsed', JSON.stringify([...collapsed]))
-  }, [collapsed])
 
   // Esc 关闭 / Enter 确认删除
   useEffect(() => {
@@ -392,18 +387,6 @@ export function Sidebar({
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [pendingDelete, onDelete])
-
-  const toggle = (project: string) => {
-    setCollapsed(prev => {
-      const next = new Set(prev)
-      if (next.has(project)) {
-        next.delete(project)
-      } else {
-        next.add(project)
-      }
-      return next
-    })
-  }
 
   const visibleGroups = groups.filter(group => !hiddenProjects.has(group.project))
 
@@ -452,7 +435,7 @@ export function Sidebar({
            >
              <div
                className="group-label"
-               onClick={() => toggle(group.project)}
+               onClick={() => setCollapsed(prev => toggled(prev, group.project))}
                title={group.project}
                draggable
                onDragStart={event => {

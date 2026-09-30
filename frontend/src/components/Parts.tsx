@@ -110,8 +110,9 @@ function matchSuffix(count: number): string {
 
 function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: string): ToolDetail {
   const rel = (path: string) => relativePath(path, workspace)
+  const raw = truncate(call.arguments, 88)
   const args = parseArgs(call.arguments)
-  if (!args) return { text: truncate(call.arguments, 88) }
+  if (!args) return { text: raw }
   switch (call.name) {
     case 'AskUser': {
       const questions = Array.isArray(args.questions) ? args.questions : []
@@ -125,7 +126,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     }
     case 'Read': {
       const rawPath = str(args.path)
-      if (!rawPath) return { text: truncate(call.arguments, 88) }
+      if (!rawPath) return { text: raw }
       const options: string[] = []
       if (typeof args.offset === 'number' && args.offset !== 1) options.push(`offset=${args.offset}`)
       if (typeof args.limit === 'number') options.push(`limit=${args.limit}`)
@@ -139,7 +140,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     }
     case 'Write': {
       const rawPath = str(args.path)
-      if (!rawPath) return { text: truncate(call.arguments, 88) }
+      if (!rawPath) return { text: raw }
       return { text: rel(rawPath), filePath: rawPath, displayPath: rel(rawPath) }
     }
     case 'Edit': {
@@ -166,7 +167,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
       return { text: rel(path ?? call.arguments), filePath: path ?? undefined, displayPath: path ? rel(path) : undefined }
     }
     case 'Glob': {
-      const pattern = str(args.pattern) ?? truncate(call.arguments, 88)
+      const pattern = str(args.pattern) ?? raw
       if (result && !result.is_error) {
         return { text: `"${pattern}" ${matchSuffix(resultMatchCount(result))}` }
       }
@@ -174,7 +175,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     }
     case 'Grep': {
       const pattern = str(args.pattern)
-      if (!pattern) return { text: truncate(call.arguments, 88) }
+      if (!pattern) return { text: raw }
       const include = str(args.include)
       const path = str(args.path)
       const shown = path ? rel(path) : null
@@ -204,7 +205,7 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     case 'TaskOutput':
     case 'TaskStop': {
       const taskId = str(args.task_id)
-      return { text: taskId ?? truncate(call.arguments, 88) }
+      return { text: taskId ?? raw }
     }
     case 'Agent': {
       const agent = str(args.agent) ?? 'agent'
@@ -219,10 +220,10 @@ function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: strin
     }
     case 'WaitSession': {
       const session = str(args.session_id)
-      return { text: session ?? truncate(call.arguments, 88) }
+      return { text: session ?? raw }
     }
     default:
-      return { text: truncate(call.arguments, 88) }
+      return { text: raw }
   }
 }
 
@@ -372,31 +373,26 @@ function externalWebSearchCall(node: ToolGroupNode): WebSearchCall | null {
 }
 
 function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: boolean }) {
+  const action = call.action
   return (
     <details className="search-row" open={expanded}>
       <summary>
         <span className="search-icon">⌕</span>
         <span className="search-label">
-          {call.action == null
-            ? '网络搜索'
-            : call.action.type === 'open_page'
-              ? '打开网页'
-              : call.action.type === 'find_in_page'
-                ? '页内查找'
-                : '网络搜索'}
+          {action?.type === 'open_page' ? '打开网页' : action?.type === 'find_in_page' ? '页内查找' : '网络搜索'}
         </span>
         <code className="search-target">
-          {call.action == null
-            ? '（动作未下发）'
-            : call.action.type === 'open_page' ? (
-              <a href={call.action.url} target="_blank" rel="noreferrer">
-                {call.action.url}
-              </a>
-            ) : call.action.type === 'search' ? (
-              call.query
-            ) : (
-              call.action.url
-            )}
+          {action == null ? (
+            '（动作未下发）'
+          ) : action.type === 'open_page' ? (
+            <a href={action.url} target="_blank" rel="noreferrer">
+              {action.url}
+            </a>
+          ) : action.type === 'search' ? (
+            call.query
+          ) : (
+            action.url
+          )}
         </code>
         <span className={`search-status ${call.status}`}>{call.status}</span>
       </summary>

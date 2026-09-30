@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react'
 import { useResizable } from './useResizable'
-import { loadFlag, storeFlag, usePersistentState } from './usePersistentState'
+import { usePersistentFlag, usePersistentState } from './usePersistentState'
 
 const SIDEBAR_MIN = 200
 const SIDEBAR_MAX = 420
@@ -17,11 +17,7 @@ const clampFileSidebar = (width: number) =>
  * 以及侧栏文件预览目标路径（预览时自动展开并加宽文件抽屉）。
  */
 export function usePanelLayout() {
-  const [sidebarHidden, setSidebarHidden] = usePersistentState(
-    'vva.sidebar-hidden',
-    loadFlag('vva.sidebar-hidden'),
-    storeFlag,
-  )
+  const [sidebarHidden, setSidebarHidden] = usePersistentFlag('vva.sidebar-hidden')
   const [sidebarWidth, setSidebarWidth] = usePersistentState(
     'vva.sidebar-width',
     () => {
@@ -30,11 +26,7 @@ export function usePanelLayout() {
     },
     String,
   )
-  const [fileSidebarOpen, setFileSidebarOpen] = usePersistentState(
-    'vva.file-sidebar-open',
-    loadFlag('vva.file-sidebar-open'),
-    storeFlag,
-  )
+  const [fileSidebarOpen, setFileSidebarOpen] = usePersistentFlag('vva.file-sidebar-open')
   const [fileSidebarWidth, setFileSidebarWidth] = usePersistentState(
     'vva.file-sidebar-width',
     () => {

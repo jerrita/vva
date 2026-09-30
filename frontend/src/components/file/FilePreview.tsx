@@ -123,15 +123,14 @@ export function FilePreview({
 
     if (fileData.is_binary) {
       if (fileData.mime_type?.startsWith('image/')) {
+        const src = `data:${fileData.mime_type};base64,${fileData.content}`
         return (
           <div className="file-preview-image-wrap">
             <img
-              src={`data:${fileData.mime_type};base64,${fileData.content}`}
+              src={src}
               alt={fileData.name}
               className="file-preview-image lightboxable"
-              onClick={() =>
-                openLightbox(`data:${fileData.mime_type};base64,${fileData.content}`)
-              }
+              onClick={() => openLightbox(src)}
             />
           </div>
         )

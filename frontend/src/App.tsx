@@ -16,7 +16,7 @@ import { FileSidebar } from './components/FileSidebar'
 import { useComposerVisibility } from './hooks/useComposerVisibility'
 import { usePanelLayout } from './hooks/usePanelLayout'
 import { useStatsPanel } from './hooks/useStatsPanel'
-import { usePersistentState } from './hooks/usePersistentState'
+import { usePersistentSet, usePersistentState } from './hooks/usePersistentState'
 import { extractRelatedFiles } from './utils/relatedFiles'
 import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SkillEntry, UserAnswer } from './types'
 
@@ -33,11 +33,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [defaultRoot, setDefaultRoot] = useState<string | null>(null)
   const [skills, setSkills] = useState<SkillEntry[]>([])
-  const [hiddenProjects, setHiddenProjects] = usePersistentState<Set<string>>(
-    'vva.projects-hidden',
-    () => new Set(JSON.parse(localStorage.getItem('vva.projects-hidden') ?? '[]') as string[]),
-    value => JSON.stringify([...value]),
-  )
+  const [hiddenProjects, setHiddenProjects] = usePersistentSet('vva.projects-hidden')
   const [projectOrder, setProjectOrder] = usePersistentState<string[]>(
     'vva.projects-order',
     () => {
@@ -50,18 +46,7 @@ export default function App() {
     },
     value => JSON.stringify(value),
   )
-  const [unreadIds, setUnreadIds] = usePersistentState<Set<string>>(
-    'vva.sessions-unread',
-    () => {
-      try {
-        const value = JSON.parse(localStorage.getItem('vva.sessions-unread') ?? '[]')
-        return new Set(Array.isArray(value) ? value.filter(item => typeof item === 'string') : [])
-      } catch {
-        return new Set()
-      }
-    },
-    value => JSON.stringify([...value]),
-  )
+  const [unreadIds, setUnreadIds] = usePersistentSet('vva.sessions-unread')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const composerRef = useRef<ComposerHandle>(null)
 
