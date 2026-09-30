@@ -112,7 +112,6 @@ impl App {
                         .effective_type(provider.provider_type.unwrap_or_default())
                         .as_str()
                         .into(),
-                    reasoning: model.reasoning,
                     context_limit: model.limit.as_ref().map(|l| l.context),
                     variants: model.variants.clone(),
                 });
@@ -172,7 +171,6 @@ impl App {
         let mut items = vec![VariantItem {
             id: None,
             display_name: "default".into(),
-            is_default: true,
         }];
         items.extend(
             variants
@@ -181,7 +179,6 @@ impl App {
                 .map(|id| VariantItem {
                     display_name: id.clone(),
                     id: Some(id),
-                    is_default: false,
                 }),
         );
         items

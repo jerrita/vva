@@ -2,6 +2,7 @@
 
 use super::state::*;
 use super::*;
+use crate::ui::views::{bold, fg};
 
 pub(super) fn url_display_domain(url: &str) -> &str {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
@@ -79,9 +80,7 @@ pub(crate) fn push_citations_block(
         Span::raw("   "),
         Span::styled(
             format!("{marker} Sources / Citations ({})", citations.len()),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            bold(Color::Cyan),
         ),
     ]));
     render.citations_hits.push(CitationsHit {
@@ -92,13 +91,10 @@ pub(crate) fn push_citations_block(
     if expanded {
         for (i, (title, url)) in citations.iter().enumerate() {
             let spans = vec![
-                Span::styled(format!("[{}] ", i + 1), Style::default().fg(Color::Cyan)),
-                Span::styled((*title).to_string(), Style::default().fg(Color::White)),
+                Span::styled(format!("[{}] ", i + 1), fg(Color::Cyan)),
+                Span::styled((*title).to_string(), fg(Color::White)),
                 Span::raw(" - "),
-                Span::styled(
-                    (*url).to_string(),
-                    Style::default().fg(Color::Rgb(100, 160, 255)),
-                ),
+                Span::styled((*url).to_string(), fg(Color::Rgb(100, 160, 255))),
             ];
             let wrapped = wrap_spans_to_lines(&spans, max_width, "     ", "       ");
             render.lines.extend(wrapped);

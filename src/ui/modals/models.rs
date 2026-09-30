@@ -1,4 +1,4 @@
-use super::{FilterableModal, fuzzy_matches};
+use super::fuzzy_matches;
 
 /// /model 模态选择框展示的模型条目
 #[derive(Debug, Clone)]
@@ -8,7 +8,6 @@ pub struct ModelItem {
     pub model_id: String,
     pub display_name: String,
     pub provider_type: String,
-    pub reasoning: bool,
     pub context_limit: Option<usize>,
     pub variants: Option<Vec<String>>,
 }
@@ -60,20 +59,4 @@ impl ModelsModalState {
     }
 }
 
-impl FilterableModal for ModelsModalState {
-    fn filtered_len(&self) -> usize {
-        self.filtered_models.len()
-    }
-
-    fn selected_index_mut(&mut self) -> &mut usize {
-        &mut self.selected_index
-    }
-
-    fn query_mut(&mut self) -> &mut String {
-        &mut self.query
-    }
-
-    fn refilter(&mut self) {
-        self.apply_filter();
-    }
-}
+impl_filterable_modal!(ModelsModalState, filtered_models);

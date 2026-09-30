@@ -243,19 +243,14 @@ fn normalize_cjk_bold_in_line(line: &str) -> String {
                 && top_count == count
             {
                 open_stack.pop();
-                for _ in 0..count {
-                    out.push('*');
-                }
+                out.extend(std::iter::repeat_n('*', count));
 
                 // 核心逻辑：若前驱字符是标点，且后继字符是 CJK 汉字或字母数字（非空白非标点），
                 // CommonMark 会判定其无法闭合，因此在星号后注入空格使其合法闭合
                 let prev_is_punct = start > 0 && is_cjk_or_ascii_punct(chars[start - 1]);
-                let next_is_word = if i < n {
-                    let next_ch = chars[i];
-                    !next_ch.is_whitespace() && !is_cjk_or_ascii_punct(next_ch)
-                } else {
-                    false
-                };
+                let next_is_word = chars
+                    .get(i)
+                    .is_some_and(|&ch| !ch.is_whitespace() && !is_cjk_or_ascii_punct(ch));
 
                 if prev_is_punct && next_is_word {
                     out.push(' ');
@@ -265,13 +260,11 @@ fn normalize_cjk_bold_in_line(line: &str) -> String {
 
             // 检查是否可以作为开启标记：后继字符非空白
             let next_is_ws = i < n && chars[i].is_whitespace();
-            if !next_is_ws && (count == 2 || count == 3 || count == 1) {
+            if !next_is_ws && (1..=3).contains(&count) {
                 open_stack.push(count);
             }
 
-            for _ in 0..count {
-                out.push('*');
-            }
+            out.extend(std::iter::repeat_n('*', count));
             continue;
         }
 
@@ -286,12 +279,8 @@ fn normalize_cjk_bold_in_line(line: &str) -> String {
 pub fn render_markdown(input: &str, max_width: usize) -> (Vec<Line<'static>>, Vec<LinkRegion>) {
     let (mut output_lines, links) = render_markdown_open(input, max_width, false);
     // 去除末尾冗余空行
-    while let Some(last) = output_lines.last() {
-        if strippable_line(last) {
-            output_lines.pop();
-        } else {
-            break;
-        }
+    while output_lines.last().is_some_and(strippable_line) {
+        output_lines.pop();
     }
     (output_lines, links)
 }
@@ -301,6 +290,7 @@ pub(crate) fn strippable_line(line: &Line<'_>) -> bool {
 }
 
 /// 单次 Markdown 渲染的块级状态与输出缓冲
+#[derive(Default)]
 struct MarkdownRenderer {
     max_width: usize,
     /// 本次调用之前已有输出（影响标题与代码块前的空行判定）
@@ -329,22 +319,7 @@ impl MarkdownRenderer {
         Self {
             max_width,
             preceded,
-            output_lines: Vec::new(),
-            links: MarkdownLinks::default(),
-            bold: false,
-            italic: false,
-            strikethrough: false,
-            current_heading_level: None,
-            list_stack: Vec::new(),
-            in_blockquote: false,
-            in_code_block: false,
-            code_block_lang: String::new(),
-            code_block_lines: Vec::new(),
-            in_table: false,
-            table_rows: Vec::new(),
-            current_row: Vec::new(),
-            current_cell: String::new(),
-            pending_spans: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -420,9 +395,6 @@ impl MarkdownRenderer {
                     self.output_lines.push(Line::from(""));
                 }
                 self.current_heading_level = Some(level);
-            }
-            Tag::Paragraph => {
-                // 段落开始
             }
             Tag::List(start_num) => {
                 self.flush_paragraph();
@@ -578,32 +550,16 @@ impl MarkdownRenderer {
 
 /// 标题层级 → 图标与样式
 fn heading_decoration(level: HeadingLevel) -> (&'static str, Style) {
-    match level {
-        HeadingLevel::H1 => (
-            "█ ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        HeadingLevel::H2 => (
-            "■ ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        HeadingLevel::H3 => (
-            "◆ ",
-            Style::default()
-                .fg(Color::LightGreen)
-                .add_modifier(Modifier::BOLD),
-        ),
-        _ => (
-            "▸ ",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
-    }
+    let (icon, color) = match level {
+        HeadingLevel::H1 => ("█ ", Color::Cyan),
+        HeadingLevel::H2 => ("■ ", Color::Yellow),
+        HeadingLevel::H3 => ("◆ ", Color::LightGreen),
+        _ => ("▸ ", Color::White),
+    };
+    (
+        icon,
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
 }
 
 /// 增量渲染用开放尾渲染：不剥除末尾空行；`preceded` 表示本次调用之前已有输出，
@@ -615,10 +571,8 @@ pub(crate) fn render_markdown_open(
 ) -> (Vec<Line<'static>>, Vec<LinkRegion>) {
     let preprocessed = preprocess_cjk_markdown(input);
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
+    let options =
+        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
 
     let mut renderer = MarkdownRenderer::new(max_width, preceded);
     for event in Parser::new_ext(&preprocessed, options) {

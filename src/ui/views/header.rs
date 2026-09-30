@@ -1,7 +1,8 @@
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use crate::ui::app::App;
+use crate::ui::views::bold;
 
 /// 主窗口标题：会话名与运行态
 pub fn session_title_line(app: &App, title: &str) -> Line<'static> {
@@ -20,12 +21,7 @@ pub fn session_title_line(app: &App, title: &str) -> Line<'static> {
 
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(
-            title_display,
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(title_display, bold(Color::White)),
         Span::styled(
             if is_running { " (Active)" } else { "" }.to_string(),
             Style::default().fg(status_color),

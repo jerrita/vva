@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{FilterableModal, fuzzy_matches};
+use super::fuzzy_matches;
 use crate::model::SessionSummary;
 
 /// /sessions 会话列表筛选作用域
@@ -129,20 +129,4 @@ impl SessionsModalState {
     }
 }
 
-impl FilterableModal for SessionsModalState {
-    fn filtered_len(&self) -> usize {
-        self.filtered_sessions.len()
-    }
-
-    fn selected_index_mut(&mut self) -> &mut usize {
-        &mut self.selected_index
-    }
-
-    fn query_mut(&mut self) -> &mut String {
-        &mut self.query
-    }
-
-    fn refilter(&mut self) {
-        self.apply_filter();
-    }
-}
+impl_filterable_modal!(SessionsModalState, filtered_sessions);

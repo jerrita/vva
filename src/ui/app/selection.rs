@@ -1,3 +1,4 @@
+use base64::Engine;
 use unicode_width::UnicodeWidthChar;
 
 use super::App;
@@ -175,72 +176,26 @@ impl App {
 
 /// 将文本设置到系统剪贴板（支持原生系统剪贴板与 ANSI OSC 52 转义序列）
 pub fn set_clipboard_text(text: &str) -> Result<(), String> {
-    let mut success = false;
-    if let Ok(mut clipboard) = arboard::Clipboard::new()
-        && clipboard.set_text(text).is_ok()
-    {
-        success = true;
-    }
+    let success =
+        arboard::Clipboard::new().is_ok_and(|mut clipboard| clipboard.set_text(text).is_ok());
 
     // 同时输出 ANSI OSC 52 转义序列，支持远程终端及 SSH 剪贴板透传
-    let b64 = base64_encode(text.as_bytes());
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text);
     let osc52 = format!("\x1b]52;c;{b64}\x07");
     let mut stdout = std::io::stdout();
     let _ = std::io::Write::write_all(&mut stdout, osc52.as_bytes());
     let _ = std::io::Write::flush(&mut stdout);
 
-    if success {
-        Ok(())
-    } else {
-        Err("Failed to set system clipboard".to_string())
-    }
+    success
+        .then_some(())
+        .ok_or_else(|| "Failed to set system clipboard".to_string())
 }
 
 /// 从系统剪贴板读取文本
 pub fn get_clipboard_text() -> Option<String> {
-    if let Ok(mut clipboard) = arboard::Clipboard::new()
-        && let Ok(text) = clipboard.get_text()
-        && !text.is_empty()
-    {
-        Some(text)
-    } else {
-        None
-    }
-}
-
-pub fn base64_encode(bytes: &[u8]) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut res = String::new();
-    for chunk in bytes.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-        res.push(CHARSET[(b0 >> 2) as usize] as char);
-        res.push(CHARSET[(((b0 & 3) << 4) | (b1 >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            res.push(CHARSET[(((b1 & 0xf) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            res.push('=');
-        }
-        if chunk.len() > 2 {
-            res.push(CHARSET[(b2 & 0x3f) as usize] as char);
-        } else {
-            res.push('=');
-        }
-    }
-    res
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_base64_encode() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"Hello World"), "SGVsbG8gV29ybGQ=");
-    }
+    arboard::Clipboard::new()
+        .ok()?
+        .get_text()
+        .ok()
+        .filter(|text| !text.is_empty())
 }

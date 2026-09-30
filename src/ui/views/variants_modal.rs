@@ -8,6 +8,7 @@ use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell, selected_row_style,
 };
+use crate::ui::views::{bold, fg};
 
 /// 渲染 /variant 模态弹窗，支持上下键或 j/k 浏览选择当前模型可用的推理强度档位；
 /// 返回列表区几何供鼠标命中测试
@@ -17,21 +18,11 @@ pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area
     let curr_var = state.active_variant.as_deref().unwrap_or("default");
     let top_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled("Model: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            curr_model,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Model: ", fg(Color::DarkGray)),
+        Span::styled(curr_model, bold(Color::Cyan)),
         Span::raw("    "),
-        Span::styled("Active Variant: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            curr_var,
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Active Variant: ", fg(Color::DarkGray)),
+        Span::styled(curr_var, bold(Color::Magenta)),
         Span::raw("  "),
         Span::styled(
             format!(
@@ -57,31 +48,18 @@ pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area
         },
         vec![top_line, filter_line(&state.query, Color::Magenta)],
         footer_hints(&[
-            (
-                " [↑/↓/j/k] ",
-                Style::default().fg(Color::Magenta),
-                "Navigate  ",
-            ),
-            (
-                " [Enter] ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                "Set Variant  ",
-            ),
-            (" [type] ", Style::default().fg(Color::Magenta), "Filter  "),
-            (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
+            (" [↑/↓/j/k] ", fg(Color::Magenta), "Navigate  "),
+            (" [Enter] ", bold(Color::Green), "Set Variant  "),
+            (" [type] ", fg(Color::Magenta), "Filter  "),
+            (" [Esc] ", fg(Color::Yellow), "Cancel"),
         ]),
     );
 
     // 表头
     let header = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            format!("{:<28}", "Variant / Effort"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled("Status", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:<28}", "Variant / Effort"), fg(Color::DarkGray)),
+        Span::styled("Status", fg(Color::DarkGray)),
     ]);
 
     render_modal_list(
@@ -102,11 +80,9 @@ pub fn render_variants_modal(state: &VariantsModalState, frame: &mut Frame, area
             let status_style = if is_selected {
                 selected_row_style(Color::Magenta)
             } else if is_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                bold(Color::Yellow)
             } else {
-                Style::default().fg(Color::DarkGray)
+                fg(Color::DarkGray)
             };
 
             Line::from(vec![

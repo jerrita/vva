@@ -8,17 +8,13 @@ use crate::harness::{ManagedSession, SessionManager};
 use crate::skills::Skill;
 use crate::ui::command::CompletionCandidate;
 
-// 重新导出子模块内容以保持 100% 外部向后兼容
 pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
 pub use pane::{
     ChatCache, CitationsHit, ResponseHit, TextPane, ThoughtHit, ToolExpand, ToolHit, UserMessageHit,
 };
-pub use selection::{
-    SelectionTracker, TextCoord, TextSelection, base64_encode, char_in_column_range,
-    get_clipboard_text, set_clipboard_text,
-};
+pub use selection::{SelectionTracker, TextCoord, TextSelection, char_in_column_range};
 
 pub mod dispatch;
 pub mod draft;

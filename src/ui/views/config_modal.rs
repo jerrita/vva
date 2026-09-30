@@ -8,6 +8,7 @@ use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell, selected_row_style,
 };
+use crate::ui::views::{bold, fg};
 
 /// 渲染 /config 模态弹窗，支持上下键或 j/k 浏览与调整各项会话配置（模型、推理档位、网络搜索等）；
 /// 返回列表区几何供鼠标命中测试
@@ -34,34 +35,18 @@ pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Re
         },
         vec![top_line, filter_line(&state.query, Color::Cyan)],
         footer_hints(&[
-            (
-                " [↑/↓/j/k] ",
-                Style::default().fg(Color::Cyan),
-                "Navigate  ",
-            ),
-            (
-                " [Enter/Space] ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                "Modify / Toggle  ",
-            ),
-            (" [type] ", Style::default().fg(Color::Cyan), "Filter  "),
-            (" [Esc] ", Style::default().fg(Color::Yellow), "Close"),
+            (" [↑/↓/j/k] ", fg(Color::Cyan), "Navigate  "),
+            (" [Enter/Space] ", bold(Color::Green), "Modify / Toggle  "),
+            (" [type] ", fg(Color::Cyan), "Filter  "),
+            (" [Esc] ", fg(Color::Yellow), "Close"),
         ]),
     );
 
     let header = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            format!("{:<24}", "Setting"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!("{:<20}", "Current Value"),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled("Action", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:<24}", "Setting"), fg(Color::DarkGray)),
+        Span::styled(format!("{:<20}", "Current Value"), fg(Color::DarkGray)),
+        Span::styled("Action", fg(Color::DarkGray)),
     ]);
 
     render_modal_list(
@@ -77,9 +62,7 @@ pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Re
             let val_style = if i == state.selected_index {
                 selected_row_style(Color::Cyan)
             } else {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+                bold(Color::Yellow)
             };
 
             let action_str = match item.kind {
@@ -98,7 +81,7 @@ pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Re
                     if i == state.selected_index {
                         row_style
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        fg(Color::DarkGray)
                     },
                 ),
             ])

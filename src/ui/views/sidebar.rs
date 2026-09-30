@@ -1,12 +1,13 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::ui::app::App;
 use crate::ui::text::truncate;
 use crate::ui::views::chat::apply_selection_highlight;
+use crate::ui::views::{bold, fg};
 
 /// 右侧边栏所需的会话元信息
 pub struct SidebarInfo<'a> {
@@ -19,7 +20,7 @@ pub struct SidebarInfo<'a> {
 /// 标签值行：左侧留白后显示 `Label: value`（标签固定 DarkGray，值样式由调用方给定）
 fn label_value(label: &str, value: String, value_style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!(" {label}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {label}: "), fg(Color::DarkGray)),
         Span::styled(value, value_style),
     ])
 }
@@ -59,15 +60,9 @@ fn context_gauge_line(width: u16, ratio: f64, percent: u16) -> Line<'static> {
     let filled = ((bar_width as f64 * ratio).round() as usize).min(bar_width);
     Line::from(vec![
         Span::raw(" ["),
-        Span::styled("#".repeat(filled), Style::default().fg(Color::Blue)),
-        Span::styled(
-            "-".repeat(bar_width - filled),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!("] {percent}%"),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled("#".repeat(filled), fg(Color::Blue)),
+        Span::styled("-".repeat(bar_width - filled), fg(Color::DarkGray)),
+        Span::styled(format!("] {percent}%"), fg(Color::DarkGray)),
     ])
 }
 
@@ -101,27 +96,19 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
     };
 
     let mut lines = vec![Line::from(""); 20];
-    lines[0] = label_value("Session", short_id, Style::default().fg(Color::Cyan));
-    lines[1] = label_value(
-        "Workspace",
-        ws_display.to_string(),
-        Style::default().fg(Color::White),
-    );
+    lines[0] = label_value("Session", short_id, fg(Color::Cyan));
+    lines[1] = label_value("Workspace", ws_display.to_string(), fg(Color::White));
     lines[2] = label_value(
         "Turns",
         format_number(app.stats.total_turns),
-        Style::default().fg(Color::Yellow),
+        fg(Color::Yellow),
     );
-    lines[4] = label_value("Model", model_display, Style::default().fg(Color::Green));
-    lines[5] = label_value(
-        "Provider",
-        provider_display,
-        Style::default().fg(Color::Cyan),
-    );
+    lines[4] = label_value("Model", model_display, fg(Color::Green));
+    lines[5] = label_value("Provider", provider_display, fg(Color::Cyan));
     lines[6] = label_value(
         "Variant",
         info.variant.unwrap_or("none").to_string(),
-        Style::default().fg(Color::Magenta),
+        fg(Color::Magenta),
     );
     lines[8] = label_value(
         "Context",
@@ -130,7 +117,7 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
             format_number(app.stats.context_tokens),
             format_context_limit(context_limit)
         ),
-        Style::default().fg(Color::White),
+        fg(Color::White),
     );
     lines[9] = label_value(
         "In/Out",
@@ -139,43 +126,28 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
             format_number(app.stats.prompt_tokens),
             format_number(app.stats.completion_tokens)
         ),
-        Style::default().fg(Color::Rgb(170, 170, 170)),
+        fg(Color::Rgb(170, 170, 170)),
     );
     if let Some(tps) = app.stats.tps {
-        lines[11] = label_value(
-            "TPS",
-            format!("{tps:.1}"),
-            Style::default().fg(Color::White),
-        );
+        lines[11] = label_value("TPS", format!("{tps:.1}"), fg(Color::White));
     }
     lines[13] = label_value(
         "Cache Read",
         format_number(app.stats.cache_read_tokens),
-        Style::default().fg(Color::Cyan),
+        fg(Color::Cyan),
     );
     lines[14] = label_value(
         "Cache Write",
         format_number(app.stats.cache_write_tokens),
-        Style::default().fg(Color::LightBlue),
+        fg(Color::LightBlue),
     );
-    lines[17] = label_value(
-        "Est. Cost",
-        cost_str,
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-    );
+    lines[17] = label_value("Est. Cost", cost_str, bold(Color::Green));
     lines
 }
 
 /// 右侧边栏：展示 Session ID、Workspace、缓存、上下文窗口、Token 消耗与 Cost 估算
 pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &SidebarInfo) {
-    let block = super::panel_block().title(Span::styled(
-        " Details ",
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    ));
+    let block = super::panel_block().title(Span::styled(" Details ", bold(Color::DarkGray)));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -213,7 +185,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
     let separator = || {
         Block::default()
             .borders(Borders::BOTTOM)
-            .border_style(Style::default().fg(Color::Rgb(40, 40, 45)))
+            .border_style(fg(Color::Rgb(40, 40, 45)))
     };
 
     frame.render_widget(

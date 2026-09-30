@@ -2,6 +2,7 @@
 
 use super::*;
 use super::{tool::*, tool_block::*};
+use crate::ui::views::fg;
 
 pub(super) enum EditRow<'a> {
     Context {
@@ -113,7 +114,7 @@ pub(super) fn edit_side_lines(
     if let Some(line_number) = cell.line_number {
         spans.push(Span::styled(
             format!("{line_number:>4} "),
-            Style::default().fg(Color::DarkGray),
+            fg(Color::DarkGray),
         ));
     }
     spans.push(Span::styled(cell.marker, cell.style));
@@ -322,12 +323,7 @@ pub(super) fn push_patch_lines(
         push_filled_text(lines, line, style, max_width);
     }
     if text.lines().count() > cap {
-        push_filled_text(
-            lines,
-            "...",
-            Style::default().fg(Color::DarkGray),
-            max_width,
-        );
+        push_filled_text(lines, "...", fg(Color::DarkGray), max_width);
     }
 }
 
@@ -399,7 +395,7 @@ pub(super) fn push_edit_detail(
             Span::raw("     "),
             Span::styled(
                 format!("... ({hidden} more lines hidden)"),
-                Style::default().fg(Color::DarkGray),
+                fg(Color::DarkGray),
             ),
         ]));
     }

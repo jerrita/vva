@@ -1,11 +1,12 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Color;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::ui::modals::AskUserModalState;
 use crate::ui::views::modal_shell::{centered_rect, selected_row_style};
+use crate::ui::views::{bold, fg};
 
 pub fn render_ask_user_modal(state: &AskUserModalState, frame: &mut Frame, area: Rect) {
     let question = state.current_question();
@@ -14,13 +15,8 @@ pub fn render_ask_user_modal(state: &AskUserModalState, frame: &mut Frame, area:
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title(Span::styled(
-            " AskUser ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
+        .border_style(fg(Color::Cyan))
+        .title(Span::styled(" AskUser ", bold(Color::Cyan)));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     let chunks = Layout::default()
@@ -58,7 +54,7 @@ pub fn render_ask_user_modal(state: &AskUserModalState, frame: &mut Frame, area:
             let style = if index == state.option_index {
                 selected_row_style(Color::Cyan)
             } else {
-                Style::default().fg(Color::White)
+                fg(Color::White)
             };
             [
                 Line::from(vec![
@@ -67,7 +63,7 @@ pub fn render_ask_user_modal(state: &AskUserModalState, frame: &mut Frame, area:
                 ]),
                 Line::from(Span::styled(
                     format!("      {}", option.description),
-                    Style::default().fg(Color::DarkGray),
+                    fg(Color::DarkGray),
                 )),
             ]
         })
@@ -75,15 +71,15 @@ pub fn render_ask_user_modal(state: &AskUserModalState, frame: &mut Frame, area:
     frame.render_widget(Paragraph::new(lines), chunks[2]);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" [↑/↓] ", Style::default().fg(Color::Cyan)),
-            Span::styled("选择  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" [↑/↓] ", fg(Color::Cyan)),
+            Span::styled("选择  ", fg(Color::DarkGray)),
             Span::styled(
                 if question.multi_select {
                     " [Space] "
                 } else {
                     " [Enter] "
                 },
-                Style::default().fg(Color::Green),
+                fg(Color::Green),
             ),
             Span::styled(
                 if question.multi_select {
@@ -91,10 +87,10 @@ pub fn render_ask_user_modal(state: &AskUserModalState, frame: &mut Frame, area:
                 } else {
                     "确认  "
                 },
-                Style::default().fg(Color::DarkGray),
+                fg(Color::DarkGray),
             ),
-            Span::styled(" [Esc] ", Style::default().fg(Color::Yellow)),
-            Span::styled("取消", Style::default().fg(Color::DarkGray)),
+            Span::styled(" [Esc] ", fg(Color::Yellow)),
+            Span::styled("取消", fg(Color::DarkGray)),
         ])),
         chunks[3],
     );

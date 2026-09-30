@@ -7,6 +7,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::skills::{Skill, SkillSource};
 use crate::ui::modals::SkillsModalState;
 use crate::ui::text::{pad_to_width, truncate};
+use crate::ui::views::fg;
 use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell,
@@ -35,8 +36,8 @@ pub fn render_skills_modal(state: &SkillsModalState, frame: &mut Frame, area: Re
             filter_line(&state.query, Color::Cyan),
         ],
         footer_hints(&[
-            (" [↑↓] ", Style::default().fg(Color::Cyan), "Nav  "),
-            (" [Esc] ", Style::default().fg(Color::Yellow), "Close"),
+            (" [↑↓] ", fg(Color::Cyan), "Nav  "),
+            (" [Esc] ", fg(Color::Yellow), "Close"),
         ]),
     );
 
@@ -58,17 +59,11 @@ pub fn render_skills_modal(state: &SkillsModalState, frame: &mut Frame, area: Re
 
     let header = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            pad_to_width("Name", name_width),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(pad_to_width("Name", name_width), fg(Color::DarkGray)),
         Span::raw(gap.clone()),
-        Span::styled(
-            pad_to_width("Source", source_width),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(pad_to_width("Source", source_width), fg(Color::DarkGray)),
         Span::raw(gap.clone()),
-        Span::styled("Description", Style::default().fg(Color::DarkGray)),
+        Span::styled("Description", fg(Color::DarkGray)),
         Span::raw(right_padding.clone()),
     ]);
 
@@ -94,7 +89,7 @@ pub fn render_skills_modal(state: &SkillsModalState, frame: &mut Frame, area: Re
             let source_style = if is_selected {
                 row_style
             } else {
-                Style::default().fg(Color::DarkGray)
+                fg(Color::DarkGray)
             };
 
             Line::from(vec![

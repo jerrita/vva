@@ -10,6 +10,7 @@ use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell, selected_row_style,
 };
+use crate::ui::views::{bold, fg};
 
 /// 渲染 /sessions 模态弹窗，支持基于当前工程过滤与切换全量工程；
 /// 返回列表区几何供鼠标命中测试
@@ -24,14 +25,8 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
     let all_count = state.all_sessions.len();
 
     let (curr_style, all_style) = match state.scope {
-        ProjectScope::CurrentProject => (
-            selected_row_style(Color::Cyan),
-            Style::default().fg(Color::DarkGray),
-        ),
-        ProjectScope::AllProjects => (
-            Style::default().fg(Color::DarkGray),
-            selected_row_style(Color::Magenta),
-        ),
+        ProjectScope::CurrentProject => (selected_row_style(Color::Cyan), fg(Color::DarkGray)),
+        ProjectScope::AllProjects => (fg(Color::DarkGray), selected_row_style(Color::Magenta)),
     };
 
     let tabs_line = Line::from(vec![
@@ -52,39 +47,22 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
     let mut header_lines = vec![tabs_line];
     let footer = if let Some(session_id) = confirming_delete {
         header_lines.push(Line::from(vec![
-            Span::styled("  Delete ", Style::default().fg(Color::Red)),
-            Span::styled(
-                truncate(session_id, 24),
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("? This cannot be undone.", Style::default().fg(Color::Red)),
+            Span::styled("  Delete ", fg(Color::Red)),
+            Span::styled(truncate(session_id, 24), bold(Color::Red)),
+            Span::styled("? This cannot be undone.", fg(Color::Red)),
         ]));
         footer_hints(&[
-            (
-                " [Enter/d] ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                "Confirm Delete  ",
-            ),
-            (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
+            (" [Enter/d] ", bold(Color::Red), "Confirm Delete  "),
+            (" [Esc] ", fg(Color::Yellow), "Cancel"),
         ])
     } else {
         header_lines.push(filter_line(&state.query, Color::Cyan));
         footer_hints(&[
-            (" [↑↓] ", Style::default().fg(Color::Cyan), "Nav  "),
-            (" [Tab] ", Style::default().fg(Color::Cyan), "Scope  "),
-            (
-                " [Enter] ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                "Resume  ",
-            ),
-            (
-                " [d] ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                "Delete  ",
-            ),
-            (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
+            (" [↑↓] ", fg(Color::Cyan), "Nav  "),
+            (" [Tab] ", fg(Color::Cyan), "Scope  "),
+            (" [Enter] ", bold(Color::Green), "Resume  "),
+            (" [d] ", bold(Color::Red), "Delete  "),
+            (" [Esc] ", fg(Color::Yellow), "Cancel"),
         ])
     };
 
@@ -127,25 +105,16 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
     // 表头
     let header = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            pad_to_width("Session ID", id_width),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(pad_to_width("Session ID", id_width), fg(Color::DarkGray)),
         Span::raw(gap.clone()),
         Span::styled(
             pad_to_width("Title / Prompt", title_width),
-            Style::default().fg(Color::DarkGray),
+            fg(Color::DarkGray),
         ),
         Span::raw(gap.clone()),
-        Span::styled(
-            pad_to_width("Turns", turns_width),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(pad_to_width("Turns", turns_width), fg(Color::DarkGray)),
         Span::raw(final_gap.clone()),
-        Span::styled(
-            pad_to_width("Created", created_width),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(pad_to_width("Created", created_width), fg(Color::DarkGray)),
         Span::raw(right_padding.clone()),
     ]);
 
@@ -172,7 +141,7 @@ pub fn render_sessions_modal(state: &SessionsModalState, frame: &mut Frame, area
             let turns_style = if is_selected {
                 row_style
             } else {
-                Style::default().fg(Color::Yellow)
+                fg(Color::Yellow)
             };
 
             Line::from(vec![

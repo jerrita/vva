@@ -2,6 +2,7 @@
 
 use super::*;
 use super::{diff::*, tool::*};
+use crate::ui::views::fg;
 
 pub(super) const EDIT_DELETE: Style = Style::new().fg(Color::Rgb(220, 100, 100));
 pub(super) const EDIT_INSERT: Style = Style::new().fg(Color::Rgb(100, 180, 110));
@@ -76,9 +77,9 @@ pub(super) fn push_filled_text(
 
 pub(super) fn tool_result_rows(result: &ToolResult) -> Vec<(String, Style)> {
     let style = if result.is_error {
-        Style::default().fg(Color::Rgb(220, 120, 120))
+        fg(Color::Rgb(220, 120, 120))
     } else {
-        Style::default().fg(Color::Rgb(180, 180, 180))
+        fg(Color::Rgb(180, 180, 180))
     };
     result
         .content
@@ -94,8 +95,8 @@ pub(super) fn push_tool_block(
     full: bool,
     max_width: usize,
 ) -> bool {
-    let cmd_style = Style::default().fg(Color::Rgb(210, 210, 210));
-    let hint_style = Style::default().fg(Color::Rgb(110, 110, 110));
+    let cmd_style = fg(Color::Rgb(210, 210, 210));
+    let hint_style = fg(Color::Rgb(110, 110, 110));
     lines.push(tool_block_frame("╭", "╮", max_width));
     push_filled_blank(lines, max_width);
     if !is_mutation_tool(&call.name) {

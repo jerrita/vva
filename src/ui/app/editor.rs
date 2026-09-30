@@ -18,12 +18,9 @@ impl App {
     }
 
     /// 从系统剪贴板粘贴文本到当前输入框 (保留多行格式，不提前提交)
-    pub fn paste_from_clipboard(&mut self) -> bool {
+    pub fn paste_from_clipboard(&mut self) {
         if let Some(text) = get_clipboard_text() {
             self.insert_str(&text);
-            true
-        } else {
-            false
         }
     }
 
@@ -41,42 +38,36 @@ impl App {
 
     /// 向上轮换历史 Prompt
     pub fn history_previous(&mut self) {
-        if self.prompt_history.is_empty() {
-            return;
-        }
-
-        match self.history_index {
+        let index = match self.history_index {
+            None if self.prompt_history.is_empty() => return,
             None => {
                 self.saved_draft = self.input.text.clone();
-                let last_idx = self.prompt_history.len() - 1;
-                self.history_index = Some(last_idx);
-                let text = self.prompt_history[last_idx].clone();
-                self.set_input(&text);
+                self.prompt_history.len() - 1
             }
-            Some(idx) if idx > 0 => {
-                let prev_idx = idx - 1;
-                self.history_index = Some(prev_idx);
-                let text = self.prompt_history[prev_idx].clone();
-                self.set_input(&text);
-            }
-            Some(_) => {}
+            Some(0) => return,
+            Some(idx) => idx - 1,
+        };
+        self.show_history(index);
+    }
+
+    /// 向下轮换历史 Prompt；越过最新一条时恢复草稿
+    pub fn history_next(&mut self) {
+        let Some(idx) = self.history_index else {
+            return;
+        };
+        if idx + 1 < self.prompt_history.len() {
+            self.show_history(idx + 1);
+        } else {
+            self.history_index = None;
+            let draft = std::mem::take(&mut self.saved_draft);
+            self.set_input(&draft);
         }
     }
 
-    /// 向下轮换历史 Prompt
-    pub fn history_next(&mut self) {
-        if let Some(idx) = self.history_index {
-            if idx + 1 < self.prompt_history.len() {
-                let next_idx = idx + 1;
-                self.history_index = Some(next_idx);
-                let text = self.prompt_history[next_idx].clone();
-                self.set_input(&text);
-            } else {
-                self.history_index = None;
-                let draft = std::mem::take(&mut self.saved_draft);
-                self.set_input(&draft);
-            }
-        }
+    fn show_history(&mut self, index: usize) {
+        self.history_index = Some(index);
+        let text = self.prompt_history[index].clone();
+        self.set_input(&text);
     }
 
     pub fn set_input(&mut self, s: &str) {
@@ -87,6 +78,11 @@ impl App {
     pub fn clear_input(&mut self) {
         self.clear_input_selection();
         self.input.clear();
+        self.dismiss_completion();
+    }
+
+    /// 关闭命令补全选单并复位选中项
+    pub fn dismiss_completion(&mut self) {
         self.matched_candidates.clear();
         self.selected_command_index = 0;
     }
@@ -98,18 +94,14 @@ impl App {
                 self.selected_command_index = 0;
             }
         } else {
-            self.matched_candidates.clear();
-            self.selected_command_index = 0;
+            self.dismiss_completion();
         }
     }
 
     pub fn command_select_previous(&mut self) {
-        if !self.matched_candidates.is_empty() {
-            self.selected_command_index = if self.selected_command_index == 0 {
-                self.matched_candidates.len() - 1
-            } else {
-                self.selected_command_index - 1
-            };
+        let len = self.matched_candidates.len();
+        if len > 0 {
+            self.selected_command_index = (self.selected_command_index + len - 1) % len;
         }
     }
 

@@ -9,6 +9,7 @@ use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell,
 };
+use crate::ui::views::{bold, fg};
 
 /// 渲染 /model 模态弹窗，支持上下键或 j/k 浏览选择当前配置中的可用模型；
 /// 返回列表区几何供鼠标命中测试
@@ -21,13 +22,8 @@ pub fn render_models_modal(
     // 顶部当前状态行
     let top_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled("Currently Active: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            current_model,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("Currently Active: ", fg(Color::DarkGray)),
+        Span::styled(current_model, bold(Color::Yellow)),
         Span::raw("  "),
         Span::styled(
             format!(
@@ -54,20 +50,10 @@ pub fn render_models_modal(
         },
         vec![top_line, filter_line(&state.query, Color::Cyan)],
         footer_hints(&[
-            (
-                " [↑/↓/j/k] ",
-                Style::default().fg(Color::Cyan),
-                "Navigate  ",
-            ),
-            (
-                " [Enter] ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-                "Switch Model  ",
-            ),
-            (" [type] ", Style::default().fg(Color::Cyan), "Filter  "),
-            (" [Esc] ", Style::default().fg(Color::Yellow), "Cancel"),
+            (" [↑/↓/j/k] ", fg(Color::Cyan), "Navigate  "),
+            (" [Enter] ", bold(Color::Green), "Switch Model  "),
+            (" [type] ", fg(Color::Cyan), "Filter  "),
+            (" [Esc] ", fg(Color::Yellow), "Cancel"),
         ]),
     );
 
@@ -89,28 +75,25 @@ pub fn render_models_modal(
     // 表头
     let header = Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            format!("{:<name_width$}", "Name"),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("{:<name_width$}", "Name"), fg(Color::DarkGray)),
         Span::styled(
             format!("{:<provider_width$}", "Provider"),
-            Style::default().fg(Color::DarkGray),
+            fg(Color::DarkGray),
         ),
         Span::styled(
             format!("{:<protocol_width$}", "Protocol"),
-            Style::default().fg(Color::DarkGray),
+            fg(Color::DarkGray),
         ),
         if show_details {
             Span::styled(
                 format!("{:<context_width$}", "Context"),
-                Style::default().fg(Color::DarkGray),
+                fg(Color::DarkGray),
             )
         } else {
             Span::raw("")
         },
         if show_details {
-            Span::styled("Variants", Style::default().fg(Color::DarkGray))
+            Span::styled("Variants", fg(Color::DarkGray))
         } else {
             Span::raw("")
         },

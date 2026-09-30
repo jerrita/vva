@@ -12,33 +12,18 @@ pub(crate) fn split_spans_by_hit(
     selected: Style,
     mut is_hit: impl FnMut(usize, char) -> bool,
 ) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let mut chunk = String::new();
-    let mut in_hit: Option<bool> = None;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut in_hit = false;
     for (idx, ch) in text.chars().enumerate() {
         let hit = is_hit(idx, ch);
-        if in_hit == Some(hit) {
-            chunk.push(ch);
-        } else {
-            if !chunk.is_empty() {
-                let style = if in_hit == Some(true) {
-                    selected
-                } else {
-                    normal
-                };
-                spans.push(Span::styled(std::mem::take(&mut chunk), style));
-            }
-            chunk.push(ch);
-            in_hit = Some(hit);
+        match spans.last_mut() {
+            Some(last) if in_hit == hit => last.content.to_mut().push(ch),
+            _ => spans.push(Span::styled(
+                ch.to_string(),
+                if hit { selected } else { normal },
+            )),
         }
-    }
-    if !chunk.is_empty() {
-        let style = if in_hit == Some(true) {
-            selected
-        } else {
-            normal
-        };
-        spans.push(Span::styled(chunk, style));
+        in_hit = hit;
     }
     spans
 }

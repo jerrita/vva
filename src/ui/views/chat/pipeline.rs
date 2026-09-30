@@ -2,6 +2,7 @@
 
 use super::*;
 use super::{citations::*, state::*, thought::*, tool::*, user_block::*};
+use crate::ui::views::{bold, fg};
 
 pub(super) fn worked_duration(elapsed_ms: u64) -> String {
     if elapsed_ms.is_multiple_of(1_000) {
@@ -21,7 +22,7 @@ pub(crate) fn append_collapsed_response(
     let line_start = render.lines.len();
     render.lines.push(Line::from(vec![Span::styled(
         format!("> Worked {}", worked_duration(elapsed_ms)),
-        Style::default().fg(Color::Rgb(150, 150, 150)),
+        fg(Color::Rgb(150, 150, 150)),
     )]));
     render.response_hits.push(ResponseHit {
         id: turn_id.to_string(),
@@ -118,9 +119,7 @@ pub(crate) fn thought_body_style() -> Style {
 }
 
 pub(crate) fn thought_prefix_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(140, 140, 140))
-        .add_modifier(Modifier::BOLD)
+    bold(Color::Rgb(140, 140, 140))
 }
 
 /// 单行 Markdown 成型：剥除排版缩进首空格并套用正文字体样式
@@ -196,7 +195,7 @@ pub(crate) fn append_part(
                         }
                         let spans = vec![Span::styled(
                             format!("Load {loaded}"),
-                            Style::default().fg(Color::Rgb(150, 150, 150)),
+                            fg(Color::Rgb(150, 150, 150)),
                         )];
                         render
                             .lines
@@ -340,14 +339,9 @@ fn push_labeled_row(
     max_width: usize,
 ) {
     let spans = vec![
-        Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(label, bold(Color::Yellow)),
         Span::raw(" "),
-        Span::styled(detail, Style::default().fg(Color::Rgb(160, 160, 160))),
+        Span::styled(detail, fg(Color::Rgb(160, 160, 160))),
     ];
     let wrapped = wrap_spans_to_lines(&spans, max_width, "", "   ");
     render.lines.extend(wrapped);
@@ -375,9 +369,9 @@ pub(super) fn push_source_row(
     let pad = title_max - title.width() + 1;
     lines.push(Line::from(vec![
         Span::raw("   "),
-        Span::styled(title, Style::default().fg(Color::Rgb(170, 170, 170))),
+        Span::styled(title, fg(Color::Rgb(170, 170, 170))),
         Span::raw(" ".repeat(pad)),
-        Span::styled(domain.to_string(), Style::default().fg(Color::DarkGray)),
+        Span::styled(domain.to_string(), fg(Color::DarkGray)),
     ]));
 }
 
@@ -406,19 +400,11 @@ pub(crate) fn is_empty_session(view: &SessionView) -> bool {
 pub(crate) fn push_empty_hint(render: &mut ChatRender<'_>) {
     render.lines.push(Line::from(""));
     render.lines.push(Line::from(vec![
-        Span::styled(
-            "  Start typing a prompt or use ",
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            "/",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled("  Start typing a prompt or use ", fg(Color::DarkGray)),
+        Span::styled("/", bold(Color::Cyan)),
         Span::styled(
             " to access commands (/sessions to resume).",
-            Style::default().fg(Color::DarkGray),
+            fg(Color::DarkGray),
         ),
     ]));
 }
@@ -429,10 +415,7 @@ pub(crate) fn append_turn_outcome(render: &mut ChatRender<'_>, turn_id: &str) {
         {
             render.lines.push(Line::from(""));
             for text in notice.text.lines() {
-                let spans = [Span::styled(
-                    text.to_owned(),
-                    Style::default().fg(Color::Rgb(220, 120, 120)),
-                )];
+                let spans = [Span::styled(text.to_owned(), fg(Color::Rgb(220, 120, 120)))];
                 render
                     .lines
                     .extend(wrap_spans_to_lines(&spans, render.max_width, "", "   "));
