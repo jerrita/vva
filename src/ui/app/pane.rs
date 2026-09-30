@@ -1,14 +1,15 @@
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::{Arc, Weak};
 
 use super::selection::SelectionTracker;
-use crate::model::Session;
+use crate::model::{ContentPart, Role, Session, Turn};
 use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
-    ChatRender, RenderState, append_parts, append_turn_outcome, collect_tool_results,
-    extract_selected_text, is_empty_session,
+    ChatRender, RenderState, append_collapsed_response, append_parts, append_turn_outcome,
+    collect_tool_results, extract_selected_text, is_empty_session,
 };
 
 use super::draft::DraftRenderCache;
@@ -55,6 +56,11 @@ impl TextPane {
     }
 }
 
+/// 行号是否落在半开区间 [start, end) 内
+fn within(line: usize, start: usize, end: usize) -> bool {
+    (start..end).contains(&line)
+}
+
 /// 历史用户消息在聊天行缓冲中的区间，供点击命中 Revert / Fork
 #[derive(Debug, Clone, Copy)]
 pub struct UserMessageHit {
@@ -65,7 +71,7 @@ pub struct UserMessageHit {
 
 impl UserMessageHit {
     pub fn contains(self, line: usize) -> bool {
-        line >= self.line_start && line < self.line_end
+        within(line, self.line_start, self.line_end)
     }
 }
 
@@ -91,11 +97,11 @@ pub struct ToolHit {
 
 impl ToolHit {
     pub fn contains_header(&self, line: usize) -> bool {
-        line >= self.header_start && line < self.header_end
+        within(line, self.header_start, self.header_end)
     }
 
     pub fn contains_block(&self, line: usize) -> bool {
-        line >= self.block_start && line < self.block_end
+        within(line, self.block_start, self.block_end)
     }
 
     pub fn contains(&self, line: usize) -> bool {
@@ -123,7 +129,7 @@ pub struct CitationsHit {
 
 impl CitationsHit {
     pub fn contains_header(&self, line: usize) -> bool {
-        line >= self.header_start && line < self.header_end
+        within(line, self.header_start, self.header_end)
     }
 }
 
@@ -139,17 +145,17 @@ pub struct ResponseHit {
 
 impl ResponseHit {
     pub fn contains(&self, line: usize) -> bool {
-        line >= self.line_start && line < self.line_end
+        within(line, self.line_start, self.line_end)
     }
 }
 
 impl ThoughtHit {
     pub fn contains_header(&self, line: usize) -> bool {
-        line >= self.header_start && line < self.header_end
+        within(line, self.header_start, self.header_end)
     }
 
     pub fn contains_body(&self, line: usize) -> bool {
-        line >= self.body_start && line < self.body_end
+        within(line, self.body_start, self.body_end)
     }
 }
 
@@ -206,6 +212,81 @@ impl ChatCache {
     }
 }
 
+/// 以 App 的字段切片组装 `ChatRender`（字段级借用，调用方仍可同时持有 cache 等其他字段）
+macro_rules! chat_render {
+    ($app:ident, $cache:ident, $results:expr, $width:expr) => {
+        ChatRender {
+            notices: &$app.view.notices,
+            lines: &mut $app.chat.lines,
+            links: &mut $app.chat.links,
+            max_width: $width,
+            thinking_concise: $app.thinking_concise,
+            results: $results,
+            expand: &$app.tool_expand,
+            hits: &mut $cache.tool_hits,
+            thought_expand: &$app.thought_expand,
+            thought_hits: &mut $cache.thought_hits,
+            citations_expand: &$app.citations_expand,
+            citations_hits: &mut $cache.citations_hits,
+            response_hits: &mut $cache.response_hits,
+        }
+    };
+}
+
+/// 一个运行段（一条真实用户消息到下一条之前）内的助手响应及其折叠判定
+struct ResponseGroup<'t> {
+    /// 段内全部助手轮次下标
+    assistant_turns: Vec<usize>,
+    /// 最后一个助手轮次（携带最终答复、耗时与分组 id）
+    last: Option<usize>,
+    id: Option<&'t str>,
+    elapsed_ms: Option<u64>,
+    final_reply: Option<(usize, usize)>,
+    /// 存在可折叠的过程内容（且已记录耗时）
+    collapsible: bool,
+    collapse: bool,
+}
+
+impl<'t> ResponseGroup<'t> {
+    fn new(
+        turns: &'t [Turn],
+        range: Range<usize>,
+        settled: bool,
+        response_expand: &HashMap<String, bool>,
+    ) -> Self {
+        let assistant_turns: Vec<usize> = range
+            .clone()
+            .filter(|&index| turns[index].role == Role::Assistant)
+            .collect();
+        let last = assistant_turns.last().copied();
+        let final_reply = last.and_then(|index| final_reply_range(&turns[index]));
+        let last_part_count = last.map_or(0, |index| {
+            turns[index].messages.iter().flat_map(|m| &m.parts).count()
+        });
+        let elapsed_ms = last.and_then(|index| turns[index].worked_ms);
+        let id = last.map(|index| turns[index].id.as_str());
+        let has_work = final_reply.is_some_and(|(start, end)| {
+            assistant_turns.len() > 1 || start > 0 || end < last_part_count
+        });
+        let collapsible = has_work && elapsed_ms.is_some();
+        let expanded = id.is_some_and(|id| response_expand.get(id).copied().unwrap_or(false));
+        let collapse = (range.end < turns.len() || settled) && collapsible && !expanded;
+        Self {
+            assistant_turns,
+            last,
+            id,
+            elapsed_ms,
+            final_reply,
+            collapsible,
+            collapse,
+        }
+    }
+
+    fn is_response_turn(&self, index: usize) -> bool {
+        self.assistant_turns.contains(&index)
+    }
+}
+
 impl super::App {
     /// 历史随会话快照和布局失效，草稿随视图版本更新，关联反馈变化使历史失效。
     pub fn refresh_chat_lines(&mut self, width: usize) {
@@ -235,94 +316,63 @@ impl super::App {
             cache.response_hits.clear();
             let turns = &self.view.session.turns;
             let boundaries = std::iter::once(0)
-                .chain(turns.iter().enumerate().filter_map(|(index, turn)| {
-                    (index > 0 && turn_is_user_boundary(turn)).then_some(index)
-                }))
+                .chain((1..turns.len()).filter(|&index| turn_is_user_boundary(&turns[index])))
                 .chain(std::iter::once(turns.len()))
                 .collect::<Vec<_>>();
             for range in boundaries.windows(2) {
-                let response_turns = (range[0]..range[1])
-                    .filter(|&index| turns[index].role == crate::model::Role::Assistant)
-                    .collect::<Vec<_>>();
-                let last_assistant = response_turns.last().copied();
-                let first_collapsed_assistant = response_turns.first().copied();
-                let final_reply = last_assistant.and_then(|index| final_reply_range(&turns[index]));
-                let last_part_count = last_assistant
-                    .map(|index| {
-                        turns[index]
-                            .messages
-                            .iter()
-                            .flat_map(|message| &message.parts)
-                            .count()
-                    })
-                    .unwrap_or(0);
-                let response_elapsed_ms = last_assistant.and_then(|index| turns[index].worked_ms);
-                let response_group_id = last_assistant.map(|index| turns[index].id.as_str());
-                let has_work = final_reply.is_some_and(|(start, end)| {
-                    response_turns.len() > 1 || start > 0 || end < last_part_count
-                });
-                let collapse_response = (range[1] < turns.len() || responses_collapsed)
-                    && has_work
-                    && response_elapsed_ms.is_some()
-                    && response_group_id
-                        .is_some_and(|id| !self.response_expand.get(id).copied().unwrap_or(false));
+                let group = ResponseGroup::new(
+                    turns,
+                    range[0]..range[1],
+                    responses_collapsed,
+                    &self.response_expand,
+                );
                 for (turn_index, turn) in turns.iter().enumerate().take(range[1]).skip(range[0]) {
                     let line_start = self.chat.lines.len();
-                    let is_response_turn = turn.role == crate::model::Role::Assistant
-                        && response_turns.contains(&turn_index);
-                    let is_summary = collapse_response
-                        && is_response_turn
-                        && Some(turn_index) == first_collapsed_assistant;
-                    let collapsible = is_response_turn && has_work && response_elapsed_ms.is_some();
-                    let mut render = ChatRender {
-                        notices: &self.view.notices,
-                        lines: &mut self.chat.lines,
-                        links: &mut self.chat.links,
-                        max_width: width,
-                        thinking_concise: self.thinking_concise,
-                        results: &results,
-                        expand: &self.tool_expand,
-                        hits: &mut cache.tool_hits,
-                        thought_expand: &self.thought_expand,
-                        thought_hits: &mut cache.thought_hits,
-                        citations_expand: &self.citations_expand,
-                        citations_hits: &mut cache.citations_hits,
-                        response_hits: &mut cache.response_hits,
-                    };
-                    if is_summary {
-                        crate::ui::views::chat::append_collapsed_response(
+                    let is_response_turn = group.is_response_turn(turn_index);
+                    let mut render = chat_render!(self, cache, &results, width);
+                    if let (true, Some(id), Some(elapsed_ms)) = (
+                        group.collapse
+                            && is_response_turn
+                            && group.assistant_turns.first() == Some(&turn_index),
+                        group.id,
+                        group.elapsed_ms,
+                    ) {
+                        append_collapsed_response(
                             &mut render,
-                            response_group_id.expect("collapsed response has a final turn"),
-                            response_elapsed_ms.expect("collapsed response has elapsed time"),
+                            id,
+                            elapsed_ms,
                             &mut cache.render_state,
                         );
                     }
-                    if !collapse_response || !is_response_turn {
+                    if !group.collapse || !is_response_turn {
                         append_parts(
                             &mut render,
                             turn.role,
                             turn.messages.iter().flat_map(|m| &m.parts),
                             &mut cache.render_state,
                         );
-                        if turn.role == crate::model::Role::Assistant {
+                        if turn.role == Role::Assistant {
                             render.response_hits.push(ResponseHit {
-                                id: response_group_id
-                                    .filter(|_| collapsible)
+                                id: group
+                                    .id
+                                    .filter(|_| group.collapsible && is_response_turn)
                                     .unwrap_or(&turn.id)
                                     .to_string(),
                                 line_start,
                                 line_end: render.lines.len(),
                                 collapsed: false,
-                                collapsible,
+                                collapsible: is_response_turn && group.collapsible,
                             });
                         }
-                    } else if Some(turn_index) == last_assistant {
+                    } else if Some(turn_index) == group.last {
                         let parts = turn
                             .messages
                             .iter()
                             .flat_map(|message| &message.parts)
                             .collect::<Vec<_>>();
-                        let (start, end) = final_reply.expect("completed response has final text");
+                        let (start, end) = group
+                            .final_reply
+                            .expect("completed response has final text");
                         append_parts(
                             &mut render,
                             turn.role,
@@ -331,7 +381,7 @@ impl super::App {
                         );
                     }
                     append_turn_outcome(&mut render, &turn.id);
-                    if turn.role == crate::model::Role::User && !turn_is_system_reminder(turn) {
+                    if turn.role == Role::User && !turn_is_system_reminder(turn) {
                         cache.user_hits.push(UserMessageHit {
                             turn_index,
                             line_start,
@@ -359,21 +409,7 @@ impl super::App {
         let history_lines = cache.history_lines;
         let mut state = cache.render_state;
         {
-            let mut render = ChatRender {
-                notices: &self.view.notices,
-                lines: &mut self.chat.lines,
-                links: &mut self.chat.links,
-                max_width: width,
-                thinking_concise: self.thinking_concise,
-                results: &results,
-                expand: &self.tool_expand,
-                hits: &mut cache.tool_hits,
-                thought_expand: &self.thought_expand,
-                thought_hits: &mut cache.thought_hits,
-                citations_expand: &self.citations_expand,
-                citations_hits: &mut cache.citations_hits,
-                response_hits: &mut cache.response_hits,
-            };
+            let mut render = chat_render!(self, cache, &results, width);
             cache.draft.render(
                 &mut render,
                 &draft,
@@ -382,7 +418,7 @@ impl super::App {
                 empty_session,
             );
             if state.prev_text {
-                render.lines.push(ratatui::text::Line::from(""));
+                render.lines.push(Line::from(""));
             }
         }
         cache.revision = self.view.revision;
@@ -390,38 +426,32 @@ impl super::App {
     }
 }
 
-fn turn_is_system_reminder(turn: &crate::model::Turn) -> bool {
-    turn.messages.iter().any(|m| {
-        m.parts.iter().any(|p| match p {
-            crate::model::ContentPart::Text { text, .. } => {
-                crate::system::parse_agents_reminder(text).is_some()
-            }
-            _ => false,
-        })
+fn turn_is_system_reminder(turn: &Turn) -> bool {
+    turn.messages.iter().flat_map(|m| &m.parts).any(|part| {
+        matches!(part, ContentPart::Text { text, .. } if crate::system::parse_agents_reminder(text).is_some())
     })
 }
 
 /// 运行段边界：真实用户消息；机器注入 reminder（含后台任务通知）随行注入不算
-fn turn_is_user_boundary(turn: &crate::model::Turn) -> bool {
-    turn.role == crate::model::Role::User && !turn_is_system_reminder(turn)
+fn turn_is_user_boundary(turn: &Turn) -> bool {
+    turn.role == Role::User && !turn_is_system_reminder(turn)
 }
 
-fn final_reply_range(turn: &crate::model::Turn) -> Option<(usize, usize)> {
+/// 助手轮次末尾连续文本段的部件区间 [start, end)
+fn final_reply_range(turn: &Turn) -> Option<(usize, usize)> {
     let mut last_run = None;
     let mut run_start = None;
-    let mut index = 0;
-    for part in turn.messages.iter().flat_map(|message| &message.parts) {
-        if matches!(part, crate::model::ContentPart::Text { .. }) {
-            if run_start.is_none() {
-                run_start = Some(index);
+    let mut total = 0;
+    for (index, part) in turn.messages.iter().flat_map(|m| &m.parts).enumerate() {
+        total = index + 1;
+        match (matches!(part, ContentPart::Text { .. }), run_start) {
+            (true, None) => run_start = Some(index),
+            (false, Some(start)) => {
+                last_run = Some((start, index));
+                run_start = None;
             }
-        } else if let Some(start) = run_start.take() {
-            last_run = Some((start, index));
+            _ => {}
         }
-        index += 1;
     }
-    if let Some(start) = run_start {
-        last_run = Some((start, index));
-    }
-    last_run
+    run_start.map(|start| (start, total)).or(last_run)
 }
