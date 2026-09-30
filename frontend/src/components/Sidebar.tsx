@@ -484,12 +484,13 @@ export function Sidebar({
       ?.scrollIntoView({ block: 'nearest' })
   }, [activeId])
 
-  // Esc 关闭 / Enter 确认删除
+  // Esc 关闭 / Enter 确认删除；Enter 需阻止默认激活，否则聚焦的删除按钮会再次触发弹窗
   useEffect(() => {
     if (!pendingDelete) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPendingDelete(null)
       if (event.key === 'Enter') {
+        event.preventDefault()
         onDelete(pendingDelete.id)
         setPendingDelete(null)
       }
