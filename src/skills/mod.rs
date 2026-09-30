@@ -94,7 +94,7 @@ pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
     let frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
         .map_err(|error| format!("Invalid SKILL.md frontmatter: {error}"))?;
 
-    validate_name(&frontmatter.name, dir_name)?;
+    crate::discover::validate_name(&frontmatter.name, dir_name, "skill", "directory name")?;
     crate::discover::validate_description(&frontmatter.description, "skill", &frontmatter.name)?;
     if frontmatter
         .compatibility
@@ -120,20 +120,10 @@ pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
     })
 }
 
-/// 全局技能目录（优先级升序）：~/.agents > ~/.vva
-fn global_skills_dirs() -> Vec<PathBuf> {
-    crate::discover::global_dirs("skills")
-}
-
-/// 项目技能目录（优先级升序）：.agents > .vva
-fn project_skills_dirs(workspace: &Path) -> [PathBuf; 2] {
-    crate::discover::project_dirs(workspace, "skills")
-}
-
 /// 发现全局与项目技能：按 name 排序返回，同名时后扫描的目录覆盖先扫描的
 /// （优先级：项目 .vva > 项目 .agents > 全局 .vva > 全局 .agents）；非法技能目录记录 warn 后跳过。
 pub fn discover_skills(workspace: &Path) -> Vec<Skill> {
-    discover_from(&global_skills_dirs(), workspace)
+    discover_from(&crate::discover::global_dirs("skills"), workspace)
 }
 
 /// 指定全局技能目录的发现逻辑（测试注入用）
@@ -142,7 +132,7 @@ fn discover_from(global_dirs: &[PathBuf], workspace: &Path) -> Vec<Skill> {
     for dir in global_dirs {
         collect_skills(dir, SkillSource::Global, &mut by_name);
     }
-    for dir in project_skills_dirs(workspace) {
+    for dir in crate::discover::project_dirs(workspace, "skills") {
         collect_skills(&dir, SkillSource::Project, &mut by_name);
     }
     by_name.into_values().collect()
@@ -164,12 +154,6 @@ fn collect_skills(dir: &Path, source: SkillSource, out: &mut BTreeMap<String, Sk
             Err(error) => tracing::warn!("Skipping invalid skill {}: {error}", path.display()),
         }
     }
-}
-
-/// 规范 name 约束：1-64 字符，仅小写字母/数字与非连续连字符，
-/// 不得以连字符开头结尾，且必须与父目录名一致
-fn validate_name(name: &str, dir_name: &str) -> Result<(), String> {
-    crate::discover::validate_name(name, dir_name, "skill", "directory name")
 }
 
 /// 切分 `---` 包裹的 YAML frontmatter 与 Markdown 正文
