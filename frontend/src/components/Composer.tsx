@@ -97,7 +97,7 @@ export function Composer({
     let active = true
     const timer = setTimeout(() => {
       void api
-        .fsFind(atToken.query, workspace, 12)
+        .fsFind(atToken.query, workspace, 12, true)
         .then(res => {
           if (active) setAtResult({ token: atToken, workspace, entries: res.entries })
         })
@@ -381,9 +381,9 @@ export function Composer({
         </div>
       )}
       {atOpen && (
-        <div className="composer-menu" role="listbox" aria-label="文件候选">
+        <div className="composer-menu" role="listbox" aria-label="文件和文件夹候选">
           {atEntries.map((entry, index) => {
-            const name = entry.path.split('/').pop() ?? entry.path
+            const name = entry.name + (entry.is_dir ? '/' : '')
             const dir = entry.path.slice(0, entry.path.length - name.length)
             return (
               <button
@@ -411,7 +411,7 @@ export function Composer({
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，@ 引用文件，Enter 发送，Shift+Enter 换行'}
+        placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，@ 引用文件或文件夹，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
           resetPalette()

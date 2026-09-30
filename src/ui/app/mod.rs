@@ -99,7 +99,7 @@ impl App {
         let (file_index_tx, file_index_rx) = std::sync::mpsc::channel();
         let workspace_root = session_mgr.workspace().to_path_buf();
         tokio::task::spawn_blocking(move || {
-            let (candidates, _) = crate::find::walk_workspace(&workspace_root, true);
+            let (candidates, _) = crate::find::walk_workspace_entries(&workspace_root, true, true);
             let _ = file_index_tx.send(Arc::new(candidates));
         });
         Self {

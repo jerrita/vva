@@ -55,7 +55,11 @@ pub fn fuzzy_match(query: &str, path: &str) -> Option<FuzzyMatch> {
     if m > n {
         return None;
     }
-    let name_start = chars.iter().rposition(|&c| c == '/').map_or(0, |p| p + 1);
+    let name_end = n - usize::from(chars.last() == Some(&'/'));
+    let name_start = chars[..name_end]
+        .iter()
+        .rposition(|&c| c == '/')
+        .map_or(0, |p| p + 1);
 
     let bonus = |i: usize| -> i64 {
         let mut b = BASE;
@@ -127,9 +131,10 @@ pub fn fuzzy_match(query: &str, path: &str) -> Option<FuzzyMatch> {
     })
 }
 
-/// 遍历得到的候选文件
+/// 遍历得到的候选文件或目录
 pub struct Candidate {
     pub path: String,
+    pub is_dir: bool,
     pub mtime: Option<SystemTime>,
 }
 
@@ -177,6 +182,15 @@ pub fn rank_candidates<'a>(
 /// 遍历工作区文件（遵循 .gitignore，包含隐藏文件但排除 `.git`，不跟随符号链接）。
 /// `want_mtime` 为真时读取修改时间。返回 (候选, 是否因访问上限被截断)。
 pub fn walk_workspace(workspace: &Path, want_mtime: bool) -> (Vec<Candidate>, bool) {
+    walk_workspace_entries(workspace, want_mtime, false)
+}
+
+/// 遍历工作区候选；目录引用补全可包含目录，目录路径以 `/` 结尾。
+pub fn walk_workspace_entries(
+    workspace: &Path,
+    want_mtime: bool,
+    include_dirs: bool,
+) -> (Vec<Candidate>, bool) {
     let walker = WalkBuilder::new(workspace)
         .hidden(false)
         .follow_links(false)
@@ -189,19 +203,28 @@ pub fn walk_workspace(workspace: &Path, want_mtime: bool) -> (Vec<Candidate>, bo
         if visited > MAX_VISITED {
             return (out, true);
         }
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
+        let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+        if !(entry.file_type().is_some_and(|t| t.is_file()) || include_dirs && is_dir) {
             continue;
         }
         let Ok(rel) = entry.path().strip_prefix(workspace) else {
             continue;
         };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
         let mtime = if want_mtime {
             entry.metadata().ok().and_then(|m| m.modified().ok())
         } else {
             None
         };
+        let mut path = rel.to_string_lossy().replace('\\', "/");
+        if is_dir {
+            path.push('/');
+        }
         out.push(Candidate {
-            path: rel.to_string_lossy().replace('\\', "/"),
+            path,
+            is_dir,
             mtime,
         });
     }
@@ -264,5 +287,27 @@ mod tests {
         let a = fuzzy_match("api", "api.rs").unwrap().score;
         let b = fuzzy_match("api", "some/deep/dir/api.rs").unwrap().score;
         assert!(a > b);
+    }
+
+    #[test]
+    fn directory_candidates_are_optional_and_match_names() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("nested/empty")).unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join("nested/item.txt"), "sample").unwrap();
+
+        let (files, _) = walk_workspace(dir.path(), false);
+        assert_eq!(files.len(), 1);
+        assert!(!files[0].is_dir);
+
+        let (entries, capped) = walk_workspace_entries(dir.path(), false, true);
+        assert!(!capped);
+        assert_eq!(entries.len(), 3);
+        let (ranked, truncated) = rank_candidates(&entries, "empty", 8);
+        assert!(!truncated);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].candidate.path, "nested/empty/");
+        assert!(ranked[0].candidate.is_dir);
+        assert_eq!(ranked[0].indices, vec![7, 8, 9, 10, 11]);
     }
 }

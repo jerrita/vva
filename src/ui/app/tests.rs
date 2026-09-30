@@ -851,6 +851,20 @@ async fn test_at_mention_file_completion_matches_and_ranking() {
 }
 
 #[tokio::test]
+async fn test_at_mention_directory_completion_and_apply() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    std::fs::create_dir_all(ta.temp_dir.join("nested/empty")).unwrap();
+    ta.refresh_file_index();
+    let app = &mut ta.app;
+
+    app.set_input("@nested/emp");
+    assert_eq!(app.file_matches[0].path, "nested/empty/");
+    app.apply_selected_file();
+    assert_eq!(app.input.as_str(), "@nested/empty/ ");
+    assert!(app.file_matches.is_empty());
+}
+
+#[tokio::test]
 async fn test_at_mention_apply_replaces_token_and_moves_cursor() {
     let mut ta = create_test_app("init_model", None, None, false).await;
     seed_workspace_files(&mut ta);

@@ -258,6 +258,8 @@ pub struct FsFindQuery {
     #[serde(default)]
     pub q: String,
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub include_dirs: bool,
 }
 
 /// 模糊查找命中的文件：`entry` 展平，附带 `path` 中命中的字符下标供前端高亮
@@ -304,20 +306,30 @@ pub async fn find_fs_files(
 
     let ws = workspace.clone();
     let q_task = q.clone();
+    let include_dirs = query.include_dirs;
     let (entries, truncated) = tokio::task::spawn_blocking(move || {
-        let (candidates, capped) = crate::find::walk_workspace(&ws, q_task.is_empty());
+        let (candidates, capped) = if include_dirs {
+            crate::find::walk_workspace_entries(&ws, q_task.is_empty(), true)
+        } else {
+            crate::find::walk_workspace(&ws, q_task.is_empty())
+        };
         let (ranked, over) = crate::find::rank_candidates(&candidates, &q_task, limit);
         let entries = ranked
             .into_iter()
             .map(|matched| {
                 let path = matched.candidate.path.clone();
                 let size = std::fs::metadata(ws.join(&path)).map_or(0, |m| m.len());
-                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                let name = path
+                    .trim_end_matches('/')
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&path)
+                    .to_string();
                 FsFindEntry {
                     entry: FsEntry {
                         name,
                         path,
-                        is_dir: false,
+                        is_dir: matched.candidate.is_dir,
                         size,
                     },
                     indices: matched.indices,

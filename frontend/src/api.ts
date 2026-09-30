@@ -88,11 +88,12 @@ export const api = {
     return request<FsEntriesResponse>(`/api/fs/entries${qs ? `?${qs}` : ''}`)
   },
   /** 工程内文件模糊查找（go to file）；q 为空时返回最近修改的文件 */
-  fsFind: (q: string, workspace?: string, limit?: number) => {
+  fsFind: (q: string, workspace?: string, limit?: number, includeDirs = false) => {
     const params = new URLSearchParams()
     params.set('q', q)
     if (workspace) params.set('workspace', workspace)
     if (limit) params.set('limit', String(limit))
+    if (includeDirs) params.set('include_dirs', 'true')
     return request<FsFindResponse>(`/api/fs/find?${params.toString()}`)
   },
   /** 读取指定工作区文件内容 */

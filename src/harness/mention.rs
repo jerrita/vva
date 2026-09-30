@@ -1,8 +1,9 @@
-//! `@` 文件引用：提示词 token 解析与工作区文件内容展开。
+//! `@` 文件/目录引用：提示词 token 解析与工作区内容展开。
 //!
-//! 用户在提示词中书写 `@relative/path`（也支持绝对路径）引用工作区文件；
-//! 提交时由 [`load_mention`] 读取文件并生成领域部件：
-//! 文本文件展开为 [`ContentPart::FileRef`]，图片/PDF 转为原生 Image/File 附件
+//! 用户在提示词中书写 `@relative/path`（也支持绝对路径）引用工作区文件或目录；
+//! 提交时由 [`load_mention`] 读取并生成领域部件：目录仅附加按名称排序的直接
+//! 子项列表（目录以 `/` 标识，限制条目数与字节数），通过工具按需读取内容；
+//! 目录与文本文件展开为 [`ContentPart::FileRef`]，图片/PDF 转为原生 Image/File 附件
 //! （与 Web 上传附件同构，经输入能力校验）。提示词原文保持不变。
 
 use std::path::{Path, PathBuf};
@@ -14,6 +15,8 @@ use crate::model::{ContentPart, MediaSource};
 
 /// 单个文本引用的内容上限（超出截断并标记 `truncated`）
 pub const MAX_TEXT_BYTES: u64 = 128 * 1024;
+/// 单个目录最多枚举的条目数（多读一项用于判断截断）
+const MAX_DIRECTORY_ENTRIES: usize = 1024;
 /// 图片/PDF 引用的大小上限（媒体必须完整传输，不做截断）
 pub const MAX_MEDIA_BYTES: u64 = 20 * 1024 * 1024;
 
@@ -139,13 +142,67 @@ fn note_ref(token: &str, reason: &str) -> ContentPart {
 pub fn capability_note(token: &str) -> ContentPart {
     note_ref(token, "当前模型不支持该媒体输入")
 }
-/// 读取 `@token` 引用的文件并生成领域部件。仅路径不可读返回 Err（提交侧转 Notice）。
+
+async fn load_directory(path: &Path, token: &str) -> Result<ContentPart, String> {
+    let mut directory = tokio::fs::read_dir(path)
+        .await
+        .map_err(|e| format!("读取目录失败: {e}"))?;
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    while let Some(entry) = directory
+        .next_entry()
+        .await
+        .map_err(|e| format!("读取目录失败: {e}"))?
+    {
+        if entries.len() == MAX_DIRECTORY_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let kind = entry
+            .file_type()
+            .await
+            .map_err(|e| format!("读取目录条目失败: {e}"))?;
+        entries.push((entry.file_name(), kind.is_dir()));
+    }
+    // 仅排序已枚举的子项，达到上限后停止访问目录。
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut content = String::from(
+        "[目录列表：仅包含当前目录的直接子文件/子目录，目录以 / 标识；如需查看内容请按需使用工具读取]\n",
+    );
+    if entries.is_empty() {
+        content.push_str("[空目录]\n");
+    }
+    for (name, is_dir) in entries {
+        let name = name.to_string_lossy();
+        let suffix = if is_dir { "/\n" } else { "\n" };
+        if content.len() + name.len() + suffix.len() > MAX_TEXT_BYTES as usize {
+            truncated = true;
+            break;
+        }
+        content.push_str(&name);
+        content.push_str(suffix);
+    }
+    Ok(ContentPart::FileRef {
+        path: token.to_string(),
+        content,
+        truncated,
+    })
+}
+
+/// 读取 `@token` 引用的文件/目录并生成领域部件。读取失败返回 Err（提交侧转 Notice）。
 ///
+/// - 目录：直接子项列表，按名称排序，受条目数与 [`MAX_TEXT_BYTES`] 限制；
 /// - 图片/PDF：完整读取转 Base64 原生附件（模型输入能力由提交侧校验并在不支持时降级）；
 /// - 其余文件：按 UTF-8 文本读取，超出 [`MAX_TEXT_BYTES`] 截断并标记；
 /// - 二进制文件、超出 [`MAX_MEDIA_BYTES`] 的媒体：不报错，降级为文本注记（模型自行处理）。
 pub async fn load_mention(workspace: &Path, token: &str) -> Result<ContentPart, String> {
     let path = resolve_path(workspace, token);
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| format!("读取失败: {e}"))?;
+    if metadata.is_dir() {
+        return load_directory(&path, token).await;
+    }
 
     if let Some((mime, is_image)) = media_kind(&path) {
         let mut file = tokio::fs::File::open(&path)
@@ -243,6 +300,119 @@ mod tests {
             Some((2, "src/lib".into()))
         );
         assert!(mention_at_cursor("@src/lib", 0).is_none());
+    }
+
+    #[tokio::test]
+    async fn directory_lists_sorted_direct_children() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.txt"), "file contents").unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::fs::write(dir.path().join("a/nested.txt"), "nested contents").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "file contents").unwrap();
+
+        match load_mention(dir.path(), ".").await.unwrap() {
+            ContentPart::FileRef {
+                path,
+                content,
+                truncated,
+            } => {
+                assert_eq!(path, ".");
+                assert!(content.contains("目录列表"));
+                assert!(content.contains("按需使用工具读取"));
+                assert_eq!(
+                    content.lines().skip(1).collect::<Vec<_>>(),
+                    ["a/", "a.txt", "z.txt"]
+                );
+                assert!(!truncated);
+            }
+            other => panic!("expected directory FileRef, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_media_named_directory_is_file_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("empty.png")).unwrap();
+        match load_mention(dir.path(), "empty.png").await.unwrap() {
+            ContentPart::FileRef {
+                path,
+                content,
+                truncated,
+            } => {
+                assert_eq!(path, "empty.png");
+                assert!(content.contains("[空目录]"));
+                assert!(!truncated);
+            }
+            other => panic!("expected directory FileRef, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_entry_limit_marks_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..MAX_DIRECTORY_ENTRIES {
+            std::fs::write(dir.path().join(format!("{i:04}.txt")), "").unwrap();
+        }
+        let part = load_mention(dir.path(), ".").await.unwrap();
+        assert!(matches!(
+            part,
+            ContentPart::FileRef {
+                truncated: false,
+                ..
+            }
+        ));
+        std::fs::write(dir.path().join("extra.txt"), "").unwrap();
+        match load_mention(dir.path(), ".").await.unwrap() {
+            ContentPart::FileRef {
+                content, truncated, ..
+            } => {
+                assert!(truncated);
+                let names = content.lines().skip(1).collect::<Vec<_>>();
+                assert_eq!(names.len(), MAX_DIRECTORY_ENTRIES);
+                assert!(names.windows(2).all(|pair| pair[0] <= pair[1]));
+                assert!(content.len() <= MAX_TEXT_BYTES as usize);
+            }
+            other => panic!("expected directory FileRef, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_byte_limit_marks_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let suffix = "x".repeat(200);
+        for i in 0..800 {
+            std::fs::write(dir.path().join(format!("{i:04}-{suffix}")), "").unwrap();
+        }
+        match load_mention(dir.path(), ".").await.unwrap() {
+            ContentPart::FileRef {
+                content, truncated, ..
+            } => {
+                assert!(truncated);
+                assert!(content.len() <= MAX_TEXT_BYTES as usize);
+                assert!(content.lines().count() < 801);
+                assert!(content.ends_with('\n'));
+            }
+            other => panic!("expected directory FileRef, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_read_errors_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            load_mention(dir.path(), "missing/")
+                .await
+                .unwrap_err()
+                .contains("读取失败")
+        );
+        let file = dir.path().join("file.txt");
+        std::fs::write(&file, "text").unwrap();
+        assert!(
+            load_directory(&file, "file.txt")
+                .await
+                .unwrap_err()
+                .contains("读取目录失败")
+        );
     }
 
     #[tokio::test]
