@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FocusEvent as ReactFocusEvent, RefObject, TouchEvent as ReactTouchEvent } from 'react'
+import type { FocusEvent as ReactFocusEvent, RefObject, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
 
 const MOBILE_MQ = '(max-width: 820px)'
 const COMPOSER_HIDE_DELTA = 16
@@ -33,6 +33,8 @@ export function useComposerVisibility(options: {
   const composerFocused = useRef(false)
   const mobileRef = useRef(false)
   const lastScrollTop = useRef(0)
+  const lastScrollHeight = useRef(0)
+  const touchLastY = useRef<number | null>(null)
   const touchStartY = useRef<number | null>(null)
   const composerTouchStartY = useRef<number | null>(null)
   // 下滑隐藏后的抑制窗口：隐藏引发的 clamp 滚动会被判定为"在底部"而立即回显
@@ -49,12 +51,14 @@ export function useComposerVisibility(options: {
     return () => mq.removeEventListener('change', sync)
   }, [])
 
-  // 切换会话时输入框复位为展示
+  // 切换会话时输入框复位为展示，跟随标记同步归零
   useEffect(() => {
     setComposerHidden(false)
     setTopbarHidden(false)
     nearBottom.current = true
     lastScrollTop.current = 0
+    lastScrollHeight.current = 0
+    touchLastY.current = null
   }, [activeId])
 
   // 窄屏隐藏用负 margin 回收高度，跟踪输入区实测高度
@@ -86,21 +90,24 @@ export function useComposerVisibility(options: {
   const onScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el) return
+    const delta = el.scrollTop - lastScrollTop.current
+    const heightDelta = el.scrollHeight - lastScrollHeight.current
+    lastScrollTop.current = el.scrollTop
+    lastScrollHeight.current = el.scrollHeight
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    nearBottom.current = atBottom
-    if (!mobileRef.current) {
-      lastScrollTop.current = el.scrollTop
-      return
+    // 跟随判定按滚动方向：向上滚动一律脱离（底部阈值内的少量上滑也算，
+    // 否则流式增长下永远逃不出阈值）；内容收缩引发的贴底钳制不算用户上滑
+    if (delta < 0 && !(heightDelta < 0 && atBottom)) {
+      nearBottom.current = false
+    } else if (atBottom) {
+      nearBottom.current = true
     }
+    if (!mobileRef.current) return
     if (atBottom) {
-      lastScrollTop.current = el.scrollTop
       revealComposer()
       setTopbarHidden(false)
       return
     }
-    const prev = lastScrollTop.current
-    lastScrollTop.current = el.scrollTop
-    const delta = el.scrollTop - prev
     // 上滑隐藏标题栏；下滑恢复
     if (delta > COMPOSER_HIDE_DELTA) {
       setTopbarHidden(true)
@@ -112,25 +119,47 @@ export function useComposerVisibility(options: {
     if (delta < -COMPOSER_HIDE_DELTA) setComposerHidden(true)
   }, [revealComposer])
 
+  // 上滑意图即刻脱离跟随：scroll 事件到帧末才触发，流式跟随写入若同帧先行，
+  // 会覆盖用户刚滚上的位置并被判定为仍在底部，形成强制拉回；
+  // 内容未溢出（scrollTop 为 0）时不算脱离，保证首次溢出仍跟随
+  const unstickFollow = useCallback(() => {
+    const el = scrollRef.current
+    if (el && el.scrollTop > 0) nearBottom.current = false
+  }, [])
+
+  const onWheel = useCallback(
+    (event: ReactWheelEvent<HTMLDivElement>) => {
+      if (event.deltaY < 0) unstickFollow()
+    },
+    [unstickFollow],
+  )
+
   const onChatTouchStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
-    if (!mobileRef.current || !composerHiddenRef.current) {
-      touchStartY.current = null
-      return
-    }
+    touchStartY.current = null
+    touchLastY.current = null
+    if (!mobileRef.current) return
     const y = event.touches[0]?.clientY
     if (y == null) return
-    touchStartY.current = viewportBottom() - y <= COMPOSER_EDGE ? y : null
+    touchLastY.current = y
+    if (composerHiddenRef.current && viewportBottom() - y <= COMPOSER_EDGE) {
+      touchStartY.current = y
+    }
   }, [])
 
   const onChatTouchMove = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
-    const start = touchStartY.current
     const y = event.touches[0]?.clientY
+    if (mobileRef.current && y != null) {
+      // 手指下移 = 内容上滚，即刻脱离跟随（理由同滚轮）
+      if (touchLastY.current != null && y > touchLastY.current) unstickFollow()
+      touchLastY.current = y
+    }
+    const start = touchStartY.current
     if (start == null || y == null) return
     if (start - y >= COMPOSER_SWIPE) {
       setComposerHidden(false)
       touchStartY.current = null
     }
-  }, [])
+  }, [unstickFollow])
 
   const onComposerFocus = useCallback(() => {
     composerFocused.current = true
@@ -167,6 +196,7 @@ export function useComposerVisibility(options: {
     scrollRef,
     scrollProps: {
       onScroll,
+      onWheel,
       onTouchStart: onChatTouchStart,
       onTouchMove: onChatTouchMove,
     },
