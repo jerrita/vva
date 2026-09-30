@@ -1,10 +1,7 @@
-use std::collections::HashMap;
-
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, Message, Role, SearchStatus, Session, ToolCall, WebSearchAction,
 };
-use crate::provider::common::EventForwarder;
 use crate::provider::http::SseEventHandler;
 use crate::provider::{CompletionOptions, ProviderError};
 use tokio::sync::mpsc;
@@ -131,23 +128,17 @@ fn test_anthropic_tool_results_merged_into_single_user_turn() {
     // 两个连续的 Tool turn
     session.append_turn(Turn::new(
         Role::Tool,
-        vec![Message::tool_result(ToolResult {
-            background_task_id: None,
-            attachments: Vec::new(),
-            tool_call_id: "call_1".into(),
-            content: "file contents".into(),
-            is_error: false,
-        })],
+        vec![Message::tool_result(ToolResult::success(
+            "call_1",
+            "file contents",
+        ))],
     ));
     session.append_turn(Turn::new(
         Role::Tool,
-        vec![Message::tool_result(ToolResult {
-            background_task_id: None,
-            attachments: Vec::new(),
-            tool_call_id: "call_2".into(),
-            content: "command output".into(),
-            is_error: false,
-        })],
+        vec![Message::tool_result(ToolResult::success(
+            "call_2",
+            "command output",
+        ))],
     ));
 
     let options = CompletionOptions {
@@ -195,12 +186,7 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
     let parsed = provider.parse_response(full.clone()).expect("parse full");
 
     // 用等价的流式事件序列驱动同一个组装路径
-    let mut handler = AnthropicStreamHandler {
-        blocks: Vec::new(),
-        partial_inputs: HashMap::new(),
-        usage: AnthropicUsageSnapshot::default(),
-        forwarder: EventForwarder::new(None),
-    };
+    let mut handler = AnthropicStreamHandler::new(None);
     let events = [
         serde_json::json!({
             "type": "message_start",
@@ -263,12 +249,7 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
 
 #[tokio::test]
 async fn test_anthropic_stream_error_event_reports_protocol_error() {
-    let mut handler = AnthropicStreamHandler {
-        blocks: Vec::new(),
-        partial_inputs: HashMap::new(),
-        usage: AnthropicUsageSnapshot::default(),
-        forwarder: EventForwarder::new(None),
-    };
+    let mut handler = AnthropicStreamHandler::new(None);
     let err = handler
         .on_event(serde_json::json!({
             "type": "error",
@@ -284,12 +265,7 @@ async fn test_anthropic_stream_error_event_reports_protocol_error() {
 
 #[tokio::test]
 async fn test_anthropic_stream_unknown_block_type_reports_protocol_error() {
-    let mut handler = AnthropicStreamHandler {
-        blocks: Vec::new(),
-        partial_inputs: HashMap::new(),
-        usage: AnthropicUsageSnapshot::default(),
-        forwarder: EventForwarder::new(None),
-    };
+    let mut handler = AnthropicStreamHandler::new(None);
     let err = handler
         .on_event(serde_json::json!({
             "type": "content_block_start", "index": 0,
@@ -586,12 +562,7 @@ fn test_anthropic_search_error_result_marks_failed() {
 async fn test_anthropic_web_search_streaming_matches_parse() {
     let provider = AnthropicProvider::new("test-key");
     let (tx, mut rx) = mpsc::channel(16);
-    let mut handler = AnthropicStreamHandler {
-        blocks: Vec::new(),
-        partial_inputs: HashMap::new(),
-        usage: AnthropicUsageSnapshot::default(),
-        forwarder: EventForwarder::new(Some(tx)),
-    };
+    let mut handler = AnthropicStreamHandler::new(Some(tx));
     let events = [
         serde_json::json!({
             "type": "message_start",

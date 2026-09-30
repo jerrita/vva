@@ -102,13 +102,10 @@ fn test_response_provider_previous_id_with_tool_call_output_pair() {
     // 3. 执行工具并返回 ToolResult
     session.append_turn(Turn::new(
         Role::Tool,
-        vec![Message::tool_result(ToolResult {
-            background_task_id: None,
-            attachments: Vec::new(),
-            tool_call_id: "call_abc123".into(),
-            content: "dir output".into(),
-            is_error: false,
-        })],
+        vec![Message::tool_result(ToolResult::success(
+            "call_abc123",
+            "dir output",
+        ))],
     ));
 
     let options = CompletionOptions {
@@ -311,13 +308,10 @@ fn test_response_provider_cold_start_history_and_temperature_guard() {
     // Tool 返回
     session.append_turn(Turn::new(
         Role::Tool,
-        vec![Message::tool_result(ToolResult {
-            background_task_id: None,
-            attachments: Vec::new(),
-            tool_call_id: "c1".into(),
-            content: "/home/project".into(),
-            is_error: false,
-        })],
+        vec![Message::tool_result(ToolResult::success(
+            "c1",
+            "/home/project",
+        ))],
     ));
 
     let options = CompletionOptions {

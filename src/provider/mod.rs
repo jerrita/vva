@@ -88,6 +88,18 @@ pub struct ProviderResponse {
     pub meta: TurnMeta,
 }
 
+impl ProviderResponse {
+    /// 将当前亲和组写入轮次元数据：回放时据此判定原生状态可否复用
+    fn stamp_scope(&mut self, scope: Option<&str>) {
+        let scope = scope.map(str::to_string);
+        if let Some(meta) = self.meta.response.as_mut() {
+            meta.scope = scope;
+        } else if let Some(meta) = self.meta.anthropic.as_mut() {
+            meta.scope = scope;
+        }
+    }
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// 供应商名称（如 "response", "anthropic", "gemini"）

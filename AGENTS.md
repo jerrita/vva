@@ -85,7 +85,7 @@ src/
 │   └── jsonl.rs            # JsonlSessionStore 按项目目录存储 (sessions/{project_key}/{sess_xxxxx}.jsonl + scratch/)
 ├── provider/               # 供应商适配器层 (原生协议直通)
 │   ├── mod.rs              # Provider Trait (capabilities/complete/complete_stream)、能力声明与共享 HTTP Client (超时)
-│   ├── common.rs           # 跨供应商共享辅助 (EventForwarder 背压转发 / require_* 严格读取 / RoleBlockMerger)
+│   ├── common.rs           # 跨供应商共享辅助 (EventForwarder 背压转发 / require_* 严格读取 / RoleBlockMerger / normalize_endpoint / header_value)
 │   ├── http.rs             # 共享传输封装 (post_json 非流式 / post_sse 流式事件循环 SseEventHandler)
 │   ├── response/           # OpenAI Responses API (previous_response_id + 原生搜索)
 │   │   ├── mod.rs          # ResponseProvider 与 Provider Trait 实现
@@ -98,7 +98,11 @@ src/
 │   │   ├── request.rs      # 请求体构建 (cache_control 断点 / thinking 签名回显 / 角色合并)
 │   │   ├── parse.rs        # 响应 DTO 严格解析与 assemble_response 统一组装
 │   │   └── stream.rs       # SSE 流式事件累积处理器 (content blocks / usage / stop_reason)
-│   ├── gemini.rs           # Google Gemini API (Grounding 多 chunk 合并投影 + 代码沙盒 + 共享累积器)
+│   ├── gemini/             # Google Gemini API (Grounding 多 chunk 合并投影 + 代码沙盒 + 共享累积器)
+│   │   ├── mod.rs          # GeminiProvider 与 Provider Trait 实现 (端点/鉴权头)
+│   │   ├── request.rs      # 请求体构建 (contents 角色合并 / 媒体 inlineData / tools)
+│   │   ├── parse.rs        # GeminiAccumulator：整包/流式 chunk 统一合并 (grounding / parts / usage)
+│   │   └── stream.rs       # SseEventHandler 实现 (合并后按背压转发增量事件)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
 ├── agents/                 # Subagent 定义：YAML agent 类型解析与发现
 │   └── mod.rs              # AgentDef 强类型解析与校验、discover_agents (内置 general/explore + 全局 ~/.vva/agents、~/.agents/agents + 项目 .vva/agents、.agents/agents，同名后者覆盖前者)
