@@ -59,6 +59,23 @@ pub fn validate_name(
     Ok(())
 }
 
+/// description 约束：非空且不超过 1024 字符
+pub fn validate_description(description: &str, kind: &str, name: &str) -> Result<(), String> {
+    if description.trim().is_empty() {
+        return Err(format!(
+            "{} '{name}' has an empty description",
+            capitalize(kind)
+        ));
+    }
+    if description.chars().count() > 1024 {
+        return Err(format!(
+            "{} '{name}' description exceeds 1024 characters",
+            capitalize(kind)
+        ));
+    }
+    Ok(())
+}
+
 fn capitalize(word: &str) -> String {
     let mut chars = word.chars();
     match chars.next() {
