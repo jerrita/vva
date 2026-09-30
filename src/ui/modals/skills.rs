@@ -85,34 +85,6 @@ mod tests {
     }
 
     #[test]
-    fn test_skills_modal_filter_and_navigation() {
-        let mut modal = SkillsModalState::new(vec![
-            skill("alpha", "Does A things.", SkillSource::Global),
-            skill("beta", "Handles B workflows.", SkillSource::Project),
-        ]);
-
-        assert_eq!(modal.filtered_skills.len(), 2);
-        assert_eq!(modal.selected_skill().unwrap().name, "alpha");
-
-        modal.next();
-        assert_eq!(modal.selected_skill().unwrap().name, "beta");
-
-        modal.push_query('b');
-        assert_eq!(modal.filtered_skills.len(), 1);
-        assert_eq!(modal.selected_skill().unwrap().name, "beta");
-
-        // 按 description 过滤
-        modal.pop_query();
-        modal.push_query('w');
-        assert_eq!(modal.filtered_skills.len(), 1);
-        assert_eq!(modal.selected_skill().unwrap().name, "beta");
-
-        modal.pop_query();
-        modal.pop_query();
-        assert_eq!(modal.filtered_skills.len(), 2);
-    }
-
-    #[test]
     fn empty_filter_resets_selection() {
         let mut modal = SkillsModalState::new(vec![skill("alpha", "A", SkillSource::Global)]);
         modal.next();

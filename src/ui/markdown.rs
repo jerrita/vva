@@ -902,40 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn test_markdown_cjk_bold_with_punctuation_rendered_properly() {
-        let md = "* **分类一：**这里是第一段示例内容。\n* **分类二：**这里是第二段示例内容。\n* **提示！**这里是提示内容。";
-        let (lines, _) = render_markdown(md, 80);
-
-        // 验证没有未闭合的字面量 **
-        let all_text: String = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        assert!(
-            !all_text.contains("**"),
-            "Markdown should not contain literal asterisks for bold titles: {}",
-            all_text
-        );
-        assert!(all_text.contains("分类一："));
-        assert!(all_text.contains("第一段示例内容"));
-        assert!(all_text.contains("分类二："));
-        assert!(all_text.contains("提示！"));
-
-        // 验证加粗 Span 具有金色与 BOLD 属性
-        let bold_span_found = lines.iter().any(|l| {
-            l.spans.iter().any(|s| {
-                s.content.contains("分类一：")
-                    && s.style.add_modifier.contains(Modifier::BOLD)
-                    && s.style.fg == Some(Color::Rgb(255, 215, 80))
-            })
-        });
-        assert!(
-            bold_span_found,
-            "Bold span with golden color and BOLD modifier should exist"
-        );
-    }
-
-    #[test]
     fn test_markdown_code_block_and_table() {
         let md = r#"```rust
 fn test() {

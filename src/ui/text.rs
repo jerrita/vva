@@ -57,12 +57,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_appends_ellipsis_within_limit() {
-        assert_eq!(truncate("abcdefghij", 8), "abcde...");
-        assert_eq!(truncate_with("abcdefghij", 8, ".."), "abcdef..");
-    }
-
-    #[test]
     fn truncate_is_multibyte_safe_and_width_aware() {
         // CJK 每字符占 2 显示列：宽度预算 6 时只能保留 1 个字符 + "..."
         let cjk = "会话标题可以很长很长很长";

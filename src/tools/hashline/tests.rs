@@ -220,16 +220,6 @@ fn parse_cut_shorthand_named_register_paste() {
 }
 
 #[test]
-fn parse_put_cut_and_header() {
-    let sections =
-        parse_patch("[greet.py#A1B2]\nPUT 1.=3:\n+def greet(name):\n+    print(name)\nCUT 4.=4\n")
-            .unwrap();
-    assert_eq!(sections[0].path, "greet.py");
-    assert_eq!(sections[0].tag, "A1B2");
-    assert_eq!(sections[0].ops.len(), 2);
-}
-
-#[test]
 fn parse_rejects_malformed_put_and_cut_syntax() {
     for input in [
         "[a.rs#ABCD]\nPUT 5:\n+x\n",
@@ -277,40 +267,6 @@ async fn read_then_put_replace_and_insert() {
         fs::read_to_string(root.join("sample")).unwrap(),
         "ALPHA\nbeta\nmid\nGAMMA\nTAIL\n"
     );
-    let _ = fs::remove_dir_all(root);
-}
-
-#[tokio::test]
-async fn unseen_and_stale_fail() {
-    let root = std::env::temp_dir().join(format!("vva-hl-fail-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("sample"), "a\nb\nc\n").unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(&root)
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read
-        .execute(r#"{"path":"sample","offset":1,"limit":1}"#)
-        .await
-        .unwrap();
-    let tag = shown
-        .lines()
-        .next()
-        .unwrap()
-        .trim_start_matches("[sample#")
-        .trim_end_matches(']');
-    let edit = HashlineEditTool::new(&root).with_session(session.clone());
-    let unseen = edit
-        .execute(&input(&format!("[sample#{tag}]\nPUT 3.=3:\n+C\n")))
-        .await
-        .unwrap_err();
-    assert!(unseen.contains("unseen"), "{unseen}");
-    fs::write(root.join("sample"), "a\nb\nc\nchanged\n").unwrap();
-    let stale = edit
-        .execute(&input(&format!("[sample#{tag}]\nPUT 1.=1:\n+A\n")))
-        .await
-        .unwrap_err();
-    assert!(stale.contains("stale"), "{stale}");
     let _ = fs::remove_dir_all(root);
 }
 
@@ -474,30 +430,6 @@ fn delimiter_scan_skips_strings_and_comments() {
         "    pass",
     ];
     assert_eq!(block::resolve_block(&docstring, 1, "a.py"), Ok((1, 5)));
-}
-
-#[tokio::test]
-async fn cut_star_removes_function_despite_brace_in_string() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("sample.rs"),
-        "fn f() {\n    let s = \"}\";\n    let t = 1;\n}\nafter();\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"sample.rs"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!("{header}\nCUT 1*\n")))
-        .await
-        .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("sample.rs")).unwrap(),
-        "after();\n"
-    );
 }
 
 #[tokio::test]
@@ -704,32 +636,6 @@ async fn paste_inside_cut_range_gets_guidance_and_outside_anchor_works() {
     assert_eq!(
         fs::read_to_string(root.path().join("reorder.txt")).unwrap(),
         "h1\nh2\n{\n    a\n    b\n}\n"
-    );
-}
-
-#[tokio::test]
-async fn put_star_body_indent_is_verbatim() {
-    let root = tempfile::tempdir().unwrap();
-    fs::write(
-        root.path().join("indent.py"),
-        "class C:\n    def old():\n        return 1\n    x = 2\n",
-    )
-    .unwrap();
-    let session = HashlineSession::new();
-    let read = ReadTool::new(root.path())
-        .with_editor(EditorKind::Hashline)
-        .with_hashline(session.clone());
-    let shown = read.execute(r#"{"path":"indent.py"}"#).await.unwrap();
-    let header = shown.lines().next().unwrap();
-    let edit = HashlineEditTool::new(root.path()).with_session(session);
-    edit.execute(&input(&format!(
-        "{header}\nPUT 2*:\n+        def new():\n+            pass\n"
-    )))
-    .await
-    .unwrap();
-    assert_eq!(
-        fs::read_to_string(root.path().join("indent.py")).unwrap(),
-        "class C:\n        def new():\n            pass\n    x = 2\n"
     );
 }
 

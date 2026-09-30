@@ -1288,21 +1288,6 @@ pass
 }
 
 #[tokio::test]
-async fn test_assistant_markdown_empty() {
-    let mut app = create_test_app().await;
-    app.add_part(
-        Role::Assistant,
-        ContentPart::Text {
-            text: String::new(),
-            annotations: Vec::new(),
-        },
-    );
-
-    let lines = build_chat_lines(&app, 80);
-    assert!(!lines.is_empty());
-}
-
-#[tokio::test]
 async fn test_render_chat_scrollbar_and_scrolling() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

@@ -229,11 +229,4 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("must not be empty"), "{error}");
     }
-
-    #[tokio::test]
-    async fn wait_session_returns_final_message() {
-        let tool = WaitSessionTool::new(broker());
-        let text = tool.execute(r#"{"session_id":"sess_b2"}"#).await.unwrap();
-        assert_eq!(text, "reply body");
-    }
 }

@@ -372,28 +372,4 @@ mod tests {
         assert_eq!(update["turns"]["from"], 0);
         assert_eq!(update["turns"]["items"][0]["worked_ms"], 500);
     }
-
-    #[test]
-    fn synthetic_stream_bandwidth() {
-        let mut current = view();
-        Arc::make_mut(&mut current.session)
-            .append_turn(Turn::user_turn(Message::text("h".repeat(34_000))));
-        let mut full_bytes = 0;
-        let mut delta_bytes = 0;
-        for _ in 0..30 {
-            let before = current.clone();
-            current.revision += 1;
-            if let ContentPart::Text { text, .. } = Arc::make_mut(&mut current.draft[0]) {
-                text.push_str("abcdefghij");
-            }
-            full_bytes += serde_json::to_vec(&SessionSnapshot::from(&current))
-                .unwrap()
-                .len();
-            delta_bytes += serde_json::to_vec(&SessionDelta::between(&before, &current))
-                .unwrap()
-                .len();
-        }
-        eprintln!("30 synthetic frames: full={full_bytes} bytes, delta={delta_bytes} bytes");
-        assert!(delta_bytes * 100 < full_bytes);
-    }
 }

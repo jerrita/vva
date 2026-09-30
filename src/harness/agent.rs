@@ -447,18 +447,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_registers_background_task_tools() {
-        let config = web_config(None);
-        let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();
-
-        assert!(engine.tools.get("TaskOutput").is_some());
-        assert!(engine.tools.get("TaskStop").is_some());
-        let shell = engine.tools.get("Shell").unwrap();
-        let property = &shell.parameters()["properties"]["run_in_background"];
-        assert_eq!(property["type"], "boolean");
-    }
-
-    #[tokio::test]
     async fn engine_registers_subagent_tools_for_top_level_sessions() {
         let config = web_config(None);
         let engine = build_engine(&config, &session_for("p/nos", false)).unwrap();

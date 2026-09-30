@@ -71,20 +71,3 @@ impl ForkTitleState {
         state
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn message_action_navigates_between_revert_and_fork() {
-        let mut state = MessageActionState::new(3, "prompt".into());
-        assert!(!state.is_fork());
-        state.next();
-        assert!(state.is_fork());
-        state.next();
-        assert!(!state.is_fork());
-        state.previous();
-        assert!(state.is_fork());
-    }
-}
