@@ -6,6 +6,15 @@ pub(super) enum TurnOutcome {
     Aborted,
 }
 
+/// 会话任务的外部依赖
+pub(super) struct TaskDeps {
+    pub store: Arc<dyn SessionStore>,
+    pub config: Arc<AppConfig>,
+    pub state_path: PathBuf,
+    /// 会话编排接口（子代理派生与跨会话投递）
+    pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
+}
+
 pub(super) struct SessionTask {
     pub(super) hashline: Arc<crate::tools::hashline::HashlineSession>,
     pub(super) view: SessionView,
@@ -127,6 +136,58 @@ fn collect_on_demand_agents(
 }
 
 impl SessionTask {
+    /// 构造任务及其发布通道：返回 (任务, 视图订阅, 已完成轮次订阅)；
+    /// 后台任务完成经 `commands` 弱引用回投，通道饱和或会话已退出时丢弃，
+    /// 模型可经 TaskOutput 轮询自愈。
+    pub(super) fn new(
+        session: Session,
+        persisted: bool,
+        deps: TaskDeps,
+        commands: mpsc::WeakSender<Command>,
+    ) -> (
+        Self,
+        watch::Receiver<Arc<SessionView>>,
+        watch::Receiver<CompletedTurn>,
+    ) {
+        let view = SessionView::new(session, persisted);
+        let (view_tx, view_rx) = watch::channel(Arc::new(view.clone()));
+        let (ask_user_tx, ask_user_rx) = mpsc::channel(4);
+        let (turn_tx, turns) = watch::channel(CompletedTurn::default());
+        let notify = commands.clone();
+        let tasks = Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
+            move |task_id| {
+                if let Some(tx) = notify.upgrade() {
+                    let _ = tx.try_send(Command::TaskFinished { task_id });
+                }
+            },
+        )));
+        let task = Self {
+            view,
+            view_tx,
+            store: deps.store,
+            config: deps.config,
+            hashline: crate::tools::hashline::HashlineSession::new(),
+            state_path: deps.state_path,
+            commands,
+            dirty: false,
+            cli: None,
+            stop_request: None,
+            title_task: None,
+            text_parts: HashMap::new(),
+            ask_user_tx,
+            ask_user_rx,
+            pending_user_question: None,
+            tasks,
+            task_completions: Vec::new(),
+            subagent_completions: Vec::new(),
+            pending_deliveries: Vec::new(),
+            turn_tx,
+            turn_start: 0,
+            broker: deps.broker,
+        };
+        (task, view_rx, turns)
+    }
+
     pub(super) fn publish(&mut self) {
         self.dirty = false;
         self.view.revision += 1;
@@ -364,7 +425,7 @@ impl SessionTask {
 
     async fn revert(&mut self, turn_index: usize) -> Result<(), String> {
         if !matches!(self.view.state, RunState::Idle) {
-            return Err("Session is currently running another prompt".into());
+            return Err(BUSY.into());
         }
         let mut session = (*self.view.session).clone();
         if turn_index >= session.turns.len() {
@@ -642,47 +703,73 @@ impl SessionTask {
                 Some(event) = events.recv() => self.event(event).await,
                 Some(request) = self.ask_user_rx.recv() => self.receive_user_question(request).await,
                 _ = publish_tick.tick() => self.publish_throttled(),
-                command = commands.recv() => match command {
-                    Some(Command::Configure { model, variant, search, reply }) => {
-                        let _ = reply.send(self.configure(model, variant, search).await);
-                    }
-                    Some(Command::Title(title)) => self.handle_title(title).await,
-                    Some(Command::DismissNotice { id, reply }) => {
-                        self.dismiss_notice(&id);
-                        let _ = reply.send(Ok(()));
-                    }
-                    Some(Command::TaskFinished { task_id }) => {
-                        self.queue_task_completion(task_id).await;
-                    }
-                    Some(Command::SubagentFinished { session_id }) => {
-                        self.queue_subagent_completion(session_id).await;
-                    }
-                    Some(Command::Deliver { delivery, reply }) => {
-                        // 程序化消息不拒绝：入队待轮次结束后处理
-                        self.pending_deliveries.push(delivery);
-                        let _ = reply.send(Ok(()));
-                    }
-                    Some(Command::Submit { reply, .. }) | Some(Command::Revert { reply, .. }) => { let _ = reply.send(Err("Session is currently running another prompt".into())); }
-                    Some(Command::AnswerUser { request_id, answers, reply }) => {
-                        let _ = reply.send(self.answer_user(request_id, answers).await);
-                    }
-                    Some(Command::Stop { delete, reply }) => {
-                        self.cancel_pending_user_question();
-                        self.stop_request = Some((delete, reply));
+                command = commands.recv() => {
+                    let Some(command) = command else {
                         self.publish_throttled();
                         return None;
+                    };
+                    let Some(command) = self.handle_shared(command).await else { continue };
+                    match command {
+                        Command::TaskFinished { task_id } => {
+                            self.queue_task_completion(task_id).await;
+                        }
+                        Command::SubagentFinished { session_id } => {
+                            self.queue_subagent_completion(session_id).await;
+                        }
+                        Command::Deliver { delivery, reply } => {
+                            // 程序化消息不拒绝：入队待轮次结束后处理
+                            self.pending_deliveries.push(delivery);
+                            let _ = reply.send(Ok(()));
+                        }
+                        Command::Submit { reply, .. } | Command::Revert { reply, .. } => {
+                            let _ = reply.send(Err(BUSY.into()));
+                        }
+                        Command::Stop { delete, reply } => {
+                            self.cancel_pending_user_question();
+                            self.stop_request = Some((delete, reply));
+                            self.publish_throttled();
+                            return None;
+                        }
+                        Command::Configure { .. } | Command::Title(_)
+                        | Command::DismissNotice { .. } | Command::AnswerUser { .. } => {
+                            unreachable!("handled by handle_shared")
+                        }
                     }
-                    None => { self.publish_throttled(); return None; }
                 }
             }
         }
     }
 
-    /// Title 命令在运行中 (drive) 与空闲 (run) 两条路径共用同一处理
-    async fn handle_title(&mut self, title: String) {
-        if let Err(error) = self.title(title).await {
-            self.event(AgentEvent::Notice(error)).await;
+    /// 运行中 (drive) 与空闲 (run) 语义一致的命令；其余命令原样交还调用方
+    async fn handle_shared(&mut self, command: Command) -> Option<Command> {
+        match command {
+            Command::Configure {
+                model,
+                variant,
+                search,
+                reply,
+            } => {
+                let _ = reply.send(self.configure(model, variant, search).await);
+            }
+            Command::Title(title) => {
+                if let Err(error) = self.title(title).await {
+                    self.event(AgentEvent::Notice(error)).await;
+                }
+            }
+            Command::DismissNotice { id, reply } => {
+                self.dismiss_notice(&id);
+                let _ = reply.send(Ok(()));
+            }
+            Command::AnswerUser {
+                request_id,
+                answers,
+                reply,
+            } => {
+                let _ = reply.send(self.answer_user(request_id, answers).await);
+            }
+            other => return Some(other),
         }
+        None
     }
 
     fn record_outcome(&mut self, text: String, aborted: bool) {
@@ -706,6 +793,7 @@ impl SessionTask {
         self.publish();
     }
 
+    /// 单个用户轮次：反复「模型响应 → 并行工具」直至模型不再调用工具
     pub(super) async fn execute(
         &mut self,
         engine: AgentEngine,
@@ -714,7 +802,7 @@ impl SessionTask {
         self.event(AgentEvent::Capabilities(engine.notices.clone()))
             .await;
         self.view.external_web = engine.external_web.clone();
-        let tools = engine.tools.definitions();
+        let definitions = engine.tools.definitions();
         let worked_started = Instant::now();
         loop {
             self.drain_task_completions().await?;
@@ -728,7 +816,7 @@ impl SessionTask {
             let request =
                 engine
                     .provider
-                    .complete_stream(&context, &tools, &engine.options, Some(tx));
+                    .complete_stream(&context, &definitions, &engine.options, Some(tx));
             let Some(response) = self.drive(request, commands, &mut rx).await else {
                 return Ok(TurnOutcome::Aborted);
             };
@@ -754,37 +842,7 @@ impl SessionTask {
             if calls.is_empty() {
                 return Ok(TurnOutcome::Completed);
             }
-            for call in &calls {
-                if engine.tools.validate_call(call).is_ok() {
-                    self.event(AgentEvent::ToolExecuting {
-                        name: call.name.clone(),
-                        args: call.arguments.clone(),
-                    })
-                    .await;
-                }
-            }
-            let tools = engine.tools.clone();
-            let mut set = tokio::task::JoinSet::new();
-            for (index, call) in calls.iter().cloned().enumerate() {
-                let tools = tools.clone();
-                set.spawn(async move { (index, tools.execute_call(&call).await) });
-            }
-            let count = calls.len();
-            let Some(results) = self
-                .drive(
-                    async move {
-                        let mut results = vec![None; count];
-                        while let Some(joined) = set.join_next().await {
-                            let (index, result) = joined.expect("tool task panicked");
-                            results[index] = Some(result);
-                        }
-                        results.into_iter().map(Option::unwrap).collect::<Vec<_>>()
-                    },
-                    commands,
-                    &mut rx,
-                )
-                .await
-            else {
+            let Some(results) = self.run_tools(&engine, &calls, commands, &mut rx).await else {
                 // 中止：为未决 tool_call 合成错误结果，保持 tool_call / tool_result 配对完整；
                 // 前台子代理随父会话本轮中止联动停止
                 let results = calls
@@ -799,8 +857,7 @@ impl SessionTask {
                     .await;
                 return Ok(TurnOutcome::Aborted);
             };
-            let on_demand_agents = self.commit_tool_results(calls, results).await?;
-            for (agents_path, content) in on_demand_agents {
+            for (agents_path, content) in self.commit_tool_results(calls, results).await? {
                 let reminder = crate::system::format_directory_agents_reminder(
                     &self.view.session.header.workspace_root,
                     &agents_path,
@@ -810,6 +867,39 @@ impl SessionTask {
                     .await?;
             }
         }
+    }
+
+    /// 并行执行一批工具调用，结果按调用顺序返回；被 Stop 中断时返回 None
+    async fn run_tools(
+        &mut self,
+        engine: &AgentEngine,
+        calls: &[crate::model::ToolCall],
+        commands: &mut mpsc::Receiver<Command>,
+        events: &mut mpsc::Receiver<AgentEvent>,
+    ) -> Option<Vec<crate::model::ToolResult>> {
+        for call in calls {
+            if engine.tools.validate_call(call).is_ok() {
+                self.event(AgentEvent::ToolExecuting {
+                    name: call.name.clone(),
+                    args: call.arguments.clone(),
+                })
+                .await;
+            }
+        }
+        let mut set = tokio::task::JoinSet::new();
+        for (index, call) in calls.iter().cloned().enumerate() {
+            let tools = engine.tools.clone();
+            set.spawn(async move { (index, tools.execute_call(&call).await) });
+        }
+        let mut results = vec![None; calls.len()];
+        let collect = async {
+            while let Some(joined) = set.join_next().await {
+                let (index, result) = joined.expect("tool task panicked");
+                results[index] = Some(result);
+            }
+        };
+        self.drive(collect, commands, events).await?;
+        Some(results.into_iter().map(Option::unwrap).collect())
     }
 
     /// 逐个提交工具结果：附件复验 → ToolFinished 事件 → Tool 轮次落盘，
@@ -1031,13 +1121,8 @@ impl SessionTask {
         false
     }
 
-    /// 空闲时收到完成通知：入队后自动续跑；返回真表示终止会话任务
-    async fn run_completion_turn(
-        &mut self,
-        commands: &mut mpsc::Receiver<Command>,
-        enqueue: impl std::ops::AsyncFnOnce(&mut Self),
-    ) -> bool {
-        enqueue(self).await;
+    /// 空闲时完成通知已入队：自动续跑，execute 首轮注入通知；返回真表示终止会话任务
+    async fn run_completion_turn(&mut self, commands: &mut mpsc::Receiver<Command>) -> bool {
         match self.build_engine().await {
             Ok(engine) => {
                 let result = self.run_turns(engine, commands).await;
@@ -1053,6 +1138,9 @@ impl SessionTask {
 
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         while let Some(command) = commands.recv().await {
+            let Some(command) = self.handle_shared(command).await else {
+                continue;
+            };
             match command {
                 Command::Submit {
                     prompt,
@@ -1086,45 +1174,30 @@ impl SessionTask {
                         break;
                     }
                 }
-                Command::Configure {
-                    model,
-                    variant,
-                    search,
-                    reply,
-                } => {
-                    let _ = reply.send(self.configure(model, variant, search).await);
-                }
-                Command::Title(title) => self.handle_title(title).await,
-                Command::DismissNotice { id, reply } => {
-                    self.dismiss_notice(&id);
-                    let _ = reply.send(Ok(()));
-                }
                 Command::TaskFinished { task_id } => {
-                    // 空闲时收到完成通知：入队后自动续跑，execute 首轮注入通知轮次
-                    let enqueue = async |task: &mut Self| task.queue_task_completion(task_id).await;
-                    if self.run_completion_turn(&mut commands, enqueue).await {
+                    self.queue_task_completion(task_id).await;
+                    if self.run_completion_turn(&mut commands).await {
                         break;
                     }
                 }
                 Command::SubagentFinished { session_id } => {
-                    // 空闲时收到子代理完成：入队后自动续跑，execute 首轮注入最终消息
-                    let enqueue =
-                        async |task: &mut Self| task.queue_subagent_completion(session_id).await;
-                    if self.run_completion_turn(&mut commands, enqueue).await {
+                    self.queue_subagent_completion(session_id).await;
+                    if self.run_completion_turn(&mut commands).await {
                         break;
                     }
                 }
                 Command::Revert { turn_index, reply } => {
                     let _ = reply.send(self.revert(turn_index).await);
                 }
-                Command::AnswerUser { reply, .. } => {
-                    let _ = reply.send(Err("No user question is waiting for an answer".into()));
-                }
                 Command::Stop { delete, reply } => {
                     if self.stop(delete, reply).await {
                         break;
                     }
                 }
+                Command::Configure { .. }
+                | Command::Title(_)
+                | Command::DismissNotice { .. }
+                | Command::AnswerUser { .. } => unreachable!("handled by handle_shared"),
             }
         }
         if let Some(task) = self.title_task {

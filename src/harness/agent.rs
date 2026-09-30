@@ -68,30 +68,6 @@ impl AgentEngine {
             .map_err(|e| e.to_string())?;
         let inputs = resolved.input_capabilities();
         inputs.validate_session(session)?;
-        let mut tools = ToolRegistry::with_workspace_tools(
-            &session.header.workspace_root,
-            Some(deps.tool_outputs),
-            session.header.editor,
-            WorkspaceToolDeps {
-                hashline: deps.hashline,
-                inputs: inputs.clone(),
-                background: Some(deps.background.clone()),
-            },
-        );
-        tools.register(Arc::new(crate::tools::ask_user::AskUserTool::new(
-            deps.ask_user_requests,
-        )));
-        tools.register(Arc::new(crate::tools::background::TaskOutputTool::new(
-            deps.background.clone(),
-        )));
-        tools.register(Arc::new(
-            crate::tools::background::TaskStopTool::new(deps.background)
-                .with_broker(deps.broker.clone()),
-        ));
-        tools.register(Arc::new(crate::tools::skill::SkillTool::new(Arc::new(
-            deps.skills,
-        ))));
-        // 子代理派生与跨会话投递（subagent 会话按定义白名单裁剪）
         let agent_def = session
             .header
             .agent
@@ -104,17 +80,8 @@ impl AgentEngine {
                     .ok_or_else(|| format!("Agent definition '{name}' is unavailable"))
             })
             .transpose()?;
-        tools.register(Arc::new(crate::tools::agent::AgentTool::new(
-            deps.broker.clone(),
-            Arc::new(deps.agents),
-            crate::tools::agent::SubagentContext::from_session(session),
-        )));
-        tools.register(Arc::new(crate::tools::session_ipc::SendMessageTool::new(
-            deps.broker.clone(),
-        )));
-        tools.register(Arc::new(crate::tools::session_ipc::WaitSessionTool::new(
-            deps.broker,
-        )));
+        let mut tools = Self::base_tools(session, &inputs, deps);
+        // subagent 会话按定义白名单裁剪
         let allowed = |name: &str| {
             agent_def
                 .as_ref()
@@ -137,16 +104,13 @@ impl AgentEngine {
                     .map_err(|_| format!("Model output limit exceeds u32: {}", limit.output))
             })
             .transpose()?;
+        let web_declared = session.header.web_search && resolved.model_config.declare_web_search();
         let options = CompletionOptions {
             model: resolved.model_id,
             max_tokens,
             reasoning_effort: resolved.selected_variant,
-            enable_web_search: session.header.web_search
-                && resolved.model_config.declare_web_search()
-                && search_allowed
-                && (!bundled_fetch || fetch_allowed),
-            enable_web_fetch: session.header.web_search
-                && resolved.model_config.declare_web_search()
+            enable_web_search: web_declared && search_allowed && (!bundled_fetch || fetch_allowed),
+            enable_web_fetch: web_declared
                 && resolved.model_config.declare_web_fetch()
                 && fetch_allowed,
             service_tier: resolved.model_config.service_tier().map(str::to_string),
@@ -167,9 +131,8 @@ impl AgentEngine {
                 }),
         );
         // 原生 web 能力缺位时以外置 provider 的客户端工具补全（配置错误在此显式报错）
-        let mut notices = Vec::new();
+        let mut external_web = Vec::new();
         let mut external_search = false;
-        let mut activated: Vec<String> = Vec::new();
         if session.header.web_search && (search_allowed || fetch_allowed) {
             let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
             let native_search = options.enable_web_search && capabilities.supports_native_search;
@@ -187,7 +150,7 @@ impl AgentEngine {
                 tools.register(Arc::new(crate::tools::web::tool::WebSearchTool::new(
                     search.clone(),
                 )));
-                activated.push(search.name().to_string());
+                external_web.push(search.name().to_string());
                 external_search = true;
             }
             if fetch_allowed
@@ -197,36 +160,14 @@ impl AgentEngine {
                 tools.register(Arc::new(crate::tools::web::tool::WebFetchTool::new(
                     fetch.clone(),
                 )));
-                activated.push(fetch.name().to_string());
+                external_web.push(fetch.name().to_string());
             }
-            activated.dedup();
+            external_web.dedup();
         }
         if let Some(def) = &agent_def {
             tools.retain(&def.tools);
         }
-        // 亲和组切换：前一段原生状态（链锚点 / 签名块）无法回传，历史降维重建，显式告知
-        let previous_scope = session.turns.iter().rev().find_map(|turn| {
-            if turn.role != Role::Assistant {
-                return None;
-            }
-            turn.meta
-                .response
-                .as_ref()
-                .and_then(|meta| meta.scope.as_deref())
-                .or_else(|| {
-                    turn.meta
-                        .anthropic
-                        .as_ref()
-                        .and_then(|meta| meta.scope.as_deref())
-                })
-        });
-        if let Some(previous) = previous_scope
-            && previous != affinity
-        {
-            notices.push(format!(
-                "Native context from '{previous}' cannot be replayed under affinity '{affinity}'; history has been rebuilt in plain form."
-            ));
-        }
+        let mut notices: Vec<String> = affinity_notice(session, &affinity).into_iter().collect();
         notices.extend(capability_notices(
             provider.as_ref(),
             &options,
@@ -237,10 +178,80 @@ impl AgentEngine {
             tools,
             options,
             notices,
-            external_web: activated,
+            external_web,
             inputs,
         })
     }
+
+    /// 工作空间工具与会话级工具 (交互 / 后台 / 技能 / 子代理编排)
+    fn base_tools(
+        session: &Session,
+        inputs: &crate::config::resolver::InputCapabilities,
+        deps: EngineDeps,
+    ) -> ToolRegistry {
+        let mut tools = ToolRegistry::with_workspace_tools(
+            &session.header.workspace_root,
+            Some(deps.tool_outputs),
+            session.header.editor,
+            WorkspaceToolDeps {
+                hashline: deps.hashline,
+                inputs: inputs.clone(),
+                background: Some(deps.background.clone()),
+            },
+        );
+        let broker = deps.broker;
+        let extra: [Arc<dyn crate::tools::Tool>; 7] = [
+            Arc::new(crate::tools::ask_user::AskUserTool::new(
+                deps.ask_user_requests,
+            )),
+            Arc::new(crate::tools::background::TaskOutputTool::new(
+                deps.background.clone(),
+            )),
+            Arc::new(
+                crate::tools::background::TaskStopTool::new(deps.background)
+                    .with_broker(broker.clone()),
+            ),
+            Arc::new(crate::tools::skill::SkillTool::new(Arc::new(deps.skills))),
+            Arc::new(crate::tools::agent::AgentTool::new(
+                broker.clone(),
+                Arc::new(deps.agents),
+                crate::tools::agent::SubagentContext::from_session(session),
+            )),
+            Arc::new(crate::tools::session_ipc::SendMessageTool::new(
+                broker.clone(),
+            )),
+            Arc::new(crate::tools::session_ipc::WaitSessionTool::new(broker)),
+        ];
+        for tool in extra {
+            tools.register(tool);
+        }
+        tools
+    }
+}
+
+/// 亲和组切换：前一段原生状态（链锚点 / 签名块）无法回传，历史降维重建，显式告知
+fn affinity_notice(session: &Session, affinity: &str) -> Option<String> {
+    let previous = session.turns.iter().rev().find_map(|turn| {
+        if turn.role != Role::Assistant {
+            return None;
+        }
+        let response = turn
+            .meta
+            .response
+            .as_ref()
+            .and_then(|meta| meta.scope.as_deref());
+        response.or_else(|| {
+            turn.meta
+                .anthropic
+                .as_ref()
+                .and_then(|meta| meta.scope.as_deref())
+        })
+    })?;
+    (previous != affinity).then(|| {
+        format!(
+            "Native context from '{previous}' cannot be replayed under affinity '{affinity}'; history has been rebuilt in plain form."
+        )
+    })
 }
 
 pub(super) async fn generate_title(
@@ -395,47 +406,9 @@ mod tests {
                 ))),
                 skills: Vec::new(),
                 agents,
-                broker: Arc::new(StubBroker),
+                broker: Arc::new(crate::harness::testing::StubBroker(None)),
             },
         )
-    }
-
-    /// 无编排能力的 broker 桩：engine 构建路径不触发网络与派生
-    struct StubBroker;
-
-    #[async_trait::async_trait]
-    impl crate::tools::agent::SessionBroker for StubBroker {
-        async fn spawn_subagent(
-            &self,
-            _parent: &crate::tools::agent::SubagentContext,
-            _def: &crate::agents::AgentDef,
-            _prompt: &str,
-            _description: &str,
-            _background: bool,
-        ) -> Result<crate::tools::agent::SubagentLaunch, String> {
-            Err("stub broker".into())
-        }
-        async fn deliver(&self, _session_id: &str, _text: &str) -> Result<String, String> {
-            Err("stub broker".into())
-        }
-        async fn wait_turn(
-            &self,
-            _session_id: &str,
-            _seen_seq: u64,
-            _timeout: Option<std::time::Duration>,
-        ) -> Result<crate::tools::agent::SubagentReport, String> {
-            Err("stub broker".into())
-        }
-        async fn session_report(
-            &self,
-            _session_id: &str,
-        ) -> Result<crate::tools::agent::SubagentReport, String> {
-            Err("stub broker".into())
-        }
-        async fn abort_session(&self, _session_id: &str) -> Result<(), String> {
-            Err("stub broker".into())
-        }
-        async fn abort_children(&self, _parent_id: &str) {}
     }
 
     #[tokio::test]

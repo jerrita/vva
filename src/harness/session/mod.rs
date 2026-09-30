@@ -10,7 +10,7 @@ mod view;
 pub use handle::ManagedSession;
 use handle::{Command, CompletedTurn, DeliveryReceipt, PendingDelivery};
 pub use manager::SessionManager;
-use task::SessionTask;
+use task::{SessionTask, TaskDeps};
 pub use view::{Notice, NoticeKind, RunState, SessionView};
 
 use std::collections::HashMap;
@@ -27,6 +27,9 @@ use crate::model::{
     ContentPart, MediaSource, Message, Role, Session, Turn, UserAnswer, UserQuestionRequest,
 };
 use crate::storage::SessionStore;
+
+/// 运行中拒绝新提示的统一错误文案
+const BUSY: &str = "Session is currently running another prompt";
 
 type Reply = oneshot::Sender<Result<(), String>>;
 

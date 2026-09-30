@@ -139,6 +139,7 @@ src/
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
 │   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions + EngineDeps 依赖注入) 与 capability_notices 能力协商；subagent 会话按 agent 定义裁剪工具
+│   ├── testing.rs          # (cfg(test)) 共享 StubBroker 桩
 │   └── session/            # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
 │       ├── mod.rs          # 模块导出 (SessionManager/ManagedSession/SessionView/RunState)
 │       ├── view.rs         # SessionView 只读快照与 RunState
