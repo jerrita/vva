@@ -28,53 +28,41 @@ pub enum ConfigError {
 /// 剥离 JSONC 中的单行注释 `// ...` 和块级注释 `/* ... */`，同时严格保留字符串内部字符
 pub fn strip_jsonc_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    let mut in_string = false;
-    let mut escaped = false;
+    let mut chars = input.chars().peekable();
 
-    while i < len {
-        let ch = chars[i];
-
-        if in_string {
-            out.push(ch);
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            i += 1;
-        } else {
-            if ch == '"' {
-                in_string = true;
-                escaped = false;
+    while let Some(ch) = chars.next() {
+        match (ch, chars.peek()) {
+            ('"', _) => {
                 out.push(ch);
-                i += 1;
-            } else if ch == '/' && i + 1 < len && chars[i + 1] == '/' {
-                // 单行注释：跳至行尾，保留换行符以维持报错行号
-                i += 2;
-                while i < len && chars[i] != '\n' {
-                    i += 1;
+                let mut escaped = false;
+                for c in chars.by_ref() {
+                    out.push(c);
+                    if escaped {
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        break;
+                    }
                 }
-            } else if ch == '/' && i + 1 < len && chars[i + 1] == '*' {
-                // 块级注释：跳至结束符 */
-                i += 2;
-                while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    if chars[i] == '\n' {
+            }
+            // 单行注释：跳至行尾，保留换行符以维持报错行号
+            ('/', Some('/')) => while chars.next_if(|c| *c != '\n').is_some() {},
+            // 块级注释：跳至结束符 */，保留其中换行符
+            ('/', Some('*')) => {
+                chars.next();
+                let mut prev = '\0';
+                for c in chars.by_ref() {
+                    if c == '\n' {
                         out.push('\n');
                     }
-                    i += 1;
+                    if prev == '*' && c == '/' {
+                        break;
+                    }
+                    prev = c;
                 }
-                if i + 1 < len {
-                    i += 2; // 跳过 */
-                }
-            } else {
-                out.push(ch);
-                i += 1;
             }
+            _ => out.push(ch),
         }
     }
 
@@ -84,29 +72,16 @@ pub fn strip_jsonc_comments(input: &str) -> String {
 /// 展开文本中的 `${ENV_VAR}` 环境变量
 pub fn interpolate_env_vars(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '$' && i + 1 < len && chars[i + 1] == '{' {
-            let start = i + 2;
-            let mut end = start;
-            while end < len && chars[end] != '}' {
-                end += 1;
-            }
-            if end < len {
-                let var_name: String = chars[start..end].iter().collect();
-                let var_val = std::env::var(&var_name).unwrap_or_default();
-                out.push_str(&var_val);
-                i = end + 1;
-                continue;
-            }
-        }
-        out.push(chars[i]);
-        i += 1;
+    let mut rest = input;
+    while let Some(start) = rest.find("${") {
+        let Some(len) = rest[start + 2..].find('}') else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(&std::env::var(&rest[start + 2..start + 2 + len]).unwrap_or_default());
+        rest = &rest[start + 3 + len..];
     }
-
+    out.push_str(rest);
     out
 }
 

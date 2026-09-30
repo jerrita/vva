@@ -99,6 +99,17 @@ pub enum Annotation {
     },
 }
 
+impl Annotation {
+    /// URL 类引用的 (标题, 链接)；文件引用无此二者
+    pub fn title_url(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::UrlCitation { title, url, .. }
+            | Self::WebSearchResultLocation { title, url, .. } => Some((title, url)),
+            Self::FileCitation { .. } => None,
+        }
+    }
+}
+
 /// 参考 OpenAI Responses API 的 web_search_call 结构
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WebSearchCall {
@@ -138,17 +149,11 @@ impl WebSearchCall {
                 }
                 let mut text = String::new();
                 for (index, source) in self.sources.iter().enumerate() {
-                    if source.title.is_empty() {
-                        text.push_str(&format!("{}. {}\n", index + 1, source.url));
-                    } else {
-                        text.push_str(&format!(
-                            "{}. {}\n{}\n",
-                            index + 1,
-                            source.title,
-                            source.url
-                        ));
+                    text.push_str(&format!("{}. ", index + 1));
+                    if !source.title.is_empty() {
+                        text.push_str(&format!("{}\n", source.title));
                     }
-                    text.push('\n');
+                    text.push_str(&format!("{}\n\n", source.url));
                 }
                 text
             }
@@ -190,6 +195,16 @@ pub enum ImageGenerationStatus {
     InProgress,
     Completed,
     Incomplete,
+}
+
+impl ImageGenerationStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+            Self::Incomplete => "incomplete",
+        }
+    }
 }
 
 /// 参考 OpenAI Responses API 的 image_generation_call 结构
@@ -238,11 +253,6 @@ mod tests {
         assert_eq!(call.query, "query");
         assert_eq!(call.sources.len(), 1);
     }
-}
-
-#[cfg(test)]
-mod action_tests {
-    use super::*;
 
     #[test]
     fn actionless_search_roundtrips_as_null() {

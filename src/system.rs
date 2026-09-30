@@ -2,188 +2,114 @@ use std::path::{Path, PathBuf};
 
 use crate::skills::Skill;
 
-/// 系统静态环境信息
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SystemInfo {
-    pub date: String,
-    pub os: String,
-    pub arch: String,
-}
-
-impl SystemInfo {
-    /// 采集当前系统的静态环境指标
-    pub fn collect() -> Self {
-        Self {
-            date: get_current_date(),
-            os: get_os_info(),
-            arch: std::env::consts::ARCH.to_string(),
-        }
-    }
-
-    /// 转换为固定 System Prompt 文本
-    pub fn to_system_prompt(&self, workspace: &Path, scratch: &Path) -> String {
-        format!(
-            "You are vva, expert at agentic coding and knowledge work.\n\n\
-             ## Environment Context\n\
-             - Date: {}\n\
-             - Operating System: {} ({})\n\
-             - Workspace Root: {}\n\
-             - Scratch Pad: {}\n\n\
-             The Scratch Pad is the absolute directory shown in Environment Context. \
-             Use that absolute path for durable notes and working artifacts. \
-             Relative paths including scratch/... resolve under the workspace root, \
-             not the Scratch Pad; there is no scratch alias.\n",
-            self.date,
-            self.os,
-            self.arch,
-            workspace.display(),
-            scratch.display()
-        )
-    }
-}
-
 /// 生成当前工作空间下的固定 System Prompt
 pub fn build_system_prompt(workspace: &Path, scratch: &Path) -> String {
-    SystemInfo::collect().to_system_prompt(workspace, scratch)
+    format!(
+        "You are vva, expert at agentic coding and knowledge work.\n\n\
+         ## Environment Context\n\
+         - Date: {}\n\
+         - Operating System: {} ({})\n\
+         - Workspace Root: {}\n\
+         - Scratch Pad: {}\n\n\
+         The Scratch Pad is the absolute directory shown in Environment Context. \
+         Use that absolute path for durable notes and working artifacts. \
+         Relative paths including scratch/... resolve under the workspace root, \
+         not the Scratch Pad; there is no scratch alias.\n",
+        chrono::Local::now().format("%Y-%m-%d"),
+        get_os_info(),
+        std::env::consts::ARCH,
+        workspace.display(),
+        scratch.display()
+    )
+}
+
+/// 包裹 `<system-reminder>` 标签；`attrs` 为开标签内的属性串
+fn reminder(attrs: &str, body: &str) -> String {
+    format!("<system-reminder {attrs}>\n{body}\n</system-reminder>")
+}
+
+/// 路径展示归一：统一使用 `/` 分隔
+fn slash(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// 格式化已发现技能清单为带有 <system-reminder> 标签的 User Message 文本
 /// （对齐 AGENTS.md 注入机制：技能清单不进入 System Prompt）
 pub fn format_skills_reminder(skills: &[Skill]) -> String {
-    let mut reminder = String::from(
-        "<system-reminder type=\"skills\">\n\
-         The following skills provide specialized workflows and knowledge for this \
-         environment. When a task matches a skill's purpose, load its full instructions \
-         with the Skill tool before proceeding.\n\n",
-    );
-    for skill in skills {
-        reminder.push_str(&skill.prompt_line());
-        reminder.push('\n');
-    }
-    reminder.push_str("</system-reminder>");
-    reminder
+    let lines: Vec<String> = skills.iter().map(Skill::prompt_line).collect();
+    reminder(
+        "type=\"skills\"",
+        &format!(
+            "The following skills provide specialized workflows and knowledge for this \
+             environment. When a task matches a skill's purpose, load its full instructions \
+             with the Skill tool before proceeding.\n\n{}",
+            lines.join("\n")
+        ),
+    )
 }
 
 /// 格式化 /<skill_name> 直接加载的技能正文为 <system-reminder> User Message 文本
 /// （user turn 保留原始输入，技能正文以独立轮次随行注入）
 pub fn format_skill_load_reminder(skill: &Skill) -> String {
-    format!(
-        "<system-reminder type=\"skill-loaded\" name=\"{}\">\n{}\n</system-reminder>",
-        skill.name,
-        crate::skills::format_skill_content(skill)
+    reminder(
+        &format!("type=\"skill-loaded\" name=\"{}\"", skill.name),
+        &crate::skills::format_skill_content(skill),
     )
 }
 
 /// 格式化后台任务完成通知为 <system-reminder> User Message 文本
 /// （正文首行为 UI 展示的状态行，其余为模型可见的输出详情）
 pub fn format_background_task_reminder(notification: &str) -> String {
-    format!(
-        "<system-reminder type=\"background-task\">\n{}\n</system-reminder>",
-        notification.trim()
-    )
+    reminder("type=\"background-task\"", notification.trim())
 }
 
-fn get_current_date() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
-}
-#[cfg(any(windows, target_os = "macos"))]
-fn run_command_output(program: &str, args: &[&str]) -> Option<String> {
-    std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-}
-
-#[cfg(windows)]
-fn parse_reg_sz(output: &str, value_name: &str) -> Option<String> {
-    for line in output.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with(value_name) {
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            if parts.len() >= 3 && parts[1] == "REG_SZ" {
-                return Some(parts[2..].join(" "));
-            }
-        }
-    }
-    None
-}
-
+/// 当前平台的 OS 描述（发行版 / 版本 / 内核或构建号）
 fn get_os_info() -> String {
     #[cfg(windows)]
     {
-        let prod = run_command_output(
-            "reg",
-            &[
-                "query",
-                "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-                "/v",
-                "ProductName",
-            ],
-        )
-        .and_then(|out| parse_reg_sz(&out, "ProductName"));
-
-        let display_ver = run_command_output(
-            "reg",
-            &[
-                "query",
-                "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-                "/v",
-                "DisplayVersion",
-            ],
-        )
-        .and_then(|out| parse_reg_sz(&out, "DisplayVersion"));
-
-        let build = run_command_output(
-            "reg",
-            &[
-                "query",
-                "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
-                "/v",
-                "CurrentBuild",
-            ],
-        )
-        .and_then(|out| parse_reg_sz(&out, "CurrentBuild"));
-
-        if let Some(p) = prod {
-            let mut result = p;
-            if let Some(dv) = display_ver {
-                result.push(' ');
-                result.push_str(&dv);
-            }
-            if let Some(b) = build {
-                result.push_str(&format!(" (Build {b})"));
-            }
-            return result;
+        let value = |name: &str| {
+            let output = std::process::Command::new("reg")
+                .args([
+                    "query",
+                    "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                    "/v",
+                    name,
+                ])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())?;
+            let text = String::from_utf8(output.stdout).ok()?;
+            text.lines().find_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                (parts.len() >= 3 && parts[0] == name && parts[1] == "REG_SZ")
+                    .then(|| parts[2..].join(" "))
+            })
+        };
+        let Some(mut result) = value("ProductName") else {
+            return format!("Windows ({})", std::env::consts::ARCH);
+        };
+        if let Some(version) = value("DisplayVersion") {
+            result.push_str(&format!(" {version}"));
         }
-        format!("Windows ({})", std::env::consts::ARCH)
+        if let Some(build) = value("CurrentBuild") {
+            result.push_str(&format!(" (Build {build})"));
+        }
+        result
     }
 
     #[cfg(target_os = "linux")]
     {
-        let distro = std::fs::read_to_string("/etc/os-release")
-            .ok()
-            .and_then(|content| {
-                let mut pretty = None;
-                let mut name = None;
-                let mut version = None;
-                for line in content.lines() {
-                    if let Some(val) = line.strip_prefix("PRETTY_NAME=") {
-                        pretty = Some(val.trim_matches('"').to_string());
-                    } else if let Some(val) = line.strip_prefix("NAME=") {
-                        name = Some(val.trim_matches('"').to_string());
-                    } else if let Some(val) = line.strip_prefix("VERSION=") {
-                        version = Some(val.trim_matches('"').to_string());
-                    }
-                }
-                pretty.or_else(|| match (name, version) {
-                    (Some(n), Some(v)) => Some(format!("{n} {v}")),
-                    (Some(n), None) => Some(n),
-                    _ => None,
-                })
-            });
-
+        let release = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+        let field = |key: &str| {
+            release
+                .lines()
+                .find_map(|line| line.strip_prefix(key))
+                .map(|value| value.trim_matches('"').to_string())
+        };
+        let distro = field("PRETTY_NAME=").or_else(|| match (field("NAME="), field("VERSION=")) {
+            (Some(name), Some(version)) => Some(format!("{name} {version}")),
+            (name, _) => name,
+        });
         let kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease")
             .ok()
             .map(|s| s.trim().to_string());
@@ -198,20 +124,24 @@ fn get_os_info() -> String {
 
     #[cfg(target_os = "macos")]
     {
-        let name =
-            run_command_output("sw_vers", &["-productName"]).unwrap_or_else(|| "macOS".into());
-        let ver = run_command_output("sw_vers", &["-productVersion"]).unwrap_or_default();
-        let build = run_command_output("sw_vers", &["-buildVersion"]).unwrap_or_default();
-
-        let mut res = name.trim().to_string();
-        if !ver.trim().is_empty() {
-            res.push(' ');
-            res.push_str(ver.trim());
+        let query = |flag: &str| {
+            std::process::Command::new("sw_vers")
+                .arg(flag)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty())
+        };
+        let mut result = query("-productName").unwrap_or_else(|| "macOS".into());
+        if let Some(version) = query("-productVersion") {
+            result.push_str(&format!(" {version}"));
         }
-        if !build.trim().is_empty() {
-            res.push_str(&format!(" (Build {})", build.trim()));
+        if let Some(build) = query("-buildVersion") {
+            result.push_str(&format!(" (Build {build})"));
         }
-        res
+        result
     }
 
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -220,7 +150,7 @@ fn get_os_info() -> String {
     }
 }
 
-/// AGENTS.md 系统提示来源类别
+/// 系统提醒来源类别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentsReminderKind {
     Global,
@@ -234,7 +164,7 @@ pub enum AgentsReminderKind {
     BackgroundTask,
 }
 
-/// 解析出的 AGENTS.md 系统提示提醒
+/// 解析出的系统提醒
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentsReminder {
     pub kind: AgentsReminderKind,
@@ -246,27 +176,25 @@ pub struct AgentsReminder {
 
 /// 格式化全局 ~/.vva/AGENTS.md 为带有 <system-reminder> 标签的 User Message 文本
 pub fn format_global_agents_reminder(path: &Path, content: &str) -> String {
-    let path_str = path.to_string_lossy().replace('\\', "/");
-    format!(
-        "<system-reminder type=\"global\" path=\"~/.vva/AGENTS.md\">\n\
-         User instructions from ~/.vva/AGENTS.md ({}):\n\n\
-         {}\n\
-         </system-reminder>",
-        path_str,
-        content.trim()
+    reminder(
+        "type=\"global\" path=\"~/.vva/AGENTS.md\"",
+        &format!(
+            "User instructions from ~/.vva/AGENTS.md ({}):\n\n{}",
+            slash(path),
+            content.trim()
+        ),
     )
 }
 
 /// 格式化项目根目录 AGENTS.md 为带有 <system-reminder> 标签的 User Message 文本
 pub fn format_project_agents_reminder(path: &Path, content: &str) -> String {
-    let path_str = path.to_string_lossy().replace('\\', "/");
-    format!(
-        "<system-reminder type=\"project\" path=\"AGENTS.md\">\n\
-         Project instructions from {}:\n\n\
-         {}\n\
-         </system-reminder>",
-        path_str,
-        content.trim()
+    reminder(
+        "type=\"project\" path=\"AGENTS.md\"",
+        &format!(
+            "Project instructions from {}:\n\n{}",
+            slash(path),
+            content.trim()
+        ),
     )
 }
 
@@ -276,100 +204,68 @@ pub fn format_directory_agents_reminder(
     agents_path: &Path,
     content: &str,
 ) -> String {
-    let ws_canonical = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
-    let agents_canonical = agents_path
-        .canonicalize()
-        .unwrap_or_else(|_| agents_path.to_path_buf());
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let agents_canonical = canonical(agents_path);
     let rel_path = agents_canonical
-        .strip_prefix(&ws_canonical)
+        .strip_prefix(canonical(workspace))
         .unwrap_or(agents_path);
-    let rel_str = rel_path.to_string_lossy().replace('\\', "/");
-
-    format!(
-        "<system-reminder type=\"directory\" path=\"{}\">\n\
-         Directory instructions from {}:\n\n\
-         {}\n\
-         </system-reminder>",
-        rel_str,
-        rel_str,
-        content.trim()
+    let rel = slash(rel_path);
+    reminder(
+        &format!("type=\"directory\" path=\"{rel}\""),
+        &format!("Directory instructions from {rel}:\n\n{}", content.trim()),
     )
 }
 
-/// 解析文本是否包含 AGENTS.md 的 <system-reminder> 标签
+/// 取开标签中 `key="..."` 属性值
+fn tag_attr<'a>(open_tag: &'a str, key: &str) -> Option<&'a str> {
+    let marker = format!("{key}=\"");
+    let rest = &open_tag[open_tag.find(&marker)? + marker.len()..];
+    Some(&rest[..rest.find('"')?])
+}
+
+/// 解析文本是否为系统提醒的 <system-reminder> 标签
 pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
+    const CLOSE_TAG: &str = "</system-reminder>";
     let trimmed = text.trim();
-    if !trimmed.starts_with("<system-reminder") || !trimmed.ends_with("</system-reminder>") {
+    if !trimmed.starts_with("<system-reminder") || !trimmed.ends_with(CLOSE_TAG) {
         return None;
     }
-    let close_tag_idx = trimmed.find('>')?;
-    let open_tag = &trimmed[..close_tag_idx];
-    let body = trimmed[close_tag_idx + 1..trimmed.len() - "</system-reminder>".len()].trim();
+    let open_end = trimmed.find('>')?;
+    let open_tag = &trimmed[..open_end];
+    let body = trimmed[open_end + 1..trimmed.len() - CLOSE_TAG.len()].trim();
 
-    let kind = if open_tag.contains("type=\"global\"") {
-        AgentsReminderKind::Global
-    } else if open_tag.contains("type=\"project\"") {
-        AgentsReminderKind::Project
-    } else if open_tag.contains("type=\"directory\"") {
-        AgentsReminderKind::Directory
-    } else if open_tag.contains("type=\"skill-loaded\"") {
-        AgentsReminderKind::SkillLoaded
-    } else if open_tag.contains("type=\"skills\"") {
-        AgentsReminderKind::Skills
-    } else if open_tag.contains("type=\"background-task\"") {
-        AgentsReminderKind::BackgroundTask
-    } else {
-        return None;
-    };
-
-    let path = if let Some(p_idx) = open_tag.find("path=\"") {
-        let rest = &open_tag[p_idx + 6..];
-        let end_p = rest.find('"')?;
-        rest[..end_p].to_string()
-    } else {
-        String::new()
-    };
-
-    let name = if let Some(n_idx) = open_tag.find("name=\"") {
-        let rest = &open_tag[n_idx + 6..];
-        let end_n = rest.find('"')?;
-        rest[..end_n].to_string()
-    } else {
-        String::new()
+    let kind = match tag_attr(open_tag, "type")? {
+        "global" => AgentsReminderKind::Global,
+        "project" => AgentsReminderKind::Project,
+        "directory" => AgentsReminderKind::Directory,
+        "skill-loaded" => AgentsReminderKind::SkillLoaded,
+        "skills" => AgentsReminderKind::Skills,
+        "background-task" => AgentsReminderKind::BackgroundTask,
+        _ => return None,
     };
 
     Some(AgentsReminder {
         kind,
-        path,
-        name,
+        path: tag_attr(open_tag, "path").unwrap_or_default().to_string(),
+        name: tag_attr(open_tag, "name").unwrap_or_default().to_string(),
         content: body.to_string(),
     })
 }
 
-/// 读取并校验 AGENTS.md 文件内容（若文件存在且非空）
-fn load_agents_file(path: &Path) -> Option<String> {
-    if path.is_file() {
-        let content = std::fs::read_to_string(path).ok()?;
-        if !content.trim().is_empty() {
-            return Some(content);
-        }
-    }
-    None
+/// 读取 AGENTS.md 文件内容（文件存在且非空）
+fn load_agents_file(path: PathBuf) -> Option<(PathBuf, String)> {
+    let content = std::fs::read_to_string(&path).ok()?;
+    (!content.trim().is_empty()).then_some((path, content))
 }
 
 /// 加载用户全局 ~/.vva/AGENTS.md（若存在且非空）
 pub fn load_global_agents_md() -> Option<(PathBuf, String)> {
-    let home = crate::config::home_dir()?;
-    let path = home.join(".vva").join("AGENTS.md");
-    load_agents_file(&path).map(|c| (path, c))
+    load_agents_file(crate::config::home_dir()?.join(".vva").join("AGENTS.md"))
 }
 
 /// 加载项目根目录下的 AGENTS.md（若存在且非空）
 pub fn load_project_agents_md(workspace: &Path) -> Option<(PathBuf, String)> {
-    let path = workspace.join("AGENTS.md");
-    load_agents_file(&path).map(|c| (path, c))
+    load_agents_file(workspace.join("AGENTS.md"))
 }
 
 /// 向上查找最近的 AGENTS.md（从文件所在目录向上遍历至 workspace 根目录，排除根目录已在初始加载的 AGENTS.md）
@@ -378,12 +274,7 @@ pub fn find_directory_agents_md(workspace: &Path, file_path: &Path) -> Option<Pa
         return None;
     }
 
-    let full_path = if file_path.is_relative() {
-        workspace.join(file_path)
-    } else {
-        file_path.to_path_buf()
-    };
-
+    let full_path = workspace.join(file_path);
     let ws_canonical = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
@@ -404,56 +295,44 @@ pub fn find_directory_agents_md(workspace: &Path, file_path: &Path) -> Option<Pa
 /// 检查会话轮次中是否已经加载过特定相对路径的 AGENTS.md
 pub fn session_contains_agents_md(session: &crate::model::Session, rel_path: &str) -> bool {
     let normalized = rel_path.replace('\\', "/");
-    session.turns.iter().any(|t| {
-        t.role == crate::model::Role::User
-            && t.messages.iter().any(|m| {
-                m.parts.iter().any(|p| match p {
-                    crate::model::ContentPart::Text { text, .. } => parse_agents_reminder(text)
-                        .is_some_and(|r| r.path.replace('\\', "/") == normalized),
-                    _ => false,
-                })
-            })
-    })
+    session
+        .turns
+        .iter()
+        .filter(|turn| turn.role == crate::model::Role::User)
+        .flat_map(|turn| &turn.messages)
+        .flat_map(|message| &message.parts)
+        .any(|part| match part {
+            crate::model::ContentPart::Text { text, .. } => {
+                parse_agents_reminder(text).is_some_and(|r| r.path.replace('\\', "/") == normalized)
+            }
+            _ => false,
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
 
-    #[test]
-    fn system_prompt_includes_workspace_and_scratch() {
-        let info = SystemInfo {
-            date: "2026-09-06".into(),
-            os: "Linux".into(),
-            arch: "x86_64".into(),
-        };
-        let prompt = info.to_system_prompt(Path::new("/ws"), Path::new("/data/scratch"));
-        assert!(prompt.contains("Workspace Root: /ws"));
-        assert!(prompt.contains("Scratch Pad: /data/scratch"));
-    }
-
-    #[test]
-    fn skills_reminder_lists_skills_as_user_message() {
-        let skill = crate::skills::Skill {
-            name: "pdf-processing".into(),
-            description: "Extract PDF text and fill forms.".into(),
+    fn skill(name: &str, description: &str, body: &str) -> Skill {
+        Skill {
+            name: name.into(),
+            description: description.into(),
             license: None,
             compatibility: None,
             metadata: Default::default(),
             allowed_tools: None,
-            path: PathBuf::from("/skills/pdf-processing"),
+            path: PathBuf::from(format!("/skills/{name}")),
             source: crate::skills::SkillSource::Global,
-            body: String::new(),
-        };
-        let reminder = format_skills_reminder(&[skill]);
-        assert!(reminder.starts_with("<system-reminder type=\"skills\">"));
-        assert!(reminder.ends_with("</system-reminder>"));
-        assert!(reminder.contains("- pdf-processing: Extract PDF text and fill forms."));
+            body: body.into(),
+        }
+    }
 
-        // 系统提示不含技能清单
-        let prompt = build_system_prompt(Path::new("/ws"), Path::new("/scratch"));
+    #[test]
+    fn system_prompt_includes_workspace_and_scratch_but_no_skills() {
+        let prompt = build_system_prompt(Path::new("/ws"), Path::new("/data/scratch"));
+        assert!(prompt.contains("Workspace Root: /ws"));
+        assert!(prompt.contains("Scratch Pad: /data/scratch"));
         assert!(!prompt.contains("Skills"));
     }
 
@@ -485,37 +364,29 @@ mod tests {
     }
 
     #[test]
-    fn format_and_parse_skill_load_reminder() {
-        let skill = crate::skills::Skill {
-            name: "pdf-processing".into(),
-            description: "Extract PDF text.".into(),
-            license: None,
-            compatibility: None,
-            metadata: Default::default(),
-            allowed_tools: None,
-            path: PathBuf::from("/skills/pdf-processing"),
-            source: crate::skills::SkillSource::Global,
-            body: "1. Open the file.".into(),
-        };
-        let reminder = format_skill_load_reminder(&skill);
-        assert!(
-            reminder.starts_with("<system-reminder type=\"skill-loaded\" name=\"pdf-processing\">")
-        );
-        assert!(reminder.ends_with("</system-reminder>"));
-        assert!(
-            reminder.contains("<skill name=\"pdf-processing\" path=\"/skills/pdf-processing\">")
-        );
-        assert!(reminder.contains("1. Open the file."));
+    fn format_and_parse_skill_reminders() {
+        let skill = skill("pdf-processing", "Extract PDF text.", "1. Open the file.");
 
-        let parsed = parse_agents_reminder(&reminder).unwrap();
+        let list = format_skills_reminder(std::slice::from_ref(&skill));
+        assert!(list.starts_with("<system-reminder type=\"skills\">"));
+        assert!(list.ends_with("</system-reminder>"));
+        assert!(list.contains("- pdf-processing: Extract PDF text."));
+        assert_eq!(
+            parse_agents_reminder(&list).unwrap().kind,
+            AgentsReminderKind::Skills
+        );
+
+        let loaded = format_skill_load_reminder(&skill);
+        assert!(
+            loaded.starts_with("<system-reminder type=\"skill-loaded\" name=\"pdf-processing\">")
+        );
+        assert!(loaded.contains("<skill name=\"pdf-processing\" path=\"/skills/pdf-processing\">"));
+        let parsed = parse_agents_reminder(&loaded).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::SkillLoaded);
         assert_eq!(parsed.name, "pdf-processing");
-        assert!(parsed.content.contains("<skill name=\"pdf-processing\""));
+        assert!(parsed.content.contains("1. Open the file."));
 
         assert_eq!(parse_agents_reminder("plain prompt"), None);
-        let list_reminder = format_skills_reminder(&[skill]);
-        let parsed_list = parse_agents_reminder(&list_reminder).unwrap();
-        assert_eq!(parsed_list.kind, AgentsReminderKind::Skills);
     }
 
     #[test]
@@ -524,13 +395,10 @@ mod tests {
             "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 4 bytes";
         let reminder = format_background_task_reminder(notification);
         assert!(reminder.starts_with("<system-reminder type=\"background-task\">"));
-        assert!(reminder.ends_with("</system-reminder>"));
 
         let parsed = parse_agents_reminder(&reminder).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::BackgroundTask);
-        let mut lines = parsed.content.lines();
-        assert_eq!(lines.next(), Some("Background task 1 exited with code 0"));
-        assert!(lines.next().is_some());
+        assert_eq!(parsed.content, notification);
     }
 
     #[test]
@@ -540,30 +408,23 @@ mod tests {
         let src_ui_views = ws.join("src/ui/views");
         fs::create_dir_all(&src_ui_views).unwrap();
 
-        // 根目录 AGENTS.md
         fs::write(ws.join("AGENTS.md"), "root agents").unwrap();
-        // 子模块 AGENTS.md
         fs::write(ws.join("src/ui/AGENTS.md"), "ui agents").unwrap();
-        // 目标文件
         let target_file = src_ui_views.join("chat.rs");
         fs::write(&target_file, "fn chat() {}").unwrap();
 
-        // 查找 chat.rs：应向上找到最近的 src/ui/AGENTS.md
+        // 应向上找到最近的 src/ui/AGENTS.md
         let found = find_directory_agents_md(&ws, &target_file);
         assert_eq!(
             found.unwrap().canonicalize().unwrap(),
             ws.join("src/ui/AGENTS.md").canonicalize().unwrap()
         );
 
-        // 如果直接读取 AGENTS.md 自身，不触发加载
-        let self_found = find_directory_agents_md(&ws, &ws.join("src/ui/AGENTS.md"));
-        assert!(self_found.is_none());
-
-        // 如果在根目录下读取文件，不重复加载根目录 AGENTS.md
+        // AGENTS.md 自身与根目录文件均不触发加载
+        assert!(find_directory_agents_md(&ws, &ws.join("src/ui/AGENTS.md")).is_none());
         let root_file = ws.join("main.rs");
         fs::write(&root_file, "fn main() {}").unwrap();
-        let root_found = find_directory_agents_md(&ws, &root_file);
-        assert!(root_found.is_none());
+        assert!(find_directory_agents_md(&ws, &root_file).is_none());
 
         let _ = fs::remove_dir_all(temp);
     }

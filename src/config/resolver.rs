@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::model::{AppConfig, ModelConfig, ProviderConfig, ProviderType};
 use super::parser::ConfigError;
+use crate::model::{ContentPart, MediaKind, MediaSource, Session};
 use crate::provider::Provider;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::gemini::GeminiProvider;
@@ -127,7 +128,7 @@ pub struct InputCapabilities {
 }
 
 impl InputCapabilities {
-    pub fn require(&self, kind: crate::model::MediaKind, mime_type: &str) -> Result<(), String> {
+    pub fn require(&self, kind: MediaKind, mime_type: &str) -> Result<(), String> {
         if !self.modalities.iter().any(|input| input == kind.as_str()) {
             return Err(format!(
                 "Model '{}' does not support {} input",
@@ -138,7 +139,7 @@ impl InputCapabilities {
         self.protocol.require_media(kind, mime_type)
     }
 
-    pub fn validate_session(&self, session: &crate::model::Session) -> Result<(), String> {
+    pub fn validate_session(&self, session: &Session) -> Result<(), String> {
         for part in session
             .turns
             .iter()
@@ -146,7 +147,7 @@ impl InputCapabilities {
             .flat_map(|msg| &msg.parts)
         {
             match part {
-                crate::model::ContentPart::Image { source, mime_type } => {
+                ContentPart::Image { source, mime_type } => {
                     if !self.modalities.iter().any(|input| input == "image") {
                         return Err(format!(
                             "Model '{}' does not support image input",
@@ -154,27 +155,24 @@ impl InputCapabilities {
                         ));
                     }
                     let mime = match source {
-                        crate::model::MediaSource::Base64 { mime_type, .. } => {
-                            Some(mime_type.as_str())
-                        }
-                        crate::model::MediaSource::Url { .. } => mime_type.as_deref(),
+                        MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
+                        MediaSource::Url { .. } => mime_type.as_deref(),
                     };
                     if let Some(mime) = mime {
-                        self.protocol
-                            .require_media(crate::model::MediaKind::Image, mime)?;
+                        self.protocol.require_media(MediaKind::Image, mime)?;
                     }
                 }
-                crate::model::ContentPart::File {
-                    source: crate::model::MediaSource::Base64 { mime_type, .. },
+                ContentPart::File {
+                    source: MediaSource::Base64 { mime_type, .. },
                     mime_type: declared_mime,
                     ..
                 } => {
                     if declared_mime != mime_type {
                         return Err("File MIME type does not match its source".into());
                     }
-                    self.require(crate::model::MediaKind::Pdf, mime_type)?;
+                    self.require(MediaKind::Pdf, mime_type)?;
                 }
-                crate::model::ContentPart::ToolResult(result) => {
+                ContentPart::ToolResult(result) => {
                     for media in &result.attachments {
                         self.require(media.kind, &media.mime_type)?;
                     }
@@ -218,43 +216,38 @@ impl ResolvedModel<'_> {
         let base_url = self.provider_config.base_url.trim().trim_end_matches('/');
         let api_key = self.provider_config.api_key.trim();
 
-        let provider_inst: Arc<dyn Provider> = match effective_type {
-            ProviderType::Response => {
-                let default_url = "https://api.openai.com/v1";
-                let url = if base_url.is_empty() {
-                    default_url.to_string()
-                } else if base_url.ends_with("/v1") || base_url.ends_with("/responses") {
-                    base_url.to_string()
-                } else {
-                    format!("{base_url}/v1")
-                };
-                Arc::new(ResponseProvider::new(api_key).with_base_url(url))
-            }
-            ProviderType::Anthropic => {
-                let url = if base_url.is_empty() {
-                    "https://api.anthropic.com/v1".to_string()
-                } else if base_url.ends_with("/v1") || base_url.ends_with("/messages") {
-                    base_url.to_string()
-                } else {
-                    format!("{base_url}/v1")
-                };
-                Arc::new(AnthropicProvider::new(api_key).with_base_url(url))
-            }
-            ProviderType::Gemini => {
-                let url = if base_url.is_empty() {
-                    "https://generativelanguage.googleapis.com/v1beta".to_string()
-                } else if base_url.ends_with("/v1beta")
-                    || base_url.ends_with("/v1")
-                    || base_url.contains("/models")
-                {
-                    base_url.to_string()
-                } else {
-                    format!("{base_url}/v1beta")
-                };
-                Arc::new(GeminiProvider::new(api_key).with_base_url(url))
+        // 空值取官方默认端点；已是完整端点（is_complete）原样使用，否则补版本段
+        let endpoint = |default: &str, version: &str, is_complete: &dyn Fn(&str) -> bool| {
+            if base_url.is_empty() {
+                default.to_string()
+            } else if is_complete(base_url) {
+                base_url.to_string()
+            } else {
+                format!("{base_url}{version}")
             }
         };
 
-        provider_inst
+        match effective_type {
+            ProviderType::Response => {
+                let url = endpoint("https://api.openai.com/v1", "/v1", &|u| {
+                    u.ends_with("/v1") || u.ends_with("/responses")
+                });
+                Arc::new(ResponseProvider::new(api_key).with_base_url(url))
+            }
+            ProviderType::Anthropic => {
+                let url = endpoint("https://api.anthropic.com/v1", "/v1", &|u| {
+                    u.ends_with("/v1") || u.ends_with("/messages")
+                });
+                Arc::new(AnthropicProvider::new(api_key).with_base_url(url))
+            }
+            ProviderType::Gemini => {
+                let url = endpoint(
+                    "https://generativelanguage.googleapis.com/v1beta",
+                    "/v1beta",
+                    &|u| u.ends_with("/v1beta") || u.ends_with("/v1") || u.contains("/models"),
+                );
+                Arc::new(GeminiProvider::new(api_key).with_base_url(url))
+            }
+        }
     }
 }

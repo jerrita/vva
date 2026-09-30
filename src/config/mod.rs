@@ -50,23 +50,11 @@ impl AppConfig {
 
 /// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
 pub fn home_dir() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME")
-        && !home.trim().is_empty()
-    {
-        return Some(PathBuf::from(home));
-    }
-    if let Ok(profile) = std::env::var("USERPROFILE")
-        && !profile.trim().is_empty()
-    {
-        return Some(PathBuf::from(profile));
-    }
-    if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
-        let combined = format!("{}{}", drive, path);
-        if !combined.trim().is_empty() {
-            return Some(PathBuf::from(combined));
-        }
-    }
-    None
+    let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    var("HOME")
+        .or_else(|| var("USERPROFILE"))
+        .or_else(|| Some(var("HOMEDRIVE")? + &var("HOMEPATH")?))
+        .map(PathBuf::from)
 }
 
 /// 展开路径中的 `~` 前缀为用户主目录

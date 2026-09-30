@@ -28,13 +28,17 @@ pub struct AgentDef {
     pub system_prompt: Option<String>,
 }
 
+fn tool_names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| name.to_string()).collect()
+}
+
 /// 内置 general：全工具子代理（不含 Agent 自身与 AskUser，经 YAML 显式开启）
 fn builtin_general() -> AgentDef {
     AgentDef {
         name: "general".into(),
         description: "General-purpose agent for complex, multi-step tasks.".into(),
         model: None,
-        tools: [
+        tools: tool_names(&[
             "Read",
             "Write",
             "Edit",
@@ -48,10 +52,7 @@ fn builtin_general() -> AgentDef {
             "WaitSession",
             "WebSearch",
             "WebFetch",
-        ]
-        .into_iter()
-        .map(str::to_string)
-        .collect(),
+        ]),
         system_prompt: Some(
             "You are a general-purpose subagent. Your prompt is self-contained: the parent \
              session does not see your intermediate steps, so your final message must carry \
@@ -67,10 +68,7 @@ fn builtin_explore() -> AgentDef {
         name: "explore".into(),
         description: "Read-only search agent for locating code and answering questions.".into(),
         model: None,
-        tools: ["Read", "Glob", "Grep"]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+        tools: tool_names(&["Read", "Glob", "Grep"]),
         system_prompt: Some(
             "You are a read-only exploration subagent. Search broadly, read excerpts rather \
              than whole files, and report conclusions with file paths and line references."
@@ -107,7 +105,7 @@ pub fn parse_agent_file(path: &Path) -> Result<AgentDef, String> {
     let file: AgentDefFile = serde_yaml::from_str(&content)
         .map_err(|error| format!("Invalid agent definition {}: {error}", path.display()))?;
     let name = file.name.unwrap_or_else(|| stem.to_string());
-    validate_name(&name, stem)?;
+    crate::discover::validate_name(&name, stem, "agent", "file name")?;
     crate::discover::validate_description(&file.description, "agent", &name)?;
     if file.tools.is_empty() {
         return Err(format!("Agent '{name}' must allow at least one tool"));
@@ -126,28 +124,22 @@ pub fn parse_agent_file(path: &Path) -> Result<AgentDef, String> {
     })
 }
 
-/// 全局定义目录（优先级升序）：~/.agents > ~/.vva
-fn global_agent_dirs() -> Vec<PathBuf> {
-    crate::discover::global_dirs("agents")
-}
-
-/// 项目定义目录（优先级升序）：.agents > .vva
-fn project_agent_dirs(workspace: &Path) -> [PathBuf; 2] {
-    crate::discover::project_dirs(workspace, "agents")
-}
-
 /// 发现内置与文件系统定义：按 name 排序返回，同名时后扫描的目录覆盖先扫描的
 /// （优先级：项目 .vva > 项目 .agents > 全局 .vva > 全局 .agents > 内置）；
 /// 非法定义文件记录 warn 后跳过。
 pub fn discover_agents(workspace: &Path) -> Vec<AgentDef> {
-    let mut by_name = BTreeMap::new();
-    for def in builtin_agents() {
-        by_name.insert(def.name.clone(), def);
-    }
-    let mut dirs = global_agent_dirs();
-    dirs.extend(project_agent_dirs(workspace));
-    for dir in dirs {
-        collect_agents(&dir, &mut by_name);
+    discover_from(&crate::discover::global_dirs("agents"), workspace)
+}
+
+/// 指定全局定义目录的发现逻辑（测试注入用）
+fn discover_from(global_dirs: &[PathBuf], workspace: &Path) -> Vec<AgentDef> {
+    let mut by_name: BTreeMap<String, AgentDef> = builtin_agents()
+        .into_iter()
+        .map(|def| (def.name.clone(), def))
+        .collect();
+    let project_dirs = crate::discover::project_dirs(workspace, "agents");
+    for dir in global_dirs.iter().chain(&project_dirs) {
+        collect_agents(dir, &mut by_name);
     }
     by_name.into_values().collect()
 }
@@ -179,12 +171,6 @@ fn collect_agents(dir: &Path, out: &mut BTreeMap<String, AgentDef>) {
             }
         }
     }
-}
-
-/// name 约束与 skills 一致：1-64 字符，仅小写字母/数字与非连续连字符，
-/// 显式声明时必须与文件主干一致
-fn validate_name(name: &str, stem: &str) -> Result<(), String> {
-    crate::discover::validate_name(name, stem, "agent", "file name")
 }
 
 #[cfg(test)]
@@ -313,20 +299,5 @@ mod tests {
         assert!(!general.tools.contains(&"AskUser".to_string()));
         let explore = defs.iter().find(|def| def.name == "explore").unwrap();
         assert_eq!(explore.tools, ["Read", "Glob", "Grep"]);
-    }
-
-    /// 测试专用：以指定根目录作为全局定义目录执行发现
-    fn discover_from(global_dirs: &[PathBuf], workspace: &Path) -> Vec<AgentDef> {
-        let mut by_name = BTreeMap::new();
-        for def in builtin_agents() {
-            by_name.insert(def.name.clone(), def);
-        }
-        for dir in global_dirs {
-            collect_agents(dir, &mut by_name);
-        }
-        for dir in project_agent_dirs(workspace) {
-            collect_agents(&dir, &mut by_name);
-        }
-        by_name.into_values().collect()
     }
 }
