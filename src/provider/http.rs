@@ -31,24 +31,37 @@ impl std::fmt::Display for SseTermination {
     }
 }
 
+/// 发送 JSON POST（非 2xx 返回 ApiError）
+async fn send_json(
+    url: &str,
+    headers: HeaderMap,
+    body: &serde_json::Value,
+) -> Result<reqwest::Response, ProviderError> {
+    let res = super::shared_client()
+        .post(url)
+        .headers(headers)
+        .json(body)
+        .send()
+        .await?;
+    let status = res.status();
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(ProviderError::ApiError { status, body });
+    }
+    Ok(res)
+}
+
 /// 发送 JSON POST 并解析 JSON 响应（非 2xx 返回 ApiError）
 pub async fn post_json(
     url: &str,
     headers: HeaderMap,
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, ProviderError> {
-    ensure_success(
-        super::shared_client()
-            .post(url)
-            .headers(headers)
-            .json(body)
-            .send()
-            .await?,
-    )
-    .await?
-    .json()
-    .await
-    .map_err(Into::into)
+    send_json(url, headers, body)
+        .await?
+        .json()
+        .await
+        .map_err(Into::into)
 }
 
 /// 发送 JSON POST 并将 SSE 事件逐个交给处理器（自动补 Accept 头）
@@ -62,25 +75,7 @@ pub async fn post_sse<H: SseEventHandler>(
         reqwest::header::ACCEPT,
         reqwest::header::HeaderValue::from_static("text/event-stream"),
     );
-    let res = ensure_success(
-        super::shared_client()
-            .post(url)
-            .headers(headers)
-            .json(body)
-            .send()
-            .await?,
-    )
-    .await?;
-    consume_sse(res, handler).await
-}
-
-async fn ensure_success(res: reqwest::Response) -> Result<reqwest::Response, ProviderError> {
-    let status = res.status();
-    if !status.is_success() {
-        let body = res.text().await.unwrap_or_default();
-        return Err(ProviderError::ApiError { status, body });
-    }
-    Ok(res)
+    consume_sse(send_json(url, headers, body).await?, handler).await
 }
 
 /// 消费 SSE 流并将每个事件 JSON 交给处理器。

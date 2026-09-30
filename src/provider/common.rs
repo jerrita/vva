@@ -21,50 +21,43 @@ impl EventForwarder {
         Self { tx }
     }
 
-    pub async fn thought(&self, delta: &str) {
+    /// 有订阅者时按背压语义转发（通道关闭视为无订阅者，忽略）
+    async fn send(&self, event: AgentEvent) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(AgentEvent::Thought(delta.to_string())).await;
+            let _ = tx.send(event).await;
         }
+    }
+
+    pub async fn thought(&self, delta: &str) {
+        self.send(AgentEvent::Thought(delta.to_string())).await;
     }
 
     pub async fn text(&self, text_id: &str, delta: &str) {
-        if let Some(tx) = &self.tx {
-            let _ = tx
-                .send(AgentEvent::Text {
-                    text_id: text_id.to_string(),
-                    delta: delta.to_string(),
-                })
-                .await;
-        }
+        self.send(AgentEvent::Text {
+            text_id: text_id.to_string(),
+            delta: delta.to_string(),
+        })
+        .await;
     }
 
     pub async fn citation(&self, text_id: &str, annotation: Annotation) {
-        if let Some(tx) = &self.tx {
-            let _ = tx
-                .send(AgentEvent::Citation {
-                    text_id: text_id.to_string(),
-                    annotation,
-                })
-                .await;
-        }
+        self.send(AgentEvent::Citation {
+            text_id: text_id.to_string(),
+            annotation,
+        })
+        .await;
     }
 
     pub async fn web_search_call(&self, call: WebSearchCall) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(AgentEvent::WebSearchCall(call)).await;
-        }
+        self.send(AgentEvent::WebSearchCall(call)).await;
     }
 
     pub async fn image_generation_call(&self, call: ImageGenerationCall) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(AgentEvent::ImageGenerationCall(call)).await;
-        }
+        self.send(AgentEvent::ImageGenerationCall(call)).await;
     }
 
     pub async fn notice(&self, text: impl Into<String>) {
-        if let Some(tx) = &self.tx {
-            let _ = tx.send(AgentEvent::Notice(text.into())).await;
-        }
+        self.send(AgentEvent::Notice(text.into())).await;
     }
 }
 
@@ -116,8 +109,7 @@ pub fn from_value<T: serde::de::DeserializeOwned>(
     json: &serde_json::Value,
     what: &str,
 ) -> Result<T, ProviderError> {
-    serde_json::from_value(json.clone())
-        .map_err(|e| ProviderError::Protocol(format!("Invalid {what}: {e}")))
+    T::deserialize(json).map_err(|e| ProviderError::Protocol(format!("Invalid {what}: {e}")))
 }
 
 /// 相邻同角色消息合并器。
