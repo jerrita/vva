@@ -1,4 +1,21 @@
-import type { SessionDelta, SessionSnapshot } from './types'
+import type { Session, SessionDelta, SessionSnapshot, SessionSummary } from './types'
+
+/** 当前与后台会话共用列表投影，完整保留服务端的可空字段。 */
+export function sessionSummary(session: Session, state: string): SessionSummary {
+  return {
+    id: session.id,
+    title: session.title,
+    workspace_root: session.workspace_root,
+    created_at: session.created_at,
+    turn_count: session.turns.length,
+    current_model: session.current_model,
+    current_variant: session.current_variant,
+    web_search: session.web_search,
+    parent: session.parent,
+    agent: session.agent,
+    state,
+  }
+}
 
 /** 每个连接独立维护版本基线，原子应用一帧中的历史、草稿和状态。 */
 export function applySessionDelta(previous: SessionSnapshot, delta: SessionDelta): SessionSnapshot {

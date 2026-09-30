@@ -76,23 +76,7 @@ impl AppConfig {
         }
 
         for (p_id, p_cfg) in project.providers {
-            if let Some(base_prov) = self.providers.get_mut(&p_id) {
-                if !p_cfg.base_url.is_empty() {
-                    base_prov.base_url = p_cfg.base_url;
-                }
-                if !p_cfg.api_key.is_empty() {
-                    base_prov.api_key = p_cfg.api_key;
-                }
-                // 仅在项目配置显式声明 type 时覆写，防止 serde 默认值静默翻转协议
-                if let Some(provider_type) = p_cfg.provider_type {
-                    base_prov.provider_type = Some(provider_type);
-                }
-                for (m_id, m_cfg) in p_cfg.models {
-                    base_prov.models.insert(m_id, m_cfg);
-                }
-            } else {
-                self.providers.insert(p_id, p_cfg);
-            }
+            self.providers.entry(p_id).or_default().merge(p_cfg);
         }
 
         self.hydrate_builtin_providers();
@@ -101,27 +85,21 @@ impl AppConfig {
 
     /// 为内置供应商预设补全 type / base_url / 模型清单。已显式声明的字段与模型不被覆盖。
     pub fn hydrate_builtin_providers(&mut self) {
+        let Some(cfg) = self.providers.get_mut(GLM_CODING_PLAN_PROVIDER_ID) else {
+            return;
+        };
+        if !matches!(cfg.provider_type, Some(ProviderType::Response) | None) {
+            return;
+        }
         let preset = glm_coding_plan_preset();
-        for (id, cfg) in self.providers.iter_mut() {
-            if !is_glm_coding_plan_provider(id, cfg.provider_type) {
-                continue;
-            }
-            cfg.provider_type = preset.provider_type;
-            if cfg.base_url.is_empty() {
-                cfg.base_url = preset.base_url.clone();
-            }
-            for (model_id, model_cfg) in &preset.models {
-                cfg.models
-                    .entry(model_id.clone())
-                    .or_insert_with(|| model_cfg.clone());
-            }
+        cfg.provider_type = preset.provider_type;
+        if cfg.base_url.is_empty() {
+            cfg.base_url = preset.base_url;
+        }
+        for (model_id, model_cfg) in preset.models {
+            cfg.models.entry(model_id).or_insert(model_cfg);
         }
     }
-}
-
-fn is_glm_coding_plan_provider(id: &str, provider_type: Option<ProviderType>) -> bool {
-    id == GLM_CODING_PLAN_PROVIDER_ID
-        && matches!(provider_type, Some(ProviderType::Response) | None)
 }
 
 /// glm-coding-plan 内置预设：Response 协议 + 官方端点 + 内置模型清单。
@@ -254,6 +232,22 @@ pub struct ProviderConfig {
     pub api_key: String,
     #[serde(default)]
     pub models: HashMap<String, ModelConfig>,
+}
+
+impl ProviderConfig {
+    /// 项目配置中已声明的协议、非空连接参数与同名模型覆盖全局配置。
+    fn merge(&mut self, project: Self) {
+        if let Some(provider_type) = project.provider_type {
+            self.provider_type = Some(provider_type);
+        }
+        if !project.base_url.is_empty() {
+            self.base_url = project.base_url;
+        }
+        if !project.api_key.is_empty() {
+            self.api_key = project.api_key;
+        }
+        self.models.extend(project.models);
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

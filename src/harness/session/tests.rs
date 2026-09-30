@@ -42,7 +42,6 @@ fn event_task() -> (SessionTask, watch::Receiver<Arc<SessionView>>) {
         subagent_completions: Vec::new(),
         pending_deliveries: Vec::new(),
         turn_tx: watch::channel(CompletedTurn::default()).0,
-        turn_seq: 0,
         turn_start: 0,
         broker: Arc::new(StubBroker),
     };
@@ -372,7 +371,7 @@ async fn execute_drains_completions_before_next_model_call() {
     };
     let (_tx, mut rx) = mpsc::channel(1);
     let finished = task.execute(engine, &mut rx).await.unwrap();
-    assert!(finished);
+    assert_eq!(finished, TurnOutcome::Completed);
 
     let turns = &task.view.session.turns;
     assert_eq!(turns.len(), 2);
@@ -407,7 +406,7 @@ async fn parallel_tool_calls_run_concurrently_and_preserve_order() {
         .await
         .unwrap()
         .unwrap();
-    assert!(finished);
+    assert_eq!(finished, TurnOutcome::Completed);
     let ids: Vec<_> = task
         .view
         .session
@@ -1042,7 +1041,7 @@ async fn abort_during_tools_synthesizes_paired_error_results() {
             .await;
     });
     let finished = task.execute(engine, &mut rx).await.unwrap();
-    assert!(!finished);
+    assert_eq!(finished, TurnOutcome::Aborted);
 
     // assistant 轮携带 ToolCall，随后必须配对合成 error ToolResult（无悬空 tool_call）
     let turns = &task.view.session.turns;
@@ -1146,7 +1145,6 @@ async fn pending_deliveries_run_as_turns_and_bump_seq() {
     assert_eq!(last.text_content(), "queued message");
     assert!(task.pending_deliveries.is_empty());
     // 供应商错误同样完成轮次：seq 递增唤醒等待者
-    assert_eq!(task.turn_seq, 1);
     assert_eq!(seq_rx.borrow().seq, 1);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1505,7 +1503,10 @@ async fn delete_session_cascades_to_child_sessions() {
 
 #[tokio::test]
 async fn failed_or_aborted_turn_has_no_old_answer_and_cancels_pending_deliveries() {
-    for outcome in [Ok(false), Err("provider failure".to_string())] {
+    for outcome in [
+        Ok(TurnOutcome::Aborted),
+        Err("provider failure".to_string()),
+    ] {
         let (mut task, _) = event_task();
         Arc::make_mut(&mut task.view.session)
             .append_turn(Turn::assistant_turn(vec![Message::text("earlier answer")]));
@@ -1523,7 +1524,7 @@ async fn failed_or_aborted_turn_has_no_old_answer_and_cancels_pending_deliveries
         let (_, mut commands) = mpsc::channel(1);
         assert!(!task.run_pending_deliveries(&mut commands).await);
         assert_eq!(task.view.session.turns.len(), 1);
-        assert_eq!(task.turn_seq, 1);
+        assert_eq!(task.turn_tx.borrow().seq, 1);
         let _ = std::fs::remove_dir_all(&task.view.session.header.workspace_root);
     }
 }

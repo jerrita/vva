@@ -2,9 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, toError } from '../api'
 import type { FsEntry } from '../types'
 
+interface DirectoryCache {
+  children: Record<string, FsEntry[]>
+  pending: Set<string>
+  active: boolean
+}
+
+function directoryCache(): DirectoryCache {
+  return { children: {}, pending: new Set(), active: true }
+}
+
 /**
  * 工程文件树状态：根目录加载、子目录懒加载缓存、展开集合与路径揭示。
- * 目录请求以 pending 集合去重；workspace 变化时整体重置，避免跨工程缓存串味。
+ * 目录请求按工程缓存去重；切换工程或卸载时停用旧缓存，隔离未完成请求。
  */
 export function useFileTree(workspace: string | null | undefined, enabled: boolean) {
   const [rootEntries, setRootEntries] = useState<FsEntry[]>([])
@@ -14,14 +24,21 @@ export function useFileTree(workspace: string | null | undefined, enabled: boole
   const [dirLoading, setDirLoading] = useState<Record<string, boolean>>({})
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
 
-  const childrenRef = useRef<Record<string, FsEntry[]>>({})
-  const pending = useRef(new Set<string>())
+  const cacheRef = useRef<DirectoryCache>(directoryCache())
 
   // workspace 变化（切换会话/工程）时重置树缓存与展开状态
   useEffect(() => {
-    childrenRef.current = {}
+    const cache = directoryCache()
+    cacheRef.current = cache
+    setRootEntries([])
+    setRootLoading(false)
+    setRootError(null)
     setDirChildren({})
+    setDirLoading({})
     setExpandedDirs(new Set())
+    return () => {
+      cache.active = false
+    }
   }, [workspace])
 
   // 加载工程根目录条目
@@ -51,20 +68,23 @@ export function useFileTree(workspace: string | null | undefined, enabled: boole
 
   const fetchDir = useCallback(
     (path: string) => {
-      if (childrenRef.current[path] || pending.current.has(path)) return
-      pending.current.add(path)
+      const cache = cacheRef.current
+      if (!cache.active || cache.children[path] || cache.pending.has(path)) return
+      cache.pending.add(path)
       setDirLoading(prev => ({ ...prev, [path]: true }))
       api
         .fsEntries(workspace || undefined, path)
         .then(res => {
-          childrenRef.current = { ...childrenRef.current, [path]: res.entries }
-          setDirChildren(childrenRef.current)
+          if (!cache.active) return
+          cache.children = { ...cache.children, [path]: res.entries }
+          setDirChildren(cache.children)
         })
         .catch(err => {
-          console.error('Failed to load directory entries:', err)
+          if (cache.active) console.error('Failed to load directory entries:', err)
         })
         .finally(() => {
-          pending.current.delete(path)
+          cache.pending.delete(path)
+          if (!cache.active) return
           setDirLoading(prev => ({ ...prev, [path]: false }))
         })
     },

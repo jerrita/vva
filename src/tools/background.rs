@@ -140,18 +140,13 @@ impl BackgroundTasks {
                     monitor: None,
                 },
             );
-        let readers = [
-            spawn_reader(child.stdout.take(), inner.clone()),
-            spawn_reader(child.stderr.take(), inner.clone()),
-        ];
+        let stdout = read_output(child.stdout.take(), inner.clone());
+        let stderr = read_output(child.stderr.take(), inner.clone());
         let sink = self.sink.clone();
         let monitor_id = id.clone();
         let monitor = tokio::spawn(async move {
-            let exit = child.wait().await;
-            // 等管道残余读尽，保证落终态时刻输出完整
-            for reader in readers.into_iter().flatten() {
-                let _ = reader.await;
-            }
+            // 读取 future 随 monitor 取消回收；正常退出时等管道读尽再落终态。
+            let (exit, (), ()) = tokio::join!(child.wait(), stdout, stderr);
             // TaskStop / 会话回收已置 Killed 且结果已内联或会话已退出：不再回投
             let notify = {
                 let mut inner = inner.lock().expect("task state lock poisoned");
@@ -239,24 +234,21 @@ impl BackgroundTasks {
     }
 }
 
-fn spawn_reader(
-    pipe: Option<impl AsyncReadExt + Unpin + Send + 'static>,
-    inner: Arc<Mutex<TaskInner>>,
-) -> Option<tokio::task::JoinHandle<()>> {
-    let mut pipe = pipe?;
-    Some(tokio::spawn(async move {
-        let mut buf = [0u8; 8192];
-        loop {
-            match pipe.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => inner
-                    .lock()
-                    .expect("task state lock poisoned")
-                    .output
-                    .push(&buf[..n]),
-            }
+async fn read_output(pipe: Option<impl AsyncReadExt + Unpin>, inner: Arc<Mutex<TaskInner>>) {
+    let Some(mut pipe) = pipe else {
+        return;
+    };
+    let mut buf = [0u8; 8192];
+    loop {
+        match pipe.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => inner
+                .lock()
+                .expect("task state lock poisoned")
+                .output
+                .push(&buf[..n]),
         }
-    }))
+    }
 }
 
 /// 完成通知轮次正文：以 background-task reminder 注入会话，
@@ -515,6 +507,52 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(ids.lock().unwrap().is_empty(), "TaskStop must not notify");
+    }
+
+    #[tokio::test]
+    async fn cancellation_closes_pending_output_pipes() {
+        for stop in [true, false] {
+            let (sink, ids) = recording_sink();
+            let tasks = BackgroundTasks::new(sink);
+            let inner = Arc::new(Mutex::new(TaskInner {
+                status: BackgroundStatus::Running,
+                output: TaskOutputBuffer::default(),
+            }));
+            let (stdout, mut stdout_peer) = tokio::io::duplex(64);
+            let (stderr, mut stderr_peer) = tokio::io::duplex(64);
+            let stdout = read_output(Some(stdout), inner.clone());
+            let stderr = read_output(Some(stderr), inner.clone());
+            let monitor = tokio::spawn(async move {
+                tokio::join!(stdout, stderr);
+            });
+            tasks.tasks.lock().unwrap().insert(
+                "1".into(),
+                BackgroundTask {
+                    intent: "capture output".into(),
+                    command: String::new(),
+                    inner,
+                    monitor: Some(monitor),
+                },
+            );
+            tokio::task::yield_now().await;
+
+            if stop {
+                tasks.stop("1").unwrap();
+            } else {
+                tasks.shutdown();
+            }
+
+            // 保持另一端打开，模拟继承了输出管道的进程仍在运行。
+            for peer in [&mut stdout_peer, &mut stderr_peer] {
+                let mut byte = [0];
+                let read = tokio::time::timeout(Duration::from_secs(1), peer.read(&mut byte))
+                    .await
+                    .expect("cancelled monitor must release its output pipes")
+                    .unwrap();
+                assert_eq!(read, 0);
+            }
+            assert!(ids.lock().unwrap().is_empty());
+        }
     }
 
     #[tokio::test]

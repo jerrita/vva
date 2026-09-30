@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { api, toError } from './api'
-import { subscribeSession } from './sessionSync'
+import { sessionSummary, subscribeSession } from './sessionSync'
 import type { ConfigureBody } from './api'
 import { Chat, turnText } from './components/Chat'
 import { AskUserModal } from './components/AskUserModal'
@@ -176,31 +176,17 @@ export default function App() {
   )
 
   // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次 / 运行态）
-  const listKey = useRef('')
+  const summary = useMemo(
+    () => active && snap?.persisted ? sessionSummary(active, snap.state) : null,
+    [active, snap?.persisted, snap?.state],
+  )
   // 服务端清单尚未收录的本地会话（已创建未持久化）：轮询合并时保留
   const localOnlyIds = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (!snap || !snap.persisted) return
-    const s = snap.session
-    const key = `${s.id}|${s.title ?? ''}|${s.current_model}|${s.current_variant ?? ''}|${s.turns.length}|${snap.state}`
-    if (key === listKey.current) return
-    listKey.current = key
-    localOnlyIds.current.delete(s.id)
-    const summary: SessionSummary = {
-      id: s.id,
-      title: s.title ?? null,
-      workspace_root: s.workspace_root,
-      created_at: s.created_at,
-      turn_count: s.turns.length,
-      current_model: s.current_model,
-      current_variant: s.current_variant ?? null,
-      web_search: s.web_search,
-      parent: s.parent ?? null,
-      agent: s.agent ?? null,
-      state: snap.state,
-    }
-    setSessions(prev => [summary, ...prev.filter(item => item.id !== s.id)])
-  }, [snap])
+    if (!summary) return
+    localOnlyIds.current.delete(summary.id)
+    setSessions(prev => [summary, ...prev.filter(item => item.id !== summary.id)])
+  }, [summary])
 
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
@@ -219,17 +205,7 @@ export default function App() {
         next => {
           setSessions(prev =>
             prev.map(item =>
-              item.id === next.session.id
-                ? {
-                    ...item,
-                    title: next.session.title ?? item.title,
-                    turn_count: next.session.turns.length,
-                    current_model: next.session.current_model,
-                    current_variant: next.session.current_variant ?? null,
-                    web_search: next.session.web_search,
-                    state: next.state,
-                  }
-                : item,
+              item.id === next.session.id ? sessionSummary(next.session, next.state) : item,
             ),
           )
           if (next.state === '' && activeIdRef.current !== next.session.id) {
@@ -476,7 +452,7 @@ export default function App() {
   )
 
   const currentModel = active?.current_model ?? draftModel ?? models?.default ?? ''
-  const currentVariant = active?.current_variant ?? draftVariant
+  const currentVariant = active ? active.current_variant : draftVariant
   const currentSearch = active?.web_search ?? draftSearch
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
 

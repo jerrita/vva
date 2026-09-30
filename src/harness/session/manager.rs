@@ -133,7 +133,6 @@ impl SessionManager {
             subagent_completions: Vec::new(),
             pending_deliveries: Vec::new(),
             turn_tx,
-            turn_seq: 0,
             turn_start: 0,
             broker: Arc::new(SessionBrokerHandle::new(self.clone())),
         };

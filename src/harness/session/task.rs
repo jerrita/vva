@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TurnOutcome {
+    Completed,
+    Aborted,
+}
+
 pub(super) struct SessionTask {
     pub(super) hashline: Arc<crate::tools::hashline::HashlineSession>,
     pub(super) view: SessionView,
@@ -30,7 +36,6 @@ pub(super) struct SessionTask {
     /// 已完成轮次计数通道：每次 finish_turn 递增，供外部等待轮次结束
     pub(super) turn_tx: watch::Sender<CompletedTurn>,
     pub(super) turn_start: usize,
-    pub(super) turn_seq: u64,
     /// 会话编排接口（子代理派生与跨会话投递）
     pub(super) broker: Arc<dyn crate::tools::agent::SessionBroker>,
 }
@@ -727,7 +732,7 @@ impl SessionTask {
         &mut self,
         engine: AgentEngine,
         commands: &mut mpsc::Receiver<Command>,
-    ) -> Result<bool, String> {
+    ) -> Result<TurnOutcome, String> {
         self.event(AgentEvent::Capabilities(engine.notices.clone()))
             .await;
         self.view.external_web = engine.external_web.clone();
@@ -747,7 +752,7 @@ impl SessionTask {
                     .provider
                     .complete_stream(&context, &tools, &engine.options, Some(tx));
             let Some(response) = self.drive(request, commands, &mut rx).await else {
-                return Ok(false);
+                return Ok(TurnOutcome::Aborted);
             };
             let response = response.map_err(|e| e.to_string())?;
             let calls: Vec<_> = response
@@ -772,7 +777,7 @@ impl SessionTask {
             self.view.draft.clear();
             self.append(turn).await?;
             if calls.is_empty() {
-                return Ok(true);
+                return Ok(TurnOutcome::Completed);
             }
             for call in &calls {
                 if engine.tools.validate_call(call).is_ok() {
@@ -817,7 +822,7 @@ impl SessionTask {
                 self.broker
                     .abort_children(&self.view.session.header.id)
                     .await;
-                return Ok(false);
+                return Ok(TurnOutcome::Aborted);
             };
             let on_demand_agents = self.commit_tool_results(calls, results).await?;
             for (agents_path, content) in on_demand_agents {
@@ -952,36 +957,28 @@ impl SessionTask {
     /// 用户中止与供应商错误不自动续跑，队列留给下次 Submit 注入。
     async fn run_turns(
         &mut self,
-        engine: AgentEngine,
+        mut engine: AgentEngine,
         commands: &mut mpsc::Receiver<Command>,
-    ) -> Result<bool, String> {
+    ) -> Result<TurnOutcome, String> {
         self.turn_start = self.view.session.turns.len();
-        let mut engine = Some(engine);
         loop {
-            let result = self
-                .execute(engine.take().expect("engine set at loop entry"), commands)
-                .await;
-            match result {
-                Err(error) => return Err(error),
-                Ok(false) => return Ok(false),
-                Ok(true) => {
-                    if self.task_completions.is_empty() && self.subagent_completions.is_empty() {
-                        return Ok(true);
-                    }
-                    let skills =
-                        crate::skills::discover_skills(&self.view.session.header.workspace_root);
-                    engine = Some(self.build_engine_for(&self.view.session, skills).await?);
-                }
+            let outcome = self.execute(engine, commands).await?;
+            if outcome == TurnOutcome::Aborted
+                || (self.task_completions.is_empty() && self.subagent_completions.is_empty())
+            {
+                return Ok(outcome);
             }
+            let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
+            engine = self.build_engine_for(&self.view.session, skills).await?;
         }
     }
 
     /// 轮次收尾：状态复位、终态事件、CLI 通道释放与停止请求处理；
     /// 返回是否终止会话任务
-    pub(super) async fn finish_turn(&mut self, result: Result<bool, String>) -> bool {
+    pub(super) async fn finish_turn(&mut self, result: Result<TurnOutcome, String>) -> bool {
         let error = match &result {
-            Ok(true) => None,
-            Ok(false) => Some("Turn aborted".to_string()),
+            Ok(TurnOutcome::Completed) => None,
+            Ok(TurnOutcome::Aborted) => Some("Turn aborted".to_string()),
             Err(error) => Some(error.clone()),
         };
         if let Some(error) = &error {
@@ -999,18 +996,15 @@ impl SessionTask {
         };
         self.view.state = RunState::Idle;
         match result {
-            Ok(true) => self.event(AgentEvent::Finished).await,
-            Ok(false) => self.event(AgentEvent::Aborted).await,
+            Ok(TurnOutcome::Completed) => self.event(AgentEvent::Finished).await,
+            Ok(TurnOutcome::Aborted) => self.event(AgentEvent::Aborted).await,
             Err(error) => self.event(AgentEvent::Error(error)).await,
         }
         self.cli = None;
         // 已完成轮次计数递增，唤醒等待本轮结束的外部订阅者（Agent / WaitSession）
-        self.turn_seq += 1;
-        self.turn_tx.send_replace(CompletedTurn {
-            seq: self.turn_seq,
-            text,
-            error,
-        });
+        let seq = self.turn_tx.borrow().seq + 1;
+        self.turn_tx
+            .send_replace(CompletedTurn { seq, text, error });
         if let Some((delete, reply)) = self.stop_request.take() {
             return self.stop(delete, reply).await;
         }
@@ -1047,7 +1041,7 @@ impl SessionTask {
                 }
             };
             let result = self.run_turns(engine, commands).await;
-            let successful = matches!(result, Ok(true));
+            let successful = matches!(result, Ok(TurnOutcome::Completed));
             let close = self.finish_turn(result).await;
             let report = self
                 .turn_tx

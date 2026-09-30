@@ -1,7 +1,7 @@
 // Run: node --experimental-strip-types --test sessionSync.test.mjs
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { applySessionDelta, subscribeSession } from './src/sessionSync.ts'
+import { applySessionDelta, sessionSummary, subscribeSession } from './src/sessionSync.ts'
 
 const snapshot = () => ({
   revision: 1, state: 'Responding...', persisted: true, notices: [],
@@ -14,6 +14,23 @@ const snapshot = () => ({
   draft: [{ type: 'reasoning', content: '思考' }, { type: 'text', text: '起点🙂' }],
 })
 const delta = (extra = {}) => ({ base_revision: 1, revision: 5, state: 'Responding...', persisted: true, ...extra })
+
+test('session list projection preserves cleared metadata and search configuration', () => {
+  const before = snapshot()
+  const { turns, ...info } = before.session
+  const after = applySessionDelta(before, delta({
+    session: {
+      ...info, title: null, current_variant: null, parent: null, agent: null,
+      web_search: false, editor: 'replace', depth: 2,
+    },
+    state: '',
+  }))
+  assert.deepEqual(sessionSummary(after.session, after.state), {
+    id: 'synthetic', title: null, workspace_root: '/synthetic',
+    created_at: '2026-01-01T00:00:00Z', turn_count: 1, current_model: 'test/model',
+    current_variant: null, web_search: false, parent: null, agent: null, state: '',
+  })
+})
 
 test('text/reasoning suffixes preserve history references and the old snapshot', () => {
   const before = snapshot()
