@@ -35,22 +35,14 @@ impl InputBuffer {
 
     /// 清空输入框内容并归零光标与视口滚动，并清空选区
     pub fn clear(&mut self) {
-        self.text.clear();
-        self.cursor_pos = 0;
-        self.scroll_y.set(0);
-        self.scroll_x.set(0);
-        self.selection = None;
+        self.set("");
     }
 
     /// 返回规范化后的选区字符索引区间 [start, end)，满足 start < end
     pub fn selection_range(&self) -> Option<(usize, usize)> {
-        self.selection.and_then(|(anchor, head)| {
-            if anchor != head {
-                Some((anchor.min(head), anchor.max(head)))
-            } else {
-                None
-            }
-        })
+        self.selection
+            .filter(|(anchor, head)| anchor != head)
+            .map(|(anchor, head)| (anchor.min(head), anchor.max(head)))
     }
 
     /// 清空选区
@@ -206,12 +198,8 @@ impl InputBuffer {
     pub fn move_cursor_up(&mut self) {
         self.clear_selection();
         let line_starts = self.line_char_starts();
-        if line_starts.len() <= 1 {
-            return;
-        }
-        let cursor_row = self.cursor_row(&line_starts);
-        if cursor_row > 0 {
-            self.move_cursor_to_row(&line_starts, cursor_row - 1);
+        if let Some(target) = self.cursor_row(&line_starts).checked_sub(1) {
+            self.move_cursor_to_row(&line_starts, target);
         }
     }
 
@@ -219,12 +207,9 @@ impl InputBuffer {
     pub fn move_cursor_down(&mut self) {
         self.clear_selection();
         let line_starts = self.line_char_starts();
-        if line_starts.len() <= 1 {
-            return;
-        }
-        let cursor_row = self.cursor_row(&line_starts);
-        if cursor_row + 1 < line_starts.len() {
-            self.move_cursor_to_row(&line_starts, cursor_row + 1);
+        let target = self.cursor_row(&line_starts) + 1;
+        if target < line_starts.len() {
+            self.move_cursor_to_row(&line_starts, target);
         }
     }
 

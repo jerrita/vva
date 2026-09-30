@@ -142,6 +142,8 @@ src/
 │       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换 + SessionBrokerHandle (spawn_subagent/deliver/wait_turn 子代理编排)
 │       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止时合成未决工具结果/后台任务与子代理完成注入续跑/Deliver 邮箱冲刷)
 ├── ui/                     # 现代化 Ratatui 交互式终端用户界面
+    ├── mod.rs              # run_tui 终端生命周期、主循环与单帧 draw 布局
+    ├── events.rs           # 键盘 / 鼠标 / 粘贴输入事件分发 (弹窗独占 → 补全选单 → 普通编辑)
     ├── app/                # App 响应式控制器、状态机与子系统调度
     │   ├── mod.rs          # App 结构体定义、生命周期与模块导出
     │   ├── session.rs      # 会话切换、SessionView 快照刷新与模态框状态调度

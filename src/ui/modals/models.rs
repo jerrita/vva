@@ -8,7 +8,6 @@ pub struct ModelItem {
     pub model_id: String,
     pub display_name: String,
     pub provider_type: String,
-    pub reasoning: bool,
     pub context_limit: Option<usize>,
     pub variants: Option<Vec<String>>,
 }

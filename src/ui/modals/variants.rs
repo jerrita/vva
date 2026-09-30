@@ -5,7 +5,6 @@ use super::fuzzy_matches;
 pub struct VariantItem {
     pub id: Option<String>,
     pub display_name: String,
-    pub is_default: bool,
 }
 
 /// 判断档位条目是否与当前激活档位匹配
