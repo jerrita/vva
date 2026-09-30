@@ -1,6 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 use unicode_width::UnicodeWidthStr;
@@ -10,6 +10,7 @@ use crate::ui::command::command_row;
 use crate::ui::spans::split_spans_by_hit;
 use crate::ui::views::modal_shell::selected_row_style;
 use crate::ui::views::{PANEL_BORDER, panel_block};
+use crate::ui::views::{bold, fg};
 
 /// 输入区：圆角输入框与模型元信息
 pub fn render_input_area(
@@ -62,14 +63,14 @@ pub fn render_input_area(
     let input_p = if app.input.is_empty() {
         Paragraph::new(Line::from(vec![Span::styled(
             "Type a prompt or / for commands... (Enter to send, Ctrl+Enter for newline)",
-            Style::default().fg(Color::Rgb(100, 100, 105)),
+            fg(Color::Rgb(100, 100, 105)),
         )]))
     } else if let Some((sel_start, sel_end)) = app.input.selection_range() {
         let text_lines: Vec<&str> = app.input.text.split('\n').collect();
         let sel_style = Style::default()
             .bg(Color::Rgb(45, 80, 140))
             .fg(Color::White);
-        let normal_style = Style::default().fg(Color::White);
+        let normal_style = fg(Color::White);
 
         let mut rendered_lines = Vec::with_capacity(text_lines.len());
         let mut char_offset = 0;
@@ -143,10 +144,10 @@ pub fn render_input_area(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
             Span::styled(model, Style::default()),
-            Span::styled(variant_label, Style::default().fg(Color::Magenta)),
-            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
-            Span::styled(workspace.to_owned(), Style::default().fg(Color::DarkGray)),
-            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
+            Span::styled(variant_label, fg(Color::Magenta)),
+            Span::styled(" • ", fg(Color::DarkGray)),
+            Span::styled(workspace.to_owned(), fg(Color::DarkGray)),
+            Span::styled(" • ", fg(Color::DarkGray)),
             Span::styled(
                 web,
                 Style::default().fg(if app.view.session.header.web_search {
@@ -155,7 +156,7 @@ pub fn render_input_area(
                     Color::DarkGray
                 }),
             ),
-            Span::styled(" • ", Style::default().fg(Color::DarkGray)),
+            Span::styled(" • ", fg(Color::DarkGray)),
             Span::styled(
                 think,
                 Style::default().fg(if app.thinking_concise {
@@ -221,12 +222,10 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan))
+        .border_style(fg(Color::Cyan))
         .title(Span::styled(
             " Commands & Skills (↑/↓ to select, Tab to complete, Enter to execute) ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            bold(Color::Cyan),
         ));
 
     let name_width = app
@@ -245,13 +244,13 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
         let style = if is_selected {
             selected_row_style(Color::Cyan)
         } else {
-            Style::default().fg(Color::White)
+            fg(Color::White)
         };
 
         let desc_style = if is_selected {
             Style::default().fg(Color::Black).bg(Color::Cyan)
         } else {
-            Style::default().fg(Color::DarkGray)
+            fg(Color::DarkGray)
         };
 
         lines.push(command_row(
@@ -280,10 +279,7 @@ pub(crate) fn feedback_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         .chain(app.feedback.iter())
     {
         for line in text.lines() {
-            let spans = [Span::styled(
-                line.to_owned(),
-                Style::default().fg(Color::Yellow),
-            )];
+            let spans = [Span::styled(line.to_owned(), fg(Color::Yellow))];
             lines.extend(crate::ui::markdown::wrap_spans_to_lines(
                 &spans,
                 width.max(1),

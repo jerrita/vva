@@ -1,3 +1,26 @@
+/// 为「查询词 + 过滤列表 + 选中索引 + `apply_filter`」形态的弹窗状态实现 `FilterableModal`
+macro_rules! impl_filterable_modal {
+    ($state:ty, $filtered:ident) => {
+        impl $crate::ui::modals::FilterableModal for $state {
+            fn filtered_len(&self) -> usize {
+                self.$filtered.len()
+            }
+
+            fn selected_index_mut(&mut self) -> &mut usize {
+                &mut self.selected_index
+            }
+
+            fn query_mut(&mut self) -> &mut String {
+                &mut self.query
+            }
+
+            fn refilter(&mut self) {
+                self.apply_filter();
+            }
+        }
+    };
+}
+
 pub mod ask_user;
 pub mod config;
 pub mod message;
@@ -61,7 +84,7 @@ pub trait FilterableModal {
         let len = self.filtered_len();
         if len > 0 {
             let idx = self.selected_index_mut();
-            *idx = if *idx == 0 { len - 1 } else { *idx - 1 };
+            *idx = (*idx + len - 1) % len;
         }
     }
 }

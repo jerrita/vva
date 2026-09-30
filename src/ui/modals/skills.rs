@@ -1,4 +1,4 @@
-use super::{FilterableModal, fuzzy_matches};
+use super::fuzzy_matches;
 use crate::skills::Skill;
 
 /// /skills 模态弹窗状态机：浏览已发现的 Agent Skills（只读，无确认动作）
@@ -46,28 +46,13 @@ impl SkillsModalState {
     }
 }
 
-impl FilterableModal for SkillsModalState {
-    fn filtered_len(&self) -> usize {
-        self.filtered_skills.len()
-    }
-
-    fn selected_index_mut(&mut self) -> &mut usize {
-        &mut self.selected_index
-    }
-
-    fn query_mut(&mut self) -> &mut String {
-        &mut self.query
-    }
-
-    fn refilter(&mut self) {
-        self.apply_filter();
-    }
-}
+impl_filterable_modal!(SkillsModalState, filtered_skills);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::skills::SkillSource;
+    use crate::ui::modals::FilterableModal;
     use std::path::PathBuf;
 
     fn skill(name: &str, description: &str, source: SkillSource) -> Skill {

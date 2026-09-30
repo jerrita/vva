@@ -2,6 +2,7 @@
 
 use super::selection::*;
 use super::*;
+use crate::ui::views::fg;
 
 pub(super) const SCROLLBAR_THUMB: &str = "│";
 pub(super) const SCROLLBAR_TRACK: &str = "│";
@@ -83,7 +84,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
             .thumb_symbol(SCROLLBAR_THUMB)
             .track_symbol(Some(SCROLLBAR_TRACK))
             .thumb_style(Style::default().fg(thumb_color))
-            .track_style(Style::default().fg(PANEL_BORDER));
+            .track_style(fg(PANEL_BORDER));
 
         frame.render_stateful_widget(scrollbar, app.scrollbar_area, &mut scrollbar_state);
     }
@@ -92,7 +93,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
         frame.render_widget(
             Line::from(Span::styled(
                 format!("{} {status}", app.spinner_char()),
-                Style::default().fg(Color::Yellow),
+                fg(Color::Yellow),
             )),
             Rect {
                 x: inner.x,

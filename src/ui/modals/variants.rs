@@ -1,4 +1,4 @@
-use super::{FilterableModal, fuzzy_matches};
+use super::fuzzy_matches;
 
 /// /variant 模态弹窗展示的推理强度档位条目
 #[derive(Debug, Clone)]
@@ -79,20 +79,4 @@ impl VariantsModalState {
     }
 }
 
-impl FilterableModal for VariantsModalState {
-    fn filtered_len(&self) -> usize {
-        self.filtered_variants.len()
-    }
-
-    fn selected_index_mut(&mut self) -> &mut usize {
-        &mut self.selected_index
-    }
-
-    fn query_mut(&mut self) -> &mut String {
-        &mut self.query
-    }
-
-    fn refilter(&mut self) {
-        self.apply_filter();
-    }
-}
+impl_filterable_modal!(VariantsModalState, filtered_variants);

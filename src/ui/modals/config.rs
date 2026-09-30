@@ -1,4 +1,4 @@
-use super::{FilterableModal, fuzzy_matches};
+use super::fuzzy_matches;
 
 /// /config 模态弹窗中的设置项类别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,27 +119,12 @@ impl ConfigModalState {
     }
 }
 
-impl FilterableModal for ConfigModalState {
-    fn filtered_len(&self) -> usize {
-        self.filtered_items.len()
-    }
-
-    fn selected_index_mut(&mut self) -> &mut usize {
-        &mut self.selected_index
-    }
-
-    fn query_mut(&mut self) -> &mut String {
-        &mut self.query
-    }
-
-    fn refilter(&mut self) {
-        self.apply_filter();
-    }
-}
+impl_filterable_modal!(ConfigModalState, filtered_items);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::modals::FilterableModal;
 
     #[test]
     fn test_config_modal_toggle_restores_selection() {

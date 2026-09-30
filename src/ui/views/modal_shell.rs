@@ -2,6 +2,7 @@
 //! 滚动窗口计算、选中行样式与底部按键提示行，
 //! 以及"顶部状态区 + 列表区 + 底部提示区"的整体渲染骨架。
 
+use crate::ui::views::{bold, fg};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -129,14 +130,9 @@ pub fn list_row_affix(is_selected: bool, is_active: bool, accent: Color) -> (&'s
     if is_selected {
         ("> ", selected_row_style(accent))
     } else if is_active {
-        (
-            "* ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
+        ("* ", bold(Color::Yellow))
     } else {
-        ("  ", Style::default().fg(Color::White))
+        ("  ", fg(Color::White))
     }
 }
 
@@ -154,7 +150,7 @@ pub fn modal_block(title: &str, accent: Color) -> Block<'static> {
 /// 过滤词输入行：`  Filter: <query>_`
 pub fn filter_line(query: &str, accent: Color) -> Line<'static> {
     Line::from(vec![
-        Span::styled("  Filter: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Filter: ", fg(Color::DarkGray)),
         Span::styled(query.to_owned(), Style::default().fg(accent)),
         Span::styled("_", Style::default().fg(accent)),
     ])
@@ -165,10 +161,7 @@ pub fn footer_hints(hints: &[(&str, Style, &str)]) -> Line<'static> {
     let mut spans = Vec::new();
     for (key, key_style, desc) in hints {
         spans.push(Span::styled((*key).to_owned(), *key_style));
-        spans.push(Span::styled(
-            (*desc).to_owned(),
-            Style::default().fg(Color::DarkGray),
-        ));
+        spans.push(Span::styled((*desc).to_owned(), fg(Color::DarkGray)));
     }
     Line::from(spans)
 }

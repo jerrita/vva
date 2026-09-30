@@ -3,6 +3,7 @@
 use super::*;
 use super::{pipeline::push_source_row, state::*, tool_block::*};
 use crate::ui::text::truncate;
+use crate::ui::views::{bold, fg};
 
 pub(super) fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(serde_json::Value::as_str)
@@ -351,21 +352,15 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let is_error = result.is_some_and(|result| result.is_error);
     // 外置 web 工具与原生 server tool 同名，头部样式对齐原生（黄色加粗 label）
     let name_style = if is_error {
-        Style::default()
-            .fg(Color::Rgb(220, 100, 100))
-            .add_modifier(Modifier::BOLD)
+        bold(Color::Rgb(220, 100, 100))
     } else if matches!(call.name.as_str(), "web_search" | "web_fetch") {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+        bold(Color::Yellow)
     } else {
-        Style::default()
-            .fg(Color::Rgb(210, 210, 210))
-            .add_modifier(Modifier::BOLD)
+        bold(Color::Rgb(210, 210, 210))
     };
-    let detail_style = Style::default().fg(Color::Rgb(150, 150, 150));
+    let detail_style = fg(Color::Rgb(150, 150, 150));
     let mut spans = vec![
-        Span::styled(arrow, Style::default().fg(Color::Rgb(160, 160, 160))),
+        Span::styled(arrow, fg(Color::Rgb(160, 160, 160))),
         Span::styled(call.name.clone(), name_style),
         Span::raw(" "),
     ];

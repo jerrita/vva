@@ -32,7 +32,6 @@ impl App {
     /// 提交普通用户 Prompt 到当前会话
     async fn submit_prompt(&mut self, prompt: &str) {
         self.auto_scroll = true;
-        self.feedback.clear();
 
         if let Err(e) = self
             .session_mgr
