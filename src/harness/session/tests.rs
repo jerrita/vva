@@ -1538,8 +1538,8 @@ async fn notice_lifecycle_uses_identity_and_current_capabilities() {
     task.event(AgentEvent::Notice("Second feedback".into()))
         .await;
     let second = task.view.notices[1].id.clone();
-    task.dismiss_notice(&first).unwrap();
-    task.dismiss_notice(&first).unwrap();
+    task.dismiss_notice(&first);
+    task.dismiss_notice(&first);
     assert_eq!(view.borrow().notices[0].id, second);
 
     task.event(AgentEvent::Capabilities(vec!["Feature unavailable".into()]))
