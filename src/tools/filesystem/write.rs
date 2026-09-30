@@ -1,7 +1,7 @@
 //! Write 工具：独占创建写。
 
-use super::parse_args;
 use super::{Tool, resolve_path, write_new_file};
+use crate::tools::parse_args;
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::fs;

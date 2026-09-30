@@ -1,8 +1,7 @@
-use super::Tool;
 use super::filesystem::{
-    EditPlan, commit_text_edit, edit_lock, format_edit_result, parse_args, resolve_path,
-    write_new_file,
+    EditPlan, commit_text_edit, edit_lock, format_edit_result, resolve_path, write_new_file,
 };
+use super::{Tool, parse_args};
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::fs;

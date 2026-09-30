@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 
-use super::filesystem::parse_args;
+use super::parse_args;
 use super::{Tool, TruncateSide, truncate_utf8};
 
 /// 单个任务的输出保留上限（超出丢弃头部，仅保尾部）

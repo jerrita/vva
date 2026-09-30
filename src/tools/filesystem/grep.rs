@@ -1,11 +1,11 @@
 //! Grep 工具：正则行搜索。
 
-use super::parse_args;
 use super::{
     MAX_RESULTS, Tool, collect_files, matches_any, parse_glob_patterns, relative_to, resolve_path,
     sort_by_mtime,
 };
 use crate::model::EditorKind;
+use crate::tools::parse_args;
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;

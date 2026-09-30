@@ -1,10 +1,10 @@
 //! Read 工具：文本分页 / 媒体读取 / hashline 快照。
 
-use super::parse_args;
 use super::{Tool, resolve_path};
 use crate::config::resolver::InputCapabilities;
 use crate::model::{EditorKind, MediaContent, MediaKind, ToolCall, ToolResult};
 use crate::tools::INLINE_OUTPUT_BUDGET;
+use crate::tools::parse_args;
 use async_trait::async_trait;
 use base64::Engine;
 use serde::Deserialize;

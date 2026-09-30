@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use super::Tool;
 use super::line_offsets;
-use super::parse_args;
 use super::read::content_version;
 use super::resolve_path;
 use super::unified_diff;
 use crate::tools::INLINE_OUTPUT_BUDGET;
+use crate::tools::parse_args;
 
 pub struct EditTool {
     working_dir: PathBuf,

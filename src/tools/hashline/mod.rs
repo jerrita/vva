@@ -9,7 +9,7 @@ mod snapshot;
 mod tests;
 
 use super::Tool;
-use super::filesystem::parse_args;
+use super::parse_args;
 use async_trait::async_trait;
 use parse::parse_patch;
 use serde::Deserialize;
