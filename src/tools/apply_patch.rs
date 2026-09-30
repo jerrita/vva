@@ -1,5 +1,5 @@
 use super::filesystem::{
-    EditPlan, commit_text_edit, edit_lock, format_edit_result, resolve_path, write_new_file,
+    EditPlan, commit_text_edit, format_edit_result, resolve_path, with_edit_locks, write_new_file,
 };
 use super::{Tool, parse_args};
 use async_trait::async_trait;
@@ -99,197 +99,130 @@ fn is_heredoc_start(line: &str) -> bool {
     matches!(line.trim(), "<<EOF" | "<<'EOF'" | "<<\"EOF\"")
 }
 
-enum ParseState {
-    Header {
-        saw_env: bool,
-    },
-    Body,
-    Add {
-        path: String,
-        contents: String,
-    },
-    Update {
-        path: String,
-        move_to: Option<String>,
-        chunks: Vec<UpdateChunk>,
-    },
-    End,
-}
-
 fn parse_hunks(lines: &[&str]) -> Result<Vec<FileHunk>, String> {
-    let mut hunks = Vec::new();
-    let mut state = ParseState::Header { saw_env: false };
+    let mut hunks: Vec<FileHunk> = Vec::new();
+    let mut saw_env = false;
+    let mut ended = false;
     for line in lines.iter().copied().skip(1) {
-        state = consume_line(state, line, &mut hunks)?;
-    }
-    match state {
-        ParseState::End => Ok(hunks),
-        _ => Err("invalid_arguments: missing *** End Patch".into()),
-    }
-}
-
-fn consume_line(
-    state: ParseState,
-    line: &str,
-    hunks: &mut Vec<FileHunk>,
-) -> Result<ParseState, String> {
-    if let Some(next) = start_hunk_or_end(&state, line, hunks)? {
-        return Ok(next);
-    }
-    match state {
-        ParseState::Header { saw_env } => {
-            if let Some(id) = line.strip_prefix(ENVIRONMENT_ID) {
-                if saw_env {
-                    return Err("invalid_arguments: duplicate *** Environment ID: preamble".into());
-                }
-                if id.is_empty() {
-                    return Err(
-                        "invalid_arguments: apply_patch environment_id cannot be empty".into(),
-                    );
-                }
-                return Ok(ParseState::Header { saw_env: true });
-            }
-            Err(invalid_hunk_header(line))
+        if ended {
+            return Err(format!(
+                "invalid_arguments: trailing content after *** End Patch: {line}"
+            ));
         }
-        ParseState::Body => Err(invalid_hunk_header(line)),
-        ParseState::Add { path, mut contents } => {
-            let Some(rest) = line.strip_prefix('+') else {
-                return Err(format!(
-                    "invalid_arguments: Add File lines must start with '+', got: {line}"
-                ));
-            };
-            contents.push_str(rest);
-            contents.push('\n');
-            Ok(ParseState::Add { path, contents })
-        }
-        ParseState::Update {
-            path,
-            mut move_to,
-            mut chunks,
-        } => {
-            let update_line = line.trim_end();
-            if update_line == ATAT {
-                chunks.push(UpdateChunk::new(None));
-            } else if let Some(ctx) = update_line.strip_prefix(ATAT_CONTEXT) {
-                chunks.push(UpdateChunk::new(Some(ctx.to_string())));
-            } else if update_line == END_OF_FILE {
-                // 语法保留：标记本身不再携带语义。上游 V4A 用它锚定 EOF 匹配；
-                // vva 匹配本就搜索全文，未命中按 not_found 显式报错，不再静默追加文件尾。
-            } else if update_line.is_empty() {
-                push_context(&mut chunks, String::new());
-            } else if let Some(rest) = line.strip_prefix('+') {
-                push_add(&mut chunks, rest.to_string());
-            } else if let Some(rest) = line.strip_prefix('-') {
-                push_delete(&mut chunks, rest.to_string());
-            } else if let Some(rest) = line.strip_prefix(' ') {
-                push_context(&mut chunks, rest.to_string());
-            } else if let Some(dest) = update_line.strip_prefix(MOVE_TO)
-                && chunks.is_empty()
-                && move_to.is_none()
-            {
-                move_to = Some(dest.to_string());
-            } else {
-                return Err(format!(
-                    "invalid_arguments: invalid line in Update File hunk: {line}"
-                ));
-            }
-            Ok(ParseState::Update {
-                path,
-                move_to,
-                chunks,
-            })
-        }
-        ParseState::End => Err(format!(
-            "invalid_arguments: trailing content after *** End Patch: {line}"
-        )),
-    }
-}
-
-fn start_hunk_or_end(
-    state: &ParseState,
-    line: &str,
-    hunks: &mut Vec<FileHunk>,
-) -> Result<Option<ParseState>, String> {
-    if line == END_PATCH {
-        flush_state(state, hunks)?;
-        return Ok(Some(ParseState::End));
-    }
-    if let Some(path) = line.strip_prefix(ADD_FILE) {
-        flush_state(state, hunks)?;
-        return Ok(Some(ParseState::Add {
-            path: path.to_string(),
-            contents: String::new(),
-        }));
-    }
-    if let Some(path) = line.strip_prefix(DELETE_FILE) {
-        flush_state(state, hunks)?;
-        hunks.push(FileHunk::Delete {
-            path: path.to_string(),
-        });
-        return Ok(Some(ParseState::Body));
-    }
-    if let Some(path) = line.strip_prefix(UPDATE_FILE) {
-        flush_state(state, hunks)?;
-        return Ok(Some(ParseState::Update {
-            path: path.to_string(),
-            move_to: None,
-            chunks: Vec::new(),
-        }));
-    }
-    Ok(None)
-}
-
-fn flush_state(state: &ParseState, hunks: &mut Vec<FileHunk>) -> Result<(), String> {
-    match state {
-        ParseState::Header { .. } | ParseState::Body | ParseState::End => Ok(()),
-        ParseState::Add { path, contents } => {
+        if line == END_PATCH {
+            check_update_not_empty(&hunks)?;
+            ended = true;
+        } else if let Some(path) = line.strip_prefix(ADD_FILE) {
+            check_update_not_empty(&hunks)?;
             hunks.push(FileHunk::Add {
-                path: path.clone(),
-                contents: contents.clone(),
+                path: path.into(),
+                contents: String::new(),
             });
-            Ok(())
-        }
-        ParseState::Update {
-            path,
-            move_to,
-            chunks,
-        } => {
-            if chunks.is_empty() && move_to.is_none() {
-                return Err(format!(
-                    "invalid_arguments: Update file hunk for path '{path}' is empty"
-                ));
-            }
+        } else if let Some(path) = line.strip_prefix(DELETE_FILE) {
+            check_update_not_empty(&hunks)?;
+            hunks.push(FileHunk::Delete { path: path.into() });
+        } else if let Some(path) = line.strip_prefix(UPDATE_FILE) {
+            check_update_not_empty(&hunks)?;
             hunks.push(FileHunk::Update {
-                path: path.clone(),
-                move_to: move_to.clone(),
-                chunks: chunks.clone(),
+                path: path.into(),
+                move_to: None,
+                chunks: Vec::new(),
             });
-            Ok(())
+        } else {
+            match hunks.last_mut() {
+                Some(FileHunk::Add { contents, .. }) => {
+                    let Some(rest) = line.strip_prefix('+') else {
+                        return Err(format!(
+                            "invalid_arguments: Add File lines must start with '+', got: {line}"
+                        ));
+                    };
+                    contents.push_str(rest);
+                    contents.push('\n');
+                }
+                Some(FileHunk::Update {
+                    move_to, chunks, ..
+                }) => parse_update_line(line, move_to, chunks)?,
+                None if line.starts_with(ENVIRONMENT_ID) => {
+                    if saw_env {
+                        return Err(
+                            "invalid_arguments: duplicate *** Environment ID: preamble".into()
+                        );
+                    }
+                    if line.len() == ENVIRONMENT_ID.len() {
+                        return Err(
+                            "invalid_arguments: apply_patch environment_id cannot be empty".into(),
+                        );
+                    }
+                    saw_env = true;
+                }
+                _ => {
+                    return Err(format!(
+                        "invalid_arguments: expected a file operation or *** End Patch, got: {line}"
+                    ));
+                }
+            }
         }
     }
-}
-
-fn invalid_hunk_header(line: &str) -> String {
-    format!("invalid_arguments: expected a file operation or *** End Patch, got: {line}")
-}
-
-fn push_add(chunks: &mut [UpdateChunk], line: String) {
-    if let Some(chunk) = chunks.last_mut() {
-        chunk.new_lines.push(line);
+    if ended {
+        Ok(hunks)
+    } else {
+        Err("invalid_arguments: missing *** End Patch".into())
     }
 }
 
-fn push_delete(chunks: &mut [UpdateChunk], line: String) {
-    if let Some(chunk) = chunks.last_mut() {
-        chunk.old_lines.push(line);
+/// 上一个 Update hunk 必须带有块或 Move（在下一个 hunk 开始或补丁结束时校验）。
+fn check_update_not_empty(hunks: &[FileHunk]) -> Result<(), String> {
+    match hunks.last() {
+        Some(FileHunk::Update {
+            path,
+            move_to: None,
+            chunks,
+        }) if chunks.is_empty() => Err(format!(
+            "invalid_arguments: Update file hunk for path '{path}' is empty"
+        )),
+        _ => Ok(()),
     }
 }
 
-fn push_context(chunks: &mut [UpdateChunk], line: String) {
-    if let Some(chunk) = chunks.last_mut() {
-        chunk.old_lines.push(line.clone());
-        chunk.new_lines.push(line);
+fn parse_update_line(
+    line: &str,
+    move_to: &mut Option<String>,
+    chunks: &mut Vec<UpdateChunk>,
+) -> Result<(), String> {
+    let trimmed = line.trim_end();
+    // 上下文 / 删除 / 新增行同时作用于最近的块（无块时忽略）。
+    let mut push = |old: Option<&str>, new: Option<&str>| {
+        if let Some(chunk) = chunks.last_mut() {
+            chunk.old_lines.extend(old.map(str::to_string));
+            chunk.new_lines.extend(new.map(str::to_string));
+        }
+    };
+    if trimmed == ATAT {
+        chunks.push(UpdateChunk::new(None));
+    } else if let Some(ctx) = trimmed.strip_prefix(ATAT_CONTEXT) {
+        chunks.push(UpdateChunk::new(Some(ctx.to_string())));
+    } else if trimmed == END_OF_FILE {
+        // 语法保留：标记本身不再携带语义。上游 V4A 用它锚定 EOF 匹配；
+        // vva 匹配本就搜索全文，未命中按 not_found 显式报错，不再静默追加文件尾。
+    } else if trimmed.is_empty() {
+        push(Some(""), Some(""));
+    } else if let Some(rest) = line.strip_prefix('+') {
+        push(None, Some(rest));
+    } else if let Some(rest) = line.strip_prefix('-') {
+        push(Some(rest), None);
+    } else if let Some(rest) = line.strip_prefix(' ') {
+        push(Some(rest), Some(rest));
+    } else if let Some(dest) = trimmed.strip_prefix(MOVE_TO)
+        && chunks.is_empty()
+        && move_to.is_none()
+    {
+        *move_to = Some(dest.to_string());
+    } else {
+        return Err(format!(
+            "invalid_arguments: invalid line in Update File hunk: {line}"
+        ));
     }
+    Ok(())
 }
 
 fn apply_update(original: &str, chunks: &[UpdateChunk]) -> Result<String, String> {
@@ -454,36 +387,26 @@ fn apply_parsed(working_dir: &Path, hunks: Vec<FileHunk>) -> Result<String, Stri
 
 fn add_file(working_dir: &Path, path: &str, contents: &str) -> Result<String, String> {
     let path = resolve_path(working_dir, path);
-    if path.exists() {
-        return Err(format!(
-            "Failed to create file {}: already exists",
-            path.display()
-        ));
-    }
-    let lock = edit_lock(&path)?;
-    let _guard = lock
-        .lock()
-        .map_err(|_| "File mutation lock poisoned".to_string())?;
-    if path.exists() {
-        return Err(format!(
-            "Failed to create file {}: already exists",
-            path.display()
-        ));
-    }
-    write_new_file(&path, contents)?;
-    Ok(format!("Created file {}", path.display()))
+    with_edit_locks(&[&path], || {
+        if path.exists() {
+            return Err(format!(
+                "Failed to create file {}: already exists",
+                path.display()
+            ));
+        }
+        write_new_file(&path, contents)?;
+        Ok(format!("Created file {}", path.display()))
+    })
 }
 
 fn delete_file(working_dir: &Path, path: &str) -> Result<String, String> {
     let path = resolve_path(working_dir, path);
     let path = fs::canonicalize(&path)
         .map_err(|e| format!("Failed to resolve {}: {e}", path.display()))?;
-    let lock = edit_lock(&path)?;
-    let _guard = lock
-        .lock()
-        .map_err(|_| "File mutation lock poisoned".to_string())?;
-    fs::remove_file(&path).map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
-    Ok(format!("Deleted file {}", path.display()))
+    with_edit_locks(&[&path], || {
+        fs::remove_file(&path).map_err(|e| format!("Failed to delete {}: {e}", path.display()))?;
+        Ok(format!("Deleted file {}", path.display()))
+    })
 }
 
 fn update_file(
@@ -493,15 +416,16 @@ fn update_file(
     chunks: &[UpdateChunk],
 ) -> Result<String, String> {
     let src = resolve_path(working_dir, path);
-    if chunks.is_empty() && move_to.is_none() {
-        return Err("invalid_arguments: Update File has no hunks".into());
-    }
+    let apply = |content: &str| {
+        if chunks.is_empty() {
+            Ok(content.to_string())
+        } else {
+            apply_update(content, chunks)
+        }
+    };
     let Some(dest_rel) = move_to else {
         return commit_text_edit(&src, None, false, |content| {
-            Ok(EditPlan::from_replacement(
-                content,
-                apply_update(content, chunks)?,
-            ))
+            Ok(EditPlan::from_replacement(content, apply(content)?))
         });
     };
     let dest = resolve_path(working_dir, dest_rel);
@@ -514,33 +438,23 @@ fn update_file(
     }
     let src =
         fs::canonicalize(&src).map_err(|e| format!("Failed to resolve {}: {e}", src.display()))?;
-    let src_lock = edit_lock(&src)?;
-    let dest_lock = edit_lock(&dest)?;
-    let _g1 = src_lock
-        .lock()
-        .map_err(|_| "File mutation lock poisoned".to_string())?;
-    let _g2 = dest_lock
-        .lock()
-        .map_err(|_| "File mutation lock poisoned".to_string())?;
-    let content =
-        fs::read_to_string(&src).map_err(|e| format!("Failed to read {}: {e}", src.display()))?;
-    if content.contains('\0') {
-        return Err("Unsupported binary file".into());
-    }
-    let updated = if chunks.is_empty() {
-        content.clone()
-    } else {
-        apply_update(&content, chunks)?
-    };
-    write_new_file(&dest, &updated)?;
-    fs::remove_file(&src).map_err(|e| format!("Failed to remove {}: {e}", src.display()))?;
-    let plan = EditPlan::from_replacement(&content, updated);
-    Ok(format!(
-        "Moved {} -> {}\n{}",
-        src.display(),
-        dest.display(),
-        format_edit_result(&dest, &content, &plan, false)
-    ))
+    with_edit_locks(&[&src, &dest], || {
+        let content = fs::read_to_string(&src)
+            .map_err(|e| format!("Failed to read {}: {e}", src.display()))?;
+        if content.contains('\0') {
+            return Err("Unsupported binary file".into());
+        }
+        let updated = apply(&content)?;
+        write_new_file(&dest, &updated)?;
+        fs::remove_file(&src).map_err(|e| format!("Failed to remove {}: {e}", src.display()))?;
+        let plan = EditPlan::from_replacement(&content, updated);
+        Ok(format!(
+            "Moved {} -> {}\n{}",
+            src.display(),
+            dest.display(),
+            format_edit_result(&dest, &content, &plan, false)
+        ))
+    })
 }
 
 #[async_trait]

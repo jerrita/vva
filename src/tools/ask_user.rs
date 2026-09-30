@@ -38,8 +38,7 @@ impl AskUserTool {
             description: String,
         }
 
-        let arguments: Arguments = serde_json::from_str(&call.arguments)
-            .map_err(|error| format!("Invalid AskUser arguments: {error}"))?;
+        let arguments: Arguments = super::parse_args(&call.arguments, "AskUser")?;
         if arguments.questions.is_empty() {
             return Err("AskUser requires at least one question".into());
         }

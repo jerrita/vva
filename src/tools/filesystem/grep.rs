@@ -110,48 +110,43 @@ Returns path:line: text with 1-indexed line numbers, sorted by file modification
             let Ok(content) = fs::read_to_string(&path) else {
                 continue;
             };
-            if self.editor == EditorKind::Hashline {
-                let mut clipped = Vec::new();
-                let mut truncated = false;
-                for (index, line) in content.lines().enumerate() {
-                    if !regex.is_match(line) {
-                        continue;
-                    }
-                    if match_count == MAX_RESULTS {
-                        truncated = true;
-                        break;
-                    }
-                    clipped.push((index, line));
-                    match_count += 1;
+            let mut hits = Vec::new();
+            let mut truncated = false;
+            for (index, line) in content.lines().enumerate() {
+                if !regex.is_match(line) {
+                    continue;
                 }
-                if !clipped.is_empty() {
+                if match_count == MAX_RESULTS {
+                    truncated = true;
+                    break;
+                }
+                hits.push((index, line));
+                match_count += 1;
+            }
+            if !hits.is_empty() {
+                results.push(if self.editor == EditorKind::Hashline {
                     let label = path
                         .strip_prefix(&self.working_dir)
                         .unwrap_or(&path)
                         .display()
                         .to_string();
                     let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-                    results.push(crate::tools::hashline::format_grep_file(
+                    crate::tools::hashline::format_grep_file(
                         &label,
                         &content,
-                        &clipped,
+                        &hits,
                         self.hashline.as_deref(),
                         &canonical,
-                    )?);
-                }
-                if truncated {
-                    return Ok(format!("{}\n[results truncated]", results.join("\n")));
-                }
-                continue;
+                    )?
+                } else {
+                    hits.iter()
+                        .map(|(index, line)| format!("{}:{}: {line}", path.display(), index + 1))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                });
             }
-            for (index, line) in content.lines().enumerate() {
-                if regex.is_match(line) {
-                    if match_count == MAX_RESULTS {
-                        return Ok(format!("{}\n[results truncated]", results.join("\n")));
-                    }
-                    results.push(format!("{}:{}: {line}", path.display(), index + 1));
-                    match_count += 1;
-                }
+            if truncated {
+                return Ok(format!("{}\n[results truncated]", results.join("\n")));
             }
         }
         Ok(results.join("\n"))

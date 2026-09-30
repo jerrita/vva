@@ -184,20 +184,41 @@ async fn searches_sort_before_capping_and_only_mark_excess() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// 在临时目录中按 (相对路径, 内容) 建文件。
+fn workspace(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let root = tempfile::tempdir().unwrap();
+    for (path, content) in files {
+        let path = root.path().join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    root
+}
+
 #[tokio::test]
-async fn glob_matches_files_recursively() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), "pub fn example() {}").unwrap();
-    fs::write(root.join("src/lib.txt"), "example").unwrap();
-
-    let tool = GlobTool::new(&root);
-    let result = tool.execute(r#"{"pattern":"**/*.rs"}"#).await.unwrap();
-    assert_eq!(result, root.join("src/lib.rs").display().to_string());
-    let quoted = tool.execute(r#"{"pattern":"\"**/*.rs\""}"#).await.unwrap();
-    assert_eq!(quoted, root.join("src/lib.rs").display().to_string());
-
-    fs::remove_dir_all(root).unwrap();
+async fn glob_handles_quotes_and_brace_alternatives() {
+    let root = workspace(&[
+        ("src/lib.rs", "pub fn example() {}"),
+        ("src/readme.md", "# readme"),
+        ("src/lib.txt", "example"),
+    ]);
+    let rs = root.path().join("src/lib.rs").display().to_string();
+    let tool = GlobTool::new(root.path());
+    assert_eq!(tool.execute(r#"{"pattern":"**/*.rs"}"#).await.unwrap(), rs);
+    assert_eq!(
+        tool.execute(r#"{"pattern":"\"**/*.rs\""}"#).await.unwrap(),
+        rs
+    );
+    let result = tool.execute(r#"{"pattern":"**/*.{rs,md}"}"#).await.unwrap();
+    let mut lines: Vec<_> = result.lines().collect();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            rs.as_str(),
+            &root.path().join("src/readme.md").display().to_string()
+        ]
+    );
 }
 
 #[test]
@@ -211,52 +232,41 @@ fn strip_wrapping_quotes_peels_paired_quotes() {
 
 #[tokio::test]
 async fn read_strips_quoted_path() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), "hello").unwrap();
-
-    let tool = ReadTool::new(&root);
-    let result = tool.execute(r#"{"path":"\"src/lib.rs\""}"#).await.unwrap();
+    let root = workspace(&[("src/lib.rs", "hello")]);
+    let result = ReadTool::new(root.path())
+        .execute(r#"{"path":"\"src/lib.rs\""}"#)
+        .await
+        .unwrap();
     assert!(result.ends_with("1: hello\n[End of file]"));
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
-async fn read_hashline_emits_snapshot_header_and_line_numbers() {
-    let root = std::env::temp_dir().join(format!("vva-hash-read-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("sample"), "alpha\nbeta\nalpha\n").unwrap();
-    let tool = ReadTool::new(&root).with_editor(crate::model::EditorKind::Hashline);
-    let result = tool.execute(r#"{"path":"sample"}"#).await.unwrap();
+async fn read_and_grep_hashline_emit_snapshot_header_and_line_numbers() {
+    let root = workspace(&[("sample", "alpha\nbeta\nalpha\n")]);
+    let hashline = crate::model::EditorKind::Hashline;
+    let result = ReadTool::new(root.path())
+        .with_editor(hashline)
+        .execute(r#"{"path":"sample"}"#)
+        .await
+        .unwrap();
     let header = result.lines().next().unwrap();
     assert!(header.starts_with("[sample#"), "{header}");
     assert_eq!(header.len(), "[sample#ABCD]".len(), "{header}");
-    assert!(result.contains("1:alpha"));
-    assert!(result.contains("2:beta"));
-    assert!(result.contains("3:alpha"));
-    assert!(!result.contains("1: "));
-    assert!(!result.contains("[version:"));
-    fs::remove_dir_all(root).unwrap();
-}
+    for line in ["1:alpha", "2:beta", "3:alpha"] {
+        assert!(result.contains(line), "{result}");
+    }
+    assert!(!result.contains("1: ") && !result.contains("[version:"));
 
-#[tokio::test]
-async fn grep_hashline_emits_snapshot_header_and_line_numbers() {
-    let root = std::env::temp_dir().join(format!("vva-hash-grep-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("sample"), "alpha\nbeta\nalpha\n").unwrap();
-    let tool = GrepTool::new(&root).with_editor(crate::model::EditorKind::Hashline);
-    let result = tool.execute(r#"{"pattern":"alpha"}"#).await.unwrap();
-    let lines: Vec<&str> = result.lines().collect();
+    let grep = GrepTool::new(root.path()).with_editor(hashline);
+    let result = grep.execute(r#"{"pattern":"alpha"}"#).await.unwrap();
+    let lines: Vec<_> = result.lines().collect();
     assert!(lines[0].starts_with("[sample#"), "{}", lines[0]);
-    assert_eq!(lines[1], "1:alpha");
-    assert_eq!(lines[2], "3:alpha");
-    let numbered = GrepTool::new(&root)
+    assert_eq!(lines[1..], ["1:alpha", "3:alpha"]);
+    let plain = GrepTool::new(root.path())
         .execute(r#"{"pattern":"alpha"}"#)
         .await
         .unwrap();
-    assert!(numbered.contains(":1: alpha"));
-    fs::remove_dir_all(root).unwrap();
+    assert!(plain.contains(":1: alpha"));
 }
 
 #[test]
@@ -271,154 +281,80 @@ fn expand_braces_splits_comma_groups() {
 }
 
 #[tokio::test]
-async fn glob_expands_brace_alternatives() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), "pub fn example() {}").unwrap();
-    fs::write(root.join("src/readme.md"), "# readme").unwrap();
-    fs::write(root.join("src/lib.txt"), "example").unwrap();
-
-    let tool = GlobTool::new(&root);
-    let result = tool.execute(r#"{"pattern":"**/*.{rs,md}"}"#).await.unwrap();
-    let mut lines: Vec<String> = result.lines().map(str::to_owned).collect();
-    lines.sort();
-    let mut expected = vec![
-        root.join("src/lib.rs").display().to_string(),
-        root.join("src/readme.md").display().to_string(),
-    ];
-    expected.sort();
-    assert_eq!(lines, expected);
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
 async fn grep_include_expands_braces() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(root.join("src/lib.rs"), "needle in rust").unwrap();
-    fs::write(root.join("src/readme.md"), "needle in markdown").unwrap();
-    fs::write(root.join("src/lib.txt"), "needle in text").unwrap();
-
-    let tool = GrepTool::new(&root);
-    let result = tool
+    let root = workspace(&[
+        ("src/lib.rs", "needle in rust"),
+        ("src/readme.md", "needle in markdown"),
+        ("src/lib.txt", "needle in text"),
+    ]);
+    let result = GrepTool::new(root.path())
         .execute(r#"{"pattern":"needle","include":"**/*.{rs,md}"}"#)
         .await
         .unwrap();
-    assert!(result.contains("src/lib.rs"));
-    assert!(result.contains("src/readme.md"));
+    assert!(result.contains("src/lib.rs") && result.contains("src/readme.md"));
     assert!(!result.contains("src/lib.txt"));
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[tokio::test]
-async fn edit_returns_unified_diff() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("file.txt"), "one\nbefore\nthree\n").unwrap();
-
-    let tool = EditTool::new(&root);
+async fn edit_basics_diff_replace_all_and_unchanged() {
+    let root = workspace(&[
+        ("file.txt", "one\nbefore\nthree\n"),
+        ("all.txt", "before before"),
+    ]);
+    let tool = EditTool::new(root.path());
+    let path = root.path().join("file.txt");
     let result = tool
         .execute(r#"{"path":"file.txt","old_string":"before","new_string":"after"}"#)
         .await
         .unwrap();
-
-    assert_eq!(
-        fs::read_to_string(root.join("file.txt")).unwrap(),
-        "one\nafter\nthree\n"
-    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), "one\nafter\nthree\n");
     assert_eq!(
         result,
         format!(
             "--- {0}\n+++ {0}\n@@ -1,3 +1,3 @@\n one\n-before\n+after\n three\n[version: {1}]",
-            root.join("file.txt").display(),
+            path.display(),
             content_version("one\nafter\nthree\n")
         )
     );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn write_creates_a_new_file() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-
-    let tool = WriteTool::new(&root);
-    let result = tool
-        .execute(r#"{"path":"file.txt","content":"hello\nworld"}"#)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        fs::read_to_string(root.join("file.txt")).unwrap(),
-        "hello\nworld"
-    );
-    assert_eq!(
-        result,
-        format!("Created file {}", root.join("file.txt").display())
-    );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn write_rejects_existing_file() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("file.txt"), "existing").unwrap();
-
-    let tool = WriteTool::new(&root);
-    let error = tool
-        .execute(r#"{"path":"file.txt","content":"replacement"}"#)
-        .await
-        .unwrap_err();
-
-    assert!(error.starts_with("Failed to create file "));
-    assert_eq!(
-        fs::read_to_string(root.join("file.txt")).unwrap(),
-        "existing"
-    );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn edit_replaces_all_when_requested() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("file.txt"), "before before").unwrap();
-
-    let tool = EditTool::new(&root);
     tool.execute(
-        r#"{"path":"file.txt","old_string":"before","new_string":"after","replace_all":true}"#,
+        r#"{"path":"all.txt","old_string":"before","new_string":"after","replace_all":true}"#,
     )
     .await
     .unwrap();
     assert_eq!(
-        fs::read_to_string(root.join("file.txt")).unwrap(),
+        fs::read_to_string(root.path().join("all.txt")).unwrap(),
         "after after"
     );
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
-async fn edit_rejects_unchanged_content() {
-    let root = std::env::temp_dir().join(format!("vva-tools-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&root).unwrap();
-    fs::write(root.join("file.txt"), "before").unwrap();
-
-    let tool = EditTool::new(&root);
     let error = tool
-        .execute(r#"{"path":"file.txt","old_string":"before","new_string":"before"}"#)
+        .execute(r#"{"path":"file.txt","old_string":"after","new_string":"after"}"#)
         .await
         .unwrap_err();
     assert!(error.starts_with("unchanged:"));
-
-    fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn write_creates_new_file_and_rejects_existing() {
+    let root = workspace(&[("old.txt", "existing")]);
+    let tool = WriteTool::new(root.path());
+    let result = tool
+        .execute(r#"{"path":"file.txt","content":"hello\nworld"}"#)
+        .await
+        .unwrap();
+    let path = root.path().join("file.txt");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "hello\nworld");
+    assert_eq!(result, format!("Created file {}", path.display()));
+
+    let error = tool
+        .execute(r#"{"path":"old.txt","content":"replacement"}"#)
+        .await
+        .unwrap_err();
+    assert!(error.starts_with("Failed to create file "));
+    assert_eq!(
+        fs::read_to_string(root.path().join("old.txt")).unwrap(),
+        "existing"
+    );
+}
+
 #[tokio::test]
 async fn batch_edits_use_original_and_fail_without_writing() {
     let root = tempfile::tempdir().unwrap();

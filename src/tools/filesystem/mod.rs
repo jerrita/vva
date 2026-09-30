@@ -10,7 +10,7 @@ mod write;
 
 pub use edit::EditTool;
 pub(crate) use edit::{
-    ChangedRange, EditPlan, commit_text_edit, edit_lock, format_edit_result, persist_edit,
+    ChangedRange, EditPlan, commit_text_edit, format_edit_result, persist_edit, with_edit_locks,
 };
 pub use glob::GlobTool;
 pub use grep::GrepTool;
