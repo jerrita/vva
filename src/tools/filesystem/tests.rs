@@ -584,3 +584,9 @@ async fn concurrent_edits_with_same_version_apply_once() {
     assert!(error.starts_with("stale:"));
     assert_eq!(fs::read_to_string(path).unwrap(), "updated");
 }
+
+#[test]
+fn edit_locks_tolerate_duplicate_paths() {
+    let path = Path::new("/tmp/vva-lock-dup");
+    assert_eq!(with_edit_locks(&[path, path], || Ok(1)), Ok(1));
+}

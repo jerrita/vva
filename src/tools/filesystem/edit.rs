@@ -93,13 +93,14 @@ fn edit_lock(path: &Path) -> Result<Arc<Mutex<()>>, String> {
     Ok(lock)
 }
 
-/// 按序持有各路径的文件变更锁后执行 `f`（多路径时调用方保证一致的加锁顺序）。
+/// 持有各路径的文件变更锁后执行 `f`；路径排序去重，保证全局一致的加锁顺序且同一路径不重入。
 pub(crate) fn with_edit_locks<T>(
     paths: &[&Path],
     f: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    let paths: std::collections::BTreeSet<_> = paths.iter().collect();
     let locks = paths
-        .iter()
+        .into_iter()
         .map(|path| edit_lock(path))
         .collect::<Result<Vec<_>, _>>()?;
     let _guards = locks
