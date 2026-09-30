@@ -32,31 +32,16 @@ pub(super) struct PendingDelivery {
     pub completion: oneshot::Sender<DeliveryResult>,
 }
 
-pub enum Command {
-    Submit {
-        prompt: String,
-        /// 用户随提示词提交的图片附件（Base64）
-        images: Vec<ContentPart>,
-        events: Option<mpsc::Sender<AgentEvent>>,
-        reply: Reply,
-    },
+pub enum SharedCommand {
     Configure {
         model: Option<String>,
         variant: Option<Option<String>>,
         search: Option<bool>,
         reply: Reply,
     },
-    Stop {
-        delete: bool,
-        reply: Reply,
-    },
     AnswerUser {
         request_id: String,
         answers: Vec<UserAnswer>,
-        reply: Reply,
-    },
-    Revert {
-        turn_index: usize,
         reply: Reply,
     },
     Title(String),
@@ -65,6 +50,26 @@ pub enum Command {
         id: String,
         reply: Reply,
     },
+}
+
+pub enum Command {
+    Submit {
+        prompt: String,
+        /// 用户随提示词提交的图片附件（Base64）
+        images: Vec<ContentPart>,
+        events: Option<mpsc::Sender<AgentEvent>>,
+        reply: Reply,
+    },
+    Stop {
+        delete: bool,
+        reply: Reply,
+    },
+    Revert {
+        turn_index: usize,
+        reply: Reply,
+    },
+    /// 运行中与空闲时语义一致的命令
+    Shared(SharedCommand),
     /// 后台任务完成：注入通知轮次并自动续跑（无应答，monitor 经 WeakSender 投递）
     TaskFinished {
         task_id: String,
@@ -170,11 +175,13 @@ impl ManagedSession {
         variant: Option<Option<String>>,
         search: Option<bool>,
     ) -> Result<(), String> {
-        self.request(|reply| Command::Configure {
-            model,
-            variant,
-            search,
-            reply,
+        self.request(|reply| {
+            Command::Shared(SharedCommand::Configure {
+                model,
+                variant,
+                search,
+                reply,
+            })
         })
         .await
     }
@@ -194,7 +201,7 @@ impl ManagedSession {
 
     /// 关闭一条运行通知横幅
     pub async fn dismiss_notice(&self, id: String) -> Result<(), String> {
-        self.request(|reply| Command::DismissNotice { id, reply })
+        self.request(|reply| Command::Shared(SharedCommand::DismissNotice { id, reply }))
             .await
     }
 
@@ -203,10 +210,12 @@ impl ManagedSession {
         request_id: impl Into<String>,
         answers: Vec<UserAnswer>,
     ) -> Result<(), String> {
-        self.request(|reply| Command::AnswerUser {
-            request_id: request_id.into(),
-            answers,
-            reply,
+        self.request(|reply| {
+            Command::Shared(SharedCommand::AnswerUser {
+                request_id: request_id.into(),
+                answers,
+                reply,
+            })
         })
         .await
     }

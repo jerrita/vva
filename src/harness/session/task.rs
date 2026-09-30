@@ -610,7 +610,7 @@ impl SessionTask {
             match generate_title(&config, &model, &prompt).await {
                 Ok(title) => {
                     if let Some(tx) = commands.upgrade() {
-                        let _ = tx.send(Command::Title(title)).await;
+                        let _ = tx.send(Command::Shared(SharedCommand::Title(title))).await;
                     }
                 }
                 Err(error) => tracing::warn!("Title generation failed: {error}"),
@@ -708,8 +708,8 @@ impl SessionTask {
                         self.publish_throttled();
                         return None;
                     };
-                    let Some(command) = self.handle_shared(command).await else { continue };
                     match command {
+                        Command::Shared(command) => self.handle_shared(command).await,
                         Command::TaskFinished { task_id } => {
                             self.queue_task_completion(task_id).await;
                         }
@@ -730,20 +730,16 @@ impl SessionTask {
                             self.publish_throttled();
                             return None;
                         }
-                        Command::Configure { .. } | Command::Title(_)
-                        | Command::DismissNotice { .. } | Command::AnswerUser { .. } => {
-                            unreachable!("handled by handle_shared")
-                        }
                     }
                 }
             }
         }
     }
 
-    /// 运行中 (drive) 与空闲 (run) 语义一致的命令；其余命令原样交还调用方
-    async fn handle_shared(&mut self, command: Command) -> Option<Command> {
+    /// 运行中 (drive) 与空闲 (run) 语义一致的命令
+    async fn handle_shared(&mut self, command: SharedCommand) {
         match command {
-            Command::Configure {
+            SharedCommand::Configure {
                 model,
                 variant,
                 search,
@@ -751,25 +747,23 @@ impl SessionTask {
             } => {
                 let _ = reply.send(self.configure(model, variant, search).await);
             }
-            Command::Title(title) => {
+            SharedCommand::Title(title) => {
                 if let Err(error) = self.title(title).await {
                     self.event(AgentEvent::Notice(error)).await;
                 }
             }
-            Command::DismissNotice { id, reply } => {
+            SharedCommand::DismissNotice { id, reply } => {
                 self.dismiss_notice(&id);
                 let _ = reply.send(Ok(()));
             }
-            Command::AnswerUser {
+            SharedCommand::AnswerUser {
                 request_id,
                 answers,
                 reply,
             } => {
                 let _ = reply.send(self.answer_user(request_id, answers).await);
             }
-            other => return Some(other),
         }
-        None
     }
 
     fn record_outcome(&mut self, text: String, aborted: bool) {
@@ -1138,10 +1132,8 @@ impl SessionTask {
 
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         while let Some(command) = commands.recv().await {
-            let Some(command) = self.handle_shared(command).await else {
-                continue;
-            };
             match command {
+                Command::Shared(command) => self.handle_shared(command).await,
                 Command::Submit {
                     prompt,
                     images,
@@ -1194,10 +1186,6 @@ impl SessionTask {
                         break;
                     }
                 }
-                Command::Configure { .. }
-                | Command::Title(_)
-                | Command::DismissNotice { .. }
-                | Command::AnswerUser { .. } => unreachable!("handled by handle_shared"),
             }
         }
         if let Some(task) = self.title_task {

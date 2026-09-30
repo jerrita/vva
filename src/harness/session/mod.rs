@@ -8,7 +8,7 @@ mod tests;
 mod view;
 
 pub use handle::ManagedSession;
-use handle::{Command, CompletedTurn, DeliveryReceipt, PendingDelivery};
+use handle::{Command, CompletedTurn, DeliveryReceipt, PendingDelivery, SharedCommand};
 pub use manager::SessionManager;
 use task::{SessionTask, TaskDeps};
 pub use view::{Notice, NoticeKind, RunState, SessionView};
