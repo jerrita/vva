@@ -252,6 +252,117 @@ pub struct FsEntriesResponse {
     pub entries: Vec<FsEntry>,
 }
 
+#[derive(Deserialize)]
+pub struct FsFindQuery {
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+/// 模糊查找命中的文件：`entry` 展平，附带 `path` 中命中的字符下标供前端高亮
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FsFindEntry {
+    #[serde(flatten)]
+    pub entry: FsEntry,
+    pub indices: Vec<usize>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct FsFindResponse {
+    pub workspace: String,
+    pub query: String,
+    pub entries: Vec<FsFindEntry>,
+    pub truncated: bool,
+}
+
+const FIND_DEFAULT_LIMIT: usize = 50;
+const FIND_MAX_LIMIT: usize = 200;
+
+/// 工程内文件模糊查找（go to file）；`q` 为空时返回最近修改的文件
+pub async fn find_fs_files(
+    State(state): State<AppState>,
+    Query(query): Query<FsFindQuery>,
+) -> ApiResult<Json<FsFindResponse>> {
+    let workspace = workspace_or_default(&state, query.workspace.as_deref());
+    let limit = query
+        .limit
+        .unwrap_or(FIND_DEFAULT_LIMIT)
+        .clamp(1, FIND_MAX_LIMIT);
+    let q = query.q.trim().to_string();
+
+    match tokio::fs::metadata(&workspace).await {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err(ApiError::new(StatusCode::BAD_REQUEST, "工作区不是目录")),
+        Err(e) => {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("工作区不存在: {e}"),
+            ));
+        }
+    }
+
+    let ws = workspace.clone();
+    let q_task = q.clone();
+    let (ranked, truncated) = tokio::task::spawn_blocking(move || {
+        let (candidates, capped) = super::find::walk_workspace(&ws, q_task.is_empty());
+        let mut scored: Vec<(i64, Option<std::time::SystemTime>, String, Vec<usize>)> =
+            if q_task.is_empty() {
+                candidates
+                    .into_iter()
+                    .map(|c| (0, c.mtime, c.path, Vec::new()))
+                    .collect()
+            } else {
+                candidates
+                    .into_iter()
+                    .filter_map(|c| {
+                        super::find::fuzzy_match(&q_task, &c.path)
+                            .map(|m| (m.score, c.mtime, c.path, m.indices))
+                    })
+                    .collect()
+            };
+        if q_task.is_empty() {
+            scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+        } else {
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
+        }
+        let over = scored.len() > limit;
+        scored.truncate(limit);
+        (scored, capped || over)
+    })
+    .await
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("文件查找失败: {e}"),
+        )
+    })?;
+
+    let entries = ranked
+        .into_iter()
+        .map(|(_, _, path, indices)| {
+            let size = std::fs::metadata(workspace.join(&path)).map_or(0, |m| m.len());
+            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            FsFindEntry {
+                entry: FsEntry {
+                    name,
+                    path,
+                    is_dir: false,
+                    size,
+                },
+                indices,
+            }
+        })
+        .collect();
+
+    Ok(Json(FsFindResponse {
+        workspace: workspace.to_string_lossy().to_string(),
+        query: q,
+        entries,
+        truncated,
+    }))
+}
+
 /// 列出工程目录下的条目（目录与文件），支持工程文件浏览器懒加载
 pub async fn list_fs_entries(
     State(state): State<AppState>,

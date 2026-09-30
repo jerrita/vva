@@ -1,17 +1,21 @@
+import type { ReactNode } from 'react'
+import type { PreviewFile } from '../hooks/usePanelLayout'
 import type {
   Annotation,
   ContentPart,
   ImageGenerationCall,
   MediaSource,
-  SearchStatus,
   ToolCall,
   ToolResult,
   WebSearchCall,
-  WebSearchSource,
 } from '../types'
-import { IconFile } from './icons'
+import { editDiffs } from '../utils/editDiff'
+import type { FileDiff } from '../utils/editDiff'
+import { IconChevronRight, IconFile } from './icons'
 import { useLightbox } from './Lightbox'
 import { Markdown } from './Markdown'
+import { baseName, describeSearch, describeTool, externalWebCall, relativePath } from './trace/describe'
+import type { Outcome, StepClass, TallyKey, ToolView } from './trace/describe'
 
 /** 图片数据源地址：URL 直连或 Base64 data URL */
 export function mediaSourceUrl(source: MediaSource): string {
@@ -20,416 +24,530 @@ export function mediaSourceUrl(source: MediaSource): string {
     : `data:${source.mime_type};base64,${source.data}`
 }
 
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}
+// ---- 节点模型 ----
 
-function parseArgs(args: string): Record<string, unknown> | null {
-  try {
-    const value: unknown = JSON.parse(args)
-    return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
-  } catch {
-    return null
-  }
-}
-
-function str(value: unknown): string | null {
-  return typeof value === 'string' ? value : null
-}
-
-function lineCount(text: string): number {
-  return text === '' ? 0 : text.split('\n').length
-}
-
-function fileName(path: string): string {
-  const filePath = path.split('#', 1)[0]
-  return filePath.slice(filePath.lastIndexOf('/') + 1)
-}
-
-/** 项目内文件的展示路径相对化；项目外保持原样 */
-function relativePath(path: string, workspace?: string): string {
-  if (!workspace) return path
-  const root = workspace.replace(/\/+$/, '')
-  if (path === root) return '.'
-  if (path.startsWith(`${root}/`)) return path.slice(root.length + 1)
-  return path
-}
-
-function patchFilePath(input: string): string | null {
-  for (const line of input.split('\n')) {
-    for (const prefix of ['*** Update File: ', '*** Add File: ', '*** Delete File: ']) {
-      if (line.startsWith(prefix)) return line.slice(prefix.length).trim()
-    }
-  }
-  return null
-}
-
-function patchCounts(input: string): { plus: number; minus: number } {
-  let plus = 0
-  let minus = 0
-  for (const line of input.split('\n')) {
-    const trimmed = line.replace(/\s+$/, '')
-    if (trimmed.startsWith('***') || trimmed.startsWith('@@')) continue
-    if (trimmed.startsWith('+')) plus += 1
-    else if (trimmed.startsWith('-')) minus += 1
-  }
-  return { plus, minus }
-}
-
-function editEntries(args: Record<string, unknown>): Record<string, unknown>[] {
-  if (args.edits === undefined) return [args]
-  if (!Array.isArray(args.edits)) return []
-  return args.edits.filter((edit): edit is Record<string, unknown> =>
-    edit !== null && typeof edit === 'object' && !Array.isArray(edit))
-}
-
-/** 摘要行的按工具类型 detail，对齐 TUI tool_call_detail */
-interface ToolDetail {
-  text: string
-  /** 原始路径：预览跳转用 */
-  filePath?: string
-  /** 展示路径：项目内文件相对化 */
-  displayPath?: string
-  /** Edit 专用：增删行数着色展示 */
-  editPath?: string
-  plus?: number
-  minus?: number
-  shellCommand?: string
-}
-
-/** Glob/Grep 结果中的匹配行数：非空行且排除截断标记 */
-function resultMatchCount(result: ToolResult): number {
-  return result.content
-    .split('\n')
-    .filter(line => line.trim() !== '' && line !== '[results truncated]').length
-}
-
-function matchSuffix(count: number): string {
-  return `(${count} ${count === 1 ? 'match' : 'matches'})`
-}
-
-function toolDetail(call: ToolCall, result: ToolResult | null, workspace?: string): ToolDetail {
-  const rel = (path: string) => relativePath(path, workspace)
-  const raw = truncate(call.arguments, 88)
-  const args = parseArgs(call.arguments)
-  if (!args) return { text: raw }
-  switch (call.name) {
-    case 'AskUser': {
-      const questions = Array.isArray(args.questions) ? args.questions : []
-      if (questions.length !== 1) return { text: `${questions.length} questions` }
-      const question = questions[0]
-      if (!question || typeof question !== 'object') return { text: 'user input' }
-      const item = question as Record<string, unknown>
-      const header = str(item.header)
-      const mode = item.multi_select === true ? '多选' : '单选'
-      return { text: header ? `${header} · ${mode}` : mode }
-    }
-    case 'Read': {
-      const rawPath = str(args.path)
-      if (!rawPath) return { text: raw }
-      const options: string[] = []
-      if (typeof args.offset === 'number' && args.offset !== 1) options.push(`offset=${args.offset}`)
-      if (typeof args.limit === 'number') options.push(`limit=${args.limit}`)
-      if (typeof args.byte_offset === 'number') options.push(`byte_offset=${args.byte_offset}`)
-      const shown = rel(rawPath)
-      return {
-        text: options.length > 0 ? `${shown} [${options.join(', ')}]` : shown,
-        filePath: rawPath,
-        displayPath: shown,
-      }
-    }
-    case 'Write': {
-      const rawPath = str(args.path)
-      if (!rawPath) return { text: raw }
-      return { text: rel(rawPath), filePath: rawPath, displayPath: rel(rawPath) }
-    }
-    case 'Edit': {
-      const input = str(args.input)
-      if (input) {
-        const path = patchFilePath(input)
-        const { plus, minus } = patchCounts(input)
-        if (path) {
-          return { text: fileName(path), filePath: path, editPath: rel(path), plus, minus }
-        }
-        return { text: truncate(input, 88) }
-      }
-      const path = str(args.path)
-      const edits = editEntries(args)
-      if (path && edits.length > 0 && edits.every(edit => str(edit.old_string) !== null && str(edit.new_string) !== null)) {
-        return {
-          text: fileName(path),
-          filePath: path,
-          editPath: rel(path),
-          plus: edits.reduce((count, edit) => count + lineCount(str(edit.new_string)!), 0),
-          minus: edits.reduce((count, edit) => count + lineCount(str(edit.old_string)!), 0),
-        }
-      }
-      return { text: rel(path ?? call.arguments), filePath: path ?? undefined, displayPath: path ? rel(path) : undefined }
-    }
-    case 'Glob': {
-      const pattern = str(args.pattern) ?? raw
-      if (result && !result.is_error) {
-        return { text: `"${pattern}" ${matchSuffix(resultMatchCount(result))}` }
-      }
-      return { text: `"${pattern}"` }
-    }
-    case 'Grep': {
-      const pattern = str(args.pattern)
-      if (!pattern) return { text: raw }
-      const include = str(args.include)
-      const path = str(args.path)
-      const shown = path ? rel(path) : null
-      const loc = include
-        ? shown && shown !== '.'
-          ? `${shown}/${include}`
-          : include
-        : shown && shown !== '.'
-          ? shown
-          : null
-      const target = loc ? `${loc}, "${pattern}"` : `"${pattern}"`
-      if (result && !result.is_error) {
-        return { text: `${target} ${matchSuffix(resultMatchCount(result))}` }
-      }
-      return { text: target }
-    }
-    case 'Shell': {
-      const command = str(args.command)
-      const intent = str(args.intent)
-      // 后台启动标注任务态，与前台执行区分
-      const background = args.run_in_background === true ? ' (background)' : ''
-      return {
-        text: (intent ?? '') + background,
-        shellCommand: command ?? undefined,
-      }
-    }
-    case 'TaskOutput':
-    case 'TaskStop': {
-      const taskId = str(args.task_id)
-      return { text: taskId ?? raw }
-    }
-    case 'Agent': {
-      const agent = str(args.agent) ?? 'agent'
-      const description = str(args.description) ?? ''
-      const background = args.run_in_background === true ? ' (background)' : ''
-      return { text: description ? `${agent} · ${description}${background}` : `${agent}${background}` }
-    }
-    case 'SendMessage': {
-      const session = str(args.session_id) ?? ''
-      const text = str(args.text)
-      return { text: text ? `${session} · "${truncate(text, 40)}"` : session }
-    }
-    case 'WaitSession': {
-      const session = str(args.session_id)
-      return { text: session ?? raw }
-    }
-    default:
-      return { text: raw }
-  }
-}
-
-/** 工具调用与其结果配对后的节点 */
-interface ToolGroupNode {
+/** 工具调用与其结果配对后的步骤 */
+interface ToolStep {
+  kind: 'tool'
   call: ToolCall
   result: ToolResult | null
 }
 
-function ToolGroupView({
-  node,
-  expanded = false,
+type Step =
+  | ToolStep
+  | { kind: 'thought'; content: string }
+  | { kind: 'search'; call: WebSearchCall }
+  | { kind: 'image_gen'; call: ImageGenerationCall }
+  | { kind: 'orphan'; result: ToolResult }
+  /** 连续同名只读工具（≥3）合并为一行 */
+  | { kind: 'batch'; name: string; steps: ToolStep[] }
+
+/** 轨迹段（连续步骤，共用一条轨道）与段间正文 */
+type Block =
+  | { kind: 'trace'; steps: Step[] }
+  | { kind: 'text'; part: Extract<ContentPart, { type: 'text' }> }
+  | { kind: 'image'; source: MediaSource }
+
+const BATCHABLE = new Set(['Read', 'Grep', 'Glob'])
+const BATCH_MIN = 3
+
+function toSteps(parts: ContentPart[]): (Step | Exclude<Block, { kind: 'trace' }>)[] {
+  const out: (Step | Exclude<Block, { kind: 'trace' }>)[] = []
+  const tools = new Map<string, ToolStep>()
+  for (const part of parts) {
+    switch (part.type) {
+      case 'text':
+        if (part.text.trim()) out.push({ kind: 'text', part })
+        break
+      case 'image':
+        out.push({ kind: 'image', source: part.source })
+        break
+      case 'reasoning':
+        if (part.content.trim()) out.push({ kind: 'thought', content: part.content })
+        break
+      case 'tool_call': {
+        const step: ToolStep = { kind: 'tool', call: part, result: null }
+        tools.set(part.id, step)
+        out.push(step)
+        break
+      }
+      case 'tool_result': {
+        const step = tools.get(part.tool_call_id)
+        if (step) step.result = part
+        else out.push({ kind: 'orphan', result: part })
+        break
+      }
+      case 'web_search_call':
+        out.push({ kind: 'search', call: part })
+        break
+      case 'image_generation_call':
+        out.push({ kind: 'image_gen', call: part })
+        break
+    }
+  }
+  return out
+}
+
+function isBatchable(step: Step): step is ToolStep {
+  return (
+    step.kind === 'tool' &&
+    BATCHABLE.has(step.call.name) &&
+    step.result != null &&
+    !step.result.is_error
+  )
+}
+
+/** 连续同名只读步骤（≥3，均已成功）并为一行 */
+function batchSteps(steps: Step[]): Step[] {
+  const out: Step[] = []
+  let index = 0
+  while (index < steps.length) {
+    const step = steps[index]
+    if (!isBatchable(step)) {
+      out.push(step)
+      index++
+      continue
+    }
+    const run: ToolStep[] = [step]
+    let end = index + 1
+    while (end < steps.length) {
+      const next = steps[end]
+      if (!isBatchable(next) || next.call.name !== step.call.name) break
+      run.push(next)
+      end++
+    }
+    if (run.length >= BATCH_MIN) {
+      out.push({ kind: 'batch', name: step.call.name, steps: run })
+    } else {
+      out.push(...run)
+    }
+    index = end
+  }
+  return out
+}
+
+function toBlocks(parts: ContentPart[]): Block[] {
+  const blocks: Block[] = []
+  let trace: Step[] | null = null
+  for (const node of toSteps(parts)) {
+    if (node.kind === 'text' || node.kind === 'image') {
+      if (trace) blocks.push({ kind: 'trace', steps: batchSteps(trace) })
+      trace = null
+      blocks.push(node)
+    } else {
+      trace ??= []
+      trace.push(node)
+    }
+  }
+  if (trace) blocks.push({ kind: 'trace', steps: batchSteps(trace) })
+  return blocks
+}
+
+// ---- 运行段计数 ----
+
+export interface Tally {
+  counts: [TallyKey, number][]
+  failed: number
+}
+
+const TALLY_ORDER: TallyKey[] = ['查看', '搜索', '修改', '执行', '委派']
+
+/** 工作段的动作计数：按类别汇总，失败单列 */
+export function tallyParts(parts: ContentPart[]): Tally {
+  const counts = new Map<TallyKey, number>()
+  let failed = 0
+  const bump = (key: TallyKey) => counts.set(key, (counts.get(key) ?? 0) + 1)
+  for (const node of toSteps(parts)) {
+    if (node.kind === 'tool') {
+      const web = externalWebCall(node.call, node.result)
+      bump(web ? '搜索' : describeTool(node.call, node.result, undefined, () => null).tally)
+      if (node.result?.is_error) failed++
+    } else if (node.kind === 'search') {
+      bump('搜索')
+      if (node.call.status === 'failed') failed++
+    } else if (node.kind === 'orphan' && node.result.is_error) {
+      failed++
+    }
+  }
+  return {
+    counts: TALLY_ORDER.filter(key => counts.has(key)).map(key => [key, counts.get(key)!]),
+    failed,
+  }
+}
+
+// ---- 行组件 ----
+
+type GlyphState = StepClass | 'thought' | 'running' | 'error'
+
+function Glyph({ state }: { state: GlyphState }) {
+  return <span className={`glyph ${state}`} aria-hidden />
+}
+
+function OutcomeView({ outcome, error }: { outcome?: Outcome; error: boolean }) {
+  if (error) return <span className="step-outcome fail">失败</span>
+  if (!outcome) return null
+  if ('text' in outcome) return <span className="step-outcome">{outcome.text}</span>
+  return (
+    <span className="step-outcome">
+      <span className="diff-add">+{outcome.plus}</span>
+      <span className="diff-del">−{outcome.minus}</span>
+    </span>
+  )
+}
+
+interface LineProps {
+  glyph: GlyphState
+  verb: string
+  target: ReactNode
+  mono?: boolean
+  secondary?: string
+  outcome?: ReactNode
+}
+
+/** 末列操作提示：可展开行为箭头，预览行为文件图标 */
+type Affordance = 'expand' | 'preview' | null
+
+function StepLine({
+  glyph,
+  verb,
+  target,
+  mono,
+  secondary,
+  outcome,
+  affordance,
+}: LineProps & { affordance: Affordance }) {
+  return (
+    <>
+      <Glyph state={glyph} />
+      <span className="step-verb">{verb}</span>
+      <span className="step-target">
+        <span className={`step-main${mono ? ' mono' : ''}`}>{target}</span>
+        {secondary && <span className="step-secondary">{secondary}</span>}
+      </span>
+      {outcome ?? <span />}
+      <span className="step-affordance" aria-hidden>
+        {affordance === 'expand' && <IconChevronRight size={12} strokeWidth={2} />}
+        {affordance === 'preview' && <IconFile size={12} strokeWidth={1.8} />}
+      </span>
+    </>
+  )
+}
+
+/** 可展开步骤 = details；可点击步骤 = button；其余为静态行 */
+function StepRow({
+  line,
+  body,
+  onActivate,
+  title,
+  tone,
+}: {
+  line: LineProps
+  body?: ReactNode
+  onActivate?: () => void
+  title?: string
+  tone?: 'error'
+}) {
+  const className = `step${tone ? ` ${tone}` : ''}`
+  if (body) {
+    return (
+      <details className={className}>
+        <summary className="step-line" title={title}>
+          <StepLine {...line} affordance="expand" />
+        </summary>
+        <div className="step-body">{body}</div>
+      </details>
+    )
+  }
+  if (onActivate) {
+    return (
+      <button type="button" className={`${className} step-line action`} onClick={onActivate} title={title}>
+        <StepLine {...line} affordance="preview" />
+      </button>
+    )
+  }
+  return (
+    <div className={`${className} step-line`} title={title}>
+      <StepLine {...line} affordance={null} />
+    </div>
+  )
+}
+
+function DiffView({
+  diffs,
   workspace,
   onPreviewFile,
 }: {
-  node: ToolGroupNode
-  expanded?: boolean
+  diffs: FileDiff[]
   workspace?: string
-  onPreviewFile?: (path: string) => void
+  onPreviewFile?: PreviewFile
 }) {
-  const { call, result } = node
-  const detail = toolDetail(call, result, workspace)
-  const isError = result?.is_error ?? false
-  const isFileTool = call.name === 'Read' || call.name === 'Write' || call.name === 'Edit'
-  const isShell = call.name === 'Shell'
-  const isTaskTool = call.name === 'TaskOutput' || call.name === 'TaskStop'
-  // 子代理工具：最终消息 / 投递回执可展开
-  const isAgentTool = call.name === 'Agent' || call.name === 'SendMessage' || call.name === 'WaitSession'
-  // 可展开 = 有输出可看（Shell 输出 / 后台任务输出 / 子代理输出 / 错误详情）
-  const hasOutput =
-    Boolean((isShell || isTaskTool || isAgentTool) && result && result.content.trim()) ||
-    Boolean(isError && result)
-  const shownPath = detail.displayPath ?? detail.filePath
-
-  if (!hasOutput) {
-    return (
-      <div
-        className={`tool-row${isError ? ' error' : ''}${
-          isFileTool && detail.filePath && onPreviewFile ? ' clickable' : ''
-        }`}
-        onClick={
-          isFileTool && detail.filePath && onPreviewFile
-            ? () => onPreviewFile(detail.filePath!)
-            : undefined
-        }
-        title={
-          isFileTool && detail.filePath
-            ? `在右侧边栏预览 ${detail.filePath}`
-            : undefined
-        }
-      >
-        <code className="tool-name">{call.name}</code>
-        {detail.editPath ? (
-          <span className="tool-intent">
-            <span className="file-name">{detail.editPath}</span>{' '}
-            <span className="diff-count ins">(+{detail.plus})</span>
-            {', '}
-            <span className="diff-count del">(-{detail.minus})</span>
-          </span>
-        ) : shownPath ? (
-          <span className="tool-intent">
-            <span className="file-name">{shownPath}</span>
-            {detail.text.slice(shownPath.length)}
-          </span>
-        ) : (
-          <span className="tool-intent">{detail.text}</span>
-        )}
-        {isFileTool && detail.filePath && onPreviewFile && (
-          <span className="tool-preview-hint" title="预览文件" aria-hidden>
-            <IconFile size={13} strokeWidth={1.8} />
-          </span>
-        )}
-      </div>
-    )
-  }
-
   return (
-    <details className={`tool-row${isError ? ' error' : ''}`} open={expanded}>
-      <summary>
-        <code className="tool-name">{call.name}</code>
-        <span className="tool-intent">{detail.text}</span>
-      </summary>
-      <pre className="tool-output">
-        {detail.shellCommand && <span className="tool-command">{detail.shellCommand}</span>}
-        {result!.content}
-      </pre>
-    </details>
-  )
-}
-
-/**
- * 外置 web_search 工具输出中的编号条目 → sources。
- * 与工具输出格式耦合：`N. title` 行后紧跟 URL 行（title 缺省时该行为 `N. url`）。
- */
-function parseWebSources(content: string): WebSearchSource[] {
-  const lines = content.split('\n')
-  const sources: WebSearchSource[] = []
-  for (let index = 0; index < lines.length; index++) {
-    const entry = /^\d+\. (.+)$/.exec(lines[index])
-    if (!entry) continue
-    const candidate = (lines[index + 1] ?? '').trim()
-    if (/^https?:\/\//.test(candidate)) {
-      sources.push({ url: candidate, title: entry[1] === candidate ? '' : entry[1] })
-      index++
-    } else if (/^https?:\/\//.test(entry[1])) {
-      sources.push({ url: entry[1], title: entry[1] })
-    }
-  }
-  return sources
-}
-
-/** 工具执行中/成功/失败 → 原生搜索状态 */
-function webToolStatus(result: ToolResult | null): SearchStatus {
-  if (!result) return 'searching'
-  return result.is_error ? 'failed' : 'completed'
-}
-
-/**
- * 外置 web 工具（web_search / web_fetch）→ 原生 WebSearchCall 视图：
- * 与服务端原生搜索共用同一展示形态（见 WebSearchView），其余工具返回 null。
- */
-function externalWebSearchCall(node: ToolGroupNode): WebSearchCall | null {
-  const { call, result } = node
-  const args = parseArgs(call.arguments)
-  if (call.name === 'web_search') {
-    const query = str(args?.query) ?? ''
-    return {
-      id: call.id,
-      query,
-      action: { type: 'search' },
-      status: webToolStatus(result),
-      sources: result && !result.is_error ? parseWebSources(result.content) : [],
-    }
-  }
-  if (call.name === 'web_fetch') {
-    const url = str(args?.url) ?? ''
-    if (!url) return null
-    return {
-      id: call.id,
-      query: url,
-      action: { type: 'open_page', url },
-      status: webToolStatus(result),
-      sources: [],
-    }
-  }
-  return null
-}
-
-function WebSearchView({ call, expanded }: { call: WebSearchCall; expanded: boolean }) {
-  const action = call.action
-  return (
-    <details className="search-row" open={expanded}>
-      <summary>
-        <span className="search-icon">⌕</span>
-        <span className="search-label">
-          {action?.type === 'open_page' ? '打开网页' : action?.type === 'find_in_page' ? '页内查找' : '网络搜索'}
-        </span>
-        <code className="search-target">
-          {action == null ? (
-            '（动作未下发）'
-          ) : action.type === 'open_page' ? (
-            <a href={action.url} target="_blank" rel="noreferrer">
-              {action.url}
-            </a>
-          ) : action.type === 'search' ? (
-            call.query
-          ) : (
-            action.url
+    <div className="diff">
+      {diffs.map((diff, index) => (
+        <div key={index} className="diff-file">
+          <div className="diff-head">
+            <span className="diff-path">{relativePath(diff.path, workspace)}</span>
+            {diff.op && diff.op !== 'update' && (
+              <span className="diff-op">{{ add: '新建', delete: '删除', move: '移动' }[diff.op]}</span>
+            )}
+            {onPreviewFile && diff.op !== 'delete' && (
+              <button type="button" className="diff-open" onClick={() => onPreviewFile(diff.path, 'changes')}>
+                <IconFile size={12} strokeWidth={1.8} />
+                在侧栏打开
+              </button>
+            )}
+          </div>
+          {diff.lines.length > 0 && (
+            <pre className="diff-lines">
+              {diff.lines.filter(line => !(line.kind === 'hunk' && line.text.trim() === '@@')).map((line, row) => (
+                <span key={row} className={`diff-line ${line.kind}`}>
+                  {line.kind === 'hunk' ? line.text : line.text || ' '}
+                  {'\n'}
+                </span>
+              ))}
+            </pre>
           )}
-        </code>
-        <span className={`search-status ${call.status}`}>{call.status}</span>
-      </summary>
-      {call.sources && call.sources.length > 0 && (
-        <ul className="search-sources">
-          {call.sources.map((source, index) => (
-            <li key={index}>
-              <a href={source.url} target="_blank" rel="noreferrer">
-                {source.title || source.url}
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
-    </details>
+        </div>
+      ))}
+    </div>
   )
 }
 
-function ImageGenerationView({ call, expanded }: { call: ImageGenerationCall; expanded: boolean }) {
-  const openLightbox = useLightbox()
+function OutputView({ command, content }: { command?: string; content: string }) {
   return (
-    <details className="search-row image-gen-row" open={expanded}>
-      <summary>
-        <span className="search-icon">▦</span>
-        <span className="search-label">生成图片</span>
-        <code className="search-target">{call.revised_prompt ?? ''}</code>
-        <span className={`search-status ${call.status}`}>{call.status}</span>
-      </summary>
-      {call.result && (
-        <img
-          className="part-image lightboxable"
-          src={mediaSourceUrl(call.result)}
-          alt=""
-          onClick={() => openLightbox(mediaSourceUrl(call.result!))}
-        />
-      )}
-    </details>
+    <pre className="step-output">
+      {command && <span className="step-command">{command}</span>}
+      {content.trim() ? content.replace(/\n+$/, '') : <span className="step-empty">（无输出）</span>}
+    </pre>
+  )
+}
+
+function toolGlyph(view: ToolView, result: ToolResult | null, live: boolean): GlyphState {
+  if (result?.is_error) return 'error'
+  if (!result && live) return 'running'
+  return view.cls
+}
+
+function ToolRow({
+  step,
+  live,
+  workspace,
+  onPreviewFile,
+}: {
+  step: ToolStep
+  live: boolean
+  workspace?: string
+  onPreviewFile?: PreviewFile
+}) {
+  const { call, result } = step
+  const web = externalWebCall(call, result)
+  if (web) return <SearchRow call={web} />
+
+  const diffs = call.name === 'Edit' || call.name === 'Write' ? editDiffs(call.name, call.arguments) : []
+  const view = describeTool(call, result, workspace, () =>
+    diffs.length > 0
+      ? {
+          plus: diffs.reduce((sum, diff) => sum + diff.plus, 0),
+          minus: diffs.reduce((sum, diff) => sum + diff.minus, 0),
+        }
+      : null,
+  )
+  const error = result?.is_error ?? false
+  const line: LineProps = {
+    glyph: toolGlyph(view, result, live),
+    verb: view.verb,
+    target: view.target,
+    mono: view.mono,
+    secondary: view.secondary,
+    outcome: <OutcomeView outcome={view.outcome} error={error} />,
+  }
+
+  let body: ReactNode = null
+  if (error && result) {
+    body = <OutputView command={view.command} content={result.content} />
+  } else if (view.body === 'diff' && diffs.length > 0) {
+    body = <DiffView diffs={diffs} workspace={workspace} onPreviewFile={onPreviewFile} />
+  } else if (view.body === 'output' && result) {
+    body = <OutputView command={view.command} content={result.content} />
+  }
+
+  const preview = view.filePath && onPreviewFile ? () => onPreviewFile(view.filePath!, view.range ?? null) : undefined
+  return (
+    <StepRow
+      line={line}
+      body={body}
+      onActivate={preview}
+      title={preview ? `在侧栏预览 ${view.filePath}` : view.command}
+      tone={error ? 'error' : undefined}
+    />
+  )
+}
+
+function BatchRow({
+  name,
+  steps,
+  workspace,
+  onPreviewFile,
+}: {
+  name: string
+  steps: ToolStep[]
+  workspace?: string
+  onPreviewFile?: PreviewFile
+}) {
+  const views = steps.map(step => describeTool(step.call, step.result, workspace, () => null))
+  const names = views.map(view => (view.filePath ? baseName(view.filePath) : view.target))
+  const unit = name === 'Read' ? '个文件' : '次'
+  return (
+    <StepRow
+      line={{
+        glyph: 'observe',
+        verb: name,
+        target: `${steps.length} ${unit}`,
+        secondary: names.join('  '),
+      }}
+      body={
+        <div className="step-batch">
+          {steps.map((step, index) => (
+            <ToolRow key={index} step={step} live={false} workspace={workspace} onPreviewFile={onPreviewFile} />
+          ))}
+        </div>
+      }
+    />
+  )
+}
+
+/** 思考首行预览：去 Markdown 标记；流式中取最新一行（跑马灯） */
+function thoughtPreview(content: string, streaming: boolean): string {
+  const lines = content
+    .split('\n')
+    .map(line => line.replace(/^#+\s*|\*\*|__|`/g, '').trim())
+    .filter(Boolean)
+  return (streaming ? lines.at(-1) : lines[0]) ?? ''
+}
+
+function ThoughtRow({ content, streaming }: { content: string; streaming: boolean }) {
+  return (
+    <StepRow
+      line={{
+        glyph: streaming ? 'running' : 'thought',
+        verb: 'Think',
+        target: <span className="thought-preview">{thoughtPreview(content, streaming)}</span>,
+      }}
+      body={
+        <div className="thought-body">
+          <Markdown text={content} />
+        </div>
+      }
+    />
+  )
+}
+
+function SearchRow({ call }: { call: WebSearchCall }) {
+  const { verb, target, outcome } = describeSearch(call)
+  const running = call.status === 'searching' || call.status === 'pending'
+  const failed = call.status === 'failed'
+  const sources = call.sources ?? []
+  const url = call.action?.type === 'open_page' ? call.action.url : null
+  return (
+    <StepRow
+      line={{
+        glyph: failed ? 'error' : running ? 'running' : 'observe',
+        verb,
+        target: url ? (
+          <a href={url} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()}>
+            {target}
+          </a>
+        ) : (
+          target
+        ),
+        outcome: <OutcomeView outcome={outcome ? { text: outcome } : undefined} error={failed} />,
+      }}
+      body={
+        sources.length > 0 ? (
+          <ol className="step-sources">
+            {sources.map((source, index) => (
+              <li key={index}>
+                <a href={source.url} target="_blank" rel="noreferrer">
+                  {source.title || source.url}
+                </a>
+                <span className="source-host">{hostOf(source.url)}</span>
+              </li>
+            ))}
+          </ol>
+        ) : undefined
+      }
+      tone={failed ? 'error' : undefined}
+    />
+  )
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+function ImageGenRow({ call }: { call: ImageGenerationCall }) {
+  const openLightbox = useLightbox()
+  const url = call.result ? mediaSourceUrl(call.result) : null
+  return (
+    <StepRow
+      line={{
+        glyph: call.status === 'in_progress' ? 'running' : call.status === 'incomplete' ? 'error' : 'change',
+        verb: 'Image',
+        target: call.revised_prompt ?? '生成图片',
+      }}
+      body={
+        url ? (
+          <img className="part-image lightboxable" src={url} alt="" onClick={() => openLightbox(url)} />
+        ) : undefined
+      }
+    />
+  )
+}
+
+function TraceView({
+  steps,
+  live,
+  workspace,
+  onPreviewFile,
+}: {
+  steps: Step[]
+  /** 本段处于流式末尾：未决工具为运行态，末尾思考滚动预览 */
+  live: boolean
+  workspace?: string
+  onPreviewFile?: PreviewFile
+}) {
+  return (
+    <div className="trace">
+      {steps.map((step, index) => {
+        switch (step.kind) {
+          case 'tool':
+            return <ToolRow key={index} step={step} live={live} workspace={workspace} onPreviewFile={onPreviewFile} />
+          case 'batch':
+            return (
+              <BatchRow key={index} name={step.name} steps={step.steps} workspace={workspace} onPreviewFile={onPreviewFile} />
+            )
+          case 'thought':
+            return <ThoughtRow key={index} content={step.content} streaming={live && index === steps.length - 1} />
+          case 'search':
+            return <SearchRow key={index} call={step.call} />
+          case 'image_gen':
+            return <ImageGenRow key={index} call={step.call} />
+          case 'orphan':
+            return (
+              <StepRow
+                key={index}
+                line={{ glyph: step.result.is_error ? 'error' : 'execute', verb: 'Result', target: step.result.tool_call_id, mono: true }}
+                body={<OutputView content={step.result.content} />}
+                tone={step.result.is_error ? 'error' : undefined}
+              />
+            )
+        }
+      })}
+    </div>
   )
 }
 
@@ -450,8 +568,9 @@ function Citations({ annotations }: { annotations: Annotation[] }) {
         {citations.map((citation, index) => (
           <li key={index}>
             <a href={citation.url} target="_blank" rel="noreferrer">
-              {index + 1}. {citation.title || citation.url}
+              {citation.title || citation.url}
             </a>
+            <span className="source-host">{hostOf(citation.url)}</span>
           </li>
         ))}
       </ol>
@@ -459,61 +578,16 @@ function Citations({ annotations }: { annotations: Annotation[] }) {
   )
 }
 
-export function Part({ part, expanded }: { part: ContentPart; expanded: boolean }) {
+function ImagePart({ source }: { source: MediaSource }) {
   const openLightbox = useLightbox()
-  switch (part.type) {
-    case 'text':
-      return (
-        <div className="part-text">
-          <Markdown text={part.text} />
-          {part.annotations && part.annotations.length > 0 && (
-            <Citations annotations={part.annotations} />
-          )}
-        </div>
-      )
-    case 'reasoning':
-      return (
-        <details className="reasoning-row" open={expanded}>
-          <summary>
-            <span className="reasoning-icon">✦</span>
-            <span className="reasoning-label">Thinking</span>
-          </summary>
-          <div className="reasoning-body">{part.content}</div>
-        </details>
-      )
-    case 'tool_result':
-      return (
-        <details className={`tool-row${part.is_error ? ' error' : ''}`} open={expanded}>
-          <summary>
-            <code className="tool-name">result</code>
-            <span className="tool-intent">{part.is_error ? '执行出错' : '执行结果'}</span>
-          </summary>
-          <pre className="tool-output">{part.content}</pre>
-        </details>
-      )
-    case 'web_search_call':
-      return <WebSearchView call={part} expanded={expanded} />
-    case 'image_generation_call':
-      return <ImageGenerationView call={part} expanded={expanded} />
-    case 'image': {
-      const url = mediaSourceUrl(part.source)
-      return (
-        <img
-          className="part-image lightboxable"
-          src={url}
-          alt=""
-          onClick={() => openLightbox(url)}
-        />
-      )
-    }
-  }
+  const url = mediaSourceUrl(source)
+  return <img className="part-image lightboxable" src={url} alt="" onClick={() => openLightbox(url)} />
 }
 
 /**
- * live 表示流式生成中：末尾块（思考 / 搜索 / 工具）保持展开，出现后续块或响应结束后自动收起；
- * tool_call 与同 tool_call_id 的 tool_result 配对为一个节点；
- * 未配对的 result（如无调用上下文）独立渲染。
- * 历史内容默认收起，用户可手动展开。
+ * 部件序列 → 正文与轨迹段交替排布：连续的思考/工具/搜索共用一条轨道，正文打断轨道。
+ * tool_call 与同 tool_call_id 的 tool_result 配对为一步；未配对的 result 独立成步。
+ * 所有步骤默认收起，流式中不自动展开（避免内容跳动）；live 仅影响运行态字形与思考跑马灯。
  */
 export function Parts({
   parts,
@@ -525,49 +599,31 @@ export function Parts({
   live?: boolean
   /** 会话 workspace：项目内文件展示为相对路径 */
   workspace?: string
-  onPreviewFile?: (path: string) => void
+  onPreviewFile?: PreviewFile
 }) {
-  type Node =
-    | { kind: 'part'; part: ContentPart }
-    | { kind: 'tool'; group: ToolGroupNode }
-  const nodes: Node[] = []
-  const groupsById = new Map<string, ToolGroupNode>()
-
-  parts.forEach(part => {
-    if (part.type === 'tool_call') {
-      const group = { call: part, result: null }
-      groupsById.set(part.id, group)
-      nodes.push({ kind: 'tool', group })
-    } else if (part.type === 'tool_result') {
-      const group = groupsById.get(part.tool_call_id)
-      if (group) {
-        group.result = part
-      } else {
-        nodes.push({ kind: 'part', part })
-      }
-    } else {
-      nodes.push({ kind: 'part', part })
-    }
-  })
-
+  const blocks = toBlocks(parts)
   return (
     <>
-      {nodes.map((node, index) => {
-        const expanded = live && index === nodes.length - 1
-        const webCall = node.kind === 'tool' ? externalWebSearchCall(node.group) : null
-        if (webCall) {
-          return <WebSearchView key={`tool-${index}`} call={webCall} expanded={expanded} />
+      {blocks.map((block, index) => {
+        if (block.kind === 'trace') {
+          return (
+            <TraceView
+              key={index}
+              steps={block.steps}
+              live={live && index === blocks.length - 1}
+              workspace={workspace}
+              onPreviewFile={onPreviewFile}
+            />
+          )
         }
-        return node.kind === 'tool' ? (
-          <ToolGroupView
-            key={`tool-${index}`}
-            node={node.group}
-            expanded={expanded}
-            workspace={workspace}
-            onPreviewFile={onPreviewFile}
-          />
-        ) : (
-          <Part key={`part-${index}`} part={node.part} expanded={expanded} />
+        if (block.kind === 'image') return <ImagePart key={index} source={block.source} />
+        return (
+          <div key={index} className="part-text">
+            <Markdown text={block.part.text} />
+            {block.part.annotations && block.part.annotations.length > 0 && (
+              <Citations annotations={block.part.annotations} />
+            )}
+          </div>
         )
       })}
     </>

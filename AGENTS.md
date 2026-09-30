@@ -205,10 +205,12 @@ frontend/                    # Web 前端源码 (React + Vite + TypeScript)；bu
 ├── src/types.ts             # 后端 serde 序列化镜像类型
 ├── src/sessionSync.ts       # SSE 会话订阅
 ├── src/hooks/               # usePersistentState (localStorage 持久化) / useResizable (面板拖拽) /
-│                            # useComposerVisibility (移动端输入框手势机) / useStatsPanel (用量面板) /
+│                            # useComposerVisibility (移动端输入框手势机) / useStatsPanel (用量弹层) /
 │                            # useFileTree (懒加载目录树) / useMediaQuery
-├── src/utils/               # highlight (hljs 语言映射/按行切分) / relatedFiles (会话涉及文件提取) / math (LaTeX 定界符归一)
-└── src/components/          # Sidebar / Chat / Composer / Parts / FileSidebar(+file/ 树与预览) /
+├── src/utils/               # highlight (hljs 语言映射/按行切分) / relatedFiles (会话涉及文件提取) / math (LaTeX 定界符归一) / editDiff (编辑入参 → 结构化差异) / changeMarks (本会话改动行落点)
+├── src/styles/trace.css     # 工作轨迹样式 (轨道/字形/行网格/差异)
+├── src/styles/files.css     # 文件区样式 (Explorer/Viewer/标签/IDE 三栏布局)
+└── src/components/          # Sidebar / Chat / Composer / Parts (工作轨迹) + trace/describe (工具行模型) / files/ (Explorer 跳转搜索+会话文件+目录树 / Viewer 改动标记与区间定位 / Workspace 对话抽屉与 IDE 三栏) /
                              # StatsPanel / EmptyStage / Sash / AskUserModal / SettingsModal / icons
 ```
 

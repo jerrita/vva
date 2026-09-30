@@ -34,6 +34,7 @@ pub async fn run_server(
         .route("/api/workspace", get(api::default_workspace))
         .route("/api/fs/dirs", get(api::list_dirs))
         .route("/api/fs/entries", get(api::list_fs_entries))
+        .route("/api/fs/find", get(api::find_fs_files))
         .route("/api/fs/file", get(api::get_fs_file))
         .route("/api/fs/download", get(api::download_fs_file))
         .route("/api/files", post(api::upload_file))

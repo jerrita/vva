@@ -7,6 +7,8 @@ import '@fontsource/jetbrains-mono/500.css'
 import App from './App'
 import { LightboxProvider } from './components/Lightbox'
 import './styles.css'
+import './styles/trace.css'
+import './styles/files.css'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

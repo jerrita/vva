@@ -16,6 +16,9 @@ export function Composer({
   controls,
   skills,
   workspace,
+  contextRatio,
+  contextText,
+  onOpenStats,
   ref,
 }: {
   running: boolean
@@ -24,6 +27,10 @@ export function Composer({
   controls?: ReactNode
   skills: SkillEntry[]
   workspace?: string
+  /** 上下文占用比例（0–1）；缺省时不展示圆环 */
+  contextRatio?: number
+  contextText?: string
+  onOpenStats?: () => void
   ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
@@ -288,6 +295,10 @@ export function Composer({
           </button>
           {controls}
         </div>
+        <div className="composer-actions">
+        {contextRatio !== undefined && onOpenStats && (
+          <ContextRing ratio={contextRatio} text={contextText ?? ''} onClick={onOpenStats} />
+        )}
         {running ? (
           <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
             <IconStop size={15} />
@@ -297,7 +308,42 @@ export function Composer({
             <IconArrowUp size={17} />
           </button>
         )}
+        </div>
       </div>
     </div>
+  )
+}
+
+const RING_R = 6.5
+const RING_C = 2 * Math.PI * RING_R
+
+/** 上下文占用圆环：点击打开用量弹层 */
+function ContextRing({ ratio, text, onClick }: { ratio: number; text: string; onClick: () => void }) {
+  const percent = Math.round(ratio * 100)
+  const level = percent >= 90 ? ' danger' : percent >= 70 ? ' warning' : ''
+  const label = `上下文 ${text}（${percent}%）`
+  return (
+    <button
+      type="button"
+      className={`ctx-ring${level}`}
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      data-stats-trigger
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+        <circle className="ctx-ring-track" cx="8" cy="8" r={RING_R} />
+        <circle
+          className="ctx-ring-fill"
+          cx="8"
+          cy="8"
+          r={RING_R}
+          strokeDasharray={RING_C}
+          strokeDashoffset={RING_C * (1 - Math.max(ratio, 0.02))}
+          transform="rotate(-90 8 8)"
+        />
+      </svg>
+      <span className="ctx-ring-text">{percent}%</span>
+    </button>
   )
 }

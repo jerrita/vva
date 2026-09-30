@@ -18,14 +18,10 @@ function viewportBottom(): number {
  */
 export function useComposerVisibility(options: {
   activeId: string | null
-  /** 与用量面板遮挡检测共享的聊天滚动容器 */
+  /** 聊天滚动容器 */
   scrollRef: RefObject<HTMLDivElement | null>
-  /** 滚动回调扩展点（如用量面板遮挡重估） */
-  onScrollExtra?: () => void
 }) {
   const { activeId, scrollRef } = options
-  const onScrollExtraRef = useRef(options.onScrollExtra)
-  onScrollExtraRef.current = options.onScrollExtra
 
   const [composerHidden, setComposerHidden] = useState(false)
   const [topbarHidden, setTopbarHidden] = useState(false)
@@ -92,7 +88,6 @@ export function useComposerVisibility(options: {
     if (!el) return
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
     nearBottom.current = atBottom
-    onScrollExtraRef.current?.()
     if (!mobileRef.current) {
       lastScrollTop.current = el.scrollTop
       return

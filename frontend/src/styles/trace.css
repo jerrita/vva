@@ -1,0 +1,551 @@
+/* ============================================================
+   工作轨迹（trace）：运行段内的思考 / 工具 / 搜索步骤
+   一条细轨道串起各步；字形形状编码动作类别，颜色只编码状态：
+   ○ 查看  ● 修改（紫）  ▪ 执行  ◇ 思考  ◯ 委派（紫描边）  ✕ 失败  ● 运行中（绯红脉冲）
+   列：字形 | 动词（mono） | 目标 + 弱化补充 | 结果（右对齐 mono）
+   ============================================================ */
+
+:root {
+  interpolate-size: allow-keywords;
+  --trace-glyph: 15px;
+  --trace-verb: 44px;
+  --trace-gap: 10px;
+  /* 展开区左缘 = 动词列左缘 */
+  --trace-indent: calc(var(--trace-glyph) + var(--trace-gap));
+}
+
+/* 展开/收起高度过渡（Chromium 131+，不支持则直接切换） */
+.step::details-content,
+.worked::details-content,
+.citations::details-content {
+  block-size: 0;
+  overflow: hidden;
+  transition: block-size 0.2s ease, content-visibility 0.2s allow-discrete;
+}
+
+.step[open]::details-content,
+.worked[open]::details-content,
+.citations[open]::details-content {
+  block-size: auto;
+}
+
+/* ---- 轨道 ---- */
+
+.trace {
+  position: relative;
+  margin: 4px 0 10px;
+}
+
+.trace::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--trace-glyph) / 2 - 0.5px);
+  top: 14px;
+  bottom: 14px;
+  width: 1px;
+  background: var(--border);
+}
+
+.trace:has(> :only-child)::before {
+  display: none;
+}
+
+/* ---- 步骤行 ---- */
+
+.step {
+  display: block;
+  position: relative;
+}
+
+.step-line {
+  display: grid;
+  grid-template-columns: var(--trace-glyph) var(--trace-verb) minmax(0, 1fr) auto 12px;
+  column-gap: var(--trace-gap);
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 6px 2px 0;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+  user-select: none;
+}
+
+button.step-line {
+  width: 100%;
+  text-align: left;
+}
+
+summary.step-line,
+button.step-line {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+summary.step-line:hover,
+button.step-line:hover {
+  background: var(--accent-soft);
+}
+
+.step-verb {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--faint);
+  transition: color 0.15s;
+}
+
+.step[open] > .step-line .step-verb,
+summary.step-line:hover .step-verb,
+button.step-line:hover .step-verb {
+  color: var(--accent);
+}
+
+.step-target {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.step-main {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.step-main.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.step-main a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
+.step-main a:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+.step-secondary {
+  flex: 1 1 0;
+  min-width: 4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.step-outcome {
+  display: inline-flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+.step-outcome.fail {
+  color: var(--danger);
+}
+
+.diff-add {
+  color: var(--diff-add);
+}
+
+.diff-del {
+  color: var(--diff-del);
+}
+
+/* 末列操作提示：悬停/聚焦/展开时浮现；触屏常显 */
+.step-affordance {
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, transform 0.15s;
+}
+
+.step-line:hover > .step-affordance,
+.step-line:focus-visible > .step-affordance,
+.step[open] > .step-line > .step-affordance {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.step[open] > .step-line > .step-affordance {
+  transform: rotate(90deg);
+}
+
+@media (hover: none) {
+  .step-affordance {
+    opacity: 0.6;
+  }
+}
+
+.thought-preview {
+  color: var(--muted);
+}
+
+/* 展开后全文在下方，预览让位 */
+.step[open] > .step-line .thought-preview {
+  visibility: hidden;
+}
+
+/* ---- 字形 ---- */
+
+.glyph {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: var(--trace-glyph);
+  height: var(--trace-glyph);
+}
+
+.glyph::before {
+  content: '';
+  box-sizing: border-box;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+  background: var(--panel);
+}
+
+.glyph.change::before {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.glyph.execute::before {
+  border-radius: 1.5px;
+  border-color: var(--muted);
+}
+
+.glyph.delegate::before {
+  width: 8px;
+  height: 8px;
+  border-color: var(--accent);
+}
+
+.glyph.thought::before {
+  width: 6.5px;
+  height: 6.5px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
+
+.glyph.running::before {
+  border-color: var(--rose);
+  background: var(--rose);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rose) 22%, transparent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* 失败：面板底圆垫 + 叉形 */
+.glyph.error::before {
+  width: 11px;
+  height: 11px;
+  border: none;
+  background:
+    linear-gradient(45deg, transparent 42%, var(--danger) 42% 58%, transparent 58%),
+    linear-gradient(-45deg, transparent 42%, var(--danger) 42% 58%, transparent 58%),
+    var(--panel);
+}
+
+/* ---- 展开区 ---- */
+
+.step-body {
+  margin: 2px 0 8px var(--trace-indent);
+  border-radius: 8px;
+  background: var(--code-bg);
+  overflow: hidden;
+  user-select: text;
+}
+
+.step.error > .step-body {
+  background: var(--danger-soft);
+}
+
+.step-output {
+  margin: 0;
+  padding: 9px 12px;
+  max-height: 340px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.step.error .step-output {
+  color: var(--text);
+}
+
+.step-command {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.step-command::before {
+  content: '$ ';
+  color: var(--accent);
+}
+
+.step-empty {
+  color: var(--faint);
+}
+
+/* 思考全文：正文排版，不套代码底 */
+.step-body:has(> .thought-body),
+.step-body:has(> .step-batch) {
+  background: none;
+  border-radius: 0;
+}
+
+.thought-body {
+  padding: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.thought-body > :first-child {
+  margin-top: 0;
+}
+
+.thought-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* 合并批次：内部各步沿用轨迹行，缩进到动词列 */
+.step-batch {
+  position: relative;
+}
+
+.step-sources {
+  margin: 0;
+  padding: 8px 12px 8px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12.5px;
+}
+
+.step-sources li::marker {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.source-host {
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/* ---- 编辑差异 ---- */
+
+.diff-file + .diff-file {
+  border-top: 1px solid var(--border-soft);
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--code-header);
+}
+
+.diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-op {
+  flex-shrink: 0;
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.diff-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  color: var(--muted);
+  transition: color 0.15s, background 0.15s;
+}
+
+.diff-open:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.diff-lines {
+  margin: 0;
+  padding: 6px 0;
+  max-height: 380px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+.diff-line {
+  display: block;
+  position: relative;
+  padding: 0 12px 0 24px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-line::before {
+  position: absolute;
+  left: 10px;
+}
+
+.diff-line.add {
+  color: var(--text);
+  background: color-mix(in srgb, var(--diff-add) 16%, transparent);
+}
+
+.diff-line.add::before {
+  content: '+';
+  color: var(--diff-add);
+}
+
+.diff-line.del {
+  color: var(--text);
+  background: color-mix(in srgb, var(--diff-del) 14%, transparent);
+}
+
+.diff-line.del::before {
+  content: '−';
+  color: var(--diff-del);
+}
+
+.diff-line.hunk {
+  padding-left: 12px;
+  color: var(--faint);
+}
+
+.diff-line.hunk:not(:first-child) {
+  margin-top: 6px;
+}
+
+/* ---- 运行段摘要：用时 + 动作计数 ---- */
+
+.worked {
+  margin: 0 0 6px;
+}
+
+.worked > summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 4px 0;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.worked-time {
+  font-family: var(--font-mono);
+  color: var(--muted);
+  transition: color 0.15s;
+}
+
+.worked > summary::after {
+  content: '›';
+  align-self: center;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--faint);
+  transition: transform 0.15s, color 0.15s;
+}
+
+.worked[open] > summary::after {
+  transform: rotate(90deg);
+}
+
+.worked > summary:hover .worked-time,
+.worked > summary:hover::after {
+  color: var(--accent);
+}
+
+.tally {
+  color: var(--faint);
+}
+
+.tally b {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.tally.fail,
+.tally.fail b {
+  color: var(--danger);
+}
+
+.worked-body {
+  padding: 2px 0 4px;
+}
+
+/* ---- 窄容器（手机 / IDE 对话栏）：收窄动词列，隐去补充信息 ---- */
+
+.chat-scroll {
+  container-type: inline-size;
+}
+
+@container (max-width: 560px) {
+  :root {
+    --trace-verb: 38px;
+    --trace-gap: 8px;
+  }
+
+  .step-secondary {
+    display: none;
+  }
+
+  .step-verb {
+    font-size: 11px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyph.running::before {
+    animation: none;
+  }
+}

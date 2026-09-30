@@ -10,9 +10,11 @@ import { EmptyStage } from './components/EmptyStage'
 import { Sash } from './components/Sash'
 import { Sidebar, groupByProject, projectName, type ProjectOption } from './components/Sidebar'
 import { SettingsModal } from './components/SettingsModal'
-import { StatsPanel } from './components/StatsPanel'
-import { IconActivity, IconPanelLeft, IconPanelRight, IconX } from './components/icons'
-import { FileSidebar } from './components/FileSidebar'
+import { StatsPanel, contextLabel, contextRatio } from './components/StatsPanel'
+import { IconActivity, IconLayoutIde, IconPanelLeft, IconPanelRight, IconX } from './components/icons'
+import { EditorPane, ExplorerPane, FileDrawer, type FilesContext } from './components/files/Workspace'
+import { isMac } from './components/files/Explorer'
+import { useMediaQuery } from './hooks/useMediaQuery'
 import { useComposerVisibility } from './hooks/useComposerVisibility'
 import { usePanelLayout } from './hooks/usePanelLayout'
 import { useStatsPanel } from './hooks/useStatsPanel'
@@ -59,10 +61,29 @@ export default function App() {
     setFileSidebarOpen,
     fileSidebarWidth,
     fileSidebarResize,
-    previewFilePath,
-    setPreviewFilePath,
-    onPreviewFile,
+    explorerWidth,
+    explorerResize,
+    aiPanelWidth,
+    aiPanelResize,
+    mode,
+    setMode,
+    activePath,
+    focus,
+    focusSeq,
+    tabs,
+    drawerView,
+    setDrawerView,
+    searchSeq,
+    openFile,
+    closeTab,
+    selectTab,
+    resetFiles,
+    requestSearch,
   } = usePanelLayout()
+  const narrow = useMediaQuery('(max-width: 820px)')
+  // IDE 模式仅桌面宽度生效；窄屏回落为对话模式布局
+  const ide = mode === 'ide' && !narrow
+  const [revealDir, setRevealDir] = useState<{ path: string; seq: number } | null>(null)
 
   // 未创建会话前的模型偏好，创建会话时生效
   const [draftModel, setDraftModel] = useState<string | null>(null)
@@ -145,7 +166,7 @@ export default function App() {
   useEffect(() => {
     setSnap(null)
     setPending(null)
-    setPreviewFilePath(null)
+    resetFiles()
     if (!activeId) return
     return subscribeSession(activeId, setSnap, e => setError(toError(e)))
   }, [activeId])
@@ -154,6 +175,45 @@ export default function App() {
     () => (active ? extractRelatedFiles(active, snap?.draft) : []),
     [active, snap?.draft],
   )
+
+  const revealInExplorer = useCallback(
+    (dir: string) => {
+      setRevealDir({ path: dir, seq: Date.now() })
+      setDrawerView('explorer')
+    },
+    [setDrawerView],
+  )
+
+  const filesCtx: FilesContext | null = active
+    ? {
+        session: active,
+        draft: snap?.draft,
+        files: relatedFiles,
+        activePath,
+        focus,
+        focusSeq,
+        searchSeq,
+        revealDir,
+        onOpen: openFile,
+        onReveal: revealInExplorer,
+      }
+    : null
+
+  // 全局快捷键：⌘/Ctrl+P 跳转文件，⌘/Ctrl+\ 切换对话 / IDE 模式
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || !activeId) return
+      if (event.key === 'p' || event.key === 'P') {
+        event.preventDefault()
+        requestSearch()
+      } else if (event.key === '\\' && !narrow) {
+        event.preventDefault()
+        setMode(value => (value === 'ide' ? 'chat' : 'ide'))
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [activeId, narrow, requestSearch, setMode])
 
   // 会话在本地会话列表中保持同步（标题 / 模型 / 轮次 / 运行态）
   const summary = useMemo(
@@ -272,13 +332,12 @@ export default function App() {
     if (exists) setPending(null)
   }, [snap, pending])
 
-  const { stats, statsVisible, statsPanelRef, toggle: toggleStats, refreshStatsOverlap } =
-    useStatsPanel({
-      activeId,
-      turnCount,
-      contentKey: snap,
-      scrollRef,
-    })
+  const {
+    stats,
+    open: statsOpen,
+    toggle: toggleStats,
+    show: showStats,
+  } = useStatsPanel({ activeId, turnCount })
   const {
     scrollProps,
     composerAreaRef,
@@ -287,7 +346,7 @@ export default function App() {
     topbarHidden,
     revealComposer,
     followBottom,
-  } = useComposerVisibility({ activeId, scrollRef, onScrollExtra: refreshStatsOverlap })
+  } = useComposerVisibility({ activeId, scrollRef })
 
   // 用户位于底部时跟随滚动
   useEffect(() => {
@@ -511,8 +570,14 @@ export default function App() {
     <div
       className={`app${sidebarOpen ? ' sidebar-open' : ''}${
         sidebarHidden ? ' sidebar-hidden' : ''
-      }${fileSidebarOpen ? ' file-sidebar-open' : ''}`}
-      style={{ '--sidebar-width': `${sidebarWidth}px`, '--file-sidebar-width': `${fileSidebarWidth}px` } as CSSProperties}
+      }${fileSidebarOpen && !ide ? ' file-sidebar-open' : ''}${ide && filesCtx ? ' ide' : ''}`}
+      style={
+        {
+          '--sidebar-width': `${sidebarWidth}px`,
+          '--file-sidebar-width': `${fileSidebarWidth}px`,
+          '--ai-panel-width': `${aiPanelWidth}px`,
+        } as CSSProperties
+      }
     >
       <Sidebar
         groups={groupByProject(sessions, projectOrder)}
@@ -542,12 +607,22 @@ export default function App() {
         onEnd={sidebarResize.onEnd}
       />
       <div className="backdrop" onClick={() => setSidebarOpen(false)} />
+      {ide && filesCtx && <ExplorerPane ctx={filesCtx} width={explorerWidth} />}
+      {ide && filesCtx && (
+        <Sash
+          className="sash-explorer"
+          label="拖拽调节文件列表宽度"
+          onStart={explorerResize.onStart}
+          onMove={explorerResize.onMove}
+          onEnd={explorerResize.onEnd}
+        />
+      )}
       <main className={`main${topbarHidden ? ' topbar-hidden' : ''}`}>
         <header className="topbar">
           <button
             className="icon-ghost menu"
             onClick={() => {
-              if (window.innerWidth <= 820) {
+              if (window.innerWidth <= 820 || ide) {
                 setSidebarOpen(true)
               } else {
                 setSidebarHidden(value => !value)
@@ -560,16 +635,32 @@ export default function App() {
           </button>
           <h1 className="topbar-title">{active?.title || '新对话'}</h1>
           {stats && active && (
+            <div className="stats-anchor">
+              <button
+                className={`icon-ghost stats-toggle${statsOpen ? ' active' : ''}`}
+                onClick={toggleStats}
+                title="用量统计"
+                aria-label="用量统计"
+                aria-expanded={statsOpen}
+                data-stats-trigger
+              >
+                <IconActivity size={18} />
+              </button>
+              {statsOpen && <StatsPanel stats={stats} active={active} />}
+            </div>
+          )}
+          {active && !narrow && (
             <button
-              className={`icon-ghost stats-toggle${statsVisible ? ' active' : ''}`}
-              onClick={toggleStats}
-              title={statsVisible ? '收起用量面板' : '展开用量面板'}
-              aria-label="用量面板"
+              className={`icon-ghost mode-toggle${ide ? ' active' : ''}`}
+              onClick={() => setMode(value => (value === 'ide' ? 'chat' : 'ide'))}
+              title={`${ide ? '回到对话模式' : 'IDE 模式：文件 | 编辑区 | 对话'}（${isMac() ? '⌘' : 'Ctrl+'}\\）`}
+              aria-label="IDE 模式"
+              aria-pressed={ide}
             >
-              <IconActivity size={18} />
+              <IconLayoutIde size={18} />
             </button>
           )}
-          {active && (
+          {active && !ide && (
             <button
               className={`icon-ghost file-sidebar-toggle${fileSidebarOpen ? ' active' : ''}`}
               onClick={() => setFileSidebarOpen(value => !value)}
@@ -583,9 +674,6 @@ export default function App() {
             </button>
           )}
         </header>
-        {stats && active && (
-          <StatsPanel stats={stats} active={active} visible={statsVisible} panelRef={statsPanelRef} />
-        )}
         {error && (
           <div className="banner error" onClick={() => setError(null)}>
             {error}
@@ -630,7 +718,7 @@ export default function App() {
                 pending={pending}
                 onRevert={revertTurn}
                 onFork={forkTurn}
-                onPreviewFile={onPreviewFile}
+                onPreviewFile={openFile}
               />
             </div>
             <div
@@ -656,31 +744,45 @@ export default function App() {
                 controls={composerControls}
                 skills={skills}
                 workspace={active?.workspace_root}
+                contextRatio={stats ? contextRatio(stats) : undefined}
+                contextText={stats ? contextLabel(stats) : undefined}
+                onOpenStats={showStats}
               />
             </div>
           </>
         )}
       </main>
-      {active && (
+      {filesCtx && !ide && (
         <>
-            <Sash
-              className="sash-files"
-              label="拖拽调节文件浏览器宽度"
-              onStart={fileSidebarResize.onStart}
-              onMove={fileSidebarResize.onMove}
-              onEnd={fileSidebarResize.onEnd}
-            />
-          <FileSidebar
-            sessionId={activeId}
-            workspace={active.workspace_root}
-            files={relatedFiles}
-            activePath={previewFilePath}
+          <Sash
+            className="sash-files"
+            label="拖拽调节文件面板宽度"
+            onStart={fileSidebarResize.onStart}
+            onMove={fileSidebarResize.onMove}
+            onEnd={fileSidebarResize.onEnd}
+          />
+          <FileDrawer
+            ctx={filesCtx}
             open={fileSidebarOpen}
             width={fileSidebarWidth}
-            onSelectPath={setPreviewFilePath}
+            view={drawerView}
+            onBack={() => setDrawerView('explorer')}
             onClose={() => setFileSidebarOpen(false)}
+            onSwitchIde={narrow ? undefined : () => setMode('ide')}
           />
           <div className="file-backdrop" onClick={() => setFileSidebarOpen(false)} />
+        </>
+      )}
+      {filesCtx && ide && (
+        <>
+          <EditorPane ctx={filesCtx} tabs={tabs} onSelectTab={selectTab} onCloseTab={closeTab} />
+          <Sash
+            className="sash-ai"
+            label="拖拽调节对话栏宽度"
+            onStart={aiPanelResize.onStart}
+            onMove={aiPanelResize.onMove}
+            onEnd={aiPanelResize.onEnd}
+          />
         </>
       )}
       {settingsOpen && (

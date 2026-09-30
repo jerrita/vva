@@ -210,3 +210,41 @@ export function IconSettings({ size, strokeWidth }: IconProps) {
     </Svg>
   )
 }
+
+export function IconChevronUp({ size, strokeWidth }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={strokeWidth}>
+      <path d="M18 15l-6-6-6 6" />
+    </Svg>
+  )
+}
+
+/** 文件跳转搜索 */
+export function IconSearch({ size, strokeWidth }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={strokeWidth}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-3.5-3.5" />
+    </Svg>
+  )
+}
+
+/** 代码视图：自动换行开关 */
+export function IconWrap({ size, strokeWidth }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={strokeWidth}>
+      <path d="M3 6h18M3 12h15a3 3 0 0 1 0 6h-4M3 18h7" />
+      <path d="M16 16l-2 2 2 2" />
+    </Svg>
+  )
+}
+
+/** 顶栏：IDE 模式（文件 | 编辑区 | AI 三栏） */
+export function IconLayoutIde({ size }: IconProps) {
+  return (
+    <Svg size={size} strokeWidth={1.8}>
+      <rect x="3" y="4.5" width="18" height="15" rx="2.5" />
+      <path d="M8 4.5v15M15.5 4.5v15" />
+    </Svg>
+  )
+}

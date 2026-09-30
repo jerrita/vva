@@ -254,11 +254,23 @@ export interface SessionFileResponse {
   mime_type?: string | null
 }
 
+/** 会话涉及的文件（前端派生类型，非后端镜像） */
 export interface RelatedFile {
+  /** 最近一次调用中模型所写的原始路径（文件 API 可直接接受） */
   path: string
+  /** 工作区相对路径，用于与文件树匹配 */
+  rel: string
   name: string
+  dir: string
   actions: ('read' | 'write' | 'edit' | 'attachment')[]
+  plus: number
+  minus: number
+  deleted: boolean
+  /** 读取过的行区间（1-based，闭区间） */
+  readRanges: { start: number; end: number }[]
   turnIndex: number
+  /** 全局单调递增的最近触达序号，用于按新近度排序 */
+  lastIndex: number
 }
 
 export interface FsEntry {
@@ -272,6 +284,18 @@ export interface FsEntriesResponse {
   workspace: string
   path: string
   entries: FsEntry[]
+}
+
+export interface FsFindEntry extends FsEntry {
+  /** `path` 中命中的字符下标（按 Unicode 码点计），用于高亮 */
+  indices: number[]
+}
+
+export interface FsFindResponse {
+  workspace: string
+  query: string
+  entries: FsFindEntry[]
+  truncated: boolean
 }
 
 

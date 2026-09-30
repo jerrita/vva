@@ -1,6 +1,5 @@
-import { Fragment } from 'react'
-import type { RefObject } from 'react'
 import type { Session, SidebarStats } from '../types'
+import { CopyButton } from './CopyButton'
 
 function fmtNum(value: number): string {
   return value.toLocaleString()
@@ -12,55 +11,61 @@ function fmtLimit(value: number): string {
   return `${Math.floor(value / 1000)}k`
 }
 
-interface StatsPanelProps {
-  stats: SidebarStats
-  active: Session
-  visible: boolean
-  panelRef: RefObject<HTMLDivElement | null>
+const DEFAULT_CONTEXT_LIMIT = 200_000
+
+/** 上下文占用比例（0–1，封顶 1） */
+export function contextRatio(stats: SidebarStats): number {
+  return Math.min(1, stats.context_tokens / (stats.context_limit ?? DEFAULT_CONTEXT_LIMIT))
 }
 
-/** 用量统计浮块：非阻塞，字段行 + Context 比例条。 */
-export function StatsPanel({ stats, active, visible, panelRef }: StatsPanelProps) {
-  const workspaceName =
-    active.workspace_root.split('/').filter(Boolean).pop() ?? active.workspace_root ?? null
-  const contextLimit = stats.context_limit ?? 200_000
-  const contextPercent = Math.min(
-    100,
-    Math.round((stats.context_tokens / contextLimit) * 100),
+/** 上下文摘要文案：`97,292 / 500k` */
+export function contextLabel(stats: SidebarStats): string {
+  return `${fmtNum(stats.context_tokens)} / ${fmtLimit(stats.context_limit ?? DEFAULT_CONTEXT_LIMIT)}`
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="stat-row">
+      <span className="stat-label">{label}</span>
+      <span className="stat-value">{value}</span>
+    </div>
   )
+}
+
+/** 用量统计弹层：锚定于顶栏开关下方，三组字段 + 底部会话信息。 */
+export function StatsPanel({ stats, active }: { stats: SidebarStats; active: Session }) {
+  const percent = Math.round(contextRatio(stats) * 100)
+  const level = percent >= 90 ? ' danger' : percent >= 70 ? ' warning' : ''
 
   return (
-    <div className={`stats-panel${visible ? '' : ' hidden'}`} ref={panelRef}>
-      {(
-        [
-          ['Session', active.id],
-          ['Workspace', workspaceName],
-          ['Editor', active.editor ?? 'replace'],
-          ['Turns', fmtNum(stats.total_turns)],
-          ['Context', `${fmtNum(stats.context_tokens)} / ${fmtLimit(contextLimit)}`],
-          ['In', fmtNum(stats.prompt_tokens)],
-          ['Out', fmtNum(stats.completion_tokens)],
-          ...(stats.tps != null ? ([['TPS', stats.tps.toFixed(1)]] as const) : []),
-          ['Cache Read', fmtNum(stats.cache_read_tokens)],
-          ['Cache Write', fmtNum(stats.cache_write_tokens)],
-          ['Est. Cost', `$${stats.estimated_cost_usd.toFixed(4)}`],
-        ] as [string, string][]
-      ).map(([label, value]) => (
-        <Fragment key={label}>
-          <div className="stat-row">
-            <span className="stat-label">{label}</span>
-            <span className="stat-value">{value}</span>
-          </div>
-          {label === 'Context' && (
-            <div className="ctx-gauge">
-              <span className="ctx-gauge-track">
-                <span className="ctx-gauge-fill" style={{ width: `${contextPercent}%` }} />
-              </span>
-              <span>{contextPercent}%</span>
-            </div>
-          )}
-        </Fragment>
-      ))}
+    <div className="stats-popover" role="dialog" aria-label="用量统计" data-stats-popover>
+      <section className="stats-section">
+        <div className="stats-context">{contextLabel(stats)}</div>
+        <div className="ctx-gauge">
+          <span className="ctx-gauge-track">
+            <span className={`ctx-gauge-fill${level}`} style={{ width: `${percent}%` }} />
+          </span>
+          <span>{percent}%</span>
+        </div>
+      </section>
+      <section className="stats-section">
+        <Row label="In" value={fmtNum(stats.prompt_tokens)} />
+        <Row label="Out" value={fmtNum(stats.completion_tokens)} />
+        <Row label="Cache read" value={fmtNum(stats.cache_read_tokens)} />
+        <Row label="Cache write" value={fmtNum(stats.cache_write_tokens)} />
+        {stats.tps != null && <Row label="TPS" value={stats.tps.toFixed(1)} />}
+      </section>
+      <section className="stats-section">
+        <Row label="Turns" value={fmtNum(stats.total_turns)} />
+        <Row label="Editor" value={active.editor ?? 'replace'} />
+        <Row label="Est. cost" value={`$${stats.estimated_cost_usd.toFixed(4)}`} />
+      </section>
+      <div className="stats-foot">
+        <span className="stats-foot-line" title={active.workspace_root}>
+          {active.id} · {active.workspace_root}
+        </span>
+        <CopyButton text={active.id} />
+      </div>
     </div>
   )
 }

@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:3000',
+      '/api': process.env.VVA_API ?? 'http://127.0.0.1:3000',
     },
   },
 })

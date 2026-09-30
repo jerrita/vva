@@ -1,8 +1,9 @@
+import type { PreviewFile } from '../hooks/usePanelLayout'
 import type { ContentPart, Session, Turn } from '../types'
 import { CopyButton } from './CopyButton'
-import { IconFork, IconRevert } from './icons'
+import { IconFile, IconFork, IconRevert } from './icons'
 import { useLightbox } from './Lightbox'
-import { Parts, mediaSourceUrl } from './Parts'
+import { Parts, mediaSourceUrl, tallyParts } from './Parts'
 
 /** 部件列表中的纯文本（消息原文与复制回答用） */
 export function partsText(parts: ContentPart[]): string {
@@ -134,40 +135,47 @@ function fmtDuration(ms: number): string {
 function WorkedBlock({
   group,
   live = false,
-  autoExpand = false,
   workspace,
   onPreviewFile,
 }: {
   group: WorkGroup
   live?: boolean
-  /** 草稿为空的间隙（如工具执行中）当前块仍在工作段内：末尾块保持展开 */
-  autoExpand?: boolean
   workspace?: string
-  onPreviewFile?: (path: string) => void
+  onPreviewFile?: PreviewFile
 }) {
   const ms = group.workedMs ?? group.elapsedMs
+  const tally = tallyParts(group.parts)
   return (
     <details className="worked" open={live}>
-      <summary>{ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</summary>
+      <summary>
+        <span className="worked-time">{live ? '进行中' : ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</span>
+        {tally.counts.map(([key, count]) => (
+          <span key={key} className="tally">
+            {key} <b>{count}</b>
+          </span>
+        ))}
+        {tally.failed > 0 && (
+          <span className="tally fail">
+            失败 <b>{tally.failed}</b>
+          </span>
+        )}
+      </summary>
       <div className="worked-body">
-        <Parts parts={group.parts} live={autoExpand} workspace={workspace} onPreviewFile={onPreviewFile} />
+        <Parts parts={group.parts} live={live} workspace={workspace} onPreviewFile={onPreviewFile} />
       </div>
     </details>
   )
 }
 
 function TurnMeta({ turn }: { turn: Turn }) {
-  const bits: string[] = []
-  if (turn.worked_ms != null) {
-    bits.push(`${(turn.worked_ms / 1000).toFixed(1)}s`)
-  } else if (turn.elapsed_ms != null) {
-    bits.push(`${(turn.elapsed_ms / 1000).toFixed(1)}s`)
-  }
-  if (turn.usage) {
-    bits.push(`${turn.usage.total_tokens.toLocaleString()} tokens`)
-  }
-  if (bits.length === 0) return null
-  return <div className="turn-meta">{bits.join(' · ')}</div>
+  const ms = turn.worked_ms ?? turn.elapsed_ms
+  if (ms == null && !turn.usage) return null
+  return (
+    <div className="turn-meta">
+      {ms != null && <span>{(ms / 1000).toFixed(1)}s</span>}
+      {turn.usage && <span>{turn.usage.total_tokens.toLocaleString()} tokens</span>}
+    </div>
+  )
 }
 
 function UserBubble({
@@ -184,7 +192,7 @@ function UserBubble({
   disabled?: boolean
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
-  onPreviewFile?: (path: string) => void
+  onPreviewFile?: PreviewFile
 }) {
   const openLightbox = useLightbox()
   const actions = (
@@ -240,11 +248,11 @@ function UserBubble({
                     onClick={() => onPreviewFile(part.filename)}
                     title="在右侧边栏预览文件"
                   >
-                    📄 {part.filename}
+                    <IconFile size={12} strokeWidth={1.8} /> {part.filename}
                   </button>
                 ) : (
                   <span key={index} className="bubble-file">
-                    📄 {part.filename}
+                    <IconFile size={12} strokeWidth={1.8} /> {part.filename}
                   </span>
                 )
               }
@@ -271,7 +279,7 @@ export function Chat({
   pending: string | null
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
-  onPreviewFile?: (path: string) => void
+  onPreviewFile?: PreviewFile
 }) {
   if (!snap) {
     return (
@@ -302,8 +310,6 @@ export function Chat({
       }
     }
   }
-  // 末尾展开块全局唯一：草稿持有流式块时，工作段不再保留末尾展开块
-  const draftActive = running && snap.draft.length > 0
 
   return (
     <div className="chat">
@@ -327,7 +333,6 @@ export function Chat({
               key={`work-${index}`}
               group={item.group}
               live={index === liveWork}
-              autoExpand={index === liveWork && !draftActive}
               workspace={workspace}
               onPreviewFile={onPreviewFile}
             />

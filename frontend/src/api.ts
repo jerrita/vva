@@ -1,4 +1,5 @@
-import type { FileAttachment, FsEntriesResponse, ModelsResponse, SessionFileResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillsResponse, UserAnswer } from './types'
+import type { FileAttachment, FsEntriesResponse,
+  FsFindResponse, ModelsResponse, SessionFileResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillsResponse, UserAnswer } from './types'
 
 export function toError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -85,6 +86,14 @@ export const api = {
     if (path) params.set('path', path)
     const qs = params.toString()
     return request<FsEntriesResponse>(`/api/fs/entries${qs ? `?${qs}` : ''}`)
+  },
+  /** 工程内文件模糊查找（go to file）；q 为空时返回最近修改的文件 */
+  fsFind: (q: string, workspace?: string, limit?: number) => {
+    const params = new URLSearchParams()
+    params.set('q', q)
+    if (workspace) params.set('workspace', workspace)
+    if (limit) params.set('limit', String(limit))
+    return request<FsFindResponse>(`/api/fs/find?${params.toString()}`)
   },
   /** 读取指定工作区文件内容 */
   fsFile: (path: string, workspace?: string) =>
