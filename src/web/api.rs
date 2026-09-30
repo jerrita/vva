@@ -2,10 +2,13 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::path::Path as StdPath;
+use std::fmt::Display;
+use std::path::{Path as StdPath, PathBuf};
+use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -14,46 +17,74 @@ use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::harness::ManagedSession;
-use crate::model::SessionSummary;
-use crate::ui::history::compute_stats;
+use crate::model::{ContentPart, MediaSource, SessionSummary, UserAnswer};
+use crate::ui::history::{SidebarStats, compute_stats};
 
 use super::server::AppState;
 use super::sync::{SessionDelta, SessionSnapshot};
 
-fn error(status: StatusCode, message: impl std::fmt::Display) -> Response {
-    (
-        status,
-        Json(serde_json::json!({ "error": message.to_string() })),
-    )
-        .into_response()
+/// 统一错误响应：`{ "error": message }` + 状态码
+pub struct ApiError(StatusCode, String);
+
+impl ApiError {
+    fn new(status: StatusCode, message: impl Into<String>) -> Self {
+        Self(status, message.into())
+    }
 }
 
-fn not_found(id: &str) -> Response {
-    error(StatusCode::NOT_FOUND, format!("Session not found: {id}"))
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(serde_json::json!({ "error": self.1 }))).into_response()
+    }
 }
 
-/// 取会话句柄；会话不存在时返回 404 响应
-async fn session_handle(
-    state: &AppState,
-    id: &str,
-) -> Result<std::sync::Arc<ManagedSession>, Response> {
-    state
-        .manager
-        .get_or_load(id)
-        .await
-        .map_err(|_| not_found(id))
+/// `map_err` 适配器：以给定状态码包装任意可显示错误
+fn fail<E: Display>(status: StatusCode) -> impl Fn(E) -> ApiError {
+    move |e| ApiError::new(status, e.to_string())
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+/// 路径 `{id}` 对应的会话句柄提取器；会话不存在时返回 404
+pub struct Session(Arc<ManagedSession>);
+
+impl FromRequestParts<AppState> for Session {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let Path(id) = Path::<String>::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        match state.manager.get_or_load(&id).await {
+            Ok(handle) => Ok(Session(handle)),
+            Err(_) => Err(
+                ApiError::new(StatusCode::NOT_FOUND, format!("Session not found: {id}"))
+                    .into_response(),
+            ),
+        }
+    }
+}
+
+impl Session {
+    fn snapshot_json(&self) -> Response {
+        Json(SessionSnapshot::from(&*self.0.snapshot())).into_response()
+    }
+
+    fn workspace(&self) -> PathBuf {
+        PathBuf::from(&self.0.snapshot().session.header.workspace_root)
+    }
 }
 
 /// 显式工作区参数（trim 后非空）优先，缺省回退服务器启动目录
-fn workspace_or_default(state: &AppState, explicit: Option<&str>) -> std::path::PathBuf {
+fn workspace_or_default(state: &AppState, explicit: Option<&str>) -> PathBuf {
     match explicit.map(str::trim) {
-        Some(ws) if !ws.is_empty() => std::path::PathBuf::from(ws),
+        Some(ws) if !ws.is_empty() => PathBuf::from(ws),
         _ => state.manager.workspace().to_path_buf(),
     }
 }
 
 #[derive(Serialize)]
-struct ModelEntry {
+pub struct ModelEntry {
     spec: String,
     name: String,
     provider: String,
@@ -61,35 +92,38 @@ struct ModelEntry {
 }
 
 #[derive(Serialize)]
-struct ModelsResponse {
+pub struct ModelsResponse {
     default: String,
     models: Vec<ModelEntry>,
 }
 
 /// 列出配置中的全部模型规格，供前端模型选择器使用
-pub async fn list_models(State(state): State<AppState>) -> Response {
+pub async fn list_models(State(state): State<AppState>) -> Json<ModelsResponse> {
     let config = state.manager.app_config();
-    let mut models = Vec::new();
-    for (provider_id, provider) in &config.providers {
-        for (model_id, model) in &provider.models {
-            models.push(ModelEntry {
-                spec: format!("{provider_id}/{model_id}"),
-                name: model.name.clone(),
-                provider: provider_id.clone(),
-                variants: model.variants.clone().unwrap_or_default(),
-            });
-        }
-    }
+    let mut models: Vec<ModelEntry> = config
+        .providers
+        .iter()
+        .flat_map(|(provider_id, provider)| {
+            provider
+                .models
+                .iter()
+                .map(move |(model_id, model)| ModelEntry {
+                    spec: format!("{provider_id}/{model_id}"),
+                    name: model.name.clone(),
+                    provider: provider_id.clone(),
+                    variants: model.variants.clone().unwrap_or_default(),
+                })
+        })
+        .collect();
     models.sort_by(|a, b| a.spec.cmp(&b.spec));
     Json(ModelsResponse {
         default: config.settings.default.clone(),
         models,
     })
-    .into_response()
 }
 
 #[derive(Serialize)]
-struct SkillEntry {
+pub struct SkillEntry {
     name: String,
     description: String,
     source: &'static str,
@@ -97,12 +131,12 @@ struct SkillEntry {
 }
 
 #[derive(Serialize)]
-struct SkillsResponse {
+pub struct SkillsResponse {
     skills: Vec<SkillEntry>,
 }
 
 /// 列出已发现的 Agent Skills（全局 + 项目，项目覆盖同名），供前端只读展示
-pub async fn list_skills(State(state): State<AppState>) -> Response {
+pub async fn list_skills(State(state): State<AppState>) -> Json<SkillsResponse> {
     let workspace = state.manager.workspace().to_path_buf();
     let skills = tokio::task::spawn_blocking(move || crate::skills::discover_skills(&workspace))
         .await
@@ -121,11 +155,10 @@ pub async fn list_skills(State(state): State<AppState>) -> Response {
             })
             .collect(),
     })
-    .into_response()
 }
 
 #[derive(Serialize)]
-struct SessionListItem {
+pub struct SessionListItem {
     #[serde(flatten)]
     summary: SessionSummary,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -145,22 +178,20 @@ fn overlay_session_states(
         .collect()
 }
 
-pub async fn list_sessions(State(state): State<AppState>) -> Response {
-    match state.manager.store().list_sessions().await {
-        Ok(sessions) => {
-            let live = state.manager.live_run_states().await;
-            Json(overlay_session_states(sessions, &live)).into_response()
-        }
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    }
+pub async fn list_sessions(State(state): State<AppState>) -> ApiResult<Json<Vec<SessionListItem>>> {
+    let sessions = state
+        .manager
+        .store()
+        .list_sessions()
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let live = state.manager.live_run_states().await;
+    Ok(Json(overlay_session_states(sessions, &live)))
 }
 
 /// 服务器默认工作空间，供新建会话的项目选择器使用
-pub async fn default_workspace(State(state): State<AppState>) -> Response {
-    Json(serde_json::json!({
-        "root": state.manager.workspace().to_string_lossy()
-    }))
-    .into_response()
+pub async fn default_workspace(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "root": state.manager.workspace().to_string_lossy() }))
 }
 
 #[derive(Deserialize)]
@@ -169,41 +200,35 @@ pub struct DirQuery {
 }
 
 /// 列出目录下的一级子目录，供新建项目多级点选
-pub async fn list_dirs(State(state): State<AppState>, Query(query): Query<DirQuery>) -> Response {
+pub async fn list_dirs(
+    State(state): State<AppState>,
+    Query(query): Query<DirQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
     let path = workspace_or_default(&state, query.path.as_deref());
-    match tokio::fs::metadata(&path).await {
-        Ok(meta) if meta.is_dir() => {}
-        _ => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                format!("目录不存在: {}", path.display()),
-            );
-        }
+    if !tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_dir()) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("目录不存在: {}", path.display()),
+        ));
     }
+    let mut entries = tokio::fs::read_dir(&path)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
     let mut dirs = Vec::new();
-    let mut entries = match tokio::fs::read_dir(&path).await {
-        Ok(entries) => entries,
-        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
-    };
     while let Ok(Some(entry)) = entries.next_entry().await {
-        let is_dir = tokio::fs::metadata(entry.path())
+        if tokio::fs::metadata(entry.path())
             .await
-            .map(|meta| meta.is_dir())
-            .unwrap_or(false);
-        if is_dir {
+            .is_ok_and(|meta| meta.is_dir())
+        {
             dirs.push(entry.file_name().to_string_lossy().to_string());
         }
     }
     dirs.sort();
-    let parent = path
-        .parent()
-        .map(|parent| parent.to_string_lossy().to_string());
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "root": path.to_string_lossy(),
-        "parent": parent,
+        "parent": path.parent().map(|parent| parent.to_string_lossy()),
         "dirs": dirs,
-    }))
-    .into_response()
+    })))
 }
 
 #[derive(Deserialize)]
@@ -231,54 +256,53 @@ pub struct FsEntriesResponse {
 pub async fn list_fs_entries(
     State(state): State<AppState>,
     Query(query): Query<FsEntriesQuery>,
-) -> Response {
+) -> ApiResult<Json<FsEntriesResponse>> {
     let workspace = workspace_or_default(&state, query.workspace.as_deref());
     let subpath = query.path.as_deref().unwrap_or("").trim();
     let target_dir = crate::tools::filesystem::resolve_path(&workspace, subpath);
 
     match tokio::fs::metadata(&target_dir).await {
         Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return error(StatusCode::BAD_REQUEST, "目标路径不是目录"),
-        Err(e) => return error(StatusCode::NOT_FOUND, format!("目录不存在: {e}")),
+        Ok(_) => {
+            return Err(ApiError::new(StatusCode::BAD_REQUEST, "目标路径不是目录"));
+        }
+        Err(e) => {
+            return Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("目录不存在: {e}"),
+            ));
+        }
     }
 
-    let mut read_dir = match tokio::fs::read_dir(&target_dir).await {
-        Ok(entries) => entries,
-        Err(e) => {
-            return error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("读取目录失败: {e}"),
-            );
-        }
-    };
+    let mut read_dir = tokio::fs::read_dir(&target_dir).await.map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("读取目录失败: {e}"),
+        )
+    })?;
 
+    let slash_rel = |path: &StdPath| {
+        path.strip_prefix(&workspace)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
     let mut entries = Vec::new();
     while let Ok(Some(entry)) = read_dir.next_entry().await {
-        let file_name = entry.file_name().to_string_lossy().to_string();
+        let name = entry.file_name().to_string_lossy().to_string();
         // 过滤内部版本控制系统目录
-        if file_name == ".git" {
+        if name == ".git" {
             continue;
         }
-
         let entry_path = entry.path();
-        let meta = match tokio::fs::metadata(&entry_path).await {
-            Ok(m) => m,
-            Err(_) => continue,
+        let Ok(meta) = tokio::fs::metadata(&entry_path).await else {
+            continue;
         };
-
-        let is_dir = meta.is_dir();
-        let size = if is_dir { 0 } else { meta.len() };
-
-        let rel_path = match entry_path.strip_prefix(&workspace) {
-            Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
-            Err(_) => entry_path.to_string_lossy().replace('\\', "/"),
-        };
-
         entries.push(FsEntry {
-            name: file_name,
-            path: rel_path,
-            is_dir,
-            size,
+            name,
+            path: slash_rel(&entry_path),
+            is_dir: meta.is_dir(),
+            size: if meta.is_dir() { 0 } else { meta.len() },
         });
     }
 
@@ -290,17 +314,15 @@ pub async fn list_fs_entries(
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    let rel_target = match target_dir.strip_prefix(&workspace) {
+    let path = match target_dir.strip_prefix(&workspace) {
         Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
         Err(_) => String::new(),
     };
-
-    Json(FsEntriesResponse {
+    Ok(Json(FsEntriesResponse {
         workspace: workspace.to_string_lossy().to_string(),
-        path: rel_target,
+        path,
         entries,
-    })
-    .into_response()
+    }))
 }
 
 #[derive(Deserialize)]
@@ -315,56 +337,43 @@ pub struct CreateSessionRequest {
 pub async fn create_session(
     State(state): State<AppState>,
     Json(request): Json<CreateSessionRequest>,
-) -> Response {
+) -> ApiResult<Response> {
     let model = request
         .model
-        .clone()
         .unwrap_or_else(|| state.manager.app_config().settings.default.clone());
-    let result = match request.workspace.as_deref().map(str::trim) {
+    let search = request.search.unwrap_or(true);
+    let handle = match request.workspace.as_deref().map(str::trim) {
         Some(workspace) if !workspace.is_empty() => {
             state
                 .manager
-                .create_session_in(
-                    workspace,
-                    model,
-                    request.variant,
-                    None,
-                    request.search.unwrap_or(true),
-                )
+                .create_session_in(workspace, model, request.variant, None, search)
                 .await
         }
         _ => {
             state
                 .manager
-                .create_session(model, request.variant, None, request.search.unwrap_or(true))
+                .create_session(model, request.variant, None, search)
                 .await
         }
-    };
-    match result {
-        Ok(handle) => Json(SessionSnapshot::from(&*handle.snapshot())).into_response(),
-        Err(e) => error(StatusCode::BAD_REQUEST, e),
     }
+    .map_err(fail(StatusCode::BAD_REQUEST))?;
+    Ok(Session(handle).snapshot_json())
 }
 
-pub async fn get_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    Ok(Json(SessionSnapshot::from(&*handle.snapshot())).into_response())
+pub async fn get_session(session: Session) -> Response {
+    session.snapshot_json()
 }
 
 pub async fn delete_session(
     State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
+    session: Session,
+) -> ApiResult<StatusCode> {
     state
         .manager
-        .delete_session(&handle)
+        .delete_session(&session.0)
         .await
-        .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -392,53 +401,48 @@ pub struct SessionFileResponse {
 pub async fn get_fs_file(
     State(state): State<AppState>,
     Query(query): Query<FsFileQuery>,
-) -> Result<Response, Response> {
+) -> ApiResult<Json<SessionFileResponse>> {
     let workspace = workspace_or_default(&state, query.workspace.as_deref());
-    Ok(read_file_from_workspace(&workspace, &query.path).await)
+    read_file_from_workspace(&workspace, &query.path).await
 }
 
 /// 读取会话相关文件的实时内容，供前端侧栏预览
 pub async fn get_session_file(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Query(query): Query<SessionFileQuery>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    let workspace = std::path::PathBuf::from(&handle.snapshot().session.header.workspace_root);
-    Ok(read_file_from_workspace(&workspace, &query.path).await)
+) -> ApiResult<Json<SessionFileResponse>> {
+    read_file_from_workspace(&session.workspace(), &query.path).await
 }
 
 /// 下载指定工作区文件，保留原始二进制内容
 pub async fn download_fs_file(
     State(state): State<AppState>,
     Query(query): Query<FsFileQuery>,
-) -> Result<Response, Response> {
+) -> ApiResult<Response> {
     let workspace = workspace_or_default(&state, query.workspace.as_deref());
     download_file_from_workspace(&workspace, &query.path).await
 }
 
 /// 下载会话工作区文件，保留原始二进制内容
 pub async fn download_session_file(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Query(query): Query<SessionFileQuery>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    let workspace = std::path::PathBuf::from(&handle.snapshot().session.header.workspace_root);
-    download_file_from_workspace(&workspace, &query.path).await
+) -> ApiResult<Response> {
+    download_file_from_workspace(&session.workspace(), &query.path).await
 }
 
-async fn download_file_from_workspace(
-    workspace: &std::path::Path,
-    rel_path: &str,
-) -> Result<Response, Response> {
-    let (path, _) = open_workspace_file(workspace, rel_path).await?;
-    let bytes = tokio::fs::read(&path).await.map_err(|e| {
-        error(
+async fn read_bytes(path: &StdPath) -> ApiResult<Vec<u8>> {
+    tokio::fs::read(path).await.map_err(|e| {
+        ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("读取文件失败: {e}"),
         )
-    })?;
+    })
+}
+
+async fn download_file_from_workspace(workspace: &StdPath, rel_path: &str) -> ApiResult<Response> {
+    let (path, _) = open_workspace_file(workspace, rel_path).await?;
+    let bytes = read_bytes(&path).await?;
     let name = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -473,95 +477,60 @@ async fn download_file_from_workspace(
 
 /// 解析工作区内相对路径并校验为存在的文件；缺失或目录转为错误响应
 async fn open_workspace_file(
-    workspace: &std::path::Path,
+    workspace: &StdPath,
     rel_path: &str,
-) -> Result<(std::path::PathBuf, std::fs::Metadata), Response> {
+) -> ApiResult<(PathBuf, std::fs::Metadata)> {
     let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
     let metadata = tokio::fs::metadata(&path)
         .await
-        .map_err(|e| error(StatusCode::NOT_FOUND, format!("文件不存在: {e}")))?;
+        .map_err(|e| ApiError::new(StatusCode::NOT_FOUND, format!("文件不存在: {e}")))?;
     if metadata.is_dir() {
-        return Err(error(StatusCode::BAD_REQUEST, "目标是目录而非文件"));
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "目标是目录而非文件"));
     }
     Ok((path, metadata))
 }
 
 /// 从指定工作区读取文件内容并返回统一的 SessionFileResponse 响应
-pub async fn read_file_from_workspace(workspace: &std::path::Path, rel_path: &str) -> Response {
-    let (path, metadata) = match open_workspace_file(workspace, rel_path).await {
-        Ok(ok) => ok,
-        Err(response) => return response,
-    };
-
+pub async fn read_file_from_workspace(
+    workspace: &StdPath,
+    rel_path: &str,
+) -> ApiResult<Json<SessionFileResponse>> {
+    let (path, metadata) = open_workspace_file(workspace, rel_path).await?;
     let size = metadata.len();
     if size > 10 * 1024 * 1024 {
-        return error(
+        return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "文件过大，不支持在线预览 (超过 10MB)",
-        );
+        ));
     }
+    let bytes = read_bytes(&path).await?;
 
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("读取文件失败: {e}"),
-            );
-        }
-    };
-
-    let name = path
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "file".into());
-    let path_str = path.to_string_lossy().into_owned();
-
-    // 检查是否为有效 UTF-8 文本
-    if let Ok(text) = std::str::from_utf8(&bytes)
-        && !text.contains('\0')
-    {
-        let mime_type = mime_guess::from_path(&path).first().map(|m| m.to_string());
-        return Json(SessionFileResponse {
-            path: path_str,
-            name,
-            size,
-            is_binary: false,
-            content: text.to_string(),
-            mime_type,
-        })
-        .into_response();
-    }
-
-    // 二进制媒体检测（图片等）
     let mime_type = mime_guess::from_path(&path).first().map(|m| m.to_string());
+    let text = std::str::from_utf8(&bytes)
+        .ok()
+        .filter(|text| !text.contains('\0'));
     let is_image = mime_type
         .as_deref()
-        .map(|m| m.starts_with("image/"))
-        .unwrap_or(false);
-
-    if is_image {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        return Json(SessionFileResponse {
-            path: path_str,
-            name,
-            size,
-            is_binary: true,
-            content: b64,
-            mime_type,
-        })
-        .into_response();
-    }
-
-    Json(SessionFileResponse {
-        path: path_str,
-        name,
+        .is_some_and(|m| m.starts_with("image/"));
+    let (is_binary, content) = match text {
+        Some(text) => (false, text.to_string()),
+        None if is_image => (
+            true,
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+        ),
+        None => (true, String::new()),
+    };
+    Ok(Json(SessionFileResponse {
+        path: path.to_string_lossy().into_owned(),
+        name: path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into()),
         size,
-        is_binary: true,
-        content: String::new(),
+        is_binary,
+        content,
         mime_type,
-    })
-    .into_response()
+    }))
 }
 
 #[derive(Deserialize)]
@@ -579,6 +548,28 @@ pub struct SubmitFile {
     pub data: String,
 }
 
+impl From<SubmitFile> for ContentPart {
+    fn from(file: SubmitFile) -> Self {
+        match file.mime_type.as_str() {
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => ContentPart::Image {
+                source: MediaSource::Base64 {
+                    data: file.data,
+                    mime_type: file.mime_type,
+                },
+                mime_type: None,
+            },
+            _ => ContentPart::File {
+                source: MediaSource::Base64 {
+                    data: file.data,
+                    mime_type: file.mime_type.clone(),
+                },
+                mime_type: file.mime_type,
+                filename: file.filename,
+            },
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct UploadFileRequest {
     pub filename: String,
@@ -590,71 +581,41 @@ pub struct UploadFileRequest {
 pub async fn upload_file(
     State(state): State<AppState>,
     Json(request): Json<UploadFileRequest>,
-) -> Response {
+) -> ApiResult<Json<serde_json::Value>> {
     let filename = StdPath::new(&request.filename)
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("upload");
-    let bytes = match base64::engine::general_purpose::STANDARD.decode(&request.data) {
-        Ok(bytes) => bytes,
-        Err(decode_error) => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                format!("Invalid file data: {decode_error}"),
-            );
-        }
-    };
-    let workspace = request
-        .workspace
-        .as_deref()
-        .map(StdPath::new)
-        .unwrap_or_else(|| state.manager.workspace());
-    let scratch = match state.manager.store().ensure_scratch(workspace).await {
-        Ok(path) => path,
-        Err(store_error) => return error(StatusCode::INTERNAL_SERVER_ERROR, store_error),
-    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&request.data)
+        .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, format!("Invalid file data: {e}")))?;
+    let workspace = workspace_or_default(&state, request.workspace.as_deref());
+    let scratch = state
+        .manager
+        .store()
+        .ensure_scratch(&workspace)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
     let path = scratch.join(format!("{}_{}", uuid::Uuid::new_v4(), filename));
-    if let Err(io_error) = tokio::fs::write(&path, bytes).await {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, io_error);
-    }
-    Json(serde_json::json!({"path": path})).into_response()
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Json(serde_json::json!({ "path": path })))
 }
 
 pub async fn submit_message(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Json(request): Json<SubmitMessageRequest>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    let files = request
-        .files
-        .into_iter()
-        .map(|file| match file.mime_type.as_str() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                crate::model::ContentPart::Image {
-                    source: crate::model::MediaSource::Base64 {
-                        data: file.data,
-                        mime_type: file.mime_type,
-                    },
-                    mime_type: None,
-                }
-            }
-            _ => crate::model::ContentPart::File {
-                source: crate::model::MediaSource::Base64 {
-                    data: file.data,
-                    mime_type: file.mime_type.clone(),
-                },
-                mime_type: file.mime_type,
-                filename: file.filename,
-            },
-        })
-        .collect();
-    match handle.submit(&request.prompt, files, None).await {
-        Ok(()) => Ok(StatusCode::ACCEPTED.into_response()),
-        // 会话正在执行其他请求时拒绝重复提交
-        Err(e) => Err(error(StatusCode::CONFLICT, e)),
-    }
+) -> ApiResult<StatusCode> {
+    let files = request.files.into_iter().map(ContentPart::from).collect();
+    // 会话正在执行其他请求时拒绝重复提交
+    session
+        .0
+        .submit(&request.prompt, files, None)
+        .await
+        .map_err(fail(StatusCode::CONFLICT))?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize)]
@@ -664,15 +625,15 @@ pub struct RevertRequest {
 
 /// 回退到指定用户轮次：丢弃该轮次及其后的全部内容
 pub async fn revert_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Json(request): Json<RevertRequest>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    match handle.revert(request.turn_index).await {
-        Ok(()) => Ok(Json(SessionSnapshot::from(&*handle.snapshot())).into_response()),
-        Err(e) => Err(error(StatusCode::BAD_REQUEST, e)),
-    }
+) -> ApiResult<Response> {
+    session
+        .0
+        .revert(request.turn_index)
+        .await
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    Ok(session.snapshot_json())
 }
 
 #[derive(Deserialize)]
@@ -685,33 +646,28 @@ pub struct ForkRequest {
 /// 从指定用户轮次分叉新会话：保留该轮次之前的历史，原会话不变
 pub async fn fork_session(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Json(request): Json<ForkRequest>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    match state
+) -> ApiResult<Response> {
+    let created = state
         .manager
         .fork_session(
-            &handle,
+            &session.0,
             request.turn_index,
             request.title.unwrap_or_default(),
         )
         .await
-    {
-        Ok(created) => Ok(Json(SessionSnapshot::from(&*created.snapshot())).into_response()),
-        Err(e) => Err(error(StatusCode::BAD_REQUEST, e)),
-    }
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    Ok(Session(created).snapshot_json())
 }
 
-pub async fn abort_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    match handle.abort_current().await {
-        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
-        Err(e) => Err(error(StatusCode::CONFLICT, e)),
-    }
+pub async fn abort_session(session: Session) -> ApiResult<StatusCode> {
+    session
+        .0
+        .abort_current()
+        .await
+        .map_err(fail(StatusCode::CONFLICT))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -721,36 +677,33 @@ pub struct DismissNoticeRequest {
 
 /// 关闭一条运行通知横幅：按稳定 ID 移除并发布
 pub async fn dismiss_notice(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Json(request): Json<DismissNoticeRequest>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    match handle.dismiss_notice(request.id).await {
-        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
-        Err(e) => Err(error(StatusCode::CONFLICT, e)),
-    }
+) -> ApiResult<StatusCode> {
+    session
+        .0
+        .dismiss_notice(request.id)
+        .await
+        .map_err(fail(StatusCode::CONFLICT))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
 pub struct AnswerUserRequest {
     pub request_id: String,
-    pub answers: Vec<crate::model::UserAnswer>,
+    pub answers: Vec<UserAnswer>,
 }
 
 pub async fn answer_user(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Json(request): Json<AnswerUserRequest>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    match handle
+) -> ApiResult<StatusCode> {
+    session
+        .0
         .answer_user(request.request_id, request.answers)
         .await
-    {
-        Ok(()) => Ok(StatusCode::ACCEPTED.into_response()),
-        Err(message) => Err(error(StatusCode::BAD_REQUEST, message)),
-    }
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    Ok(StatusCode::ACCEPTED)
 }
 
 /// serde 双层 Option：区分字段缺席（保持不变）与显式 null（清空档位）
@@ -775,56 +728,47 @@ pub struct ConfigureSessionRequest {
 }
 
 pub async fn configure_session(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
+    session: Session,
     Json(request): Json<ConfigureSessionRequest>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    match handle
+) -> ApiResult<Response> {
+    session
+        .0
         .configure(request.model, request.variant, request.search)
         .await
-    {
-        Ok(()) => Ok(Json(SessionSnapshot::from(&*handle.snapshot())).into_response()),
-        Err(e) => Err(error(StatusCode::BAD_REQUEST, e)),
-    }
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    Ok(session.snapshot_json())
 }
 
 /// 会话统计 (Token 消耗、缓存命中与预估花费)，复用 TUI 侧栏的 compute_stats 投影
-pub async fn session_stats(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-    let view = handle.snapshot();
-    Ok(Json(compute_stats(&view.session, &state.manager.app_config())).into_response())
+pub async fn session_stats(State(state): State<AppState>, session: Session) -> Json<SidebarStats> {
+    Json(compute_stats(
+        &session.0.snapshot().session,
+        &state.manager.app_config(),
+    ))
 }
 
 /// 全局配置文件寻址：`~/.vva/config.jsonc` 优先，其次 `config.json`，
 /// 两者都不存在时以 `config.json` 作为写入目标
-fn global_config_path() -> Option<std::path::PathBuf> {
-    let dir = crate::config::home_dir()?.join(".vva");
+fn global_config_path() -> ApiResult<PathBuf> {
+    let dir = crate::config::home_dir()
+        .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "无法定位用户主目录 (~)"))?
+        .join(".vva");
     let jsonc = dir.join("config.jsonc");
-    if jsonc.exists() {
-        return Some(jsonc);
-    }
-    let json = dir.join("config.json");
-    if json.exists() {
-        return Some(json);
-    }
-    Some(dir.join("config.json"))
+    Ok(if jsonc.exists() {
+        jsonc
+    } else {
+        dir.join("config.json")
+    })
 }
 
 /// 读取全局配置文件原文（JSONC），供 Settings 弹窗编辑；文件不存在时内容为 null
-pub async fn get_global_config() -> Response {
-    let Some(path) = global_config_path() else {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "无法定位用户主目录 (~)");
-    };
+pub async fn get_global_config() -> ApiResult<Json<serde_json::Value>> {
+    let path = global_config_path()?;
     let content = tokio::fs::read_to_string(&path).await.ok();
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "path": path.display().to_string(),
         "content": content,
-    }))
-    .into_response()
+    })))
 }
 
 #[derive(Deserialize)]
@@ -836,72 +780,57 @@ pub struct UpdateConfigRequest {
 pub async fn update_global_config(
     State(state): State<AppState>,
     Json(request): Json<UpdateConfigRequest>,
-) -> Response {
-    let Some(path) = global_config_path() else {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "无法定位用户主目录 (~)");
-    };
-    if let Err(e) = crate::config::parse_config_str(&request.content) {
-        return error(StatusCode::BAD_REQUEST, e);
+) -> ApiResult<StatusCode> {
+    let path = global_config_path()?;
+    crate::config::parse_config_str(&request.content).map_err(fail(StatusCode::BAD_REQUEST))?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
     }
-    if let Some(parent) = path.parent()
-        && let Err(e) = tokio::fs::create_dir_all(parent).await
-    {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, e);
-    }
-    if let Err(e) = tokio::fs::write(&path, &request.content).await {
-        return error(StatusCode::INTERNAL_SERVER_ERROR, e);
-    }
-    if let Err(e) = state.manager.reload_config() {
-        return error(
+    tokio::fs::write(&path, &request.content)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    state.manager.reload_config().map_err(|e| {
+        ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("配置已保存，但热重载失败: {e}"),
-        );
-    }
-    StatusCode::NO_CONTENT.into_response()
+        )
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 每条连接以快照建立基线，再发送相对已发送版本的增量。
 /// watch 可合并中间发布；慢客户端仍从自己的基线更新到最新状态。
-pub async fn stream_events(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Response, Response> {
-    let handle = session_handle(&state, &id).await?;
-
-    let mut rx = handle.subscribe();
+pub async fn stream_events(session: Session) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut rx = session.0.subscribe();
     let initial = rx.borrow_and_update().clone();
-    let stream: std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
-        Box::pin(futures::stream::unfold(
-            (rx, initial, true),
-            |(mut rx, previous, first)| async move {
-                if first {
-                    let event = Event::default()
-                        .event("snapshot")
-                        .json_data(SessionSnapshot::from(&*previous))
-                        .expect("session snapshot is serializable");
-                    return Some((Ok(event), (rx, previous, false)));
-                }
-                if rx.changed().await.is_err() {
-                    return None;
-                }
-                let current = rx.borrow_and_update().clone();
+    let stream = futures::stream::unfold(
+        (rx, initial, true),
+        |(mut rx, previous, first)| async move {
+            if first {
                 let event = Event::default()
-                    .event("delta")
-                    .json_data(SessionDelta::between(&previous, &current))
-                    .expect("session delta is serializable");
-                Some((Ok(event), (rx, current, false)))
-            },
-        ));
-    Ok(Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
+                    .event("snapshot")
+                    .json_data(SessionSnapshot::from(&*previous))
+                    .expect("session snapshot is serializable");
+                return Some((Ok(event), (rx, previous, false)));
+            }
+            rx.changed().await.ok()?;
+            let current = rx.borrow_and_update().clone();
+            let event = Event::default()
+                .event("delta")
+                .json_data(SessionDelta::between(&previous, &current))
+                .expect("session delta is serializable");
+            Some((Ok(event), (rx, current, false)))
+        },
+    );
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::harness::SessionManager;
-    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -939,21 +868,17 @@ mod tests {
         ));
         let state = AppState { manager };
 
-        let response = list_fs_entries(
-            State(state.clone()),
-            Query(FsEntriesQuery {
-                workspace: Some(ws.to_string_lossy().to_string()),
-                path: None,
-            }),
-        )
-        .await;
+        let list = |path: Option<&str>| {
+            list_fs_entries(
+                State(state.clone()),
+                Query(FsEntriesQuery {
+                    workspace: Some(ws.to_string_lossy().to_string()),
+                    path: path.map(String::from),
+                }),
+            )
+        };
 
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let res: FsEntriesResponse = serde_json::from_slice(&body).unwrap();
-
+        let Json(res) = list(None).await.ok().unwrap();
         assert!(!res.entries.iter().any(|e| e.name == ".git"));
         assert_eq!(res.entries[0].name, "src");
         assert!(res.entries[0].is_dir);
@@ -962,20 +887,7 @@ mod tests {
         let file_names: Vec<&str> = res.entries[1..].iter().map(|e| e.name.as_str()).collect();
         assert_eq!(file_names, vec!["Cargo.toml", "README.md"]);
 
-        let sub_response = list_fs_entries(
-            State(state.clone()),
-            Query(FsEntriesQuery {
-                workspace: Some(ws.to_string_lossy().to_string()),
-                path: Some("src".into()),
-            }),
-        )
-        .await;
-
-        assert_eq!(sub_response.status(), StatusCode::OK);
-        let sub_body = axum::body::to_bytes(sub_response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let sub_res: FsEntriesResponse = serde_json::from_slice(&sub_body).unwrap();
+        let Json(sub_res) = list(Some("src")).await.ok().unwrap();
         assert_eq!(sub_res.entries[0].name, "nested");
         assert!(sub_res.entries[0].is_dir);
         assert_eq!(sub_res.entries[0].path, "src/nested");
@@ -992,18 +904,16 @@ mod tests {
             .await
             .unwrap();
 
-        let response = read_file_from_workspace(ws, "hello.txt").await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let Json(res) = read_file_from_workspace(ws, "hello.txt")
             .await
+            .ok()
             .unwrap();
-        let res: SessionFileResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(res.name, "hello.txt");
         assert_eq!(res.content, "hello world");
         assert!(!res.is_binary);
 
-        let missing = read_file_from_workspace(ws, "nonexistent.txt").await;
-        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let missing = read_file_from_workspace(ws, "nonexistent.txt").await.err();
+        assert_eq!(missing.unwrap().0, StatusCode::NOT_FOUND);
     }
 
     #[test]

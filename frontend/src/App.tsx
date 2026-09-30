@@ -158,15 +158,10 @@ export default function App() {
 
   // 切换会话时建立 SSE 订阅，连接建立即收到当前快照
   useEffect(() => {
-    if (!activeId) {
-      setSnap(null)
-      setPending(null)
-      setPreviewFilePath(null)
-      return
-    }
     setSnap(null)
     setPending(null)
     setPreviewFilePath(null)
+    if (!activeId) return
     return subscribeSession(activeId, setSnap, e => setError(toError(e)))
   }, [activeId])
 
@@ -314,10 +309,19 @@ export default function App() {
     followBottom()
   }, [snap, followBottom])
 
+  // 请求失败统一走顶部 error banner
+  const attempt = useCallback(async (action: () => Promise<unknown>) => {
+    try {
+      await action()
+    } catch (e) {
+      setError(toError(e))
+    }
+  }, [])
+
   const submit = useCallback(
     async (text: string, files: FileAttachment[] = []) => {
       setError(null)
-      try {
+      await attempt(async () => {
         let id = activeId
         if (!id) {
           const created = await api.createSession({
@@ -335,21 +339,14 @@ export default function App() {
         setSessions(prev =>
           prev.map(item => (item.id === id ? { ...item, state: 'Thinking...' } : item)),
         )
-      } catch (e) {
-        setError(toError(e))
-      }
+      })
     },
-    [activeId, draftModel, draftVariant, draftSearch, draftProject],
+    [activeId, draftModel, draftVariant, draftSearch, draftProject, attempt],
   )
 
   const abort = useCallback(async () => {
-    if (!activeId) return
-    try {
-      await api.abort(activeId)
-    } catch (e) {
-      setError(toError(e))
-    }
-  }, [activeId])
+    if (activeId) await attempt(() => api.abort(activeId))
+  }, [activeId, attempt])
 
   // 关闭结果通过会话快照同步给全部订阅者
   const dismissNotice = useCallback(
@@ -363,13 +360,10 @@ export default function App() {
   const answerUser = useCallback(
     async (answers: UserAnswer[]) => {
       if (!activeId || !snap?.pending_user_question) return
-      try {
-        await api.answerUser(activeId, snap.pending_user_question.id, answers)
-      } catch (e) {
-        setError(toError(e))
-      }
+      const requestId = snap.pending_user_question.id
+      await attempt(() => api.answerUser(activeId, requestId, answers))
     },
-    [activeId, snap?.pending_user_question],
+    [activeId, snap?.pending_user_question, attempt],
   )
 
   // 回退：丢弃该用户轮次及之后的内容，提示词放回输入框重新编辑
@@ -377,29 +371,25 @@ export default function App() {
     async (turnIndex: number, prompt: string) => {
       if (!activeId) return
       revealComposer()
-      try {
+      await attempt(async () => {
         await api.revert(activeId, turnIndex)
         setPending(null)
         composerRef.current?.set(prompt)
-      } catch (e) {
-        setError(toError(e))
-      }
+      })
     },
-    [activeId, revealComposer],
+    [activeId, revealComposer, attempt],
   )
 
   // 分叉：保留该用户轮次之前的历史创建新会话，并切换过去
   const forkTurn = useCallback(
     async (turnIndex: number) => {
       if (!activeId) return
-      try {
+      await attempt(async () => {
         const created = await api.fork(activeId, turnIndex)
         setActiveId(created.session.id)
-      } catch (e) {
-        setError(toError(e))
-      }
+      })
     },
-    [activeId],
+    [activeId, attempt],
   )
 
   // 新建：仅预选项目并回到空态，会话延迟到首条消息发送时创建
@@ -412,16 +402,14 @@ export default function App() {
 
   const removeSession = useCallback(
     async (id: string) => {
-      try {
+      await attempt(async () => {
         await api.deleteSession(id)
         localOnlyIds.current.delete(id)
         setSessions(prev => prev.filter(item => item.id !== id))
         if (activeId === id) setActiveId(null)
-      } catch (e) {
-        setError(toError(e))
-      }
+      })
     },
-    [activeId],
+    [activeId, attempt],
   )
 
   const reorderProjects = useCallback(
@@ -441,14 +429,9 @@ export default function App() {
 
   const configure = useCallback(
     async (body: ConfigureBody) => {
-      if (!activeId) return
-      try {
-        await api.configure(activeId, body)
-      } catch (e) {
-        setError(toError(e))
-      }
+      if (activeId) await attempt(() => api.configure(activeId, body))
     },
-    [activeId],
+    [activeId, attempt],
   )
 
   const currentModel = active?.current_model ?? draftModel ?? models?.default ?? ''
