@@ -63,14 +63,10 @@ impl AnthropicProvider {
                     for part in &msg.parts {
                         match part {
                             ContentPart::Text { text, .. } => {
-                                let mut block = serde_json::json!({
+                                let block = serde_json::json!({
                                     "type": "text",
                                     "text": text,
                                 });
-                                if should_cache {
-                                    block["cache_control"] =
-                                        serde_json::json!({ "type": "ephemeral" });
-                                }
                                 content_blocks.push(block);
                             }
                             ContentPart::File {
@@ -107,8 +103,22 @@ impl AnthropicProvider {
                                     }));
                                 }
                             },
+                            ContentPart::FileRef {
+                                path,
+                                content,
+                                truncated,
+                            } => {
+                                let block = serde_json::json!({
+                                    "type": "text",
+                                    "text": crate::model::format_file_ref(path, content, *truncated),
+                                });
+                                content_blocks.push(block);
+                            }
                             _ => {}
                         }
+                    }
+                    if should_cache && let Some(last) = content_blocks.last_mut() {
+                        last["cache_control"] = serde_json::json!({ "type": "ephemeral" });
                     }
                     merger.push("user", content_blocks);
                 }

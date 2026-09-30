@@ -1164,6 +1164,66 @@ async fn test_user_message_block_rendering() {
 }
 
 #[tokio::test]
+async fn test_user_file_ref_and_attachment_rows() {
+    let mut app = create_test_app().await;
+    // 单个用户轮次：Text 之后依次跟随 FileRef / Image / File 附件
+    let view = Arc::make_mut(&mut app.view);
+    view.revision += 1;
+    Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+        Role::User,
+        vec![crate::model::Message::new(vec![
+            ContentPart::text("看下这个文件"),
+            ContentPart::FileRef {
+                path: "src/main.rs".into(),
+                content: "fn main() {}\n".into(),
+                truncated: false,
+            },
+            ContentPart::FileRef {
+                path: "docs/big.md".into(),
+                content: "first line\n".into(),
+                truncated: true,
+            },
+            ContentPart::image_url("https://example.com/a.png"),
+            ContentPart::File {
+                source: crate::model::MediaSource::Url {
+                    url: "https://example.com/a.pdf".into(),
+                },
+                mime_type: "application/pdf".into(),
+                filename: "a.pdf".into(),
+            },
+        ])],
+    ));
+
+    let lines = build_chat_lines(&app, 80);
+    let rendered = plain(&lines);
+    // FileRef 渲染为紧凑引用行：路径 + 行数，截断标注生效，正文不倾倒
+    assert!(rendered.contains("📎 src/main.rs · 1 line"), "{rendered}");
+    assert!(
+        rendered.contains("📎 docs/big.md · 1 line · truncated"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("fn main"), "{rendered}");
+    assert!(!rendered.contains("first line"), "{rendered}");
+    // 图片与文件附件仅标注类型 / 文件名
+    assert!(rendered.contains("🖼️ 图片附件"), "{rendered}");
+    assert!(rendered.contains("📄 a.pdf"), "{rendered}");
+    // 附件行沿用用户引用块样式（色条 + 块底色）
+    let attachment_rows: Vec<_> = lines
+        .iter()
+        .filter(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.contains("📎") || s.content.contains("📄"))
+        })
+        .collect();
+    assert_eq!(attachment_rows.len(), 3);
+    for row in &attachment_rows {
+        assert_eq!(row.spans.first().map(|s| s.content.as_ref()), Some("▌"));
+        assert!(row.spans.iter().any(|s| s.style.bg == Some(USER_BLOCK_BG)));
+    }
+}
+
+#[tokio::test]
 async fn test_assistant_markdown_rendering() {
     let mut app = create_test_app().await;
     let md_content = r#"# Hello World

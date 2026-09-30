@@ -825,3 +825,61 @@ fn test_anthropic_native_blocks_skipped_on_affinity_mismatch() {
     assert!(!text.contains("secret reasoning"), "{text}");
     assert!(text.contains("answer"), "{text}");
 }
+
+#[test]
+fn test_file_ref_projects_as_text_block() {
+    let provider = AnthropicProvider::new("test");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::new(vec![
+        ContentPart::text("解释 @src/main.rs"),
+        ContentPart::FileRef {
+            path: "src/main.rs".into(),
+            content: "fn main() {}".into(),
+            truncated: false,
+        },
+    ])));
+
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .expect("build body");
+    let msgs = body["messages"].as_array().unwrap();
+    let user_content = msgs.last().unwrap()["content"].as_array().unwrap();
+    assert_eq!(user_content.len(), 2);
+    assert_eq!(user_content[0]["type"], "text");
+    assert_eq!(user_content[1]["type"], "text");
+    assert_eq!(user_content[1]["text"], "@src/main.rs\nfn main() {}");
+    // 缓存断点位于最后一个内容块，覆盖正文与文件引用
+    assert!(user_content[0].get("cache_control").is_none());
+    assert_eq!(user_content[1]["cache_control"]["type"], "ephemeral");
+}
+
+#[test]
+fn user_cache_breakpoint_covers_all_file_refs_and_trailing_media() {
+    let provider = AnthropicProvider::new("test");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::new(Role::System, vec![Message::text("system")]));
+    let mut parts = vec![ContentPart::text("review attached files")];
+    for i in 0..6 {
+        parts.push(ContentPart::FileRef {
+            path: format!("file-{i}.txt"),
+            content: "sample".into(),
+            truncated: false,
+        });
+    }
+    parts.push(ContentPart::image_url("https://example.com/sample.png"));
+    session.append_turn(Turn::user_turn(Message::new(parts)));
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .unwrap();
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks.len(), 8);
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.get("cache_control").is_some())
+            .count(),
+        1
+    );
+    assert_eq!(blocks.last().unwrap()["cache_control"]["type"], "ephemeral");
+    assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+}

@@ -17,14 +17,14 @@ src/ui/
 ├── app/                    # App 响应式控制器、状态机与子系统调度
 │   ├── mod.rs              # App 结构体定义、生命周期与统一导出
 │   ├── session.rs          # 会话切换、SessionView 快照刷新与模态框状态调度
-│   ├── editor.rs           # 输入缓冲编辑、光标移动与斜杠命令补全
+│   ├── editor.rs           # 输入缓冲编辑、光标移动与斜杠命令补全、@ 文件补全状态维护 (token 检测/候选刷新/应用插入)
 │   ├── dispatch.rs         # 用户提交、斜杠命令路由与会话请求分发
 │   ├── pane.rs             # TextPane 可选中文本面板（命中判定 / 选区 / 渲染行缓存）
 │   ├── selection.rs        # 文本与输入选区模型 (TextCoord/TextSelection) 与剪贴板
 │   ├── scroll.rs           # 视口滚动与坐标映射
 │   ├── tests.rs            # App 完整自动化单元测试集
 │   └── test_support.rs     # 测试共享基建 (临时 JSONL 存储 + App 构造)
-├── command.rs              # 斜杠命令系统与前缀匹配补全引擎
+├── command.rs              # 斜杠命令系统与前缀匹配补全引擎、@ 文件候选模型 (FileCandidate)
 ├── input.rs                # InputBuffer 多行文本编辑与 CJK 宽字符光标算法
 ├── history.rs              # SidebarStats 纯函数统计投影
 ├── markdown.rs             # Markdown 解析与终端样式渲染
@@ -40,7 +40,7 @@ src/ui/
     ├── chat.rs             # 中间对话流（已完成轮次与流式草稿同源渲染、思考折叠、工具调用卡片、Markdown 渲染）
     ├── modal_shell.rs      # 模态弹窗公共外壳（居中布局、过滤行、滚动窗口、空态与提示行）
     ├── sidebar.rs          # 右侧详情边栏（宽屏自适应，Token与花费看板）
-    ├── input_area.rs       # 复合输入区（状态条、命令建议浮层、多行输入框）
+    ├── input_area.rs       # 复合输入区（状态条、命令/文件建议浮层、多行输入框）
     ├── sessions_modal.rs   # /sessions 弹窗视图
     ├── models_modal.rs     # /model 弹窗视图
     ├── variants_modal.rs   # /variant 弹窗视图
@@ -102,3 +102,10 @@ src/ui/
 - 输入区状态条回写 `model_selector_area` / `variant_selector_area` / `web_toggle_area` 命中矩形，鼠标按下时按矩形命中派发弹窗或开关；
 - **右键级联语义**：复制活跃选区 → 命中档位标签时循环切换推理档位（`App::cycle_variant`，按模型声明顺序推进、越过末位回到 default）→ 其余区域粘贴剪贴板；
 - 档位选项清单由 `App::variant_options` 统一构造（default 置首），与 `/variant` 弹窗同源，避免两处列表漂移。
+
+### 3.8 `@` 文件引用补全与展开
+- **代码位置**：[`src/ui/app/editor.rs`](../src/ui/app/editor.rs)（调用 harness 共用 token 检测与状态维护）、[`src/ui/views/input_area.rs`](../src/ui/views/input_area.rs)（候选浮层）、[`src/harness/mention.rs`](../src/harness/mention.rs)（提交时展开）
+- **触发词法**：光标处 `@` 须位于行首或空白/开括号之后（含全角），token 止于空白或 CJK 标点；与 `user@host` 邮箱不冲突；
+- **候选源**：启动时后台线程 `walk_workspace`（遵循 .gitignore，[`src/find.rs`](../src/find.rs)，与 Web go-to-file 共用）构建索引，输入时共用 `rank_candidates` 排序取前 8 条（空查询按 mtime 降序展示最近文件），浮层支持 ↑↓ / Ctrl-P/N 循环、Tab/Enter 插入 `@path `、Esc 关闭（输入变化后恢复）；光标移动与后台索引就绪时刷新候选；
+- **提交展开**：UI 仅插入纯文本，展开统一发生在 harness `SessionTask::start`：文本文件读取为 `ContentPart::FileRef`（128KB 截断标记），图片/PDF 转原生附件并过输入能力校验，二进制/超限/能力缺失降级为文本注记（模型自行用工具读取），路径不存在发 Notice；TUI / Web / `vva run` CLI 三端共享同一展开逻辑；
+- **渲染**：用户轮次中 `FileRef` 渲染为紧凑引用行（`📎 path · N 行`，不倾倒正文），Web 端为可点击芯片（侧栏预览）。

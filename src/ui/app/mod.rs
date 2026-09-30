@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
 
+use crate::find::Candidate;
 use crate::harness::SessionView;
 use crate::harness::{ManagedSession, SessionManager};
 use crate::skills::Skill;
-use crate::ui::command::CompletionCandidate;
+use crate::ui::command::{CompletionCandidate, FileCandidate};
 
 pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
@@ -56,6 +57,16 @@ pub struct App {
     /// 当前输入匹配的补全候选（内置命令 + 技能）
     pub matched_candidates: Vec<CompletionCandidate>,
     pub selected_command_index: usize,
+    /// 当前输入 @ token 的文件补全候选（按匹配分排序，至多 8 条）
+    pub file_matches: Vec<FileCandidate>,
+    /// 文件补全浮层的选中项下标
+    pub selected_file_index: usize,
+    /// Esc 关闭 @ 补全后置位；输入再次编辑时复位
+    pub file_completion_dismissed: bool,
+    /// 启动时后台遍历的工作区文件索引回投通道（就绪后转入 file_index）
+    pub file_index_rx: Option<std::sync::mpsc::Receiver<Arc<Vec<Candidate>>>>,
+    /// 已就绪的工作区文件索引（相对路径候选，含 mtime）
+    pub file_index: Option<Arc<Vec<Candidate>>>,
     pub stats: SidebarStats,
     pub thinking_concise: bool,
     pub show_sidebar: bool,
@@ -84,6 +95,13 @@ impl App {
         let view = initial_session.snapshot();
         let stats = compute_stats(&view.session, &session_mgr.app_config());
         let skills = crate::skills::discover_skills(&view.session.header.workspace_root);
+        // 后台遍历工作区文件候选索引（含 mtime），经通道回投，避免阻塞首帧
+        let (file_index_tx, file_index_rx) = std::sync::mpsc::channel();
+        let workspace_root = session_mgr.workspace().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let (candidates, _) = crate::find::walk_workspace(&workspace_root, true);
+            let _ = file_index_tx.send(Arc::new(candidates));
+        });
         Self {
             session_mgr,
             active_session: initial_session,
@@ -107,6 +125,11 @@ impl App {
             skills,
             matched_candidates: Vec::new(),
             selected_command_index: 0,
+            file_matches: Vec::new(),
+            selected_file_index: 0,
+            file_completion_dismissed: false,
+            file_index_rx: Some(file_index_rx),
+            file_index: None,
             stats,
             thinking_concise: true,
             show_sidebar: true,

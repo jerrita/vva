@@ -304,31 +304,27 @@ pub async fn find_fs_files(
 
     let ws = workspace.clone();
     let q_task = q.clone();
-    let (ranked, truncated) = tokio::task::spawn_blocking(move || {
-        let (candidates, capped) = super::find::walk_workspace(&ws, q_task.is_empty());
-        let mut scored: Vec<(i64, Option<std::time::SystemTime>, String, Vec<usize>)> =
-            if q_task.is_empty() {
-                candidates
-                    .into_iter()
-                    .map(|c| (0, c.mtime, c.path, Vec::new()))
-                    .collect()
-            } else {
-                candidates
-                    .into_iter()
-                    .filter_map(|c| {
-                        super::find::fuzzy_match(&q_task, &c.path)
-                            .map(|m| (m.score, c.mtime, c.path, m.indices))
-                    })
-                    .collect()
-            };
-        if q_task.is_empty() {
-            scored.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
-        } else {
-            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.2.cmp(&b.2)));
-        }
-        let over = scored.len() > limit;
-        scored.truncate(limit);
-        (scored, capped || over)
+    let (entries, truncated) = tokio::task::spawn_blocking(move || {
+        let (candidates, capped) = crate::find::walk_workspace(&ws, q_task.is_empty());
+        let (ranked, over) = crate::find::rank_candidates(&candidates, &q_task, limit);
+        let entries = ranked
+            .into_iter()
+            .map(|matched| {
+                let path = matched.candidate.path.clone();
+                let size = std::fs::metadata(ws.join(&path)).map_or(0, |m| m.len());
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                FsFindEntry {
+                    entry: FsEntry {
+                        name,
+                        path,
+                        is_dir: false,
+                        size,
+                    },
+                    indices: matched.indices,
+                }
+            })
+            .collect::<Vec<_>>();
+        (entries, capped || over)
     })
     .await
     .map_err(|e| {
@@ -337,23 +333,6 @@ pub async fn find_fs_files(
             format!("文件查找失败: {e}"),
         )
     })?;
-
-    let entries = ranked
-        .into_iter()
-        .map(|(_, _, path, indices)| {
-            let size = std::fs::metadata(workspace.join(&path)).map_or(0, |m| m.len());
-            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-            FsFindEntry {
-                entry: FsEntry {
-                    name,
-                    path,
-                    is_dir: false,
-                    size,
-                },
-                indices,
-            }
-        })
-        .collect();
 
     Ok(Json(FsFindResponse {
         workspace: workspace.to_string_lossy().to_string(),

@@ -85,6 +85,8 @@ classDiagram
 | `Text` | `text: String`, `annotations: Vec<Annotation>` | 纯文本内容，内嵌引用注脚系统 |
 | `Reasoning` | `content: String`, `signature: Option<String>` | 深度思考过程。携带可选的数字签名 `signature`（Anthropic 官方防篡改签名） |
 | `Image` | `source: MediaSource`, `mime_type: Option<String>` | 多模态图像（URL / Base64） |
+| `File` | `source: MediaSource`, `mime_type: String`, `filename: String` | 文件模态（当前原生支持 PDF；Base64 直传 Anthropic `document` / Gemini `inlineData` / Responses `input_file`） |
+| `FileRef` | `path: String`, `content: String`, `truncated: bool` | 用户 `@path` 引用的本地文本文件内容（harness 提交时展开，提示词原文保留；二进制/超限/模型不支持的媒体降级为文本注记，由模型自行用工具处理；三家适配器经 `format_file_ref` 统一投影为文本块） |
 | `ToolCall` | `ToolCall` (`id`, `name`, `arguments`) | Agent 工具调用请求封装 |
 | `ToolResult` | `ToolResult` (`tool_call_id`, `content`, `is_error`) | Agent 工具执行结果与错误封装 |
 | `WebSearchCall` | `WebSearchCall` (`id`, `query`, `status`, `sources`) | 结构化记录网络检索意图、状态与引文数据源 |

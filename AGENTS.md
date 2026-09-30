@@ -64,6 +64,7 @@
 src/
 ├── lib.rs                  # 核心模块导出
 ├── event.rs                # AgentEvent 统一事件流词汇表 (Provider 流式增量 + Harness 工具/Notice/Aborted 事件)
+├── find.rs                 # 工作区文件遍历与模糊匹配打分 (walk_workspace / fuzzy_match；TUI @ 补全与 Web go-to-file 共用)
 ├── system.rs               # 系统环境信息采集与系统提示组装 (日期 / OS / arch / workspace / scratch)
 ├── main.rs                 # CLI 命令行入口 (vva run [prompt], vva session list/inspect, vva web)
 ├── config/                 # 配置管理 (JSON/JSONC 解析、环境展开与路由)
@@ -139,6 +140,7 @@ src/
 ├── harness/                # 调度引擎与会话运行时
 │   ├── mod.rs
 │   ├── agent.rs            # AgentEngine 组装 (Provider + ToolRegistry + CompletionOptions + EngineDeps 依赖注入) 与 capability_notices 能力协商；subagent 会话按 agent 定义裁剪工具
+│   ├── mention.rs           # @ 文件引用：提示词 token 解析 (CJK 边界/收尾标点) 与工作区文件读取展开 (文本→FileRef，图片/PDF→原生附件，二进制/超限/能力缺失降级文本注记)
 │   ├── testing.rs          # (cfg(test)) 共享 StubBroker 桩
 │   └── session/            # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
 │       ├── mod.rs          # 模块导出 (SessionManager/ManagedSession/SessionView/RunState)
@@ -152,14 +154,14 @@ src/
     ├── app/                # App 响应式控制器、状态机与子系统调度
     │   ├── mod.rs          # App 结构体定义、生命周期与模块导出
     │   ├── session.rs      # 会话切换、SessionView 快照刷新与模态框状态调度
-    │   ├── editor.rs       # 输入缓冲编辑、光标移动与斜杠命令补全
+    │   ├── editor.rs       # 输入缓冲编辑、光标移动、斜杠命令补全与 @ 文件补全 (token 检测/候选刷新/应用插入)
     │   ├── dispatch.rs     # 用户提交、斜杠命令路由与会话请求分发
     │   ├── pane.rs         # TextPane 可选中文本面板与 ChatCache 历史前缀缓存 (命中判定/选区/行缓存)
     │   ├── selection.rs    # TextCoord/TextSelection/SelectionTracker 与剪贴板
     │   ├── scroll.rs       # 视口滚动与坐标映射
     │   ├── tests.rs        # App 完整自动化单元测试集
     │   └── test_support.rs # 测试共享基建 (临时 JSONL 存储 + App 构造)
-    ├── command.rs          # 斜杠命令系统与 Claude Code 风格前缀自动补全
+    ├── command.rs          # 斜杠命令系统与 Claude Code 风格前缀自动补全、@ 文件候选模型 (FileCandidate)
     ├── history.rs          # SidebarStats 纯函数统计投影 (compute_stats)
     ├── input.rs            # InputBuffer 多行文本编辑、光标计算与 CJK 对齐算法
     ├── markdown.rs         # Markdown 解析与终端样式渲染 (pulldown-cmark)
@@ -175,20 +177,20 @@ src/
         ├── chat/           # 聊天流渲染 (已完成轮次 + 流式草稿同源渲染)
         │   ├── mod.rs      # 模块导出 facade (外部路径不变)
         │   ├── state.rs    # ChatRender 输出槽与 RenderState 增量状态
-        │   ├── pipeline.rs # 渲染管线 (append_parts/append_part/thought_kind 统一决策)
+        │   ├── pipeline.rs # 渲染管线 (append_parts/append_part/thought_kind 统一决策；用户附件 FileRef/Image/File 紧凑引用行)
         │   ├── tool.rs     # 工具调用头部行 (逐工具摘要)
         │   ├── tool_block.rs # 工具展开块 (边框/填充/结果正文)
         │   ├── diff.rs     # Edit 差异渲染 (LCS 统一/双栏)
         │   ├── thought.rs  # 思考内容渲染 (内联/折叠启发式)
         │   ├── citations.rs # 搜索引用注脚与 Sources 块
-        │   ├── user_block.rs # 用户消息引用块
+        │   ├── user_block.rs # 用户消息引用块与附件引用行 (push_user_attachment_row)
         │   ├── selection.rs # 文本选区 (提取/高亮/叠加)
         │   ├── view.rs     # 终端视口 (面板/滚动/状态行)
         │   └── tests.rs    # 聊天渲染测试集
         ├── config_modal.rs # 设置弹窗视图
         ├── header.rs       # 顶部标题栏
         ├── help_modal.rs   # 帮助弹窗视图
-        ├── input_area.rs   # 复合输入区视图
+        ├── input_area.rs   # 复合输入区视图 (状态条、命令/文件建议浮层)
         ├── modal_shell.rs  # 模态弹窗公共外壳 (render_modal_shell 渲染骨架/居中布局/过滤行/滚动窗口/空态/提示行)
         ├── models_modal.rs # 模型选择弹窗视图
         ├── sessions_modal.rs # 会话选择弹窗视图

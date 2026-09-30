@@ -270,6 +270,15 @@ fn print_part(part: &ContentPart) {
             source, filename, ..
         } => println!("    📄 [File] {filename}: {source:?}"),
         ContentPart::Image { source, .. } => println!("    🖼️ [Image]: {source:?}"),
+        ContentPart::FileRef {
+            path,
+            content,
+            truncated,
+        } => println!(
+            "    📎 [FileRef] {path} ({} bytes{})",
+            content.len(),
+            if *truncated { ", truncated" } else { "" }
+        ),
         ContentPart::ImageGenerationCall(call) => println!(
             "    🖼️ [ImageGeneration] id={} status={}",
             call.id,

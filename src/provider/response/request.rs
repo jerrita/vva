@@ -133,6 +133,16 @@ impl ResponseProvider {
                                         "file_data": format!("data:{mime_type};base64,{data}"),
                                     }));
                                 }
+                                ContentPart::FileRef {
+                                    path,
+                                    content,
+                                    truncated,
+                                } => {
+                                    content_arr.push(serde_json::json!({
+                                        "type": "input_text",
+                                        "text": crate::model::format_file_ref(path, content, *truncated),
+                                    }));
+                                }
                                 _ => {}
                             }
                         }

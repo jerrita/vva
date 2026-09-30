@@ -51,6 +51,15 @@ impl GeminiProvider {
                                         }
                                     }));
                                 }
+                                ContentPart::FileRef {
+                                    path,
+                                    content,
+                                    truncated,
+                                } => {
+                                    parts_arr.push(serde_json::json!({
+                                        "text": crate::model::format_file_ref(path, content, *truncated)
+                                    }));
+                                }
                                 _ => {}
                             }
                         }

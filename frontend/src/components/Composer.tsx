@@ -1,13 +1,18 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClipboardEvent, DragEvent, KeyboardEvent, ReactNode, Ref } from 'react'
 import { api } from '../api'
-import type { FileAttachment, SkillEntry } from '../types'
+import type { FileAttachment, FsFindEntry, SkillEntry } from '../types'
 import { IconArrowUp, IconPlus, IconStop, IconX } from './icons'
 
 /** 外部写入输入框内容（回退后还原提示词） */
 export interface ComposerHandle {
   set: (text: string) => void
 }
+
+/** 与 harness mention_at_cursor 对齐：开启边界后触发，空白/CJK 收尾标点结束 token。 */
+const AT_PATTERN = /(?:^|[\s（【「『“‘《〈\(\[\{<])@([^\s@，．。；：！？）】」』”’》〉…]*)$/
+
+type AtToken = { start: number; query: string }
 
 export function Composer({
   running,
@@ -40,6 +45,15 @@ export function Composer({
   const [dragging, setDragging] = useState(false)
   const [skillIndex, setSkillIndex] = useState(0)
   const [paletteClosed, setPaletteClosed] = useState(false)
+  // token 保存 @ 起点与光标前的查询；closed 仅屏蔽当前 token
+  const [atToken, setAtToken] = useState<AtToken | null>(null)
+  const [atClosed, setAtClosed] = useState(false)
+  const [atResult, setAtResult] = useState<{
+    token: AtToken
+    workspace?: string
+    entries: FsFindEntry[]
+  } | null>(null)
+  const [atIndex, setAtIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const selectedOptionRef = useRef<HTMLButtonElement>(null)
@@ -59,9 +73,80 @@ export function Composer({
   }
   const activeSkill = Math.min(skillIndex, Math.max(0, skillMatches.length - 1))
 
+  // 候选绑定 token 与工作区；查询变化后的首帧即隐藏旧候选。
+  const atEntries =
+    atResult && atResult.token === atToken && atResult.workspace === workspace
+      ? atResult.entries
+      : []
+  const atOpen = atToken != null && !atClosed && atEntries.length > 0
+  const activeAt = Math.min(atIndex, Math.max(0, atEntries.length - 1))
+
   useEffect(() => {
     selectedOptionRef.current?.scrollIntoView({ block: 'nearest' })
-  }, [skillIndex])
+  }, [skillIndex, atIndex])
+
+  // token 变化（新 @ 或过滤词变化）时恢复弹层并复位选中；Esc 关闭仅对当前 token 生效
+  useEffect(() => {
+    setAtIndex(0)
+    setAtClosed(false)
+  }, [atToken])
+
+  // 防抖拉取候选；关闭、换 token/工作区或卸载后丢弃响应。
+  useEffect(() => {
+    if (!atToken || atClosed) return
+    let active = true
+    const timer = setTimeout(() => {
+      void api
+        .fsFind(atToken.query, workspace, 12)
+        .then(res => {
+          if (active) setAtResult({ token: atToken, workspace, entries: res.entries })
+        })
+        .catch(() => {
+          if (active) setAtResult(null)
+        })
+    }, 150)
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [atToken, atClosed, workspace])
+
+  const detectAtToken = () => {
+    const el = textareaRef.current
+    if (!el) return
+    const before = el.value.slice(0, el.selectionStart ?? el.value.length)
+    const match = AT_PATTERN.exec(before)
+    if (!match) {
+      setAtToken(null)
+      return
+    }
+    const token = { start: before.length - match[1].length - 1, query: match[1] }
+    setAtToken(prev => (prev?.start === token.start && prev?.query === token.query ? prev : token))
+  }
+
+  /** 把光标处 @token 替换为 `@path `，光标落在插入末尾并保留后续文本 */
+  const applyFile = (entry: FsFindEntry) => {
+    const el = textareaRef.current
+    if (!el) return
+    const pos = el.selectionStart ?? el.value.length
+    const before = el.value.slice(0, pos)
+    const match = AT_PATTERN.exec(before)
+    if (!match) {
+      setAtToken(null)
+      return
+    }
+    const head = before.slice(0, before.length - match[1].length - 1)
+    const inserted = `@${entry.path} `
+    setText(head + inserted + el.value.slice(pos))
+    setAtToken(null)
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      const caret = head.length + inserted.length
+      node.setSelectionRange(caret, caret)
+      resize()
+    })
+  }
 
   const applySkill = (skill: SkillEntry) => {
     setText(`/${skill.name} `)
@@ -80,6 +165,7 @@ export function Composer({
     set: (value: string) => {
       setText(value)
       resetPalette()
+      setAtToken(null)
       requestAnimationFrame(resize)
       textareaRef.current?.focus()
     },
@@ -159,10 +245,40 @@ export function Composer({
     setFiles([])
     setUploadedFiles([])
     resetPalette()
+    setAtToken(null)
     requestAnimationFrame(resize)
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Shift+Enter 保留 textarea 的换行行为，并关闭当前补全。
+    if (event.key === 'Enter' && event.shiftKey && !event.nativeEvent.isComposing) {
+      setAtClosed(true)
+      setPaletteClosed(true)
+      return
+    }
+    if (atOpen && !event.nativeEvent.isComposing) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setAtIndex(index => (index + 1) % atEntries.length)
+        return
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setAtIndex(index => (index - 1 + atEntries.length) % atEntries.length)
+        return
+      }
+      // Tab/Enter 仅插入 @path，不发送消息
+      if (event.key === 'Tab' || event.key === 'Enter') {
+        event.preventDefault()
+        applyFile(atEntries[activeAt])
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setAtClosed(true)
+        return
+      }
+    }
     if (paletteOpen && !event.nativeEvent.isComposing) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
@@ -264,17 +380,47 @@ export function Composer({
           ))}
         </div>
       )}
+      {atOpen && (
+        <div className="composer-menu" role="listbox" aria-label="文件候选">
+          {atEntries.map((entry, index) => {
+            const name = entry.path.split('/').pop() ?? entry.path
+            const dir = entry.path.slice(0, entry.path.length - name.length)
+            return (
+              <button
+                key={entry.path}
+                type="button"
+                role="option"
+                aria-selected={index === activeAt}
+                ref={index === activeAt ? selectedOptionRef : undefined}
+                className={`composer-option${index === activeAt ? ' selected' : ''}`}
+                title={entry.path}
+                onMouseDown={event => {
+                  event.preventDefault()
+                  applyFile(entry)
+                }}
+                onMouseEnter={() => setAtIndex(index)}
+              >
+                <span className="composer-option-name">{name}</span>
+                <span className="composer-option-desc">{dir}</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，Enter 发送，Shift+Enter 换行'}
+        placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，@ 引用文件，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
           resetPalette()
+          detectAtToken()
           resize()
         }}
         onKeyDown={onKeyDown}
+        onKeyUp={detectAtToken}
+        onClick={detectAtToken}
         onPaste={onPaste}
       />
       <div className="composer-foot">

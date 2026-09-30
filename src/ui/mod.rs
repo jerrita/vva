@@ -1,6 +1,6 @@
 pub mod app;
 pub mod command;
-mod events;
+pub(crate) mod events;
 pub mod history;
 mod hyperlinks;
 pub mod input;
@@ -147,6 +147,9 @@ async fn run_app_loop(
         loop {
             tokio::select! {
                 _ = tick_interval.tick() => {
+                    if app.poll_file_index() {
+                        break;
+                    }
                     if app.active_session.is_running() {
                         app.tick();
                         break;

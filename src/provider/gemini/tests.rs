@@ -348,3 +348,25 @@ fn test_gemini_streaming_grounding_chunks_merge_not_overwrite() {
         _ => panic!("Expected WebSearchCall"),
     }
 }
+
+#[test]
+fn test_file_ref_projects_as_text_part() {
+    let provider = GeminiProvider::new("test");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::new(vec![
+        ContentPart::text("解释 @src/main.rs"),
+        ContentPart::FileRef {
+            path: "src/main.rs".into(),
+            content: "fn main() {}".into(),
+            truncated: false,
+        },
+    ])));
+
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .expect("build body");
+    let parts = body["contents"][0]["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts[0]["text"], "解释 @src/main.rs");
+    assert_eq!(parts[1]["text"], "@src/main.rs\nfn main() {}");
+}

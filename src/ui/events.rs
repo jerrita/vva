@@ -45,6 +45,8 @@ pub(super) async fn handle_crossterm_event(
     event: CrosstermEvent,
     events: &mut EventRx,
 ) {
+    let cursor = app.input.cursor_pos;
+    let input_len = app.input.text.len();
     match event {
         CrosstermEvent::Mouse(mouse) => handle_mouse_event(app, mouse).await,
         CrosstermEvent::Paste(text) => {
@@ -56,6 +58,10 @@ pub(super) async fn handle_crossterm_event(
             handle_key_event(app, key, events).await;
         }
         _ => {}
+    }
+    // 编辑操作已自行刷新；光标按键与鼠标定位也需更新 token 和候选。
+    if app.input.cursor_pos != cursor && app.input.text.len() == input_len {
+        app.update_command_matches();
     }
 }
 
@@ -124,7 +130,7 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
 }
 
-/// 常规按键分发：弹窗独占 → 命令补全选单 → 普通编辑按键
+/// 常规按键分发：弹窗独占 → 命令补全选单 → @ 文件补全选单 → 普通编辑按键
 async fn handle_key_event(app: &mut App, key: KeyEvent, events: &mut EventRx) {
     // 弹窗打开时独占按键
     if !app.modal.is_none() {
@@ -134,6 +140,11 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, events: &mut EventRx) {
 
     // 命令/技能建议选单交互 (Claude Code / OpenCode 风格)
     if !app.matched_candidates.is_empty() && handle_completion_key(app, &key).await {
+        return;
+    }
+
+    // @ 文件补全选单交互：Enter 应用补全而非提交
+    if !app.file_matches.is_empty() && handle_file_completion_key(app, &key) {
         return;
     }
 
@@ -175,6 +186,35 @@ async fn handle_completion_key(app: &mut App, key: &KeyEvent) -> bool {
             }
         }
         KeyCode::Esc => app.dismiss_completion(),
+        _ => return false,
+    }
+    true
+}
+
+/// @ 文件补全选单按键处理；返回 true 表示按键已被选单消费
+/// （与命令选单一致：Up/Down/Ctrl-P/Ctrl-N 循环，Tab/Enter 应用，Esc 关闭）
+pub(crate) fn handle_file_completion_key(app: &mut App, key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Up => app.file_select_previous(),
+        KeyCode::Down => app.file_select_next(),
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.file_select_previous();
+        }
+        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.file_select_next();
+        }
+        KeyCode::Tab => {
+            app.apply_selected_file();
+        }
+        KeyCode::Enter => {
+            if is_newline_enter(key) {
+                app.dismiss_file_completion();
+                app.insert_char('\n');
+            } else {
+                app.apply_selected_file();
+            }
+        }
+        KeyCode::Esc => app.dismiss_file_completion(),
         _ => return false,
     }
     true

@@ -31,6 +31,13 @@ pub enum ContentPart {
         mime_type: String,
         filename: String,
     },
+    /// 用户以 `@path` 引用的本地文本文件内容（提交时由 harness 展开，原文保留在提示词中）
+    FileRef {
+        path: String,
+        content: String,
+        #[serde(default)]
+        truncated: bool,
+    },
     /// 通用工具调用
     ToolCall(ToolCall),
     /// 通用工具执行结果
@@ -62,6 +69,15 @@ impl ContentPart {
             mime_type: None,
         }
     }
+}
+
+/// FileRef 部件在各供应商请求中的统一文本投影：`@path` 头 + 全文，截断时追加标记
+pub fn format_file_ref(path: &str, content: &str, truncated: bool) -> String {
+    let mut out = format!("@{path}\n{content}");
+    if truncated {
+        out.push_str("\n[content truncated]");
+    }
+    out
 }
 
 /// 媒体资源来源定位

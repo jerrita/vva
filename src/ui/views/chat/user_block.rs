@@ -40,3 +40,22 @@ pub(super) fn push_user_block(lines: &mut Vec<Line<'static>>, text: &str, max_wi
     }
     lines.push(user_block_row(Vec::new(), max_width));
 }
+
+/// 用户轮次附件的紧凑引用行：色条引用块内展示（超宽折行），不展开附件正文
+pub(super) fn push_user_attachment_row(
+    lines: &mut Vec<Line<'static>>,
+    spans: Vec<Span<'static>>,
+    max_width: usize,
+) {
+    let text_style = Style::default()
+        .fg(Color::Rgb(226, 229, 234))
+        .bg(USER_BLOCK_BG);
+    let inner_width = max_width.saturating_sub(3);
+    for line in wrap_spans_to_lines(&spans, inner_width, "   ", "   ") {
+        let mut spans = line.spans;
+        if let Some(indent) = spans.first_mut() {
+            indent.style = text_style;
+        }
+        lines.push(user_block_row(spans, max_width));
+    }
+}

@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod mention;
 pub mod session;
 #[cfg(test)]
 pub(crate) mod testing;

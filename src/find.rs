@@ -133,6 +133,47 @@ pub struct Candidate {
     pub mtime: Option<SystemTime>,
 }
 
+pub struct RankedCandidate<'a> {
+    pub candidate: &'a Candidate,
+    pub indices: Vec<usize>,
+}
+
+/// 空查询按修改时间排序，其余按模糊匹配分；路径作为稳定的次排序键。
+pub fn rank_candidates<'a>(
+    candidates: &'a [Candidate],
+    query: &str,
+    limit: usize,
+) -> (Vec<RankedCandidate<'a>>, bool) {
+    let mut ranked: Vec<_> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            fuzzy_match(query, &candidate.path).map(|matched| {
+                (
+                    matched.score,
+                    RankedCandidate {
+                        candidate,
+                        indices: matched.indices,
+                    },
+                )
+            })
+        })
+        .collect();
+    ranked.sort_by(|(a_score, a), (b_score, b)| {
+        let order = if query.is_empty() {
+            b.candidate.mtime.cmp(&a.candidate.mtime)
+        } else {
+            b_score.cmp(a_score)
+        };
+        order.then_with(|| a.candidate.path.cmp(&b.candidate.path))
+    });
+    let truncated = ranked.len() > limit;
+    ranked.truncate(limit);
+    (
+        ranked.into_iter().map(|(_, candidate)| candidate).collect(),
+        truncated,
+    )
+}
+
 /// 遍历工作区文件（遵循 .gitignore，包含隐藏文件但排除 `.git`，不跟随符号链接）。
 /// `want_mtime` 为真时读取修改时间。返回 (候选, 是否因访问上限被截断)。
 pub fn walk_workspace(workspace: &Path, want_mtime: bool) -> (Vec<Candidate>, bool) {

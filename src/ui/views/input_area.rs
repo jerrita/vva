@@ -111,6 +111,8 @@ pub fn render_input_area(
 
     if !app.matched_candidates.is_empty() {
         render_command_palette(app, frame, chunks[0]);
+    } else if !app.file_matches.is_empty() {
+        render_file_palette(app, frame, chunks[0]);
     }
 
     let workspace = std::path::Path::new(workspace)
@@ -262,6 +264,63 @@ fn render_command_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
             desc_style,
         ));
     }
+
+    let p = Paragraph::new(lines).block(block);
+    frame.render_widget(p, popup_rect);
+}
+
+/// 渲染 @ 文件补全浮层（与命令浮层互斥，命令优先）：
+/// 路径行按模糊命中高亮，底部为操作提示行
+fn render_file_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
+    let count = app.file_matches.len();
+    let popup_height = (count as u16) + 3; // 上下边框 + 底部操作提示行
+    let popup_width = 64.min(input_rect.width);
+
+    let popup_y = if input_rect.y >= popup_height {
+        input_rect.y - popup_height
+    } else {
+        input_rect.y + input_rect.height
+    };
+
+    let popup_rect = Rect {
+        x: input_rect.x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    // 清除背景，避免被下层文字穿透
+    frame.render_widget(Clear, popup_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(fg(Color::Cyan))
+        .title(Span::styled(" Files (@) ", bold(Color::Cyan)));
+
+    let mut lines = Vec::new();
+    for (i, candidate) in app.file_matches.iter().take(count).enumerate() {
+        let is_selected = i == app.selected_file_index;
+        let prefix = if is_selected { "> " } else { "  " };
+        let (normal, hit) = if is_selected {
+            let selected = selected_row_style(Color::Cyan);
+            (selected, selected)
+        } else {
+            (fg(Color::White), bold(Color::Cyan))
+        };
+
+        let mut spans = vec![Span::styled(prefix.to_string(), normal)];
+        spans.extend(split_spans_by_hit(
+            &candidate.path,
+            normal,
+            hit,
+            |idx, _| candidate.indices.contains(&idx),
+        ));
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(Span::styled(
+        " ↑/↓ select · Tab/Enter insert · Esc close ",
+        fg(Color::DarkGray),
+    )));
 
     let p = Paragraph::new(lines).block(block);
     frame.render_widget(p, popup_rect);

@@ -1391,3 +1391,28 @@ fn test_response_provider_parse_with_in_progress_image_generation_call() {
     assert_eq!(call_part.status, ImageGenerationStatus::InProgress);
     assert_eq!(call_part.result, None);
 }
+
+#[test]
+fn test_file_ref_projects_as_input_text() {
+    let provider = ResponseProvider::new("test-key");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::new(vec![
+        ContentPart::text("解释 @src/main.rs"),
+        ContentPart::FileRef {
+            path: "src/main.rs".into(),
+            content: "fn main() {}".into(),
+            truncated: true,
+        },
+    ])));
+
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .expect("build body");
+    let content = body["input"][0]["content"].as_array().unwrap();
+    assert_eq!(content[0]["type"], "input_text");
+    assert_eq!(content[0]["text"], "解释 @src/main.rs");
+    assert_eq!(content[1]["type"], "input_text");
+    let text = content[1]["text"].as_str().unwrap();
+    assert!(text.starts_with("@src/main.rs\nfn main() {}"));
+    assert!(text.ends_with("[content truncated]"));
+}

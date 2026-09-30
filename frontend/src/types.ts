@@ -125,6 +125,7 @@ export type ContentPart =
   | { type: 'reasoning'; content: string; signature?: string }
   | { type: 'image'; source: MediaSource; mime_type?: string }
   | { type: 'file'; source: MediaSource; mime_type: string; filename: string }
+  | { type: 'file_ref'; path: string; content: string; truncated: boolean }
   | ({ type: 'tool_call' } & ToolCall)
   | ({ type: 'tool_result' } & ToolResult)
   | ({ type: 'web_search_call' } & WebSearchCall)

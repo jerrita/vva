@@ -256,6 +256,26 @@ function UserBubble({
                   </span>
                 )
               }
+              if (part.type === 'file_ref') {
+                // @ 引用文件的紧凑芯片：仅显示主干名，完整路径与截断状态放 title
+                const name = part.path.split('/').pop() ?? part.path
+                const title = `${part.path}${part.truncated ? '（内容过长已截断）' : ''}`
+                return onPreviewFile ? (
+                  <button
+                    key={index}
+                    type="button"
+                    className="bubble-file clickable"
+                    onClick={() => onPreviewFile(part.path)}
+                    title={`${title}｜在右侧边栏预览文件`}
+                  >
+                    <IconFile size={12} strokeWidth={1.8} /> {name}
+                  </button>
+                ) : (
+                  <span key={index} className="bubble-file" title={title}>
+                    <IconFile size={12} strokeWidth={1.8} /> {name}
+                  </span>
+                )
+              }
               if (part.type === 'text') {
                 return <span key={index}>{part.text}</span>
               }

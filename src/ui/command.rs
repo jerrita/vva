@@ -29,6 +29,16 @@ impl CompletionCandidate {
     }
 }
 
+/// @ 文件补全浮层展示的候选上限
+pub const FILE_COMPLETION_LIMIT: usize = 8;
+
+/// @ 文件补全候选：工作区相对路径与模糊命中的字符下标（按 path 的 char 序号）
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileCandidate {
+    pub path: String,
+    pub indices: Vec<usize>,
+}
+
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 

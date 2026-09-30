@@ -209,6 +209,65 @@ pub(crate) fn append_part(
             render.lines.push(Line::from(""));
             push_user_block(render.lines, text, max_width);
         }
+        // @ 引用的本地文本文件：紧凑引用行（路径 + 行数 + 截断标注），不倾倒正文
+        (
+            Role::User,
+            ContentPart::FileRef {
+                path,
+                content,
+                truncated,
+            },
+        ) => {
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            let line_count = content.lines().count();
+            let mut hint = if line_count == 1 {
+                "1 line".to_string()
+            } else {
+                format!("{line_count} lines")
+            };
+            if *truncated {
+                hint.push_str(" · truncated");
+            }
+            let spans = vec![
+                Span::styled(
+                    format!("📎 {path}"),
+                    Style::default()
+                        .fg(Color::Rgb(226, 229, 234))
+                        .bg(USER_BLOCK_BG),
+                ),
+                Span::styled(
+                    format!(" · {hint}"),
+                    Style::default()
+                        .fg(Color::Rgb(140, 146, 155))
+                        .bg(USER_BLOCK_BG),
+                ),
+            ];
+            push_user_attachment_row(render.lines, spans, max_width);
+        }
+        // 用户以 @ 引用的图片 / 原生文件附件：仅标注类型与文件名
+        (Role::User, ContentPart::Image { .. }) => {
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            let spans = vec![Span::styled(
+                "🖼️ 图片附件",
+                Style::default()
+                    .fg(Color::Rgb(226, 229, 234))
+                    .bg(USER_BLOCK_BG),
+            )];
+            push_user_attachment_row(render.lines, spans, max_width);
+        }
+        (Role::User, ContentPart::File { filename, .. }) => {
+            state.prev_reasoning = false;
+            state.prev_text = false;
+            let spans = vec![Span::styled(
+                format!("📄 {filename}"),
+                Style::default()
+                    .fg(Color::Rgb(226, 229, 234))
+                    .bg(USER_BLOCK_BG),
+            )];
+            push_user_attachment_row(render.lines, spans, max_width);
+        }
         (Role::Assistant, ContentPart::Reasoning { content, .. }) => {
             // 连续思考段归为一段，组间保留空行。
             let group_start = !state.prev_reasoning;

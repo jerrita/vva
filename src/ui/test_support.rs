@@ -33,6 +33,14 @@ impl Drop for TestApp {
     }
 }
 
+impl TestApp {
+    /// 测试向临时工作区写入文件后同步重建文件索引
+    pub(crate) fn refresh_file_index(&mut self) {
+        let (candidates, _) = crate::find::walk_workspace(&self.temp_dir, true);
+        self.app.file_index = Some(Arc::new(candidates));
+    }
+}
+
 pub(crate) async fn create_test_app(
     model: &str,
     variant: Option<&str>,
@@ -52,7 +60,11 @@ pub(crate) async fn create_test_app(
         .create_session(model.into(), variant.map(str::to_string), None, web_search)
         .await
         .unwrap();
-    let app = App::new(session_mgr, session).await;
+    let mut app = App::new(session_mgr, session).await;
+    // 同步填充文件索引（后台通道的遍历结果作废），保证测试确定性
+    let (candidates, _) = crate::find::walk_workspace(&temp_dir, true);
+    app.file_index = Some(Arc::new(candidates));
+    app.file_index_rx = None;
     TestApp { app, temp_dir }
 }
 

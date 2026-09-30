@@ -49,47 +49,59 @@ pub(super) struct SessionTask {
     pub(super) broker: Arc<dyn crate::tools::agent::SessionBroker>,
 }
 
-/// 提交前校验附件：图片先过输入能力，File 校验 MIME 一致性
-fn validate_attachments(engine: &AgentEngine, images: &[ContentPart]) -> Result<(), String> {
-    for image in images {
-        if let ContentPart::Image { source, mime_type } = image {
-            let mime = match source {
-                MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
-                MediaSource::Url { .. } => mime_type.as_deref(),
-            };
-            match mime {
-                Some(mime) => engine
+/// 单个附件的输入能力校验：图片过输入能力（MIME 或模态声明），File 校验 MIME 一致性与 PDF 能力。
+/// 返回 Some(错误文案) 表示当前模型不能接收该附件。
+fn attachment_error(engine: &AgentEngine, part: &ContentPart) -> Option<String> {
+    if let ContentPart::Image { source, mime_type } = part {
+        let mime = match source {
+            MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
+            MediaSource::Url { .. } => mime_type.as_deref(),
+        };
+        return match mime {
+            Some(mime) => engine
+                .inputs
+                .require(crate::model::MediaKind::Image, mime)
+                .err(),
+            None => {
+                if engine
                     .inputs
-                    .require(crate::model::MediaKind::Image, mime)?,
-                None => {
-                    if !engine
-                        .inputs
-                        .modalities
-                        .iter()
-                        .any(|input| input == "image")
-                    {
-                        return Err(format!(
-                            "Model '{}' does not support image input",
-                            engine.inputs.model
-                        ));
-                    }
+                    .modalities
+                    .iter()
+                    .any(|input| input == "image")
+                {
+                    None
+                } else {
+                    Some(format!(
+                        "Model '{}' does not support image input",
+                        engine.inputs.model
+                    ))
                 }
             }
-        } else if let ContentPart::File {
-            source: MediaSource::Base64 { mime_type, .. },
-            mime_type: declared_mime,
-            ..
-        } = image
-        {
-            if declared_mime != mime_type {
-                return Err("File MIME type does not match its source".into());
-            }
-            engine
-                .inputs
-                .require(crate::model::MediaKind::Pdf, mime_type)?;
-        }
+        };
     }
-    Ok(())
+    if let ContentPart::File {
+        source: MediaSource::Base64 { mime_type, .. },
+        mime_type: declared_mime,
+        ..
+    } = part
+    {
+        if declared_mime != mime_type {
+            return Some("File MIME type does not match its source".into());
+        }
+        return engine
+            .inputs
+            .require(crate::model::MediaKind::Pdf, mime_type)
+            .err();
+    }
+    None
+}
+
+/// 提交前校验上传附件：避免不支持模态的模型留下无效轮次
+fn validate_attachments(engine: &AgentEngine, parts: &[ContentPart]) -> Result<(), String> {
+    parts
+        .iter()
+        .find_map(|part| attachment_error(engine, part))
+        .map_or(Ok(()), Err)
 }
 
 /// Read 工具命中工作空间内子目录 AGENTS.md 时返回待注入的 (路径, 正文)；
@@ -494,7 +506,27 @@ impl SessionTask {
         let engine = self
             .build_engine_for(&self.view.session, skills.clone())
             .await?;
-        // 图片附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
+        // @ 引用展开：文本文件转 FileRef，图片/PDF 转原生附件（模型不支持时降级为文本注记）；
+        // 路径不可读发 Notice 不阻断提交
+        let workspace = self.view.session.header.workspace_root.clone();
+        let mut mention_parts = Vec::new();
+        for token in crate::harness::mention::extract_mention_paths(prompt) {
+            match crate::harness::mention::load_mention(&workspace, &token).await {
+                Ok(part) => {
+                    let part = if attachment_error(&engine, &part).is_some() {
+                        crate::harness::mention::capability_note(&token)
+                    } else {
+                        part
+                    };
+                    mention_parts.push(part);
+                }
+                Err(reason) => {
+                    self.event(AgentEvent::Notice(format!("@{token}: {reason}")))
+                        .await;
+                }
+            }
+        }
+        // 上传附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
         validate_attachments(&engine, &images)?;
         let generate = self.view.session.header.title.is_none();
         if !self.view.persisted {
@@ -503,6 +535,7 @@ impl SessionTask {
         self.view.draft.clear();
         let mut parts = images;
         parts.push(ContentPart::text(prompt));
+        parts.extend(mention_parts);
         self.append(Turn::user_turn(Message::new(parts))).await?;
         // /<skill_name> 斜杠调用：user turn 保留原文，技能正文以独立 reminder 轮次注入
         if let Some(skill) = crate::skills::match_invocation(prompt, &skills) {

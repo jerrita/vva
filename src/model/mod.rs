@@ -7,7 +7,7 @@ pub mod turn;
 
 pub use content::{
     Annotation, ContentPart, ImageGenerationCall, ImageGenerationStatus, MediaSource, SearchStatus,
-    WebSearchAction, WebSearchCall, WebSearchSource,
+    WebSearchAction, WebSearchCall, WebSearchSource, format_file_ref,
 };
 pub use message::{Message, Role};
 pub use meta::{

@@ -909,6 +909,48 @@ async fn new_session_loads_project_agents_md() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn submit_expands_at_mentions_into_user_parts() {
+    let dir = tmp("mention");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("note.txt"), "mention body").unwrap();
+
+    let session = Session::with_model(&dir, None, "openai/test_model", None, false);
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let (mut task, _rx) = task_with(session, store);
+    task.config = Arc::new(openai_config());
+
+    task.start("看 @note.txt 与 @missing.txt", Vec::new())
+        .await
+        .unwrap();
+    let snap = task.view.clone();
+
+    // 用户轮次保留原文，其后附加 FileRef 部件；缺失路径转 Notice 不阻断
+    let user = snap.session.turns.last().expect("user turn appended");
+    assert_eq!(user.text_content(), "看 @note.txt 与 @missing.txt");
+    let file_ref = user
+        .messages
+        .last()
+        .unwrap()
+        .parts
+        .iter()
+        .find_map(|p| match p {
+            ContentPart::FileRef {
+                path,
+                content,
+                truncated,
+            } => Some((path.clone(), content.clone(), *truncated)),
+            _ => None,
+        })
+        .expect("FileRef part appended");
+    assert_eq!(file_ref.0, "note.txt");
+    assert_eq!(file_ref.1, "mention body");
+    assert!(!file_ref.2);
+    assert!(snap.notices.iter().any(|n| n.text.contains("missing.txt")));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- 程序化投递与轮次收尾 ----
 
 fn queued(text: &str) -> (PendingDelivery, super::handle::DeliveryReceipt) {

@@ -807,3 +807,146 @@ async fn test_slash_skill_completion_and_invocation() {
     assert_eq!(parsed.name, "doc-review");
     assert!(parsed.content.contains("1. Read the doc."));
 }
+
+/// 向临时工作区写入候选文件并同步重建索引，供 @ 文件补全测试使用
+fn seed_workspace_files(ta: &mut crate::ui::test_support::TestApp) {
+    std::fs::create_dir_all(ta.temp_dir.join("src")).unwrap();
+    std::fs::write(ta.temp_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(
+        ta.temp_dir.join("src/manifest.rs"),
+        "pub const X: u8 = 1;\n",
+    )
+    .unwrap();
+    ta.refresh_file_index();
+}
+
+#[tokio::test]
+async fn test_at_mention_file_completion_matches_and_ranking() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    seed_workspace_files(&mut ta);
+    let app = &mut ta.app;
+
+    // 1. 输入 @ token 弹出模糊匹配候选，最佳命中排首位
+    app.set_input("@src/ma");
+    assert_eq!(app.file_matches[0].path, "src/main.rs");
+    // 候选按匹配分降序排列，且全部命中查询串
+    let score = |candidate: &crate::ui::command::FileCandidate| {
+        crate::find::fuzzy_match("src/ma", &candidate.path)
+            .unwrap()
+            .score
+    };
+    for pair in app.file_matches.windows(2) {
+        assert!(score(&pair[0]) >= score(&pair[1]));
+    }
+
+    // 2. 空 query（仅 '@'）按 mtime 降序给出全量候选，至多 8 条
+    app.set_input("@");
+    assert!(!app.file_matches.is_empty());
+    assert!(app.file_matches.len() <= 8);
+
+    // 3. 光标离开 token（如移至行首）后候选清空
+    app.input.cursor_pos = 0;
+    app.update_command_matches();
+    assert!(app.file_matches.is_empty());
+}
+
+#[tokio::test]
+async fn test_at_mention_apply_replaces_token_and_moves_cursor() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    seed_workspace_files(&mut ta);
+    let app = &mut ta.app;
+
+    app.set_input("看 @src/ma 的实现");
+    // 光标移至 token 内：'ma' 之后、空格之前
+    app.input.cursor_pos = "看 @src/ma".chars().count();
+    app.update_command_matches();
+    assert!(!app.file_matches.is_empty());
+
+    app.selected_file_index = app
+        .file_matches
+        .iter()
+        .position(|c| c.path == "src/main.rs")
+        .unwrap();
+    app.apply_selected_file();
+    // token '@src/ma' 被替换为 '@src/main.rs '，光标停在插入文本之后
+    assert_eq!(app.input.as_str(), "看 @src/main.rs  的实现");
+    assert_eq!(app.input.cursor_pos, "看 @src/main.rs ".chars().count());
+    // 应用后浮层关闭
+    assert!(app.file_matches.is_empty());
+}
+
+#[tokio::test]
+async fn test_at_mention_esc_dismisses_until_input_changes() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    seed_workspace_files(&mut ta);
+    let app = &mut ta.app;
+
+    app.set_input("@src/ma");
+    assert!(!app.file_matches.is_empty());
+    app.dismiss_file_completion();
+    assert!(app.file_matches.is_empty());
+    assert!(app.file_completion_dismissed);
+    // 同 token 下刷新不重新弹出
+    app.update_command_matches();
+    assert!(app.file_matches.is_empty());
+    // 输入再次编辑后复位并重新弹出
+    app.insert_char('i');
+    assert!(!app.file_completion_dismissed);
+    assert!(!app.file_matches.is_empty());
+}
+
+#[tokio::test]
+async fn test_at_mention_enter_applies_without_submit() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    seed_workspace_files(&mut ta);
+    let app = &mut ta.app;
+
+    app.set_input("@src/ma");
+    assert!(!app.file_matches.is_empty());
+    let key = crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Enter,
+        crossterm::event::KeyModifiers::empty(),
+    );
+    assert!(crate::ui::events::handle_file_completion_key(app, &key));
+    assert_eq!(app.input.as_str(), "@src/main.rs ");
+    // Enter 仅应用补全而不触发提交
+    assert!(app.active_session.snapshot().session.turns.is_empty());
+    assert!(app.file_matches.is_empty());
+}
+
+#[tokio::test]
+async fn file_completion_handles_skill_arguments_and_cursor_events() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    seed_workspace_files(&mut ta);
+    for prompt in ["/check @src/ma", "(@src/ma", "【@src/ma", "（@src/ma"] {
+        ta.set_input(prompt);
+        assert_eq!(ta.file_matches[0].path, "src/main.rs", "{prompt}");
+    }
+    ta.set_input("@src/ma");
+    let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    for code in [KeyCode::Home, KeyCode::End] {
+        crate::ui::events::handle_crossterm_event(
+            &mut ta.app,
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            &mut events,
+        )
+        .await;
+        assert_eq!(ta.file_matches.is_empty(), code == KeyCode::Home);
+    }
+}
+
+#[tokio::test]
+async fn file_index_arrival_refreshes_pending_completion() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    seed_workspace_files(&mut ta);
+    let index = ta.file_index.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    ta.file_index_rx = Some(rx);
+    ta.set_input("@src/ma");
+    assert!(ta.file_matches.is_empty());
+    tx.send(index).unwrap();
+    assert!(ta.poll_file_index());
+    assert_eq!(ta.file_matches[0].path, "src/main.rs");
+    assert!(!ta.poll_file_index());
+}
