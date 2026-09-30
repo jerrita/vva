@@ -8,6 +8,7 @@ use super::view::*;
 use super::*;
 use crate::model::{ToolCall, ToolResult, WebSearchSource};
 use crate::ui::app::{TextCoord, ToolExpand};
+use crate::ui::test_support::TestApp;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -17,6 +18,91 @@ fn joined(lines: &[Line]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// 渲染输入环境（宽度 / 展开状态 / 工具结果），默认 80 列、完整思考展示
+struct Env<'r> {
+    width: usize,
+    concise: bool,
+    results: HashMap<String, &'r ToolResult>,
+    expand: HashMap<String, ToolExpand>,
+    thought_expand: HashMap<String, bool>,
+    citations_expand: HashMap<String, bool>,
+}
+
+impl Default for Env<'_> {
+    fn default() -> Self {
+        Self {
+            width: 80,
+            concise: false,
+            results: HashMap::new(),
+            expand: HashMap::new(),
+            thought_expand: HashMap::new(),
+            citations_expand: HashMap::new(),
+        }
+    }
+}
+
+/// 渲染产物槽：各输出向量集中持有，`render` 按需借出 `ChatRender`
+#[derive(Default)]
+struct Sink {
+    lines: Vec<Line<'static>>,
+    links: Vec<LinkRegion>,
+    hits: Vec<ToolHit>,
+    thought_hits: Vec<ThoughtHit>,
+    citations_hits: Vec<CitationsHit>,
+    response_hits: Vec<ResponseHit>,
+}
+
+impl Sink {
+    fn render<'a>(&'a mut self, env: &'a Env<'_>) -> ChatRender<'a> {
+        ChatRender {
+            notices: &[],
+            lines: &mut self.lines,
+            links: &mut self.links,
+            max_width: env.width,
+            thinking_concise: env.concise,
+            results: &env.results,
+            expand: &env.expand,
+            hits: &mut self.hits,
+            thought_expand: &env.thought_expand,
+            thought_hits: &mut self.thought_hits,
+            citations_expand: &env.citations_expand,
+            citations_hits: &mut self.citations_hits,
+            response_hits: &mut self.response_hits,
+        }
+    }
+
+    /// 以默认环境渲染一组部件
+    fn append<'p>(&mut self, role: Role, parts: impl Iterator<Item = &'p ContentPart> + Clone) {
+        self.append_with(&Env::default(), role, parts);
+    }
+
+    fn append_with<'p>(
+        &mut self,
+        env: &Env<'_>,
+        role: Role,
+        parts: impl Iterator<Item = &'p ContentPart> + Clone,
+    ) {
+        append_parts(
+            &mut self.render(env),
+            role,
+            parts,
+            &mut RenderState::default(),
+        );
+    }
+
+    fn text(&self) -> String {
+        joined(&self.lines)
+    }
+}
+
+/// 各行 Span 文本直接拼接（不含换行）
+fn plain(lines: &[Line]) -> String {
+    lines
+        .iter()
+        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+        .collect()
 }
 
 #[test]
@@ -113,52 +199,50 @@ fn render_tools(
     expand: &HashMap<String, ToolExpand>,
     width: usize,
 ) -> (Vec<Line<'static>>, Vec<ToolHit>) {
-    let mut lines = Vec::new();
-    let mut hits = Vec::new();
-    let mut thought_hits = Vec::new();
-    let mut citations_hits = Vec::new();
-    let mut response_hits = Vec::new();
-    let mut state = RenderState::default();
-    append_parts(
-        &mut ChatRender {
-            notices: &[],
-            lines: &mut lines,
-            links: &mut Vec::new(),
-            max_width: width,
-            thinking_concise: true,
-            results,
-            expand,
-            hits: &mut hits,
-            thought_expand: &HashMap::new(),
-            thought_hits: &mut thought_hits,
-            citations_expand: &HashMap::new(),
-            citations_hits: &mut citations_hits,
-            response_hits: &mut response_hits,
-        },
-        Role::Assistant,
-        parts.iter(),
-        &mut state,
+    let env = Env {
+        width,
+        concise: true,
+        results: results.clone(),
+        expand: expand.clone(),
+        ..Env::default()
+    };
+    let mut sink = Sink::default();
+    sink.append_with(&env, Role::Assistant, parts.iter());
+    (sink.lines, sink.hits)
+}
+
+/// 渲染单个工具调用：返回文本、行与命中区
+fn render_call(
+    call: &ToolCall,
+    result: Option<&ToolResult>,
+    expand: &[(&str, ToolExpand)],
+) -> (String, Vec<ToolHit>) {
+    let results: HashMap<_, _> = result
+        .map(|r| (r.tool_call_id.clone(), r))
+        .into_iter()
+        .collect();
+    let expand = expand
+        .iter()
+        .map(|(id, mode)| (id.to_string(), *mode))
+        .collect();
+    let (lines, hits) = render_tools(
+        &[ContentPart::ToolCall(call.clone())],
+        &results,
+        &expand,
+        80,
     );
-    (lines, hits)
+    (joined(&lines), hits)
 }
 
 #[test]
 fn tool_call_collapsed_is_one_line() {
     let call = ToolCall::new("c1", "Read", r#"{"path":"README.md"}"#);
     let result = ToolResult::success("c1", "1: hello\n2: world");
-    let mut results = HashMap::new();
-    results.insert(result.tool_call_id.clone(), &result);
-    let (lines, _) = render_tools(
-        &[ContentPart::ToolCall(call)],
-        &results,
-        &HashMap::new(),
-        80,
-    );
-    let text = joined(&lines);
+    let (text, _) = render_call(&call, Some(&result), &[]);
     assert!(text.contains("* Read README.md [offset=1, limit=all]"));
-    assert!(!text.contains("→ Read"));
-    assert!(!text.contains("hello"));
-    assert!(!text.contains("Output:"));
+    for hidden in ["→ Read", "hello", "Output:"] {
+        assert!(!text.contains(hidden));
+    }
 }
 
 #[test]
@@ -168,16 +252,8 @@ fn tool_read_shows_requested_range() {
         "Read",
         r#"{"path":"src/main.rs","offset":10,"limit":20}"#,
     );
-    let result = ToolResult::success("c1", "10: hello");
-    let mut results = HashMap::new();
-    results.insert(result.tool_call_id.clone(), &result);
-    let (lines, _) = render_tools(
-        &[ContentPart::ToolCall(call)],
-        &results,
-        &HashMap::new(),
-        80,
-    );
-    assert!(joined(&lines).contains("* Read src/main.rs [offset=10, limit=20]"));
+    let (text, _) = render_call(&call, Some(&ToolResult::success("c1", "10: hello")), &[]);
+    assert!(text.contains("* Read src/main.rs [offset=10, limit=20]"));
 }
 
 #[test]
@@ -242,16 +318,9 @@ fn write_defaults_to_full_content_and_can_hide() {
 fn tool_glob_shows_match_count() {
     let call = ToolCall::new("c1", "Glob", r#"{"pattern":"**/*.rs"}"#);
     let result = ToolResult::success("c1", "a.rs\nb.rs\nc.rs");
-    let mut results = HashMap::new();
-    results.insert(result.tool_call_id.clone(), &result);
-    let (lines, _) = render_tools(
-        &[ContentPart::ToolCall(call)],
-        &results,
-        &HashMap::new(),
-        80,
-    );
-    assert!(joined(&lines).contains("* Glob \"**/*.rs\" (3 matches)"));
-    assert!(!joined(&lines).contains("→ Glob"));
+    let (text, _) = render_call(&call, Some(&result), &[]);
+    assert!(text.contains("* Glob \"**/*.rs\" (3 matches)"));
+    assert!(!text.contains("→ Glob"));
 }
 
 #[test]
@@ -262,18 +331,14 @@ fn tool_shell_defaults_to_preview() {
         r#"{"intent":"count lines","command":"wc -l src/*.ts"}"#,
     );
     let result = ToolResult::success("c1", "26 src/result.ts\n30 src/types.ts");
-    let mut results = HashMap::new();
-    results.insert(result.tool_call_id.clone(), &result);
-    let (lines, _) = render_tools(
-        &[ContentPart::ToolCall(call)],
-        &results,
-        &HashMap::new(),
-        80,
-    );
-    let text = joined(&lines);
-    assert!(text.contains("↓ Shell count lines"));
-    assert!(text.contains("$ wc -l src/*.ts"));
-    assert!(text.contains("26 src/result.ts"));
+    let (text, _) = render_call(&call, Some(&result), &[]);
+    for expected in [
+        "↓ Shell count lines",
+        "$ wc -l src/*.ts",
+        "26 src/result.ts",
+    ] {
+        assert!(text.contains(expected), "{expected}");
+    }
 }
 
 #[test]
@@ -283,16 +348,10 @@ fn tool_shell_multiline_command_keeps_lines() {
         "Shell",
         r#"{"intent":"capture","command":"rm -f /tmp/a.txt\nsleep 8\ncat /tmp/a.txt"}"#,
     );
-    let (lines, _) = render_tools(
-        &[ContentPart::ToolCall(call)],
-        &HashMap::new(),
-        &HashMap::new(),
-        80,
-    );
-    let text = joined(&lines);
-    assert!(text.contains("$ rm -f /tmp/a.txt"));
-    assert!(text.contains("sleep 8"));
-    assert!(text.contains("cat /tmp/a.txt"));
+    let (text, _) = render_call(&call, None, &[]);
+    for expected in ["$ rm -f /tmp/a.txt", "sleep 8", "cat /tmp/a.txt"] {
+        assert!(text.contains(expected), "{expected}");
+    }
     // 相邻命令不得因控制字符被过滤而拼接
     assert!(!text.contains("txtsleep"));
     assert!(!text.contains("8cat"));
@@ -306,29 +365,22 @@ fn tool_preview_block_truncates_and_full_shows_all() {
         .join("\n");
     let call = ToolCall::new("c1", "Shell", r#"{"intent":"list","command":"seq 15"}"#);
     let result = ToolResult::success("c1", output);
-    let mut results = HashMap::new();
-    results.insert(result.tool_call_id.clone(), &result);
-    let mut expand = HashMap::new();
-    expand.insert("c1".into(), ToolExpand::Preview);
-    let (lines, hits) = render_tools(
-        &[ContentPart::ToolCall(call.clone())],
-        &results,
-        &expand,
-        80,
-    );
-    let text = joined(&lines);
-    assert!(text.contains("↓ Shell list"));
-    assert!(text.contains("$ seq 15"));
-    assert!(text.contains("line1"));
-    assert!(text.contains("line10"));
+
+    let (text, hits) = render_call(&call, Some(&result), &[("c1", ToolExpand::Preview)]);
+    for expected in [
+        "↓ Shell list",
+        "$ seq 15",
+        "line1",
+        "line10",
+        "Click to expand",
+    ] {
+        assert!(text.contains(expected), "{expected}");
+    }
     assert!(!text.contains("line11"));
-    assert!(text.contains("Click to expand"));
     assert_eq!(hits.len(), 1);
     assert!(hits[0].truncated);
 
-    expand.insert("c1".into(), ToolExpand::Full);
-    let (lines, hits) = render_tools(&[ContentPart::ToolCall(call)], &results, &expand, 80);
-    let text = joined(&lines);
+    let (text, hits) = render_call(&call, Some(&result), &[("c1", ToolExpand::Full)]);
     assert!(text.contains("line15"));
     assert!(!text.contains("Click to expand"));
     assert!(!hits[0].truncated);
@@ -339,28 +391,9 @@ fn background_task_reminder_not_rendered() {
     let text = crate::system::format_background_task_reminder(
         "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 5 bytes",
     );
-    let mut lines = Vec::new();
-    let mut state = RenderState::default();
-    append_parts(
-        &mut ChatRender {
-            notices: &[],
-            lines: &mut lines,
-            links: &mut Vec::new(),
-            max_width: 80,
-            thinking_concise: false,
-            results: &HashMap::new(),
-            expand: &HashMap::new(),
-            hits: &mut Vec::new(),
-            thought_expand: &HashMap::new(),
-            thought_hits: &mut Vec::new(),
-            citations_expand: &HashMap::new(),
-            citations_hits: &mut Vec::new(),
-            response_hits: &mut Vec::new(),
-        },
-        Role::User,
-        [ContentPart::text(text)].iter(),
-        &mut state,
-    );
+    let mut sink = Sink::default();
+    sink.append(Role::User, [ContentPart::text(text)].iter());
+    let lines = sink.lines;
 
     // 后台任务完成通知不渲染（完成状态在工具块展示），也不落入用户引用块
     let rendered = joined(&lines);
@@ -408,70 +441,31 @@ fn test_user_block_copy_excludes_decoration() {
 }
 
 fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+    let env = Env {
+        width: width.max(20),
+        concise: app.thinking_concise,
+        results: collect_tool_results(&app.view),
+        expand: app.tool_expand.clone(),
+        thought_expand: app.thought_expand.clone(),
+        citations_expand: app.citations_expand.clone(),
+    };
+    let mut sink = Sink::default();
     let mut state = RenderState::default();
-    let results = collect_tool_results(&app.view);
-    let mut hits = Vec::new();
-    let mut thought_hits = Vec::new();
-    let mut citations_hits = Vec::new();
-    let mut response_hits = Vec::new();
     for turn in &app.view.session.turns {
         append_parts(
-            &mut ChatRender {
-                notices: &[],
-                lines: &mut lines,
-                links: &mut Vec::new(),
-                max_width: width.max(20),
-                thinking_concise: app.thinking_concise,
-                results: &results,
-                expand: &app.tool_expand,
-                hits: &mut hits,
-                thought_expand: &app.thought_expand,
-                thought_hits: &mut thought_hits,
-                citations_expand: &app.citations_expand,
-                citations_hits: &mut citations_hits,
-                response_hits: &mut response_hits,
-            },
+            &mut sink.render(&env),
             turn.role,
             turn.messages.iter().flat_map(|m| &m.parts),
             &mut state,
         );
     }
     if is_empty_session(&app.view) {
-        push_empty_hint(&mut ChatRender {
-            notices: &[],
-            lines: &mut lines,
-            links: &mut Vec::new(),
-            max_width: width.max(20),
-            thinking_concise: app.thinking_concise,
-            results: &results,
-            expand: &app.tool_expand,
-            hits: &mut hits,
-            thought_expand: &app.thought_expand,
-            thought_hits: &mut thought_hits,
-            citations_expand: &app.citations_expand,
-            citations_hits: &mut citations_hits,
-            response_hits: &mut response_hits,
-        });
+        push_empty_hint(&mut sink.render(&env));
     }
     let draft_ctx = part_context(app.view.draft.iter().map(|part| &**part));
     for part in &app.view.draft {
         append_part(
-            &mut ChatRender {
-                notices: &[],
-                lines: &mut lines,
-                links: &mut Vec::new(),
-                max_width: width.max(20),
-                thinking_concise: app.thinking_concise,
-                results: &results,
-                expand: &app.tool_expand,
-                hits: &mut hits,
-                thought_expand: &app.thought_expand,
-                thought_hits: &mut thought_hits,
-                citations_expand: &app.citations_expand,
-                citations_hits: &mut citations_hits,
-                response_hits: &mut response_hits,
-            },
+            &mut sink.render(&env),
             Role::Assistant,
             part,
             &draft_ctx,
@@ -479,15 +473,13 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         );
     }
     if state.prev_text {
-        lines.push(Line::from(""));
+        sink.lines.push(Line::from(""));
     }
-    lines
+    sink.lines
 }
 
-async fn create_test_app() -> App {
-    crate::ui::test_support::create_test_app("init_model", None, None, false)
-        .await
-        .app
+async fn create_test_app() -> TestApp {
+    crate::ui::test_support::create_test_app("init_model", None, None, false).await
 }
 
 #[tokio::test]
@@ -495,16 +487,13 @@ async fn test_chat_empty_placeholder() {
     let app = create_test_app().await;
     let lines = build_chat_lines(&app, 80);
     assert!(lines.len() >= 2);
-    let joined: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let joined = plain(&lines);
     assert!(joined.contains("Start typing a prompt"));
 }
 
 #[tokio::test]
 async fn test_chat_cache_preserves_history_and_layout() {
-    let mut ta = crate::ui::test_support::create_test_app("init_model", None, None, false).await;
+    let mut ta = create_test_app().await;
     let app = &mut ta.app;
     let check = |app: &mut App, width| {
         let expected = build_chat_lines(app, width);
@@ -574,12 +563,11 @@ async fn test_chat_cache_preserves_history_and_layout() {
             .iter()
             .any(|line| line.to_string().contains("Start typing"))
     );
-    std::fs::remove_dir_all(ta.temp_dir).unwrap();
 }
 
 #[tokio::test]
 async fn test_draft_stream_keeps_committed_prefix_and_matches_full_render() {
-    let mut ta = crate::ui::test_support::create_test_app("init_model", None, None, false).await;
+    let mut ta = create_test_app().await;
     let app = &mut ta.app;
     let check = |app: &mut App, width| {
         let expected = build_chat_lines(app, width);
@@ -615,7 +603,6 @@ async fn test_draft_stream_keeps_committed_prefix_and_matches_full_render() {
         .content
         .as_ptr();
     assert_eq!(prefix, prefix_after);
-    std::fs::remove_dir_all(ta.temp_dir).unwrap();
 }
 
 #[tokio::test]
@@ -655,10 +642,7 @@ async fn test_thinking_grouping_and_concise_modes() {
     assert_eq!(first_body.to_string(), "  Collecting example sources");
 
     // markdown 标记被渲染掉，加粗修饰保留，两段分行
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(all_text.contains("Collecting example sources"));
     assert!(all_text.contains("Drafting example response"));
     assert!(!all_text.contains("**"));
@@ -734,10 +718,7 @@ async fn test_thinking_grouping_and_concise_modes() {
     assert_eq!(row_width, 80);
 
     // 轮次内已有搜索调用：正文后的末尾来源汇总不再渲染
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(all_text.contains("这里是带引用的示例答复"));
     assert!(all_text.contains("示例查询 (1 sources)"));
     assert!(!all_text.contains("candidate"));
@@ -751,10 +732,7 @@ async fn test_thinking_grouping_and_concise_modes() {
         .filter(|l| l.spans.first().is_some_and(|s| s.content == "+ Thought"))
         .count();
     assert_eq!(headers, 1);
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(!all_text.contains("Collecting example sources"));
     assert!(all_text.contains("Thought:"));
     assert!(all_text.contains("Cross-checking sources"));
@@ -800,20 +778,14 @@ async fn test_prose_thought_stays_collapsible() {
     );
     app.thinking_concise = true;
     let lines = build_chat_lines(&app, 80);
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(all_text.contains("+ Thought"));
     assert!(!all_text.contains("Thought:"));
     assert!(!all_text.contains("地下酒吧"));
 
     app.thinking_concise = false;
     let lines = build_chat_lines(&app, 80);
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(all_text.contains("- Thought"));
     assert!(!all_text.contains("Thought:"));
     assert!(all_text.contains("地下酒吧"));
@@ -1226,10 +1198,7 @@ println!("hello");
     assert!(!lines.is_empty());
 
     // 检查渲染出的 Markdown 内容
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(all_text.contains("Hello World"));
     assert!(all_text.contains("bold"));
     assert!(all_text.contains("inline code"));
@@ -1277,10 +1246,7 @@ pass
     let lines = build_chat_lines(&app, 80);
     assert!(!lines.is_empty());
 
-    let all_text: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
+    let all_text = plain(&lines);
     assert!(all_text.contains("Note: this is a blockquote"));
     assert!(all_text.contains("Column A"));
     assert!(all_text.contains("Value 1"));
@@ -1480,90 +1446,39 @@ fn test_apply_selection_highlight() {
 
 #[test]
 fn test_agents_reminders_rendering_visibility() {
+    use crate::system::*;
     use std::path::Path;
 
-    let mut lines = Vec::new();
-    let mut links = Vec::new();
-    let results = HashMap::new();
-    let expand = HashMap::new();
-    let thought_expand = HashMap::new();
-    let citations_expand = HashMap::new();
-    let mut hits = Vec::new();
-    let mut thought_hits = Vec::new();
-    let mut citations_hits = Vec::new();
-    let mut response_hits = Vec::new();
-    let mut render = ChatRender {
-        notices: &[],
-        lines: &mut lines,
-        links: &mut links,
-        max_width: 80,
-        thinking_concise: false,
-        results: &results,
-        expand: &expand,
-        hits: &mut hits,
-        thought_expand: &thought_expand,
-        thought_hits: &mut thought_hits,
-        citations_expand: &citations_expand,
-        citations_hits: &mut citations_hits,
-        response_hits: &mut response_hits,
+    let mut sink = Sink::default();
+    let mut append = |text: String| {
+        sink.append(Role::User, std::iter::once(&ContentPart::text(text)));
+        sink.text()
     };
-    let mut state = RenderState::default();
 
     // 1. 全局与项目 AGENTS.md：不展示
-    let global_text = crate::system::format_global_agents_reminder(
-        Path::new("/home/user/.vva/AGENTS.md"),
-        "global instructions",
+    assert!(
+        append(format_global_agents_reminder(
+            Path::new("/home/user/.vva/AGENTS.md"),
+            "global instructions",
+        ))
+        .is_empty()
     );
-    let part_global = ContentPart::text(global_text);
-    append_parts(
-        &mut render,
-        Role::User,
-        std::slice::from_ref(&part_global).iter(),
-        &mut state,
+    assert!(
+        append(format_project_agents_reminder(
+            Path::new("/workspace/AGENTS.md"),
+            "project instructions",
+        ))
+        .is_empty()
     );
-
-    let project_text = crate::system::format_project_agents_reminder(
-        Path::new("/workspace/AGENTS.md"),
-        "project instructions",
-    );
-    let part_project = ContentPart::text(project_text);
-    append_parts(
-        &mut render,
-        Role::User,
-        std::slice::from_ref(&part_project).iter(),
-        &mut state,
-    );
-
-    assert!(render.lines.is_empty());
 
     // 2. 按需自动加载的子目录 AGENTS.md：展示 "Load xxx/AGENTS.md"
-    let dir_text = crate::system::format_directory_agents_reminder(
+    let output = append(format_directory_agents_reminder(
         Path::new("/workspace"),
         Path::new("/workspace/src/ui/AGENTS.md"),
         "ui instructions",
-    );
-    let part_dir = ContentPart::text(dir_text);
-    append_parts(
-        &mut render,
-        Role::User,
-        std::slice::from_ref(&part_dir).iter(),
-        &mut state,
-    );
-
-    let full_output = render
-        .lines
-        .iter()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    assert!(full_output.contains("Load src/ui/AGENTS.md"));
-    assert!(!full_output.contains("ui instructions"));
+    ));
+    assert!(output.contains("Load src/ui/AGENTS.md"));
+    assert!(!output.contains("ui instructions"));
 
     // 3. /<skill_name> 直接加载的技能：仅展示 "Load <name>"，正文不外显
     let skill = crate::skills::Skill {
@@ -1577,40 +1492,14 @@ fn test_agents_reminders_rendering_visibility() {
         source: crate::skills::SkillSource::Global,
         body: "1. Open the file.".into(),
     };
-    let part_skill = ContentPart::text(crate::system::format_skill_load_reminder(&skill));
-    append_parts(
-        &mut render,
-        Role::User,
-        std::slice::from_ref(&part_skill).iter(),
-        &mut state,
-    );
-
-    let full_output = render
-        .lines
-        .iter()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    assert!(full_output.contains("Load pdf-processing"));
-    assert!(!full_output.contains("Open the file"));
-    assert!(!full_output.contains("system-reminder"));
+    let output = append(format_skill_load_reminder(&skill));
+    assert!(output.contains("Load pdf-processing"));
+    assert!(!output.contains("Open the file"));
+    assert!(!output.contains("system-reminder"));
 
     // 技能清单 reminder 不展示
-    let lines_before_skills = render.lines.len();
-    let part_skills = ContentPart::text(crate::system::format_skills_reminder(&[skill]));
-    append_parts(
-        &mut render,
-        Role::User,
-        std::slice::from_ref(&part_skills).iter(),
-        &mut state,
-    );
-    assert_eq!(render.lines.len(), lines_before_skills);
+    let before = output;
+    assert_eq!(append(format_skills_reminder(&[skill])), before);
 }
 
 #[test]

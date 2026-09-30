@@ -270,7 +270,5 @@ mod tests {
             ),
             Some("session-id".to_string())
         );
-
-        let _ = std::fs::remove_dir_all(&ta.temp_dir);
     }
 }

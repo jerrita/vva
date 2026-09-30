@@ -127,6 +127,28 @@ fn numbered_entry(line: &str) -> Option<&str> {
         .then_some(entry)
 }
 
+/// 字符串参数，缺省时回退为原始参数文本
+fn str_or_raw(args: &serde_json::Value, key: &str, raw: &str) -> String {
+    json_str(args, key).map_or_else(|| raw.to_string(), ToOwned::to_owned)
+}
+
+/// 带双引号的字符串参数，缺省时回退为原始参数文本
+fn quoted_or_raw(args: &serde_json::Value, key: &str, raw: &str) -> String {
+    json_str(args, key).map_or_else(|| raw.to_string(), |value| format!("\"{value}\""))
+}
+
+fn is_background(args: &serde_json::Value) -> bool {
+    args.get("run_in_background")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
+/// `label (N noun)`，按数量选择单复数
+fn with_count(label: String, count: usize, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{label} ({count} {noun})")
+}
+
 pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) -> String {
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return arguments.to_string();
@@ -134,72 +156,42 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
     match name {
         "AskUser" => ask_user_detail(&args),
         "web_search" => {
-            let query = json_str(&args, "query")
-                .map(|query| format!("\"{query}\""))
-                .unwrap_or_else(|| arguments.to_string());
+            let query = quoted_or_raw(&args, "query", arguments);
             match result.map(web_sources) {
                 Some(sources) if !sources.is_empty() => {
-                    let count = sources.len();
-                    let noun = if count == 1 { "source" } else { "sources" };
-                    format!("{query} ({count} {noun})")
+                    with_count(query, sources.len(), "source", "sources")
                 }
                 _ => query,
             }
         }
-        "web_fetch" => json_str(&args, "url")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
+        "web_fetch" => str_or_raw(&args, "url", arguments),
         "Read" => {
-            let path = json_str(&args, "path")
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| arguments.to_string());
-            let offset = args
-                .get("offset")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(1);
-            let limit = args
-                .get("limit")
-                .and_then(serde_json::Value::as_u64)
-                .map(|limit| limit.to_string())
-                .unwrap_or_else(|| "all".into());
-            let byte_offset = args
-                .get("byte_offset")
-                .and_then(serde_json::Value::as_u64)
+            let path = str_or_raw(&args, "path", arguments);
+            let number = |key: &str| args.get(key).and_then(serde_json::Value::as_u64);
+            let offset = number("offset").unwrap_or(1);
+            let limit = number("limit").map_or_else(|| "all".into(), |limit| limit.to_string());
+            let byte_offset = number("byte_offset")
                 .map(|offset| format!(", byte_offset={offset}"))
                 .unwrap_or_default();
             format!("{path} [offset={offset}, limit={limit}{byte_offset}]")
         }
-        "Write" => json_str(&args, "path")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
+        "Write" => str_or_raw(&args, "path", arguments),
         "Edit" => {
-            if let Some(input) = json_str(&args, "input") {
-                match patch_file_path(input) {
-                    Some(path) => {
-                        let (added, removed) = patch_counts(input);
-                        format!("{path} (+{added}, -{removed})")
-                    }
-                    None => arguments.to_string(),
-                }
+            let counted = if let Some(input) = json_str(&args, "input") {
+                patch_file_path(input).map(|path| (path, Some(patch_counts(input))))
             } else {
-                match (json_str(&args, "path"), edit_counts(&args)) {
-                    (Some(path), Some((added, removed))) => {
-                        format!("{path} (+{added}, -{removed})")
-                    }
-                    (Some(path), None) => path.to_string(),
-                    _ => arguments.to_string(),
-                }
+                json_str(&args, "path").map(|path| (path, edit_counts(&args)))
+            };
+            match counted {
+                Some((path, Some((added, removed)))) => format!("{path} (+{added}, -{removed})"),
+                Some((path, None)) => path.to_string(),
+                None => arguments.to_string(),
             }
         }
         "Glob" => {
-            let pattern = json_str(&args, "pattern")
-                .map(|pattern| format!("\"{pattern}\""))
-                .unwrap_or_else(|| arguments.to_string());
+            let pattern = quoted_or_raw(&args, "pattern", arguments);
             match result.and_then(glob_match_count) {
-                Some(count) => {
-                    let noun = if count == 1 { "match" } else { "matches" };
-                    format!("{pattern} ({count} {noun})")
-                }
+                Some(count) => with_count(pattern, count, "match", "matches"),
                 None => pattern,
             }
         }
@@ -213,34 +205,27 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
             }
         }
         "Shell" => {
-            let intent = json_str(&args, "intent")
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| arguments.to_string());
+            let intent = str_or_raw(&args, "intent", arguments);
             // 后台启动标注任务态，与前台执行区分
-            if args
-                .get("run_in_background")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            {
+            if is_background(&args) {
                 format!("{intent} (background)")
             } else {
                 intent
             }
         }
-        "TaskOutput" | "TaskStop" => json_str(&args, "task_id")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
+        "TaskOutput" | "TaskStop" => str_or_raw(&args, "task_id", arguments),
         "Agent" => {
             let agent = json_str(&args, "agent").unwrap_or("agent");
             let description = json_str(&args, "description").unwrap_or("");
-            let background = args
-                .get("run_in_background")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true);
-            let suffix = if background { " (background)" } else { "" };
-            match description.is_empty() {
-                true => format!("{agent}{suffix}"),
-                false => format!("{agent} · {description}{suffix}"),
+            let suffix = if is_background(&args) {
+                " (background)"
+            } else {
+                ""
+            };
+            if description.is_empty() {
+                format!("{agent}{suffix}")
+            } else {
+                format!("{agent} · {description}{suffix}")
             }
         }
         "SendMessage" => {
@@ -250,9 +235,7 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
                 None => session.to_string(),
             }
         }
-        "WaitSession" => json_str(&args, "session_id")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
+        "WaitSession" => str_or_raw(&args, "session_id", arguments),
         _ => arguments.to_string(),
     }
 }
@@ -288,22 +271,14 @@ pub(super) fn tool_block_command(name: &str, arguments: &str) -> String {
     match name {
         "AskUser" => ask_user_detail(&args),
         "Shell" => json_str(&args, "command")
-            .map(|command| format!("$ {command}"))
-            .unwrap_or_else(|| arguments.to_string()),
+            .map_or_else(|| arguments.to_string(), |command| format!("$ {command}")),
         "Read" | "Write" | "Edit" => json_str(&args, "input")
             .and_then(patch_file_path)
             .or_else(|| json_str(&args, "path"))
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
-        "Glob" => json_str(&args, "pattern")
-            .map(|pattern| format!("\"{pattern}\""))
-            .unwrap_or_else(|| arguments.to_string()),
-        "Grep" => json_str(&args, "pattern")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
-        "TaskOutput" | "TaskStop" => json_str(&args, "task_id")
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| arguments.to_string()),
+            .map_or_else(|| arguments.to_string(), ToOwned::to_owned),
+        "Glob" => quoted_or_raw(&args, "pattern", arguments),
+        "Grep" => str_or_raw(&args, "pattern", arguments),
+        "TaskOutput" | "TaskStop" => str_or_raw(&args, "task_id", arguments),
         _ => arguments.to_string(),
     }
 }
@@ -353,7 +328,7 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     // 外置 web 工具与原生 server tool 同名，头部样式对齐原生（黄色加粗 label）
     let name_style = if is_error {
         bold(Color::Rgb(220, 100, 100))
-    } else if matches!(call.name.as_str(), "web_search" | "web_fetch") {
+    } else if is_web_tool {
         bold(Color::Yellow)
     } else {
         bold(Color::Rgb(210, 210, 210))

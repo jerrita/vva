@@ -11,88 +11,8 @@ async fn wait_until_idle(session: &std::sync::Arc<ManagedSession>) {
     }
 }
 
-#[tokio::test]
-async fn test_slash_command_model_execution() {
-    let mut ta = create_test_app("init_model", None, None, false).await;
-    let app = &mut ta.app;
-
-    // 1. 无参 /model 打开 Models 模态选择框
-    app.set_input("/model");
-    app.submit_input().await;
-    assert!(matches!(app.modal, ActiveModal::Models(_)));
-
-    // 2. 带参 /model 切换模型
-    app.set_input("/model target_model");
-    app.submit_input().await;
-    let curr = app
-        .active_session
-        .snapshot()
-        .session
-        .header
-        .current_model
-        .clone();
-    assert_eq!(curr, "openai/target_model");
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
-}
-
-#[tokio::test]
-async fn test_clear_deletes_current_session_and_creates_new_one() {
-    let mut ta = create_test_app("init_model", Some("high"), None, true).await;
-    let app = &mut ta.app;
-    let previous_id = app.active_session.id.clone();
-
-    app.set_input("/clear");
-    app.submit_input().await;
-
-    assert_ne!(app.active_session.id, previous_id);
-    assert!(app.view.session.turns.is_empty());
-    assert!(app.active_session.snapshot().session.header.web_search);
-    assert_eq!(
-        app.active_session
-            .snapshot()
-            .session
-            .header
-            .current_variant
-            .as_deref(),
-        Some("high")
-    );
-    assert!(app.session_mgr.get_or_load(&previous_id).await.is_err());
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
-}
-
-#[tokio::test]
-async fn test_new_creates_session_and_keeps_current_one() {
-    let mut ta = create_test_app("init_model", Some("high"), None, true).await;
-    let app = &mut ta.app;
-    let previous_id = app.active_session.id.clone();
-
-    app.set_input("/new");
-    app.submit_input().await;
-
-    assert_ne!(app.active_session.id, previous_id);
-    assert!(app.view.session.turns.is_empty());
-    assert!(app.active_session.snapshot().session.header.web_search);
-    assert_eq!(
-        app.active_session
-            .snapshot()
-            .session
-            .header
-            .current_variant
-            .as_deref(),
-        Some("high")
-    );
-    assert_eq!(
-        app.session_mgr.get_or_load(&previous_id).await.unwrap().id,
-        previous_id
-    );
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
-}
-
-#[tokio::test]
-async fn test_slash_command_variant_execution() {
+/// 含 variants 模型与无 variants 模型的双模型配置，活跃模型为前者
+async fn variants_app() -> crate::ui::test_support::TestApp {
     let config_str = r#"{
         "providers": {
             "prov": {
@@ -113,12 +33,70 @@ async fn test_slash_command_variant_execution() {
         }
     }"#;
     let app_config = crate::config::parser::parse_config_str(config_str).unwrap();
-    let mut ta = create_test_app("prov/model-with-vars", None, Some(app_config), false).await;
+    create_test_app("prov/model-with-vars", None, Some(app_config), false).await
+}
+
+#[tokio::test]
+async fn test_slash_command_model_execution() {
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    let app = &mut ta.app;
+
+    // 1. 无参 /model 打开 Models 模态选择框
+    app.run("/model").await;
+    assert!(matches!(app.modal, ActiveModal::Models(_)));
+
+    // 2. 带参 /model 切换模型
+    app.run("/model target_model").await;
+    let curr = app
+        .active_session
+        .snapshot()
+        .session
+        .header
+        .current_model
+        .clone();
+    assert_eq!(curr, "openai/target_model");
+}
+
+#[tokio::test]
+async fn test_clear_deletes_current_session_and_creates_new_one() {
+    let mut ta = create_test_app("init_model", Some("high"), None, true).await;
+    let app = &mut ta.app;
+    let previous_id = app.active_session.id.clone();
+
+    app.run("/clear").await;
+
+    assert_ne!(app.active_session.id, previous_id);
+    assert!(app.view.session.turns.is_empty());
+    assert!(app.active_session.snapshot().session.header.web_search);
+    assert_eq!(app.current_variant().as_deref(), Some("high"));
+    assert!(app.session_mgr.get_or_load(&previous_id).await.is_err());
+}
+
+#[tokio::test]
+async fn test_new_creates_session_and_keeps_current_one() {
+    let mut ta = create_test_app("init_model", Some("high"), None, true).await;
+    let app = &mut ta.app;
+    let previous_id = app.active_session.id.clone();
+
+    app.run("/new").await;
+
+    assert_ne!(app.active_session.id, previous_id);
+    assert!(app.view.session.turns.is_empty());
+    assert!(app.active_session.snapshot().session.header.web_search);
+    assert_eq!(app.current_variant().as_deref(), Some("high"));
+    assert_eq!(
+        app.session_mgr.get_or_load(&previous_id).await.unwrap().id,
+        previous_id
+    );
+}
+
+#[tokio::test]
+async fn test_slash_command_variant_execution() {
+    let mut ta = variants_app().await;
     let app = &mut ta.app;
 
     // 1. 无参 /variant 打开 Variants 模态框，包含 default 与配置的 variants
-    app.set_input("/variant");
-    app.submit_input().await;
+    app.run("/variant").await;
     let ActiveModal::Variants(vm) = &app.modal else {
         panic!("expected variants modal");
     };
@@ -129,36 +107,18 @@ async fn test_slash_command_variant_execution() {
     assert_eq!(vm.variants[3].id.as_deref(), Some("high"));
 
     // 2. 带参 /variant 切换推理档位
-    app.set_input("/variant high");
-    app.submit_input().await;
-    let curr = app
-        .active_session
-        .snapshot()
-        .session
-        .header
-        .current_variant
-        .clone();
+    app.run("/variant high").await;
+    let curr = app.current_variant();
     assert_eq!(curr, Some("high".to_string()));
 
     // 3. /variant none 显式禁用推理
-    app.set_input("/variant none");
-    app.submit_input().await;
-    let curr_none = app
-        .active_session
-        .snapshot()
-        .session
-        .header
-        .current_variant
-        .clone();
+    app.run("/variant none").await;
+    let curr_none = app.current_variant();
     assert_eq!(curr_none.as_deref(), Some("none"));
 
     // 4. /variant default 不发送推理档位
-    app.set_input("/variant default");
-    app.submit_input().await;
-    assert_eq!(
-        app.active_session.snapshot().session.header.current_variant,
-        None
-    );
+    app.run("/variant default").await;
+    assert_eq!(app.current_variant(), None);
 
     // 5. 未配置 variants 的模型，模态框列表为空（不兜底）
     let session_no_vars = app
@@ -173,51 +133,23 @@ async fn test_slash_command_variant_execution() {
             .resolve_model("prov/model-without-vars", Some("none"))
             .is_err()
     );
-    app_no_vars.set_input("/variant");
-    app_no_vars.submit_input().await;
+    app_no_vars.run("/variant").await;
     let ActiveModal::Variants(vm_empty) = &app_no_vars.modal else {
         panic!("expected variants modal");
     };
     assert!(vm_empty.variants.is_empty());
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
 async fn test_cycle_variant_wraps_through_declared_order() {
-    let config_str = r#"{
-        "providers": {
-            "prov": {
-                "type": "response",
-                "base_url": "https://api.openai.com/v1",
-                "api_key": "test_key",
-                "models": {
-                    "model-with-vars": {
-                        "name": "Model With Variants",
-                        "reasoning": true,
-                        "variants": ["none", "low", "high"]
-                    },
-                    "model-without-vars": {
-                        "name": "Model Without Variants"
-                    }
-                }
-            }
-        }
-    }"#;
-    let app_config = crate::config::parser::parse_config_str(config_str).unwrap();
-    let mut ta = create_test_app("prov/model-with-vars", None, Some(app_config), false).await;
+    let mut ta = variants_app().await;
     let app = &mut ta.app;
 
     // default → none → low → high → 回到 default
     for expected in [Some("none"), Some("low"), Some("high"), None] {
         app.cycle_variant().await;
         assert_eq!(
-            app.active_session
-                .snapshot()
-                .session
-                .header
-                .current_variant
-                .as_deref(),
+            app.current_variant().as_deref(),
             expected,
             "cycle 应按声明顺序推进到 {expected:?}"
         );
@@ -231,17 +163,7 @@ async fn test_cycle_variant_wraps_through_declared_order() {
         .unwrap();
     let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
     app_no_vars.cycle_variant().await;
-    assert_eq!(
-        app_no_vars
-            .active_session
-            .snapshot()
-            .session
-            .header
-            .current_variant,
-        None
-    );
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
+    assert_eq!(app_no_vars.current_variant(), None);
 }
 
 #[tokio::test]
@@ -299,8 +221,6 @@ async fn test_tool_right_click_before_request_completion() {
             .iter()
             .any(|line| line.to_string().contains("Worked"))
     );
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -365,8 +285,6 @@ async fn test_completed_nonfinal_responses_collapse_and_expand() {
             .iter()
             .any(|line| line.to_string().contains("> Worked 2s"))
     );
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -426,8 +344,6 @@ async fn test_response_groups_keep_independent_state_across_prompts() {
     assert!(app.handle_response_right_click(line));
     app.refresh_chat_lines(80);
     assert!(app.chat_cache.response_hits.iter().all(|hit| hit.collapsed));
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -481,8 +397,6 @@ async fn test_completed_single_turn_work_collapses_before_final_reply() {
     assert!(rendered.contains("release date"));
     assert!(rendered.contains("Reviewing results"));
     assert!(rendered.contains("Final reply"));
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -543,8 +457,6 @@ async fn test_completed_response_collapses_text_before_web_search() {
     assert!(rendered.contains("Reviewing results"));
     assert!(rendered.contains("source threshold"));
     assert!(rendered.contains("Final reply"));
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -615,8 +527,6 @@ async fn test_app_scroll_control_and_clamping() {
     app.scroll_to_ratio(2.0);
     assert_eq!(app.scroll_offset, 50);
     assert!(app.auto_scroll);
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -676,8 +586,7 @@ async fn test_session_resume_preserves_web_search_state() {
     assert!(app.view.session.header.web_search);
 
     // 6. 执行 /web off 显式关闭 Session 1 的网络搜索
-    app.set_input("/web off");
-    app.submit_input().await;
+    app.run("/web off").await;
     assert!(!app.view.session.header.web_search);
 
     // 校验 Session 1 持久化存储中的 web_search 已同步更新为 false
@@ -685,8 +594,7 @@ async fn test_session_resume_preserves_web_search_state() {
     assert!(!loaded_s1.header.web_search);
 
     // 7. 再次执行 /web on 开启 Session 1 的网络搜索
-    app.set_input("/web on");
-    app.submit_input().await;
+    app.run("/web on").await;
     assert!(app.view.session.header.web_search);
 
     let loaded_s1_again = store.load_session(&s1_id).await.unwrap().unwrap();
@@ -701,11 +609,9 @@ async fn test_prompt_history_rotation_and_draft_restore() {
     let app = &mut ta.app;
 
     // 1. 提交两次 Prompt
-    app.set_input("first prompt");
-    app.submit_input().await;
+    app.run("first prompt").await;
 
-    app.set_input("second prompt");
-    app.submit_input().await;
+    app.run("second prompt").await;
 
     assert_eq!(app.prompt_history.len(), 2);
     assert_eq!(app.prompt_history[0], "first prompt");
@@ -731,8 +637,6 @@ async fn test_prompt_history_rotation_and_draft_restore() {
     app.history_next();
     assert_eq!(app.input.as_str(), "my draft");
     assert!(app.history_index.is_none());
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
 
 #[tokio::test]
@@ -875,8 +779,7 @@ async fn test_slash_skill_completion_and_invocation() {
     assert!(app.matched_candidates.is_empty());
 
     // 3. /<skill_name> 提交：user turn 保留原文，技能正文以 reminder turn 注入
-    app.set_input("/doc-review check the guide");
-    app.submit_input().await;
+    app.run("/doc-review check the guide").await;
     // 提交经会话任务异步落盘，轮询等待本条 user turn 出现
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
@@ -903,6 +806,4 @@ async fn test_slash_skill_completion_and_invocation() {
     assert_eq!(parsed.kind, crate::system::AgentsReminderKind::SkillLoaded);
     assert_eq!(parsed.name, "doc-review");
     assert!(parsed.content.contains("1. Read the doc."));
-
-    let _ = std::fs::remove_dir_all(&ta.temp_dir);
 }
