@@ -176,6 +176,7 @@ impl App {
 
 /// 将文本设置到系统剪贴板（支持原生系统剪贴板与 ANSI OSC 52 转义序列）
 pub fn set_clipboard_text(text: &str) -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
     let success =
         arboard::Clipboard::new().is_ok_and(|mut clipboard| clipboard.set_text(text).is_ok());
 
@@ -183,19 +184,34 @@ pub fn set_clipboard_text(text: &str) -> Result<(), String> {
     let b64 = base64::engine::general_purpose::STANDARD.encode(text);
     let osc52 = format!("\x1b]52;c;{b64}\x07");
     let mut stdout = std::io::stdout();
-    let _ = std::io::Write::write_all(&mut stdout, osc52.as_bytes());
-    let _ = std::io::Write::flush(&mut stdout);
+    let result = std::io::Write::write_all(&mut stdout, osc52.as_bytes())
+        .and_then(|()| std::io::Write::flush(&mut stdout));
 
-    success
-        .then_some(())
-        .ok_or_else(|| "Failed to set system clipboard".to_string())
+    #[cfg(target_os = "android")]
+    {
+        result.map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = result;
+        success
+            .then_some(())
+            .ok_or_else(|| "Failed to set system clipboard".to_string())
+    }
 }
 
 /// 从系统剪贴板读取文本
 pub fn get_clipboard_text() -> Option<String> {
-    arboard::Clipboard::new()
-        .ok()?
-        .get_text()
-        .ok()
-        .filter(|text| !text.is_empty())
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        arboard::Clipboard::new()
+            .ok()?
+            .get_text()
+            .ok()
+            .filter(|text| !text.is_empty())
+    }
 }
