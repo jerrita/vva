@@ -37,6 +37,7 @@ pub async fn run_server(
         .route("/api/fs/entries", get(api::list_fs_entries))
         .route("/api/fs/find", get(api::find_fs_files))
         .route("/api/fs/file", get(api::get_fs_file))
+        .route("/api/fs/preview", get(api::preview_fs_file))
         .route("/api/fs/download", get(api::download_fs_file))
         // 上传文件不设请求体大小上限，包括 Base64 编码后的体积。
         .route(
@@ -56,6 +57,7 @@ pub async fn run_server(
             get(api::get_session).delete(api::delete_session),
         )
         .route("/api/sessions/{id}/file", get(api::get_session_file))
+        .route("/api/sessions/{id}/preview", get(api::preview_session_file))
         .route(
             "/api/sessions/{id}/download",
             get(api::download_session_file),

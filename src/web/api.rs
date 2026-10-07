@@ -7,7 +7,7 @@ use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -15,6 +15,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
+use tower_http::services::ServeFile;
 
 use crate::harness::ManagedSession;
 use crate::model::{ContentPart, MediaSource, SessionSummary, UserAnswer};
@@ -501,6 +502,7 @@ pub struct SessionFileResponse {
     pub name: String,
     pub size: u64,
     pub is_binary: bool,
+    /// 文本或图片 Base64；音频和 PDF 通过 preview 接口读取，此处为空。
     pub content: String,
     pub mime_type: Option<String>,
 }
@@ -520,6 +522,56 @@ pub async fn get_session_file(
     Query(query): Query<SessionFileQuery>,
 ) -> ApiResult<Json<SessionFileResponse>> {
     read_file_from_workspace(&session.workspace(), &query.path).await
+}
+
+/// 按需流式预览工作区音频 / PDF，支持 Range 与 HEAD。
+pub async fn preview_fs_file(
+    State(state): State<AppState>,
+    Query(query): Query<FsFileQuery>,
+    request: Request,
+) -> ApiResult<Response> {
+    let workspace = workspace_or_default(&state, query.workspace.as_deref());
+    preview_file_from_workspace(&workspace, &query.path, request).await
+}
+
+/// 会话工作区使用同一预览传输。
+pub async fn preview_session_file(
+    session: Session,
+    Query(query): Query<SessionFileQuery>,
+    request: Request,
+) -> ApiResult<Response> {
+    preview_file_from_workspace(&session.workspace(), &query.path, request).await
+}
+
+fn is_streamed_preview(mime: Option<&str>) -> bool {
+    mime.is_some_and(|mime| mime.starts_with("audio/") || mime == "application/pdf")
+}
+
+async fn preview_file_from_workspace(
+    workspace: &StdPath,
+    rel_path: &str,
+    request: Request,
+) -> ApiResult<Response> {
+    let (path, _) = open_workspace_file(workspace, rel_path).await?;
+    if !is_streamed_preview(mime_guess::from_path(&path).first_raw()) {
+        return Err(ApiError::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "此预览接口仅支持音频和 PDF",
+        ));
+    }
+    let mut response = ServeFile::new(&path)
+        .try_call(request)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?
+        .into_response();
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("inline"),
+    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    Ok(response)
 }
 
 /// 下载指定工作区文件，保留原始二进制内容
@@ -605,31 +657,32 @@ pub async fn read_file_from_workspace(
 ) -> ApiResult<Json<SessionFileResponse>> {
     let (path, metadata) = open_workspace_file(workspace, rel_path).await?;
     let size = metadata.len();
-    if size > 10 * 1024 * 1024 {
+    let mime_type = mime_guess::from_path(&path).first().map(|m| m.to_string());
+    let streamed = is_streamed_preview(mime_type.as_deref());
+    if !streamed && size > 10 * 1024 * 1024 {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "文件过大，不支持在线预览 (超过 10MB)",
         ));
     }
-    let bytes = read_bytes(&path).await?;
-
-    let mime_type = mime_guess::from_path(&path).first().map(|m| m.to_string());
-    let text = std::str::from_utf8(&bytes)
-        .ok()
-        .filter(|text| !text.contains('\0'));
-    let is_image = mime_type
-        .as_deref()
-        .is_some_and(|m| m.starts_with("image/"));
-    let is_audio = mime_type
-        .as_deref()
-        .is_some_and(|m| m.starts_with("audio/"));
-    let (is_binary, content) = match text {
-        Some(text) if !is_audio => (false, text.to_string()),
-        _ if is_image || is_audio => (
-            true,
-            base64::engine::general_purpose::STANDARD.encode(&bytes),
-        ),
-        _ => (true, String::new()),
+    let (is_binary, content) = if streamed {
+        (true, String::new())
+    } else {
+        let bytes = read_bytes(&path).await?;
+        let text = std::str::from_utf8(&bytes)
+            .ok()
+            .filter(|text| !text.contains('\0'));
+        let is_image = mime_type
+            .as_deref()
+            .is_some_and(|m| m.starts_with("image/"));
+        match text {
+            Some(text) => (false, text.to_string()),
+            _ if is_image => (
+                true,
+                base64::engine::general_purpose::STANDARD.encode(&bytes),
+            ),
+            _ => (true, String::new()),
+        }
     };
     Ok(Json(SessionFileResponse {
         path: path.to_string_lossy().into_owned(),
@@ -1033,6 +1086,105 @@ mod tests {
 
         let missing = read_file_from_workspace(ws, "nonexistent.txt").await.err();
         assert_eq!(missing.unwrap().0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn streamed_media_metadata_has_no_size_limit_or_inline_content() {
+        let temp = TempDir::new().unwrap();
+        let size = 10 * 1024 * 1024 + 1;
+        for name in ["sample.wav", "sample.pdf", "sample.txt"] {
+            let file = tokio::fs::File::create(temp.path().join(name))
+                .await
+                .unwrap();
+            file.set_len(size).await.unwrap();
+            let response = read_file_from_workspace(temp.path(), name).await;
+            if name.ends_with(".txt") {
+                assert_eq!(response.err().unwrap().0, StatusCode::BAD_REQUEST);
+            } else {
+                let Json(response) = response.ok().unwrap();
+                assert!(response.is_binary);
+                assert!(response.content.is_empty());
+                assert_eq!(response.size, size);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn media_preview_serves_ranges_and_head_with_native_mime() {
+        use axum::body::{Body, to_bytes};
+
+        let temp = TempDir::new().unwrap();
+        for (name, bytes, mime) in [
+            ("sample.pdf", b"%PDF-1.7\n".as_slice(), "application/pdf"),
+            ("sample.wav", b"RIFFsample".as_slice(), "audio/wav"),
+        ] {
+            tokio::fs::write(temp.path().join(name), bytes)
+                .await
+                .unwrap();
+            let Json(metadata) = read_file_from_workspace(temp.path(), name)
+                .await
+                .ok()
+                .unwrap();
+            assert!(metadata.is_binary);
+            assert!(metadata.content.is_empty());
+
+            let request = Request::builder()
+                .header(header::RANGE, "bytes=0-3")
+                .body(Body::empty())
+                .unwrap();
+            let response = preview_file_from_workspace(temp.path(), name, request)
+                .await
+                .ok()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], mime);
+            assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "inline");
+            assert_eq!(response.headers()[header::ACCEPT_RANGES], "bytes");
+            assert_eq!(
+                response.headers()[header::CONTENT_RANGE],
+                format!("bytes 0-3/{}", bytes.len())
+            );
+            assert_eq!(
+                to_bytes(response.into_body(), 4).await.unwrap().as_ref(),
+                &bytes[..4]
+            );
+
+            let request = Request::builder()
+                .method("HEAD")
+                .body(Body::empty())
+                .unwrap();
+            let response = preview_file_from_workspace(temp.path(), name, request)
+                .await
+                .ok()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[header::CONTENT_LENGTH],
+                bytes.len().to_string()
+            );
+            assert!(to_bytes(response.into_body(), 0).await.unwrap().is_empty());
+
+            let request = Request::builder()
+                .header(header::RANGE, "bytes=100-200")
+                .body(Body::empty())
+                .unwrap();
+            let response = preview_file_from_workspace(temp.path(), name, request)
+                .await
+                .ok()
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        }
+
+        tokio::fs::write(temp.path().join("sample.html"), "<p>sample</p>")
+            .await
+            .unwrap();
+        let response =
+            preview_file_from_workspace(temp.path(), "sample.html", Request::new(Body::empty()))
+                .await;
+        assert_eq!(
+            response.err().unwrap().0,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
     }
 
     #[test]

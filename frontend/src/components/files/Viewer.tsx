@@ -188,6 +188,8 @@ export function Viewer({
   }
 
   const downloadUrl = sessionId ? api.sessionFileDownloadUrl(sessionId, path) : api.fsFileDownloadUrl(path, workspace)
+  const previewPath = file?.path ?? path
+  const previewUrl = sessionId ? api.sessionFilePreviewUrl(sessionId, previewPath) : api.fsFilePreviewUrl(previewPath, workspace)
 
   let body: ReactNode
   if (loading && !file) {
@@ -205,7 +207,13 @@ export function Viewer({
         </div>
       )
     } else if (file.mime_type?.startsWith('audio/')) {
-      body = <AudioPreview src={`data:${file.mime_type};base64,${file.content}`} name={file.name} />
+      body = <AudioPreview src={previewUrl} name={file.name} />
+    } else if (file.mime_type === 'application/pdf') {
+      body = (
+        <object className="viewer-pdf" data={`${previewUrl}#view=FitH&navpanes=0`} type="application/pdf" aria-label={`预览 ${file.name}`}>
+          <p className="viewer-note">浏览器无法显示 PDF，<a href={downloadUrl} download>下载查看</a>。</p>
+        </object>
+      )
     } else {
       body = <p className="viewer-note">二进制文件（{file.mime_type || '未知类型'}），不提供文本预览，可下载查看。</p>
     }

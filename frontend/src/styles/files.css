@@ -605,6 +605,14 @@ button.crumb:hover {
   margin: 0;
 }
 
+.viewer-pdf {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--panel-2);
+}
+
 /* 代码：行号常驻左侧（横向滚动时吸附），改动行紫色竖条，读取区间底色 */
 .code {
   min-width: max-content;

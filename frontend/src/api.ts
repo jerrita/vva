@@ -101,6 +101,10 @@ export const api = {
   /** 读取指定工作区文件内容 */
   fsFile: (path: string, workspace?: string) =>
     request<SessionFileResponse>(`/api/fs/file?${fsQuery(path, workspace)}`),
+  sessionFilePreviewUrl: (id: string, path: string) =>
+    `/api/sessions/${encodeURIComponent(id)}/preview?path=${encodeURIComponent(path)}`,
+  fsFilePreviewUrl: (path: string, workspace?: string) =>
+    `/api/fs/preview?${fsQuery(path, workspace)}`,
   sessionFileDownloadUrl: (id: string, path: string) =>
     `/api/sessions/${encodeURIComponent(id)}/download?path=${encodeURIComponent(path)}`,
   fsFileDownloadUrl: (path: string, workspace?: string) =>

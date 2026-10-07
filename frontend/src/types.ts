@@ -253,6 +253,7 @@ export interface SessionFileResponse {
   name: string
   size: number
   is_binary: boolean
+  /** 文本或图片 Base64；音频和 PDF 通过 preview 接口读取，此处为空。 */
   content: string
   mime_type?: string | null
 }
