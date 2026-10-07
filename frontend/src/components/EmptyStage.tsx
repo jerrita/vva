@@ -15,6 +15,7 @@ interface EmptyStageProps {
   skills: SkillEntry[]
   onSend: (text: string, files: FileAttachment[]) => void
   onStop: () => void
+  onError: (message: string) => void
 }
 
 /** 空态：无会话时的居中版式（品牌大字 + 项目选择与路径 + 输入框）。 */
@@ -28,6 +29,7 @@ export function EmptyStage({
   skills,
   onSend,
   onStop,
+  onError,
 }: EmptyStageProps) {
   const root = draftProject || defaultRoot || ''
   return (
@@ -52,6 +54,7 @@ export function EmptyStage({
           running={running}
           onSend={onSend}
           onStop={onStop}
+          onError={onError}
           controls={controls}
           skills={skills}
           workspace={draftProject || defaultRoot || undefined}

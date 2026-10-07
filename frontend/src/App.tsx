@@ -709,6 +709,7 @@ export default function App() {
             skills={skills}
             onSend={submit}
             onStop={abort}
+            onError={setError}
           />
         ) : (
           <>
@@ -741,6 +742,7 @@ export default function App() {
                 running={running}
                 onSend={submit}
                 onStop={abort}
+                onError={setError}
                 controls={composerControls}
                 skills={skills}
                 workspace={active?.workspace_root}

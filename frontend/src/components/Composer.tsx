@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClipboardEvent, DragEvent, KeyboardEvent, ReactNode, Ref } from 'react'
-import { api } from '../api'
+import { api, toError } from '../api'
 import type { FileAttachment, FsFindEntry, SkillEntry } from '../types'
 import { IconArrowUp, IconPlus, IconStop, IconX } from './icons'
 
@@ -18,6 +18,7 @@ export function Composer({
   running,
   onSend,
   onStop,
+  onError,
   controls,
   skills,
   workspace,
@@ -29,6 +30,7 @@ export function Composer({
   running: boolean
   onSend: (text: string, files: FileAttachment[]) => void
   onStop: () => void
+  onError: (message: string) => void
   controls?: ReactNode
   skills: SkillEntry[]
   workspace?: string
@@ -195,8 +197,8 @@ export function Composer({
           const { path } = await api.uploadFile(file.name, data, workspace)
           setUploadedFiles(prev => [...prev, { filename: file.name, path }])
         }
-      } catch {
-        setText(prev => `${prev}${prev.trim() ? '\n\n' : ''}文件上传失败：${file.name}`)
+      } catch (error) {
+        onError(`文件上传失败：${file.name}（${toError(error)}）`)
       } finally {
         if (!native) setUploading(count => Math.max(0, count - 1))
       }

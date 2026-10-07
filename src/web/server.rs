@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -37,7 +38,11 @@ pub async fn run_server(
         .route("/api/fs/find", get(api::find_fs_files))
         .route("/api/fs/file", get(api::get_fs_file))
         .route("/api/fs/download", get(api::download_fs_file))
-        .route("/api/files", post(api::upload_file))
+        // 上传文件不设请求体大小上限，包括 Base64 编码后的体积。
+        .route(
+            "/api/files",
+            post(api::upload_file).layer(DefaultBodyLimit::disable()),
+        )
         .route(
             "/api/config",
             get(api::get_global_config).post(api::update_global_config),
@@ -55,7 +60,11 @@ pub async fn run_server(
             "/api/sessions/{id}/download",
             get(api::download_session_file),
         )
-        .route("/api/sessions/{id}/messages", post(api::submit_message))
+        // 图片和 PDF 附件随消息提交，使用同样的上传策略。
+        .route(
+            "/api/sessions/{id}/messages",
+            post(api::submit_message).layer(DefaultBodyLimit::disable()),
+        )
         .route("/api/sessions/{id}/revert", post(api::revert_session))
         .route("/api/sessions/{id}/fork", post(api::fork_session))
         .route("/api/sessions/{id}/abort", post(api::abort_session))
