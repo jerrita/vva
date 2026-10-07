@@ -55,7 +55,7 @@ pub async fn run_tui(
     workspace: std::path::PathBuf,
     default_model: Option<String>,
     default_variant: Option<String>,
-    enable_web_search: Option<bool>,
+    toggles: crate::model::ToggleOverrides,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_mgr = Arc::new(SessionManager::new(
         store,
@@ -69,7 +69,7 @@ pub async fn run_tui(
             initial_session_id.as_deref(),
             default_model,
             default_variant,
-            enable_web_search,
+            toggles,
         )
         .await?;
     let mut app = App::new(session_mgr, initial_session).await;

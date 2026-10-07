@@ -123,7 +123,15 @@ async fn test_slash_command_variant_execution() {
     // 5. 未配置 variants 的模型，模态框列表为空（不兜底）
     let session_no_vars = app
         .session_mgr
-        .create_session("prov/model-without-vars".into(), None, None, false)
+        .create_session(
+            "prov/model-without-vars".into(),
+            None,
+            None,
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
@@ -158,7 +166,15 @@ async fn test_cycle_variant_wraps_through_declared_order() {
     // 未配置 variants 的模型：无可循环档位，保持原状
     let session_no_vars = app
         .session_mgr
-        .create_session("prov/model-without-vars".into(), None, None, false)
+        .create_session(
+            "prov/model-without-vars".into(),
+            None,
+            None,
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
@@ -546,7 +562,12 @@ async fn test_session_resume_preserves_web_search_state() {
 
     // 1. 创建 Session 1 并发送首条消息落盘，初始开启 web_search
     let s1 = session_mgr
-        .create_session("model_1".into(), None, Some("Session 1".into()), true)
+        .create_session(
+            "model_1".into(),
+            None,
+            Some("Session 1".into()),
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     session_mgr
@@ -557,7 +578,15 @@ async fn test_session_resume_preserves_web_search_state() {
 
     // 2. 创建 Session 2 并发送首条消息落盘，初始关闭 web_search
     let s2 = session_mgr
-        .create_session("model_2".into(), None, Some("Session 2".into()), false)
+        .create_session(
+            "model_2".into(),
+            None,
+            Some("Session 2".into()),
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     session_mgr
@@ -649,7 +678,10 @@ async fn test_user_message_hits_and_revert_fills_input() {
         Some("Origin".into()),
         "openai/test_model",
         None,
-        false,
+        crate::model::SessionToggles {
+            web_search: false,
+            ..Default::default()
+        },
     );
     session.append_turn(crate::model::Turn::new(
         crate::model::Role::System,
@@ -703,7 +735,7 @@ async fn test_fork_user_turn_creates_titled_session() {
         Some("Origin".into()),
         "openai/test_model",
         Some("high".into()),
-        true,
+        crate::model::SessionToggles::default(),
     );
     session.append_turn(crate::model::Turn::new(
         crate::model::Role::System,

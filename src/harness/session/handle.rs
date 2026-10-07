@@ -36,7 +36,7 @@ pub enum SharedCommand {
     Configure {
         model: Option<String>,
         variant: Option<Option<String>>,
-        search: Option<bool>,
+        toggles: ToggleOverrides,
         reply: Reply,
     },
     AnswerUser {
@@ -173,13 +173,13 @@ impl ManagedSession {
         &self,
         model: Option<String>,
         variant: Option<Option<String>>,
-        search: Option<bool>,
+        toggles: ToggleOverrides,
     ) -> Result<(), String> {
         self.request(|reply| {
             Command::Shared(SharedCommand::Configure {
                 model,
                 variant,
-                search,
+                toggles,
                 reply,
             })
         })

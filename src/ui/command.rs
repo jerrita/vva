@@ -79,6 +79,11 @@ pub static COMMANDS: &[SlashCommand] = &[
         description: "Toggle native web search grounding",
     },
     SlashCommand {
+        name: "/team",
+        aliases: &[],
+        description: "Toggle team mode: subagents and cross-session messaging (/team on|off)",
+    },
+    SlashCommand {
         name: "/thinking",
         aliases: &["/think", "/th"],
         description: "Toggle thinking display between concise (one line) and full",

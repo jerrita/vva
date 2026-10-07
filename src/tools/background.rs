@@ -375,16 +375,26 @@ impl Tool for TaskStopTool {
     }
 
     fn description(&self) -> &str {
-        "Stop a running background task started with Shell run_in_background, or abort the \
-         current turn of a session (e.g. a background subagent) by passing its sess_ id as \
-         task_id. Stopped tasks do not produce a completion notification."
+        if self.broker.is_some() {
+            "Stop a running background task started with Shell run_in_background, or abort the \
+             current turn of a session (e.g. a background subagent) by passing its sess_ id as \
+             task_id. Stopped tasks do not produce a completion notification."
+        } else {
+            "Stop a running background task started with Shell run_in_background. \
+             Stopped tasks do not produce a completion notification."
+        }
     }
 
     fn parameters(&self) -> serde_json::Value {
+        let task_id = if self.broker.is_some() {
+            "Task id returned by the background Shell call, or a sess_ session id."
+        } else {
+            "Task id returned by the background Shell call."
+        };
         serde_json::json!({
             "type": "object",
             "properties": {
-                "task_id": {"type": "string", "description": "Task id returned by the background Shell call, or a sess_ session id."}
+                "task_id": {"type": "string", "description": task_id}
             },
             "required": ["task_id"]
         })

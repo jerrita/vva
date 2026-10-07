@@ -432,6 +432,8 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     pub variant: Option<String>,
     pub search: Option<bool>,
+    /// team（subagent 编排）开关；缺省开启
+    pub team: Option<bool>,
     /// 工作空间目录；缺省为服务器启动目录
     pub workspace: Option<String>,
 }
@@ -443,18 +445,22 @@ pub async fn create_session(
     let model = request
         .model
         .unwrap_or_else(|| state.manager.app_config().settings.default.clone());
-    let search = request.search.unwrap_or(true);
+    let toggles = crate::model::ToggleOverrides {
+        web_search: request.search,
+        team: request.team,
+    }
+    .apply(crate::model::SessionToggles::default());
     let handle = match request.workspace.as_deref().map(str::trim) {
         Some(workspace) if !workspace.is_empty() => {
             state
                 .manager
-                .create_session_in(workspace, model, request.variant, None, search)
+                .create_session_in(workspace, model, request.variant, None, toggles)
                 .await
         }
         _ => {
             state
                 .manager
-                .create_session(model, request.variant, None, search)
+                .create_session(model, request.variant, None, toggles)
                 .await
         }
     }
@@ -827,6 +833,7 @@ pub struct ConfigureSessionRequest {
     #[serde(default, deserialize_with = "double_option::deserialize")]
     pub variant: Option<Option<String>>,
     pub search: Option<bool>,
+    pub team: Option<bool>,
 }
 
 pub async fn configure_session(
@@ -835,7 +842,14 @@ pub async fn configure_session(
 ) -> ApiResult<Response> {
     session
         .0
-        .configure(request.model, request.variant, request.search)
+        .configure(
+            request.model,
+            request.variant,
+            crate::model::ToggleOverrides {
+                web_search: request.search,
+                team: request.team,
+            },
+        )
         .await
         .map_err(fail(StatusCode::BAD_REQUEST))?;
     Ok(session.snapshot_json())

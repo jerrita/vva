@@ -380,9 +380,9 @@ impl SessionTask {
         &mut self,
         model: Option<String>,
         variant: Option<Option<String>>,
-        search: Option<bool>,
+        toggles: ToggleOverrides,
     ) -> Result<(), String> {
-        if model.is_none() && variant.is_none() && search.is_none() {
+        if model.is_none() && variant.is_none() && toggles.is_empty() {
             return Ok(());
         }
         let mut session = (*self.view.session).clone();
@@ -397,8 +397,8 @@ impl SessionTask {
             resolved.input_capabilities().validate_session(&session)?;
             session.set_model(resolved.full_spec, selected);
         }
-        if let Some(search) = search {
-            session.set_web_search(search);
+        if !toggles.is_empty() {
+            session.set_toggles(toggles.apply(session.toggles()));
         }
         let skills = crate::skills::discover_skills(&session.header.workspace_root);
         let engine = self.build_engine_for(&session, skills).await?;
@@ -775,10 +775,10 @@ impl SessionTask {
             SharedCommand::Configure {
                 model,
                 variant,
-                search,
+                toggles,
                 reply,
             } => {
-                let _ = reply.send(self.configure(model, variant, search).await);
+                let _ = reply.send(self.configure(model, variant, toggles).await);
             }
             SharedCommand::Title(title) => {
                 if let Err(error) = self.title(title).await {

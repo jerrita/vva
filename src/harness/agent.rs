@@ -200,30 +200,40 @@ impl AgentEngine {
             },
         );
         let broker = deps.broker;
-        let extra: [Arc<dyn crate::tools::Tool>; 7] = [
+        let team = session.header.team;
+        let mut task_stop = crate::tools::background::TaskStopTool::new(deps.background.clone());
+        if team {
+            task_stop = task_stop.with_broker(broker.clone());
+        }
+        let extra: [Arc<dyn crate::tools::Tool>; 4] = [
             Arc::new(crate::tools::ask_user::AskUserTool::new(
                 deps.ask_user_requests,
             )),
             Arc::new(crate::tools::background::TaskOutputTool::new(
-                deps.background.clone(),
+                deps.background,
             )),
-            Arc::new(
-                crate::tools::background::TaskStopTool::new(deps.background)
-                    .with_broker(broker.clone()),
-            ),
+            Arc::new(task_stop),
             Arc::new(crate::tools::skill::SkillTool::new(Arc::new(deps.skills))),
-            Arc::new(crate::tools::agent::AgentTool::new(
-                broker.clone(),
-                Arc::new(deps.agents),
-                crate::tools::agent::SubagentContext::from_session(session),
-            )),
-            Arc::new(crate::tools::session_ipc::SendMessageTool::new(
-                broker.clone(),
-            )),
-            Arc::new(crate::tools::session_ipc::WaitSessionTool::new(broker)),
         ];
         for tool in extra {
             tools.register(tool);
+        }
+        // team 关闭时不挂载子代理编排工具（工具定义即提示词，一并缺席）
+        if team {
+            let team_tools: [Arc<dyn crate::tools::Tool>; 3] = [
+                Arc::new(crate::tools::agent::AgentTool::new(
+                    broker.clone(),
+                    Arc::new(deps.agents),
+                    crate::tools::agent::SubagentContext::from_session(session),
+                )),
+                Arc::new(crate::tools::session_ipc::SendMessageTool::new(
+                    broker.clone(),
+                )),
+                Arc::new(crate::tools::session_ipc::WaitSessionTool::new(broker)),
+            ];
+            for tool in team_tools {
+                tools.register(tool);
+            }
         }
         tools
     }
@@ -429,6 +439,30 @@ mod tests {
             .map(|value| value.as_str().unwrap())
             .collect();
         assert_eq!(names, ["explore", "general"]);
+        let task_stop = engine.tools.get("TaskStop").unwrap();
+        assert!(task_stop.description().contains("sess_"));
+    }
+
+    #[tokio::test]
+    async fn engine_omits_subagent_tools_when_team_disabled() {
+        let config = web_config(None);
+        let mut session = session_for("p/nos", false);
+        session.header.team = false;
+        let engine = build_engine(&config, &session).unwrap();
+
+        for name in ["Agent", "SendMessage", "WaitSession"] {
+            assert!(engine.tools.get(name).is_none(), "{name} should be absent");
+        }
+        // TaskStop 保留后台 Shell 能力，但不再宣称可中止 sess_ 会话
+        let task_stop = engine.tools.get("TaskStop").unwrap();
+        assert!(!task_stop.description().contains("sess_"));
+        assert!(!task_stop.parameters().to_string().contains("sess_"));
+        assert!(
+            task_stop
+                .execute(r#"{"task_id":"sess_abc"}"#)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -562,7 +596,10 @@ mod tests {
     fn session_for(model: &str, web_search: bool) -> Session {
         let mut session = Session::new(".", None);
         session.set_model(model.to_string(), None);
-        session.set_web_search(web_search);
+        session.set_toggles(crate::model::SessionToggles {
+            web_search,
+            ..Default::default()
+        });
         session
     }
 

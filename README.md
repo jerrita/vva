@@ -49,6 +49,7 @@ vva
 | `/model` | 切换模型 |
 | `/variant` | 切换推理档位 |
 | `/search` | 开关联网搜索 |
+| `/team` | 开关 team 模式（subagent 派生与跨会话消息，默认开启） |
 | `/help` | 查看全部命令 |
 
 ### 单次执行

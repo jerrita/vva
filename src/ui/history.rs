@@ -150,8 +150,16 @@ mod tests {
         cached_tokens: Option<u32>,
         anthropic: Option<AnthropicTurnMeta>,
     ) -> Session {
-        let mut session =
-            Session::with_model(std::path::PathBuf::from("/ws"), None, "p/m", None, false);
+        let mut session = Session::with_model(
+            std::path::PathBuf::from("/ws"),
+            None,
+            "p/m",
+            None,
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
+        );
         let mut turn = Turn::assistant_turn(vec![]);
         turn.usage = Some(TokenUsage {
             prompt_tokens,
@@ -184,7 +192,10 @@ mod tests {
             None,
             "model_a",
             None,
-            false,
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
         );
         let mut turn = Turn::assistant_turn(vec![]);
         turn.usage = Some(TokenUsage {
@@ -213,7 +224,10 @@ mod tests {
             None,
             "model_a",
             None,
-            false,
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
         );
         for total_tokens in [150, 300] {
             let mut turn = Turn::assistant_turn(vec![]);
@@ -239,7 +253,10 @@ mod tests {
             None,
             "model_a",
             None,
-            false,
+            crate::model::SessionToggles {
+                web_search: false,
+                ..Default::default()
+            },
         );
         for (completion_tokens, elapsed_ms) in [(50, 500), (150, 1_500)] {
             let mut turn = Turn::assistant_turn(vec![]);

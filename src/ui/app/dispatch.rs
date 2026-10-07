@@ -1,5 +1,17 @@
 use super::App;
+use crate::model::ToggleOverrides;
 use crate::ui::modals::{ActiveModal, ConfigItemKind};
+
+/// 开关命令参数：`on` / `off` 显式设置，其余（含空）为切换
+fn on_off(arg: &str) -> Option<bool> {
+    if arg.eq_ignore_ascii_case("on") {
+        Some(true)
+    } else if arg.eq_ignore_ascii_case("off") {
+        Some(false)
+    } else {
+        None
+    }
+}
 
 impl App {
     pub async fn submit_input(&mut self) {
@@ -43,29 +55,49 @@ impl App {
         self.refresh_view();
     }
 
-    /// 设置或切换原生网络搜索（/search 命令与 Config 弹窗共用）：
-    /// 更新会话字段、持久化 Header、同步弹窗显示并输出系统提示
+    /// 设置或切换原生网络搜索（/search 命令与 Config 弹窗共用）
     pub async fn set_web_search(&mut self, target: Option<bool>) {
         let enabled = target.unwrap_or(!self.view.session.header.web_search);
-        if let Err(error) = self
-            .active_session
-            .configure(None, None, Some(enabled))
-            .await
-        {
+        self.apply_toggle(
+            ConfigItemKind::WebSearch,
+            ToggleOverrides {
+                web_search: Some(enabled),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+
+    /// 设置或切换 team 模式（/team 命令、状态栏与 Config 弹窗共用）
+    pub async fn set_team(&mut self, target: Option<bool>) {
+        let enabled = target.unwrap_or(!self.view.session.header.team);
+        self.apply_toggle(
+            ConfigItemKind::Team,
+            ToggleOverrides {
+                team: Some(enabled),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+
+    /// 更新会话开关、持久化 Header 并同步弹窗显示
+    async fn apply_toggle(&mut self, kind: ConfigItemKind, overrides: ToggleOverrides) {
+        if let Err(error) = self.active_session.configure(None, None, overrides).await {
             self.feedback.push(error);
             return;
         }
         self.refresh_view();
 
         if let ActiveModal::Config(cm) = &mut self.modal {
+            let header = &self.view.session.header;
+            let enabled = match kind {
+                ConfigItemKind::Team => header.team,
+                _ => header.web_search,
+            };
             cm.update_item_value(
-                ConfigItemKind::WebSearch,
-                if self.view.session.header.web_search {
-                    "Enabled"
-                } else {
-                    "Disabled"
-                }
-                .to_string(),
+                kind,
+                if enabled { "Enabled" } else { "Disabled" }.to_string(),
             );
         }
     }
@@ -123,14 +155,10 @@ impl App {
                 self.open_config_modal().await;
             }
             "/search" | "/web" => {
-                let target = if arg.eq_ignore_ascii_case("on") {
-                    Some(true)
-                } else if arg.eq_ignore_ascii_case("off") {
-                    Some(false)
-                } else {
-                    None
-                };
-                self.set_web_search(target).await;
+                self.set_web_search(on_off(&arg)).await;
+            }
+            "/team" => {
+                self.set_team(on_off(&arg)).await;
             }
             "/thinking" | "/think" | "/th" => {
                 self.toggle_thinking_display();

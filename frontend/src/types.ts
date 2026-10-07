@@ -153,6 +153,8 @@ export interface Session {
   current_model: string
   current_variant?: string | null
   web_search: boolean
+  /** team 开关：关闭时不挂载 subagent 编排工具 */
+  team: boolean
   editor?: 'replace' | 'patch' | 'hashline'
   /** 父会话 id：subagent 会话指向派生它的会话 */
   parent?: string | null

@@ -24,7 +24,8 @@ use super::agent::{AgentEngine, EngineDeps, generate_title};
 use crate::config::{AppConfig, AppState};
 use crate::event::AgentEvent;
 use crate::model::{
-    ContentPart, MediaSource, Message, Role, Session, Turn, UserAnswer, UserQuestionRequest,
+    ContentPart, MediaSource, Message, Role, Session, SessionToggles, ToggleOverrides, Turn,
+    UserAnswer, UserQuestionRequest,
 };
 use crate::storage::SessionStore;
 

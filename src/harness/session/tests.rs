@@ -257,7 +257,7 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
     let before = task.view.session.clone();
     let revision = task.view.revision;
     let error = task
-        .configure(Some("test/text".into()), None, None)
+        .configure(Some("test/text".into()), None, Default::default())
         .await
         .unwrap_err();
     assert!(error.contains("does not support image input"));
@@ -266,7 +266,7 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
     assert!(!task.state_path.exists());
     let stored = task.store.load_session(&id).await.unwrap().unwrap();
     assert_eq!(stored.header.current_model, "test/vision");
-    task.configure(Some("test/other".into()), None, None)
+    task.configure(Some("test/other".into()), None, Default::default())
         .await
         .unwrap();
     assert_eq!(task.view.session.header.current_model, "test/other");
@@ -714,17 +714,26 @@ async fn turn_failure_keeps_its_anchor_when_another_turn_starts() {
 async fn new_session_uses_last_selected_model() {
     let dir = tmp("last-model");
     let first = manager_for(&dir, openai_config())
-        .create_session("openai/first".into(), Some("high".into()), None, true)
+        .create_session(
+            "openai/first".into(),
+            Some("high".into()),
+            None,
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     first
-        .configure(Some("openai/second".into()), Some(Some("low".into())), None)
+        .configure(
+            Some("openai/second".into()),
+            Some(Some("low".into())),
+            Default::default(),
+        )
         .await
         .unwrap();
 
     let restarted = manager_for(&dir, openai_config());
     let next = restarted
-        .open_session(None, None, None, None)
+        .open_session(None, None, None, Default::default())
         .await
         .unwrap();
     let snap = next.snapshot();
@@ -732,7 +741,12 @@ async fn new_session_uses_last_selected_model() {
     assert_eq!(snap.session.header.current_variant.as_deref(), Some("low"));
 
     let explicit = restarted
-        .open_session(None, Some("openai/explicit".into()), None, None)
+        .open_session(
+            None,
+            Some("openai/explicit".into()),
+            None,
+            Default::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -741,16 +755,26 @@ async fn new_session_uses_last_selected_model() {
     );
 
     let alpha = restarted
-        .create_session("openai/alpha".into(), None, None, true)
+        .create_session(
+            "openai/alpha".into(),
+            None,
+            None,
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     restarted
-        .create_session("openai/beta".into(), None, None, true)
+        .create_session(
+            "openai/beta".into(),
+            None,
+            None,
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     restarted.get_or_load(&alpha.id).await.unwrap();
     let after_switch = manager_for(&dir, openai_config())
-        .open_session(None, None, None, None)
+        .open_session(None, None, None, Default::default())
         .await
         .unwrap();
     assert_eq!(
@@ -760,13 +784,58 @@ async fn new_session_uses_last_selected_model() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn team_toggle_configures_and_persists_independently() {
+    let dir = tmp("team-toggle");
+    let mgr = manager_for(&dir, openai_config());
+    let handle = mgr
+        .create_session(
+            "openai/first".into(),
+            None,
+            None,
+            crate::model::SessionToggles {
+                web_search: false,
+                team: true,
+            },
+        )
+        .await
+        .unwrap();
+    handle
+        .configure(
+            None,
+            None,
+            crate::model::ToggleOverrides {
+                team: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let header = handle.snapshot().session.header.clone();
+    assert!(!header.team);
+    assert!(!header.web_search, "team 覆写不应改动 web 开关");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_header_defaults_team_enabled() {
+    let header: crate::model::SessionHeader = serde_json::from_value(serde_json::json!({
+        "id": "sess_legacy",
+        "workspace_root": "/tmp",
+        "created_at": "2026-01-01T00:00:00Z"
+    }))
+    .unwrap();
+    assert!(header.team);
+}
+
 async fn seeded_session(dir: &Path) -> (Arc<SessionManager>, Arc<ManagedSession>, String) {
     let mut session = Session::with_model(
         dir,
         Some("Origin".into()),
         "openai/default_model",
         Some("high".into()),
-        true,
+        crate::model::SessionToggles::default(),
     );
     session.append_turn(Turn::new(Role::System, vec![Message::text("sys")]));
     for (user, assistant) in [("first", "a1"), ("second", "a2")] {
@@ -843,7 +912,12 @@ fn editor_config(settings_editor: Option<EditorKind>) -> AppConfig {
 
 async fn editor_of(mgr: &Arc<SessionManager>, model: &str) -> EditorKind {
     let handle = mgr
-        .create_session(model.into(), None, None, true)
+        .create_session(
+            model.into(),
+            None,
+            None,
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     handle.snapshot().session.header.editor
@@ -854,7 +928,12 @@ async fn session_editor_frozen_at_create() {
     let dir = tmp("editor");
     let mgr = manager_for(&dir, editor_config(None));
     let handle = mgr
-        .create_session("p/hashed".into(), None, None, true)
+        .create_session(
+            "p/hashed".into(),
+            None,
+            None,
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -862,7 +941,7 @@ async fn session_editor_frozen_at_create() {
         EditorKind::Hashline
     );
     handle
-        .configure(Some("p/patched".into()), None, None)
+        .configure(Some("p/patched".into()), None, Default::default())
         .await
         .unwrap();
     let snap = handle.snapshot();
@@ -887,7 +966,16 @@ async fn new_session_loads_project_agents_md() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("AGENTS.md"), "project instructions").unwrap();
 
-    let session = Session::with_model(&dir, None, "openai/test_model", None, false);
+    let session = Session::with_model(
+        &dir,
+        None,
+        "openai/test_model",
+        None,
+        crate::model::SessionToggles {
+            web_search: false,
+            ..Default::default()
+        },
+    );
     let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
     let (mut task, _rx) = task_with(session, store);
     task.config = Arc::new(openai_config());
@@ -915,7 +1003,16 @@ async fn submit_expands_at_mentions_into_user_parts() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("note.txt"), "mention body").unwrap();
 
-    let session = Session::with_model(&dir, None, "openai/test_model", None, false);
+    let session = Session::with_model(
+        &dir,
+        None,
+        "openai/test_model",
+        None,
+        crate::model::SessionToggles {
+            web_search: false,
+            ..Default::default()
+        },
+    );
     let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
     let (mut task, _rx) = task_with(session, store);
     task.config = Arc::new(openai_config());
@@ -1058,7 +1155,12 @@ async fn subagent_fixture() -> (
     let dir = tmp("subagent");
     let manager = manager_for(&dir, unreachable_config());
     let parent = manager
-        .create_session("p/m".into(), None, None, true)
+        .create_session(
+            "p/m".into(),
+            None,
+            None,
+            crate::model::SessionToggles::default(),
+        )
         .await
         .unwrap();
     let broker = super::manager::SessionBrokerHandle::new(manager.clone());
@@ -1210,7 +1312,13 @@ async fn delete_session_cascades_to_child_sessions() {
     let store = manager.store().clone();
 
     let session = |title: &str, parent: Option<&Session>| {
-        let mut session = Session::with_model(&dir, Some(title.into()), "p/m", None, true);
+        let mut session = Session::with_model(
+            &dir,
+            Some(title.into()),
+            "p/m",
+            None,
+            crate::model::SessionToggles::default(),
+        );
         session.header.parent = parent.map(|p| p.header.id.clone());
         session
     };

@@ -6,6 +6,7 @@ pub enum ConfigItemKind {
     Model,
     Variant,
     WebSearch,
+    Team,
     ThinkingDisplay,
 }
 
@@ -32,6 +33,7 @@ impl ConfigModalState {
         current_model: String,
         current_variant: Option<String>,
         web_search: bool,
+        team: bool,
         thinking_concise: bool,
     ) -> Self {
         let items = vec![
@@ -60,6 +62,17 @@ impl ConfigModalState {
                     "Disabled".into()
                 },
                 description: "Toggle native search grounding for models".to_string(),
+            },
+            ConfigSettingItem {
+                kind: ConfigItemKind::Team,
+                name: "Team (Subagents)".to_string(),
+                current_value: if team {
+                    "Enabled".into()
+                } else {
+                    "Disabled".into()
+                },
+                description: "Toggle subagent tools (/team): Agent, SendMessage, WaitSession"
+                    .to_string(),
             },
             ConfigSettingItem {
                 kind: ConfigItemKind::ThinkingDisplay,
@@ -128,8 +141,13 @@ mod tests {
 
     #[test]
     fn test_config_modal_toggle_restores_selection() {
-        let mut cm =
-            ConfigModalState::new("test_model".into(), Some("medium".into()), false, false);
+        let mut cm = ConfigModalState::new(
+            "test_model".into(),
+            Some("medium".into()),
+            false,
+            true,
+            false,
+        );
 
         // 导航至 WebSearch 项并切换取值
         cm.next();
@@ -141,10 +159,14 @@ mod tests {
         // toggle 内部会重建过滤列表，选中项应被恢复而非重置，后续导航仍指向下一项
         cm.next();
         assert_eq!(cm.selected_index, 3);
+        cm.update_item_value(ConfigItemKind::Team, "Disabled".to_string());
+        assert_eq!(cm.items[3].current_value, "Disabled");
+        cm.next();
+        assert_eq!(cm.selected_index, 4);
         cm.update_item_value(
             ConfigItemKind::ThinkingDisplay,
             "Concise (1 line)".to_string(),
         );
-        assert_eq!(cm.items[3].current_value, "Concise (1 line)");
+        assert_eq!(cm.items[4].current_value, "Concise (1 line)");
     }
 }

@@ -152,9 +152,9 @@ impl SessionManager {
         model: String,
         variant: Option<String>,
         title: Option<String>,
-        search: bool,
+        toggles: SessionToggles,
     ) -> Result<Arc<ManagedSession>, String> {
-        self.create_session_in(self.workspace.clone(), model, variant, title, search)
+        self.create_session_in(self.workspace.clone(), model, variant, title, toggles)
             .await
     }
 
@@ -165,7 +165,7 @@ impl SessionManager {
         model: String,
         variant: Option<String>,
         title: Option<String>,
-        search: bool,
+        toggles: SessionToggles,
     ) -> Result<Arc<ManagedSession>, String> {
         let workspace = workspace.into();
         // 新建项目语义：目录不存在时自动创建
@@ -177,7 +177,7 @@ impl SessionManager {
             .resolve_model(&model, variant.as_deref())
             .map_err(|e| e.to_string())?;
         let mut session =
-            Session::with_model(&workspace, title, resolved.full_spec, variant, search);
+            Session::with_model(&workspace, title, resolved.full_spec, variant, toggles);
         session.header.editor =
             resolve_session_editor(&resolved.model_config, config.settings.editor);
         self.unique_session_id(&mut session).await?;
@@ -190,18 +190,23 @@ impl SessionManager {
         id: Option<&str>,
         model: Option<String>,
         variant: Option<String>,
-        search: Option<bool>,
+        toggles: ToggleOverrides,
     ) -> Result<Arc<ManagedSession>, String> {
         match id {
             Some(id) => {
                 let handle = self.get_or_load(id).await?;
-                handle.configure(model, variant.map(Some), search).await?;
+                handle.configure(model, variant.map(Some), toggles).await?;
                 Ok(handle)
             }
             None => {
                 let (model, variant) = self.new_session_model(model, variant);
-                self.create_session(model, variant, None, search.unwrap_or(true))
-                    .await
+                self.create_session(
+                    model,
+                    variant,
+                    None,
+                    toggles.apply(SessionToggles::default()),
+                )
+                .await
             }
         }
     }
@@ -327,7 +332,7 @@ impl SessionManager {
             Some(title),
             origin.header.current_model.clone(),
             origin.header.current_variant.clone(),
-            origin.header.web_search,
+            origin.toggles(),
         );
         session.header.editor = origin.header.editor;
         self.unique_session_id(&mut session).await?;
@@ -405,7 +410,10 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             Some(format!("[{}] {}", def.name, description)),
             resolved.full_spec,
             parent.current_variant.clone(),
-            parent.web_search,
+            SessionToggles {
+                web_search: parent.web_search,
+                team: true,
+            },
         );
         session.header.editor =
             resolve_session_editor(&resolved.model_config, config.settings.editor);

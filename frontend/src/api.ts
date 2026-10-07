@@ -30,6 +30,7 @@ export interface ConfigureBody {
   /** null 表示清空推理档位，省略表示保持不变 */
   variant?: string | null
   search?: boolean
+  team?: boolean
 }
 
 /** 工作区文件查询串：workspace 缺省时由服务端回退默认目录 */
@@ -52,6 +53,7 @@ export const api = {
     model?: string
     variant?: string | null
     search?: boolean
+    team?: boolean
     workspace?: string
   } = {}) => request<SessionSnapshot>('/api/sessions', json('POST', body)),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),

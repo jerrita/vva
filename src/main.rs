@@ -44,6 +44,10 @@ enum Commands {
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         web_search: Option<bool>,
 
+        /// 开启 team 模式 (subagent 派生与跨会话消息；默认开启)
+        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
+        team: Option<bool>,
+
         /// 恢复指定 Session ID (省略则自动新建)
         #[arg(short, long)]
         session_id: Option<String>,
@@ -301,6 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         model: None,
         variant: None,
         web_search: None,
+        team: None,
         session_id: None,
         workspace: None,
         prompt: None,
@@ -344,18 +349,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             variant,
             web_search,
+            team,
             session_id,
             workspace,
             prompt,
         } => {
             let workspace = resolve_workspace(workspace);
+            let toggles = vva::model::ToggleOverrides { web_search, team };
 
             // 未提供 prompt 时启动 TUI 交互
             let prompt = match prompt {
                 Some(p) => p,
                 None => {
                     return run_tui(
-                        store, app_config, session_id, workspace, model, variant, web_search,
+                        store, app_config, session_id, workspace, model, variant, toggles,
                     )
                     .await;
                 }
@@ -368,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 vva_dir.join("state.json"),
             ));
             let session = manager
-                .open_session(session_id.as_deref(), model, variant, web_search)
+                .open_session(session_id.as_deref(), model, variant, toggles)
                 .await?;
             let view = session.snapshot();
             println!("🚀 [vva] Session ID: {}", session.id);

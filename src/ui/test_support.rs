@@ -57,7 +57,15 @@ pub(crate) async fn create_test_app(
         temp_dir.join("state.json"),
     ));
     let session = session_mgr
-        .create_session(model.into(), variant.map(str::to_string), None, web_search)
+        .create_session(
+            model.into(),
+            variant.map(str::to_string),
+            None,
+            crate::model::SessionToggles {
+                web_search,
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     let mut app = App::new(session_mgr, session).await;

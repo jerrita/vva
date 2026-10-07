@@ -311,7 +311,7 @@ mod tests {
             Some("Bugfix task".into()),
             "a/gpt-5.6-terra",
             Some("high".into()),
-            true,
+            crate::model::SessionToggles::default(),
         );
 
         // 写入 Session 头部

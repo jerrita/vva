@@ -58,7 +58,7 @@ impl App {
                 header.current_model.clone(),
                 header.current_variant.clone(),
                 None,
-                header.web_search,
+                self.view.session.toggles(),
             )
             .await?;
         self.attach_session(handle);
@@ -139,7 +139,7 @@ impl App {
         };
         match self
             .active_session
-            .configure(Some(model.into()), Some(variant), None)
+            .configure(Some(model.into()), Some(variant), Default::default())
             .await
         {
             Ok(()) => self.refresh_view(),
@@ -206,7 +206,7 @@ impl App {
             .map(str::to_string);
         match self
             .active_session
-            .configure(None, Some(variant.clone()), None)
+            .configure(None, Some(variant.clone()), Default::default())
             .await
         {
             Ok(()) => self.refresh_view(),
@@ -220,6 +220,7 @@ impl App {
             session.header.current_model.clone(),
             session.header.current_variant.clone(),
             session.header.web_search,
+            session.header.team,
             self.thinking_concise,
         ));
     }
