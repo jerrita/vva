@@ -751,6 +751,43 @@ async fn test_stream_search_and_citations_arrive_before_completion() {
 }
 
 #[tokio::test]
+async fn test_stream_error_event_documented_shape() {
+    let provider = ResponseProvider::new("test-key");
+    let mut handler = ResponseStreamHandler::new(&provider, None);
+    let result = handler
+        .on_event(serde_json::json!({
+            "type": "error", "code": "ERR_SOMETHING",
+            "message": "Something went wrong", "param": null, "sequence_number": 1
+        }))
+        .await;
+    assert!(matches!(
+        result,
+        Err(ProviderError::Protocol(message))
+            if message == "Stream error (ERR_SOMETHING): Something went wrong"
+    ));
+}
+
+#[tokio::test]
+async fn test_stream_error_event_nested_wire_shape() {
+    let provider = ResponseProvider::new("test-key");
+    let mut handler = ResponseStreamHandler::new(&provider, None);
+    let result = handler
+        .on_event(serde_json::json!({
+            "type": "error", "sequence_number": 2,
+            "error": {
+                "type": "invalid_request_error", "code": null,
+                "message": "There was an issue with your request.", "param": null
+            }
+        }))
+        .await;
+    assert!(matches!(
+        result,
+        Err(ProviderError::Protocol(message))
+            if message == "Stream error (invalid_request_error): There was an issue with your request."
+    ));
+}
+
+#[tokio::test]
 async fn test_stream_rejects_invalid_url_citation() {
     let provider = ResponseProvider::new("test-key");
     let mut handler = ResponseStreamHandler::new(&provider, None);

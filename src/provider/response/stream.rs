@@ -76,8 +76,23 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
         }
         match ev_type {
             "error" => {
-                let msg = require_str(&json, "message")?;
-                Err(ProviderError::Protocol(format!("Stream error: {msg}")))
+                // 文档 ResponseErrorEvent 将 code/message 置于顶层，但线上 API 实际下发
+                // `{"type":"error","error":{"type","code","message"}}` 嵌套形态
+                // （OpenAI 社区已确认的文档与实现偏差）。两种形态均为官方服务端真实报文，
+                // 若只认文档形态，上游错误（限流/过载/上下文超限）会被掩盖为 Missing 'message'。
+                let body = match json.get("error") {
+                    Some(error) if error.is_object() => error,
+                    _ => &json,
+                };
+                let msg = require_str(body, "message")?;
+                let code = body
+                    .get("code")
+                    .and_then(|c| c.as_str())
+                    .or_else(|| body.get("type").and_then(|t| t.as_str()));
+                Err(ProviderError::Protocol(match code {
+                    Some(code) => format!("Stream error ({code}): {msg}"),
+                    None => format!("Stream error: {msg}"),
+                }))
             }
             "response.failed" => {
                 let resp_obj = require_value(&json, "response")?;
