@@ -589,6 +589,22 @@ button.crumb:hover {
   cursor: zoom-in;
 }
 
+.viewer-audio {
+  display: grid;
+  gap: 16px;
+  padding: 24px 20px;
+}
+
+.viewer-audio audio {
+  width: 100%;
+  max-width: 560px;
+  color-scheme: light dark;
+}
+
+.viewer-audio .viewer-note {
+  margin: 0;
+}
+
 /* 代码：行号常驻左侧（横向滚动时吸附），改动行紫色竖条，读取区间底色 */
 .code {
   min-width: max-content;

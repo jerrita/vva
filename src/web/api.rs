@@ -620,13 +620,16 @@ pub async fn read_file_from_workspace(
     let is_image = mime_type
         .as_deref()
         .is_some_and(|m| m.starts_with("image/"));
+    let is_audio = mime_type
+        .as_deref()
+        .is_some_and(|m| m.starts_with("audio/"));
     let (is_binary, content) = match text {
-        Some(text) => (false, text.to_string()),
-        None if is_image => (
+        Some(text) if !is_audio => (false, text.to_string()),
+        _ if is_image || is_audio => (
             true,
             base64::engine::general_purpose::STANDARD.encode(&bytes),
         ),
-        None => (true, String::new()),
+        _ => (true, String::new()),
     };
     Ok(Json(SessionFileResponse {
         path: path.to_string_lossy().into_owned(),

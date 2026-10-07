@@ -18,6 +18,20 @@ function changeStarts(marks: Set<number>): number[] {
   return [...marks].sort((a, b) => a - b).filter(line => !marks.has(line - 1))
 }
 
+function AudioPreview({ src, name }: { src: string; name: string }) {
+  const [failed, setFailed] = useState(false)
+  useEffect(() => setFailed(false), [src])
+
+  return (
+    <div className="viewer-audio">
+      <audio controls preload="metadata" src={src} aria-label={`播放 ${name}`} onError={() => setFailed(true)} />
+      {failed && (
+        <p className="viewer-note error" role="alert">音频加载失败或浏览器不支持此格式，可下载查看。</p>
+      )}
+    </div>
+  )
+}
+
 function Breadcrumb({
   rel,
   onReveal,
@@ -190,6 +204,8 @@ export function Viewer({
           <img src={src} alt={file.name} className="lightboxable" onClick={() => openLightbox(src)} />
         </div>
       )
+    } else if (file.mime_type?.startsWith('audio/')) {
+      body = <AudioPreview src={`data:${file.mime_type};base64,${file.content}`} name={file.name} />
     } else {
       body = <p className="viewer-note">二进制文件（{file.mime_type || '未知类型'}），不提供文本预览，可下载查看。</p>
     }
