@@ -103,5 +103,8 @@ impl HashlineSession {
 }
 
 pub fn file_tag(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))[..4].to_ascii_uppercase()
+    Sha256::digest(text.as_bytes())[..2]
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect()
 }

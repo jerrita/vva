@@ -14,9 +14,12 @@ use crate::harness::SessionManager;
 
 use super::api;
 
-/// 前端构建产物在构件期由 build.rs 编译产出，rust_embed 打包进二进制
+/// 前端构建产物在构件期由 build.rs 编译产出，rust_embed 压缩后打包进二进制；
+/// KaTeX 字体 @font-face 优先声明 woff2，ttf/woff 旧格式不打包
 #[derive(RustEmbed)]
 #[folder = "frontend/dist"]
+#[exclude = "*.ttf"]
+#[exclude = "*.woff"]
 struct Assets;
 
 #[derive(Clone)]

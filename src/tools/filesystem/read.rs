@@ -146,7 +146,10 @@ fn media_type(path: &Path, bytes: &[u8]) -> Option<(MediaKind, &'static str)> {
 
 pub(super) fn content_version(content: &str) -> String {
     // 64-bit truncation suffices for optimistic stale detection within a session.
-    format!("{:x}", Sha256::digest(content.as_bytes()))[..16].to_string()
+    Sha256::digest(content.as_bytes())[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn format_read_text(content: &str, args: &ReadArgs, editor: EditorKind) -> Result<String, String> {
