@@ -63,6 +63,25 @@ pub fn format_background_task_reminder(notification: &str) -> String {
     reminder("type=\"background-task\"", notification.trim())
 }
 
+/// 格式化 rollover 摘要为 <system-reminder> User Message 文本（新会话首条动态内容，
+/// 承接 `from` 会话被压缩的历史）
+pub fn format_rollover_summary_reminder(from: &str, summary: &str) -> String {
+    reminder(
+        &format!("type=\"rollover-summary\" from=\"{from}\""),
+        &format!(
+            "This session continues session {from}, whose earlier history was compressed \
+             into the summary below. The most recent turns follow verbatim. Items marked \
+             unconfirmed are not verified facts.\n\n{}",
+            summary.trim()
+        ),
+    )
+}
+
+/// 文本是否为 <system-reminder> 注入内容（非用户轮次边界）
+pub fn is_reminder_text(text: &str) -> bool {
+    text.trim_start().starts_with("<system-reminder")
+}
+
 /// 当前平台的 OS 描述（发行版 / 版本 / 内核或构建号）
 fn get_os_info() -> String {
     #[cfg(windows)]
@@ -387,6 +406,17 @@ mod tests {
         assert!(parsed.content.contains("1. Open the file."));
 
         assert_eq!(parse_agents_reminder("plain prompt"), None);
+    }
+
+    #[test]
+    fn rollover_summary_reminder_is_a_reminder_but_not_a_known_kind() {
+        let text = format_rollover_summary_reminder("sess_a1b2c", "## 目标\n修 bug");
+        assert!(
+            text.starts_with("<system-reminder type=\"rollover-summary\" from=\"sess_a1b2c\">")
+        );
+        assert!(text.contains("## 目标\n修 bug"));
+        assert!(is_reminder_text(&text));
+        assert!(!is_reminder_text("普通用户消息"));
     }
 
     #[test]

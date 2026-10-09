@@ -223,7 +223,13 @@ impl AgentEngine {
             let team_tools: [Arc<dyn crate::tools::Tool>; 3] = [
                 Arc::new(crate::tools::agent::AgentTool::new(
                     broker.clone(),
-                    Arc::new(deps.agents),
+                    // curator 由 agent space 系统创建，不可由模型派生
+                    Arc::new(
+                        deps.agents
+                            .into_iter()
+                            .filter(|def| def.name != crate::agent_space::curator::CURATOR_AGENT)
+                            .collect(),
+                    ),
                     crate::tools::agent::SubagentContext::from_session(session),
                 )),
                 Arc::new(crate::tools::session_ipc::SendMessageTool::new(

@@ -3,6 +3,7 @@
 pub mod binding;
 pub mod channel;
 pub mod curator;
+pub mod lifecycle;
 pub mod rollover;
 pub mod router;
 pub mod scheduler;

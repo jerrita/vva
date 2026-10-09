@@ -45,6 +45,11 @@ pub enum SharedCommand {
         reply: Reply,
     },
     Title(String),
+    /// 标记会话已被 rollover 接替（写入 header.superseded_by）
+    Supersede {
+        by: String,
+        reply: Reply,
+    },
     /// 通过稳定身份关闭会话提示
     DismissNotice {
         id: String,
@@ -167,6 +172,33 @@ impl ManagedSession {
         })
         .await?;
         Ok(receipt)
+    }
+
+    /// 程序化投递并等待该轮结束，返回本轮报告；轮次失败或中止时返回错误
+    pub async fn deliver_wait(
+        &self,
+        text: &str,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        let report = self
+            .deliver(text)
+            .await?
+            .await
+            .map_err(|_| "Session task stopped".to_string())??;
+        match report.error {
+            Some(error) => Err(error),
+            None => Ok(report),
+        }
+    }
+
+    /// 标记本会话已被 `by` 接替
+    pub async fn mark_superseded(&self, by: &str) -> Result<(), String> {
+        self.request(|reply| {
+            Command::Shared(SharedCommand::Supersede {
+                by: by.into(),
+                reply,
+            })
+        })
+        .await
     }
 
     pub async fn configure(
