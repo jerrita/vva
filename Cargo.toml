@@ -33,6 +33,7 @@ tempfile = "3"
 dom_smoothie = "0.18"
 htmd = "0.5"
 ignore = "0.4.33"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "native-tls"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = "3.4"
