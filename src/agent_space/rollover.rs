@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::config::{AgentSpaceConfig, AppConfig};
 use crate::harness::{ManagedSession, SessionManager};
-use crate::model::{ContentPart, Message, Role, Session, Turn};
+use crate::model::{ContentPart, Message, Role, Session, TokenUsage, Turn};
 
 /// 追加到旧会话末尾的压缩 prompt
 pub const COMPRESS_PROMPT: &str = "\
@@ -34,8 +34,17 @@ pub struct Rolled {
     pub new_id: String,
 }
 
-/// 当前上下文 token 数：最近一个带 usage 的 assistant 轮次的输入 + 输出
-/// （Anthropic 的 input 不含缓存读写，需另行计入）；尚无 usage 时为 `None`
+/// 一次请求的总输入 token（含缓存读写；Anthropic 的 input 不含缓存读写，需另行计入）
+fn input_tokens(turn: &Turn, usage: &TokenUsage) -> u64 {
+    let mut tokens = usage.prompt_tokens as u64;
+    if let Some(anthropic) = &turn.meta.anthropic {
+        tokens += usage.cached_tokens.unwrap_or_default() as u64
+            + anthropic.cache_creation_input_tokens.unwrap_or_default() as u64;
+    }
+    tokens
+}
+
+/// 当前上下文 token 数：最近一个带 usage 的 assistant 轮次的输入 + 输出；尚无 usage 时为 `None`
 pub fn context_tokens(session: &Session) -> Option<u64> {
     let turn = session
         .turns
@@ -43,12 +52,23 @@ pub fn context_tokens(session: &Session) -> Option<u64> {
         .rev()
         .find(|turn| turn.role == Role::Assistant && turn.usage.is_some())?;
     let usage = turn.usage.as_ref()?;
-    let mut tokens = usage.prompt_tokens as u64 + usage.completion_tokens as u64;
-    if let Some(anthropic) = &turn.meta.anthropic {
-        tokens += usage.cached_tokens.unwrap_or_default() as u64
-            + anthropic.cache_creation_input_tokens.unwrap_or_default() as u64;
-    }
-    Some(tokens)
+    Some(input_tokens(turn, usage) + usage.completion_tokens as u64)
+}
+
+/// 全会话 cache 命中率（读缓存 token / 总输入 token）；尚无输入时为 `None`
+pub fn cache_hit_rate(session: &Session) -> Option<f64> {
+    let (hit, total) = session
+        .turns
+        .iter()
+        .filter(|turn| turn.role == Role::Assistant)
+        .filter_map(|turn| Some((turn.usage.as_ref()?, turn)))
+        .fold((0u64, 0u64), |(hit, total), (usage, turn)| {
+            (
+                hit + usage.cached_tokens.unwrap_or_default() as u64,
+                total + input_tokens(turn, usage),
+            )
+        });
+    (total > 0).then(|| hit as f64 / total as f64)
 }
 
 /// 回合结束后的阈值判定：`上下文 tokens >= limit.context - rollover_reserve_tokens`。

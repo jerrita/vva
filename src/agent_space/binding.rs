@@ -183,6 +183,10 @@ impl PendingFiles {
             });
     }
 
+    pub fn count(&self, binding: &str) -> usize {
+        self.by_binding.get(binding).map_or(0, Vec::len)
+    }
+
     /// 取出并清空该 binding 的缓冲，保持接收顺序
     pub fn take(&mut self, binding: &str) -> Vec<AttachedFile> {
         self.by_binding

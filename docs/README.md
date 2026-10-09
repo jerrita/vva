@@ -53,3 +53,8 @@
    - `App` 顶层响应式状态机与非阻塞事件主循环
    - 独立的 `InputBuffer` 多行文本编辑器（CJK宽字符视觉对齐、Unicode边界保护、视口滚动）
    - 模态弹窗状态机与视图层解耦（`sessions`, `models`, `variants`, `config`）
+
+7. **[Agent Space 设计 (agent.md)](agent.md)**
+   - 常驻 IM agent：Channel、分层小模型 Router（L0 锚点 / L1 元数据路由 / oneshot / guide）
+   - Session 生命周期（TTL → curator 沉淀 → 删除）与 rollover 上下文压缩（主模型同 session 续接，复用 cache）
+   - Curator 知识沉淀、Scheduler、cache 稳定性纪律与验收行为

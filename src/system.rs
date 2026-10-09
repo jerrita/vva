@@ -77,6 +77,18 @@ pub fn format_rollover_summary_reminder(from: &str, summary: &str) -> String {
     )
 }
 
+/// 格式化定时任务触发为 <system-reminder> User Message 文本（非用户即时发送的消息）
+pub fn format_scheduled_reminder(id: &str, cron: &str, prompt: &str) -> String {
+    reminder(
+        &format!("type=\"scheduled\" task=\"{id}\" cron=\"{cron}\""),
+        &format!(
+            "This is a scheduled trigger, not a message the user just sent. Carry out the \
+             task below and reply with the text to deliver to the user.\n\n{}",
+            prompt.trim()
+        ),
+    )
+}
+
 /// 文本是否为 <system-reminder> 注入内容（非用户轮次边界）
 pub fn is_reminder_text(text: &str) -> bool {
     text.trim_start().starts_with("<system-reminder")

@@ -55,6 +55,7 @@
 | **供应商适配** | [docs/providers.md](docs/providers.md) | Responses 链式继承、Anthropic 缓存与签名、Gemini 搜索注脚与通用 SSE 解码 |
 | **配置路由** | [docs/configuration.md](docs/configuration.md) | JSON/JSONC 词法注释剥离、`${VAR}` 环境变量展开、模型规格寻址与端点规范化 |
 | **终端交互** | [docs/ui.md](docs/ui.md) | Ratatui TUI 架构、会话任务与 `SessionView` 订阅、`InputBuffer` 多行编辑与模态框状态解耦 |
+| **Agent Space** | [docs/agent.md](docs/agent.md) | 常驻 IM agent：分层小模型 Router、TTL 清理与 curator 沉淀、rollover 压缩、Scheduler、cache 稳定性纪律 |
 
 ---
 
@@ -105,6 +106,17 @@ src/
 │   │   ├── parse.rs        # GeminiAccumulator：整包/流式 chunk 统一合并 (grounding / parts / usage)
 │   │   └── stream.rs       # SseEventHandler 实现 (合并后按背压转发增量事件)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
+├── agent_space/            # 常驻 IM agent (`vva agent`，设计见 docs/agent.md)
+│   ├── mod.rs              # AgentSpace：启动期配置校验与 run (装配 channel / runtime / scheduler / lifecycle，ctrl-c 退出)、agent_toggles
+│   ├── runtime.rs          # Runtime：入站消息 → 命令 / 文件缓冲 → 路由 → session 轮次 → 出站文本；AskUser 守卫、rollover 切换、定时任务投递
+│   ├── command.rs          # 斜杠命令解析 (/new /switch /sessions /stop /status /delete)
+│   ├── binding.rs          # BindingStore (focus) / MessageIndex (消息 id → session) / PendingFiles (待附件缓冲)
+│   ├── router.rs           # Router：L0 reply 锚点 / L1 小模型结构化决策 / L2 显式报错 + router.jsonl
+│   ├── scheduler.rs        # Scheduler：schedule.jsonc 热重载、5 字段 cron、错过任务检测 (不补跑)
+│   ├── lifecycle.rs        # 空闲 TTL → curator 沉淀 → 删除
+│   ├── curator.rs          # 知识沉淀 (kind=curator 会话，游标增量，memory/ git 提交)
+│   ├── rollover.rs         # 上下文达预留线时同会话压缩并切换新会话；context_tokens / cache_hit_rate
+│   └── channel/            # Channel trait 与 Inbound/Outbound；files.rs 附件落盘辅助；qq/ 官方 OpenAPI + 网关
 ├── agents/                 # Subagent 定义：YAML agent 类型解析与发现
 │   └── mod.rs              # AgentDef 强类型解析与校验、discover_agents (内置 general/explore + 全局 ~/.vva/agents、~/.agents/agents + 项目 .vva/agents、.agents/agents，同名后者覆盖前者)
 ├── skills/                 # Agent Skills (agentskills.io 规范：SKILL.md 技能包解析与发现)
