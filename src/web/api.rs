@@ -1204,6 +1204,7 @@ mod tests {
             origin: None,
             topic: None,
             superseded_by: None,
+            last_activity: None,
         };
         let running = SessionSummary {
             id: "sess_run".into(),

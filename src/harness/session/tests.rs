@@ -1320,6 +1320,7 @@ async fn delete_session_cascades_to_child_sessions() {
             crate::model::SessionToggles::default(),
         );
         session.header.parent = parent.map(|p| p.header.id.clone());
+        session.header.agent = parent.map(|_| "general".to_string());
         session
     };
     let parent = session("parent", None);

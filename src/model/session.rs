@@ -288,7 +288,17 @@ pub struct Origin {
     pub chat_id: String,
 }
 
+/// agent space 会话携带 IM 来源或非 Topic 类别；TUI / Web 创建的普通会话两者皆无
+fn is_agent_managed(kind: SessionKind, origin: Option<&Origin>) -> bool {
+    origin.is_some() || !kind.is_topic()
+}
+
 impl SessionHeader {
+    /// 是否为 agent space 管理的会话：仅此类会话维护 `last_activity`
+    pub fn agent_managed(&self) -> bool {
+        is_agent_managed(self.kind, self.origin.as_ref())
+    }
+
     /// 由持久化 Header 与已加载的轮次重建运行时会话（updated_at 以加载时刻计）
     pub fn into_session(self, turns: Vec<Turn>) -> Session {
         Session {
@@ -332,9 +342,16 @@ pub struct SessionSummary {
     pub topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<DateTime<Utc>>,
 }
 
 impl SessionSummary {
+    /// 是否为 agent space 管理的会话（TTL 清理的作用域）
+    pub fn agent_managed(&self) -> bool {
+        is_agent_managed(self.kind, self.origin.as_ref())
+    }
+
     /// 由持久化 Header 与轮次条数构建列表摘要
     pub fn from_header(header: SessionHeader, turn_count: usize) -> Self {
         Self {
@@ -352,6 +369,7 @@ impl SessionSummary {
             origin: header.origin,
             topic: header.topic,
             superseded_by: header.superseded_by,
+            last_activity: header.last_activity,
         }
     }
 }

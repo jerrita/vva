@@ -421,6 +421,16 @@ impl SessionTask {
         Ok(())
     }
 
+    async fn save_header_if_persisted(&self, session: &Session) -> Result<(), String> {
+        if !self.view.persisted {
+            return Ok(());
+        }
+        self.store
+            .save_header(session)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn title(&mut self, title: String) -> Result<(), String> {
         if title.is_empty() {
             return Ok(());
@@ -785,6 +795,15 @@ impl SessionTask {
                     self.event(AgentEvent::Notice(error)).await;
                 }
             }
+            SharedCommand::Supersede { by, reply } => {
+                let mut session = (*self.view.session).clone();
+                session.header.superseded_by = Some(by);
+                let result = self.save_header_if_persisted(&session).await;
+                if result.is_ok() {
+                    self.replace_session(session);
+                }
+                let _ = reply.send(result);
+            }
             SharedCommand::DismissNotice { id, reply } => {
                 self.dismiss_notice(&id);
                 let _ = reply.send(Ok(()));
@@ -1092,6 +1111,7 @@ impl SessionTask {
             Err(error) => self.event(AgentEvent::Error(error)).await,
         }
         self.cli = None;
+        self.touch_activity().await;
         // 已完成轮次计数递增，唤醒等待本轮结束的外部订阅者（Agent / WaitSession）
         let seq = self.turn_tx.borrow().seq + 1;
         self.turn_tx
@@ -1100,6 +1120,20 @@ impl SessionTask {
             return self.stop(delete, reply).await;
         }
         false
+    }
+
+    /// agent space 会话每个轮次结束刷新 `last_activity`（TTL 清理依据）；
+    /// 重写 header 失败只告警，不影响轮次结果
+    async fn touch_activity(&mut self) {
+        if !self.view.persisted || !self.view.session.header.agent_managed() {
+            return;
+        }
+        let mut session = (*self.view.session).clone();
+        session.header.last_activity = Some(chrono::Utc::now());
+        match self.save_header_if_persisted(&session).await {
+            Ok(()) => self.replace_session(session),
+            Err(error) => tracing::warn!("Failed to persist last_activity: {error}"),
+        }
     }
 
     fn cancel_deliveries(&mut self, error: &str) {

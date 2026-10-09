@@ -130,8 +130,13 @@ impl SessionManager {
         Ok(handle)
     }
 
-    /// 句柄表读取：内存未命中时从存储加载（不回写运行时偏好，供 broker 编排路径使用）
-    async fn live_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
+    /// 内存中已登记的句柄（不触发存储加载）
+    pub async fn live(&self, id: &str) -> Option<Arc<ManagedSession>> {
+        self.sessions.lock().await.get(id).cloned()
+    }
+
+    /// 句柄表读取：内存未命中时从存储加载（不回写运行时偏好，供 broker 与 agent space 使用）
+    pub async fn live_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
         let mut sessions = self.sessions.lock().await;
         if let Some(session) = sessions.get(id) {
             return Ok(session.clone());
@@ -167,6 +172,20 @@ impl SessionManager {
         title: Option<String>,
         toggles: SessionToggles,
     ) -> Result<Arc<ManagedSession>, String> {
+        self.create_session_with(workspace, model, variant, title, toggles, |_| {})
+            .await
+    }
+
+    /// 创建会话并在登记前由 `init` 调整 header（agent space 设置 kind / agent / origin）
+    pub async fn create_session_with(
+        self: &Arc<Self>,
+        workspace: impl Into<PathBuf>,
+        model: String,
+        variant: Option<String>,
+        title: Option<String>,
+        toggles: SessionToggles,
+        init: impl FnOnce(&mut crate::model::SessionHeader),
+    ) -> Result<Arc<ManagedSession>, String> {
         let workspace = workspace.into();
         // 新建项目语义：目录不存在时自动创建
         if !workspace.exists() {
@@ -180,9 +199,24 @@ impl SessionManager {
             Session::with_model(&workspace, title, resolved.full_spec, variant, toggles);
         session.header.editor =
             resolve_session_editor(&resolved.model_config, config.settings.editor);
+        init(&mut session.header);
         self.unique_session_id(&mut session).await?;
         self.remember_session(&session);
         Ok(self.spawn_registered(session, false).await)
+    }
+
+    /// 接管一个已构造完毕且带历史轮次的会话（rollover 新会话）：落盘后登记，
+    /// 不回写运行时模型偏好
+    pub async fn adopt_session(
+        self: &Arc<Self>,
+        mut session: Session,
+    ) -> Result<Arc<ManagedSession>, String> {
+        self.unique_session_id(&mut session).await?;
+        self.store
+            .save_header(&session)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(self.spawn_registered(session, true).await)
     }
 
     pub async fn open_session(
@@ -251,13 +285,16 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 级联删除 parent 会话的全部子会话（subagent 派生链递归）：
+    /// 级联删除 parent 会话的全部 subagent 子会话（派生链递归；仅 `agent` 标记的子会话，
+    /// rollover 接替会话虽以 parent 指向旧会话，但不随之删除）：
     /// 活跃句柄经 Stop{delete} 停任务并删盘，冷会话直接删存储记录
     async fn delete_child_sessions(&self, parent_id: &str) {
         let children: Vec<String> = match self.store.list_sessions().await {
             Ok(sessions) => sessions
                 .into_iter()
-                .filter(|session| session.parent.as_deref() == Some(parent_id))
+                .filter(|session| {
+                    session.parent.as_deref() == Some(parent_id) && session.agent.is_some()
+                })
                 .map(|session| session.id)
                 .collect(),
             Err(error) => {
