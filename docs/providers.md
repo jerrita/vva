@@ -115,3 +115,15 @@ pub trait Provider: Send + Sync {
 - 提供通用标准 Server-Sent Events 流式解码器（`SseDecoder`）；
 - 遵循 W3C 规范：支持分块 Chunked 输入拆包、多字节 UTF-8 跨包重组、CRLF/LF 换行规范化以及空行事件触发机制；
 - 为 Responses、Anthropic 与 Gemini 协议流式解析提供底层支撑。
+
+---
+
+## 6. 原生结构化输出 (`response_schema`)
+
+`CompletionOptions.response_schema: Option<ResponseSchema { name, schema }>` 声明期望的 JSON Schema，各供应商用官方原生机制约束输出，返回的 text 即 JSON 文本，由调用方 serde 反序列化为强类型。适配器不修复、不校验返回内容，非法输出（拒答 / 截断）由上层报错。
+
+| 供应商 | 请求字段 |
+|---|---|
+| Responses | `text.format = {type:"json_schema", name, schema, strict:true}` |
+| Anthropic | `output_config.format = {type:"json_schema", schema}`（无需 beta header，无 `name`） |
+| Gemini | `generationConfig.responseMimeType="application/json"` + `generationConfig.responseJsonSchema` |

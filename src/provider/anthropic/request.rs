@@ -267,6 +267,13 @@ impl AnthropicProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
+        // 原生 structured outputs：无需 beta header，JSON 文本落在 text 块中
+        if let Some(rs) = &options.response_schema {
+            body["output_config"] = serde_json::json!({
+                "format": { "type": "json_schema", "schema": rs.schema }
+            });
+        }
+
         Ok(body)
     }
 }

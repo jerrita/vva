@@ -51,6 +51,14 @@ pub struct ProviderCapabilities {
     pub server_tool_names: Vec<&'static str>,
 }
 
+/// 结构化输出约束：供应商以原生机制强制模型返回符合 `schema` 的 JSON 文本，
+/// 由调用方自行反序列化；适配器不修复、不校验返回内容
+#[derive(Debug, Clone)]
+pub struct ResponseSchema {
+    pub name: String,
+    pub schema: serde_json::Value,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionOptions {
     pub model: String,
@@ -64,6 +72,8 @@ pub struct CompletionOptions {
     pub service_tier: Option<String>,
     /// 模型亲和组：组装轮次元数据时打标，回放时据此判定原生状态是否可复用
     pub affinity: Option<String>,
+    /// 期望的 JSON Schema 输出（Responses `text.format` / Anthropic `output_config.format` / Gemini `responseJsonSchema`）
+    pub response_schema: Option<ResponseSchema>,
 }
 
 impl Default for CompletionOptions {
@@ -77,6 +87,7 @@ impl Default for CompletionOptions {
             reasoning_effort: None,
             service_tier: None,
             affinity: None,
+            response_schema: None,
         }
     }
 }
