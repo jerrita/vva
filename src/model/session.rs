@@ -138,6 +138,12 @@ impl Session {
                 parent: None,
                 agent: None,
                 depth: 0,
+                kind: SessionKind::default(),
+                origin: None,
+                topic: None,
+                routed_by: None,
+                superseded_by: None,
+                last_activity: None,
             },
             updated_at: now,
             turns: Vec::new(),
@@ -236,7 +242,52 @@ pub struct SessionHeader {
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_depth")]
     pub depth: u8,
+    /// agent space 会话类别；缺省 Topic 不序列化
+    #[serde(default, skip_serializing_if = "SessionKind::is_topic")]
+    pub kind: SessionKind,
+    /// 会话来源 IM 位置（agent space 创建的会话携带）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    /// router 使用的一句话主题摘要
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// 路由本会话的决策来源（如 `reply` / `switch` / `router`）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_by: Option<String>,
+    /// rollover 后接替本会话的新会话 id；router 排除已被取代的会话
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// 最近一次用户活动时刻，TTL 清理依据（重启后据此恢复）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<DateTime<Utc>>,
 }
+
+/// agent space 会话类别
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionKind {
+    /// 普通主题会话（含所有非 agent space 会话）
+    #[default]
+    Topic,
+    /// 一次性问答，不进入 router 候选，回复后清理
+    Oneshot,
+    /// 知识沉淀后台会话
+    Curator,
+}
+
+impl SessionKind {
+    pub fn is_topic(&self) -> bool {
+        matches!(self, Self::Topic)
+    }
+}
+
+/// IM 来源位置：channel 名与 chat id
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    pub channel: String,
+    pub chat_id: String,
+}
+
 impl SessionHeader {
     /// 由持久化 Header 与已加载的轮次重建运行时会话（updated_at 以加载时刻计）
     pub fn into_session(self, turns: Vec<Turn>) -> Session {
@@ -252,7 +303,7 @@ impl SessionHeader {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JsonlRecord {
-    Header(SessionHeader),
+    Header(Box<SessionHeader>),
     Turn(Box<Turn>),
 }
 
@@ -273,6 +324,14 @@ pub struct SessionSummary {
     /// 派生本会话的 agent 定义名（subagent 会话携带）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(skip_serializing_if = "SessionKind::is_topic")]
+    pub kind: SessionKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
 }
 
 impl SessionSummary {
@@ -289,6 +348,64 @@ impl SessionSummary {
             web_search: header.web_search,
             parent: header.parent,
             agent: header.agent,
+            kind: header.kind,
+            origin: header.origin,
+            topic: header.topic,
+            superseded_by: header.superseded_by,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_header_loads_with_topic_defaults() {
+        let line = r#"{"type":"header","id":"sess_a1b2c","workspace_root":"/w","created_at":"2026-01-01T00:00:00Z","current_model":"a/m"}"#;
+        let JsonlRecord::Header(header) = serde_json::from_str(line).unwrap() else {
+            panic!("expected header");
+        };
+        assert_eq!(header.kind, SessionKind::Topic);
+        assert!(header.origin.is_none() && header.topic.is_none());
+        assert!(header.routed_by.is_none() && header.superseded_by.is_none());
+        assert!(header.last_activity.is_none());
+        // 缺省字段不被序列化，旧格式保持稳定
+        let out = serde_json::to_string(&JsonlRecord::Header(header)).unwrap();
+        for key in [
+            "kind",
+            "origin",
+            "topic",
+            "routed_by",
+            "superseded_by",
+            "last_activity",
+        ] {
+            assert!(!out.contains(key), "{key} 不应被序列化");
+        }
+    }
+
+    #[test]
+    fn agent_space_header_fields_roundtrip() {
+        let mut header = Session::new("/w", None).header;
+        header.kind = SessionKind::Oneshot;
+        header.origin = Some(Origin {
+            channel: "qq".into(),
+            chat_id: "c2c:1".into(),
+        });
+        header.topic = Some("t".into());
+        header.routed_by = Some("router".into());
+        header.superseded_by = Some("sess_00000".into());
+        header.last_activity = Some(Utc::now());
+        let json = serde_json::to_string(&header).unwrap();
+        assert!(json.contains(r#""kind":"oneshot""#));
+        assert_eq!(
+            serde_json::from_str::<SessionHeader>(&json).unwrap(),
+            header
+        );
+
+        let summary = SessionSummary::from_header(header, 2);
+        assert_eq!(summary.kind, SessionKind::Oneshot);
+        assert_eq!(summary.origin.unwrap().channel, "qq");
+        assert_eq!(summary.superseded_by.as_deref(), Some("sess_00000"));
     }
 }

@@ -69,6 +69,7 @@ impl AppConfig {
         base.small_model = over.small_model.or(base.small_model.take());
         base.editor = over.editor.or(base.editor);
         base.web = over.web.or(base.web.take());
+        base.agent = over.agent.or(base.agent.take());
 
         for (p_id, p_cfg) in project.providers {
             self.providers.entry(p_id).or_default().merge(p_cfg);
@@ -167,6 +168,79 @@ pub struct GlobalSettings {
     /// 外置 web search / fetch 补全配置；模型原生能力缺位时以客户端工具补齐
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<WebSettings>,
+    /// agent space（常驻 IM agent）配置；`vva agent` 要求声明
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentSpaceConfig>,
+}
+
+/// agent space 配置：整数秒 / 整数 token；router 复用 `settings.small_model`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentSpaceConfig {
+    /// oneshot 与 topic session 使用的模型规格；缺省沿用 `settings.default`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 普通 session 空闲清理时长（秒）
+    pub ttl_secs: u64,
+    /// oneshot session 回复后的清理等待时长（秒）；0 表示回复完即可清理
+    pub oneshot_ttl_secs: u64,
+    /// rollover 预留线：上下文达到 `limit.context - 预留` 时回合结束触发
+    pub rollover_reserve_tokens: u64,
+    /// rollover 后新 session 保留的最近完整轮次数
+    pub rollover_keep_turns: usize,
+    /// 待附件缓冲等待时长（秒），超时提示并清理
+    pub pending_files_ttl_secs: u64,
+    pub channels: AgentChannels,
+}
+
+impl Default for AgentSpaceConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            ttl_secs: 18_000,
+            oneshot_ttl_secs: 0,
+            rollover_reserve_tokens: 32_000,
+            rollover_keep_turns: 4,
+            pending_files_ttl_secs: 600,
+            channels: AgentChannels::default(),
+        }
+    }
+}
+
+impl AgentSpaceConfig {
+    /// 启动期校验：已声明的 channel 凭据不得为空
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(qq) = &self.channels.qq {
+            if qq.app_id.is_empty() {
+                return Err("settings.agent.channels.qq.app_id 为空".into());
+            }
+            if qq.secret.is_empty() {
+                return Err(
+                    "settings.agent.channels.qq.secret 为空（检查 ${VAR} 环境变量是否已设置）"
+                        .into(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AgentChannels {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qq: Option<QqChannelConfig>,
+}
+
+/// QQ 官方机器人凭据与白名单；白名单外用户静默丢弃
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QqChannelConfig {
+    #[serde(default)]
+    pub app_id: String,
+    /// 推荐 `${VAR}` 插值；环境变量缺失时展开为空，由 `validate` 显式报错
+    #[serde(default)]
+    pub secret: String,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
 }
 
 /// 外置 web 配置：`search` / `fetch` 按名称选择 provider。

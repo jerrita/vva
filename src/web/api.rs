@@ -1200,6 +1200,10 @@ mod tests {
             web_search: true,
             parent: None,
             agent: None,
+            kind: Default::default(),
+            origin: None,
+            topic: None,
+            superseded_by: None,
         };
         let running = SessionSummary {
             id: "sess_run".into(),

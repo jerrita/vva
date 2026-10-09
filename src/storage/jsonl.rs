@@ -110,7 +110,10 @@ fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError
     // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
     let temp_path = path.with_extension("jsonl.tmp");
     let mut file = File::create(&temp_path)?;
-    write_record(&mut file, &JsonlRecord::Header(session.header.clone()))?;
+    write_record(
+        &mut file,
+        &JsonlRecord::Header(Box::new(session.header.clone())),
+    )?;
     for turn in &session.turns {
         write_record(&mut file, &JsonlRecord::Turn(Box::new(turn.clone())))?;
     }
@@ -154,7 +157,7 @@ fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session
     };
 
     let header: SessionHeader = match serde_json::from_str::<JsonlRecord>(&first_line)? {
-        JsonlRecord::Header(h) => h,
+        JsonlRecord::Header(h) => *h,
         _ => {
             return Err(StoreError::InvalidFormat(
                 "First line must be SessionHeader".into(),
@@ -214,7 +217,7 @@ fn collect_summaries(dir: &Path, summaries: &mut Vec<SessionSummary>) -> Result<
         let mut first_line = String::new();
         let parsed_header = reader.read_line(&mut first_line).ok().and_then(|_| {
             match serde_json::from_str::<JsonlRecord>(&first_line) {
-                Ok(JsonlRecord::Header(header)) => Some(header),
+                Ok(JsonlRecord::Header(header)) => Some(*header),
                 _ => {
                     eprintln!(
                         "warning: corrupt session header, skipped: {}",
