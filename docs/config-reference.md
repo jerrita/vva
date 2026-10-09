@@ -60,7 +60,8 @@
     "default": "a/gpt-5.6-terra",     // 缺省模型规格 {provider_id}/{model_id}
     "small_model": "a/gpt-5.6-luna",  // 会话标题生成用的小模型，缺省时用主模型
     "editor": "hashline",             // 缺省文件编辑协议：replace | patch | hashline
-    "web": { /* 外置 web search / fetch，见 2.1 */ }
+    "web": { /* 外置 web search / fetch，见 2.1 */ },
+    "agent": { /* agent space，见 2.2 */ }
   },
   "providers": {
     "<provider_id>": { /* ... */ }
@@ -76,6 +77,7 @@
 | `small_model` | string | 否 | 会话标题生成所用的模型规格；缺省时沿用主模型 |
 | `editor` | string | 否 | 模型未声明 `annotation.editor` 时新会话采用的编辑协议：`replace` / `patch` / `hashline`；缺省 `hashline` |
 | `web` | object | 否 | 外置 web search / fetch 补全，见 2.1 |
+| `agent` | object | 否 | agent space（常驻 IM agent）配置，见 2.2；`vva agent` 要求声明 |
 
 ### 2.1 settings.web 外置搜索
 
@@ -97,6 +99,31 @@
 | `fetch` | provider 名选择：`local` / `tavily` |
 
 模型原生 web 能力缺位时（`annotation.web_search: false`、`annotation.web_fetch: false` 或协议本身未提供），会话 web 开关开启且对应位配置了外置 provider 的情况下，注册同名客户端工具 `web_search` / `web_fetch` 补全，并在状态栏标注接管后端（TUI 状态行 `web:<search>+<fetch>`，Web 输入区「搜索」chip 标题）；原生能力在位时优先使用原生，外置工具不注册。Responses 的原生 `web_search` 含 `open_page` / `find_in_page`，视为 fetch 在位。`settings.web` 未配置时行为与既往一致（搜索选项报"被忽略"通知）。选中的 provider 不具备对应能力、未声明或密钥缺失时，会话启动报错。
+
+### 2.2 settings.agent 常驻 IM agent
+
+```jsonc
+"agent": {
+  "model": "a/gpt-5.6-terra",
+  "ttl_secs": 18000,
+  "channels": {
+    "qq": { "app_id": "123456", "secret": "${QQ_BOT_SECRET}", "allowed_users": ["<openid>"] }
+  }
+}
+```
+
+整段省略字段取默认值；项目配置声明 `agent` 时整段替换全局。时长为整数秒，预留为整数 token。router 复用 `settings.small_model`，不单设模型字段。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `model` | `settings.default` | oneshot 与 topic session 使用的模型规格 |
+| `ttl_secs` | `18000`（5h） | 普通 session 空闲清理 |
+| `oneshot_ttl_secs` | `0` | oneshot 回复完即可清理 |
+| `rollover_reserve_tokens` | `32000` | 上下文达到 `limit.context - 预留` 时回合结束触发 rollover |
+| `rollover_keep_turns` | `4` | rollover 后新 session 保留的最近完整轮次数 |
+| `pending_files_ttl_secs` | `600` | 待附件缓冲等待时间 |
+| `channels.qq.app_id` / `secret` | 无 | QQ 机器人凭据；已声明 qq 而二者为空（如 `${VAR}` 未设置）时启动报错 |
+| `channels.qq.allowed_users` | `[]` | 用户白名单；白名单外静默丢弃 |
 
 ---
 

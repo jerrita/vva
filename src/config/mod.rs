@@ -6,8 +6,9 @@ pub mod state;
 use std::path::{Path, PathBuf};
 
 pub use model::{
-    AppConfig, GLM_CODING_PLAN_BASE_URL, GLM_CODING_PLAN_PROVIDER_ID, GlobalSettings, ModelConfig,
-    ProviderConfig, ProviderType,
+    AgentChannels, AgentSpaceConfig, AppConfig, GLM_CODING_PLAN_BASE_URL,
+    GLM_CODING_PLAN_PROVIDER_ID, GlobalSettings, ModelConfig, ProviderConfig, ProviderType,
+    QqChannelConfig,
 };
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::ResolvedModel;
@@ -281,6 +282,44 @@ mod tests {
             models["hashed"].editor(),
             Some(crate::model::EditorKind::Hashline)
         );
+    }
+
+    #[test]
+    fn test_settings_agent_defaults_and_merge() {
+        let global = parse_config_str(
+            r#"{ "settings": { "agent": { "ttl_secs": 60, "channels": { "qq": { "app_id": "1", "secret": "s", "allowed_users": ["u"] } } } } }"#,
+        )
+        .expect("parse global");
+        let agent = global.settings.agent.as_ref().unwrap();
+        assert_eq!(agent.ttl_secs, 60);
+        assert_eq!(agent.oneshot_ttl_secs, 0);
+        assert_eq!(agent.rollover_reserve_tokens, 32_000);
+        assert_eq!(agent.rollover_keep_turns, 4);
+        assert_eq!(agent.pending_files_ttl_secs, 600);
+        assert_eq!(agent.model, None);
+        assert!(agent.validate().is_ok());
+
+        // 项目未声明 agent 时保留全局；声明时整段替换
+        let kept = global
+            .clone()
+            .merge(parse_config_str(r#"{ "settings": {} }"#).unwrap());
+        assert_eq!(kept.settings.agent.as_ref().unwrap().ttl_secs, 60);
+        let over = global
+            .merge(parse_config_str(r#"{ "settings": { "agent": { "model": "a/m" } } }"#).unwrap());
+        let agent = over.settings.agent.unwrap();
+        assert_eq!(agent.model.as_deref(), Some("a/m"));
+        assert_eq!(agent.ttl_secs, 18_000);
+        assert!(agent.channels.qq.is_none());
+    }
+
+    #[test]
+    fn test_settings_agent_qq_secret_missing_is_error() {
+        let config = parse_config_str(
+            r#"{ "settings": { "agent": { "channels": { "qq": { "app_id": "1", "secret": "${VVA_TEST_UNSET_QQ_SECRET}" } } } } }"#,
+        )
+        .expect("parse");
+        let err = config.settings.agent.unwrap().validate().unwrap_err();
+        assert!(err.contains("secret"));
     }
 
     #[test]

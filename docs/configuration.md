@@ -22,7 +22,11 @@ vva 支持分层配置加载机制：
 
 ### 2.2 环境变量插值展开 (`interpolate_env_vars`)
 - 配置文件中的敏感信息（如 API Key）建议使用环境变量插值语法：`"${ENV_VAR_NAME}"`；
-- 解析引擎在反序列化前扫描并替换为对应环境变量的值；未找到时保留原字符串并提示。
+- 解析引擎在反序列化前扫描并替换为对应环境变量的值；未设置的变量展开为空字符串（`settings.agent.channels.qq.secret` 等必填凭据为空时，`vva agent` 启动即报错）。
+
+### 2.3 agent space 配置组 (`settings.agent`)
+- 强类型 `AgentSpaceConfig`（[`src/config/model.rs`](../src/config/model.rs)），`GlobalSettings.agent` 为 `Option`；项目配置声明该段时整段替换全局（与 `settings.web` 一致），未声明则保留全局；
+- 缺省字段取默认值（见 [config-reference.md](config-reference.md) 的 2.2）；`vva agent` 要求该段存在，工作区固定为 `~/.vva/agent/`；router 复用 `settings.small_model`。
 
 ---
 

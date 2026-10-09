@@ -80,6 +80,9 @@ enum Commands {
         #[arg(short, long)]
         workspace: Option<PathBuf>,
     },
+
+    /// 启动 agent space (常驻 IM agent；工作区固定为 ~/.vva/agent/)
+    Agent,
 }
 
 #[derive(Subcommand)]
@@ -400,6 +403,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 SessionManager::new(store, app_config, workspace, vva_dir.join("state.json"))
                     .with_config_path(cli.config.as_deref());
             vva::web::run_server(Arc::new(manager), host, port).await?;
+        }
+
+        Commands::Agent => {
+            let space =
+                vva::agent_space::AgentSpace::new(store, app_config, vva_dir.join("state.json"))?;
+            space.run().await?;
         }
 
         Commands::Session { action } => match action {
