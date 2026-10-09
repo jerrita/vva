@@ -883,3 +883,29 @@ fn user_cache_breakpoint_covers_all_file_refs_and_trailing_media() {
     assert_eq!(blocks.last().unwrap()["cache_control"]["type"], "ephemeral");
     assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
 }
+
+#[test]
+fn test_response_schema_maps_to_output_config_format() {
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("route")));
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"agent": {"type": "string"}},
+        "required": ["agent"],
+        "additionalProperties": false
+    });
+    let options = CompletionOptions {
+        model: "claude-sonnet-4-5".into(),
+        response_schema: Some(crate::provider::ResponseSchema {
+            name: "route_decision".into(),
+            schema: schema.clone(),
+        }),
+        ..Default::default()
+    };
+    let body = AnthropicProvider::new("k")
+        .build_request_body(&session, &[], &options)
+        .unwrap();
+    assert_eq!(body["output_config"]["format"]["type"], "json_schema");
+    assert_eq!(body["output_config"]["format"]["schema"], schema);
+    assert!(body.get("output_format").is_none());
+}

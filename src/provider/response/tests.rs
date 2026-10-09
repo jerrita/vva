@@ -1453,3 +1453,31 @@ fn test_file_ref_projects_as_input_text() {
     assert!(text.starts_with("@src/main.rs\nfn main() {}"));
     assert!(text.ends_with("[content truncated]"));
 }
+
+#[test]
+fn test_response_schema_maps_to_text_format_json_schema() {
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("route")));
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"agent": {"type": "string"}},
+        "required": ["agent"],
+        "additionalProperties": false
+    });
+    let options = CompletionOptions {
+        model: "gpt-5".into(),
+        response_schema: Some(crate::provider::ResponseSchema {
+            name: "route_decision".into(),
+            schema: schema.clone(),
+        }),
+        ..Default::default()
+    };
+    let body = ResponseProvider::new("k")
+        .build_request_body(&session, &[], &options)
+        .unwrap();
+    let format = &body["text"]["format"];
+    assert_eq!(format["type"], "json_schema");
+    assert_eq!(format["name"], "route_decision");
+    assert_eq!(format["schema"], schema);
+    assert_eq!(format["strict"], true);
+}

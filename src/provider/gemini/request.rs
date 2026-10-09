@@ -174,6 +174,13 @@ impl GeminiProvider {
         if let Some(max_tokens) = options.max_tokens {
             gen_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
         }
+        if let Some(rs) = &options.response_schema {
+            gen_config.insert(
+                "responseMimeType".to_string(),
+                serde_json::json!("application/json"),
+            );
+            gen_config.insert("responseJsonSchema".to_string(), rs.schema.clone());
+        }
         if !gen_config.is_empty() {
             body["generationConfig"] = serde_json::Value::Object(gen_config);
         }

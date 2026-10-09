@@ -288,6 +288,7 @@ pub(super) async fn generate_title(
         reasoning_effort: None,
         service_tier: resolved.model_config.service_tier().map(str::to_string),
         affinity: None,
+        response_schema: None,
     };
     let response = resolved
         .create_provider()

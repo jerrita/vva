@@ -370,3 +370,31 @@ fn test_file_ref_projects_as_text_part() {
     assert_eq!(parts[0]["text"], "解释 @src/main.rs");
     assert_eq!(parts[1]["text"], "@src/main.rs\nfn main() {}");
 }
+
+#[test]
+fn test_response_schema_maps_to_generation_config() {
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("route")));
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"agent": {"type": "string"}},
+        "required": ["agent"],
+        "additionalProperties": false
+    });
+    let options = CompletionOptions {
+        model: "gemini-2.5-flash".into(),
+        response_schema: Some(crate::provider::ResponseSchema {
+            name: "route_decision".into(),
+            schema: schema.clone(),
+        }),
+        ..Default::default()
+    };
+    let body = GeminiProvider::new("k")
+        .build_request_body(&session, &[], &options)
+        .unwrap();
+    assert_eq!(
+        body["generationConfig"]["responseMimeType"],
+        "application/json"
+    );
+    assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
+}

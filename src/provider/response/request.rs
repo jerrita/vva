@@ -301,6 +301,17 @@ impl ResponseProvider {
             });
         }
 
+        if let Some(rs) = &options.response_schema {
+            body["text"] = serde_json::json!({
+                "format": {
+                    "type": "json_schema",
+                    "name": rs.name,
+                    "schema": rs.schema,
+                    "strict": true
+                }
+            });
+        }
+
         Ok(body)
     }
 }
