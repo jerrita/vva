@@ -26,6 +26,7 @@ use crate::config::AgentSpaceConfig;
 use crate::harness::{ManagedSession, SessionManager};
 use crate::model::{Origin, Session, SessionKind, ToggleOverrides};
 use crate::system::format_scheduled_reminder;
+use crate::ui::history::compute_stats;
 
 /// 待附件缓冲的过期检查周期
 const EXPIRE_PERIOD: Duration = Duration::from_secs(30);
@@ -562,28 +563,42 @@ impl Runtime {
     /// 无参查看；`list` 列出可用规格；`<规格> [档位]` 切换 focus 会话模型，
     /// 无 focus 时改 agent 模式模型；`--global` 同时改 agent 模式与 focus 会话
     async fn model_command(&self, binding: &str, arg: &str) -> Result<String, String> {
-        let global = arg.split_whitespace().any(|w| w == "--global");
-        let words: Vec<&str> = arg
-            .split_whitespace()
-            .filter(|w| *w != "--global")
-            .collect();
+        let mut global = false;
+        let mut flag_variant: Option<&str> = None;
+        let mut words: Vec<&str> = Vec::new();
+        let mut tokens = arg.split_whitespace();
+        while let Some(w) = tokens.next() {
+            match w {
+                "--global" => global = true,
+                "--variant" => {
+                    flag_variant = Some(tokens.next().ok_or("--variant 需要指定档位")?);
+                }
+                _ => words.push(w),
+            }
+        }
         let focus = self.focus_handle(binding).await.ok();
         match words[..] {
-            [] if global => Err("用法: /model --global <规格> [档位]".into()),
-            [] => {
+            [] if flag_variant.is_none() && global => {
+                Err("用法: /model --global <规格> [档位]".into())
+            }
+            [] if flag_variant.is_none() => {
                 let mode = self.mode_model();
                 let mut lines = Vec::new();
                 if let Some(handle) = &focus {
                     let header = handle.snapshot().session.header.clone();
                     lines.push(format!(
-                        "默认会话 {} 模型: {}",
+                        "默认会话 {} 模型: {}\n  当前档位: {}\n  可用档位: {}",
                         handle.id,
-                        spec_label(&header.current_model, header.current_variant.as_deref())
+                        header.current_model,
+                        header.current_variant.as_deref().unwrap_or("none"),
+                        self.variants_label(&header.current_model)
                     ));
                 }
                 lines.push(format!(
-                    "agent 模式模型（新会话）: {}",
-                    spec_label(&mode.model, mode.variant.as_deref())
+                    "agent 模式模型（新会话）: {}\n  当前档位: {}\n  可用档位: {}",
+                    mode.model,
+                    mode.variant.as_deref().unwrap_or("none"),
+                    self.variants_label(&mode.model)
                 ));
                 Ok(lines.join("\n"))
             }
@@ -627,8 +642,51 @@ impl Runtime {
                     .collect::<Vec<_>>()
                     .join("\n"))
             }
-            [spec] | [spec, _] => {
-                let variant = words.get(1).map(|v| v.to_string());
+            _ if flag_variant.is_some() && words.len() <= 1 => {
+                self.apply_model(focus, global, words.first().copied(), flag_variant)
+                    .await
+            }
+            [spec] | [spec, _] if !spec.is_empty() => {
+                self.apply_model(focus, global, Some(spec), words.get(1).copied())
+                    .await
+            }
+            _ => Err("用法: /model [list|[--global] [<规格>] [--variant <档位>]]".into()),
+        }
+    }
+
+    /// 模型声明的可用档位（`/` 分隔），未声明时给出提示
+    fn variants_label(&self, spec: &str) -> String {
+        self.manager
+            .app_config()
+            .resolve_model(spec, None)
+            .ok()
+            .and_then(|m| m.model_config.variants.clone())
+            .filter(|v| !v.is_empty())
+            .map_or("无".into(), |v| v.join("/"))
+    }
+
+    /// 切换模型与/或档位：`spec` 缺省时沿用当前模型；档位 `none` 清除
+    async fn apply_model(
+        &self,
+        focus: Option<Arc<ManagedSession>>,
+        global: bool,
+        spec: Option<&str>,
+        variant: Option<&str>,
+    ) -> Result<String, String> {
+        {
+            {
+                let spec_owned;
+                let spec = match spec {
+                    Some(spec) => spec,
+                    None => {
+                        spec_owned = match &focus {
+                            Some(h) if !global => h.snapshot().session.header.current_model.clone(),
+                            _ => self.mode_model().model,
+                        };
+                        spec_owned.as_str()
+                    }
+                };
+                let variant = variant.filter(|v| *v != "none").map(str::to_string);
                 let mode = global || focus.is_none();
                 // 会话与模式都要求声明 limit.context，否则 rollover 无法判定
                 check_mode_model(&self.manager, spec, variant.clone())?;
@@ -637,22 +695,25 @@ impl Runtime {
                     handle
                         .configure(
                             Some(spec.into()),
-                            variant.clone().map(Some),
+                            Some(variant.clone()),
                             ToggleOverrides::default(),
                         )
                         .await?;
                     lines.push(format!(
-                        "默认会话 {} 已切换到 {spec}（下一轮起生效，切换会使该会话缓存失效）",
-                        handle.id
+                        "默认会话 {} 已切换到 {}（下一轮起生效，切换会使该会话缓存失效）",
+                        handle.id,
+                        spec_label(spec, variant.as_deref())
                     ));
                 }
                 if mode {
-                    self.set_mode_model(spec, variant)?;
-                    lines.push(format!("agent 模式模型已设为 {spec}（新会话使用）"));
+                    self.set_mode_model(spec, variant.clone())?;
+                    lines.push(format!(
+                        "agent 模式模型已设为 {}（新会话使用）",
+                        spec_label(spec, variant.as_deref())
+                    ));
                 }
                 Ok(lines.join("\n"))
             }
-            _ => Err("用法: /model [list | [--global] <规格> [档位]]".into()),
         }
     }
 
@@ -731,49 +792,72 @@ impl Runtime {
     }
 
     async fn status(&self, binding: &str) -> Result<String, String> {
-        let pending = self.state.lock().await.pending.count(binding);
-        let focus = self
-            .state
-            .lock()
-            .await
-            .bindings
-            .focus(binding)
-            .map(str::to_string);
+        let (pending, focus) = {
+            let state = self.state.lock().await;
+            (
+                state.pending.count(binding),
+                state.bindings.focus(binding).map(str::to_string),
+            )
+        };
         let Some(id) = focus else {
-            return Ok(format!("默认会话: 无\n待附件: {pending}"));
+            return Ok(status_table(&[
+                ("默认会话", "无".into()),
+                ("待附件", pending.to_string()),
+            ]));
         };
         let handle = self.manager.live_or_load(&id).await?;
         let session = handle.snapshot().session.clone();
-        Ok(format!(
-            "默认会话: {id}\n运行中: {}\n模型: {}\n上下文: {}\ncache 命中率: {}\n待附件: {pending}",
-            if handle.is_running() { "是" } else { "否" },
-            session.header.current_model,
-            self.context_usage(&session),
-            cache_hit_rate(&session)
-                .map_or("暂无数据".into(), |r| format!("{:.0}%", r * 100.0)),
-        ))
-    }
-
-    fn context_usage(&self, session: &Session) -> String {
-        let Some(tokens) = context_tokens(session) else {
-            return "暂无数据".into();
+        let stats = compute_stats(&session, &self.manager.app_config());
+        let header = &session.header;
+        let (provider, model) = header
+            .current_model
+            .split_once('/')
+            .unwrap_or(("-", &header.current_model));
+        let context = match (context_tokens(&session), stats.context_limit) {
+            (None, _) => "暂无数据".into(),
+            (Some(t), Some(limit)) => {
+                format!("{t} / {limit} ({:.0}%)", t as f64 * 100.0 / limit as f64)
+            }
+            (Some(t), None) => format!("{t} (模型未声明 limit.context)"),
         };
-        let limit = self
-            .manager
-            .app_config()
-            .resolve_model(
-                &session.header.current_model,
-                session.header.current_variant.as_deref(),
-            )
-            .ok()
-            .and_then(|m| m.model_config.limit.as_ref().map(|l| l.context as u64));
-        match limit {
-            Some(limit) => format!(
-                "{tokens} / {limit} ({:.0}%)",
-                tokens as f64 * 100.0 / limit as f64
+        let rows = [
+            ("默认会话", id),
+            ("标题", header.title.clone().unwrap_or_else(|| "-".into())),
+            ("工作区", header.workspace_root.display().to_string()),
+            (
+                "运行中",
+                if handle.is_running() { "是" } else { "否" }.into(),
             ),
-            None => format!("{tokens} (模型未声明 limit.context)"),
-        }
+            ("轮次", stats.total_turns.to_string()),
+            ("模型", model.to_string()),
+            ("Provider", provider.to_string()),
+            (
+                "推理档位",
+                header
+                    .current_variant
+                    .clone()
+                    .unwrap_or_else(|| "none".into()),
+            ),
+            ("上下文", context),
+            (
+                "输入 / 输出",
+                format!("{} / {}", stats.prompt_tokens, stats.completion_tokens),
+            ),
+            (
+                "TPS",
+                stats.tps.map_or("暂无数据".into(), |v| format!("{v:.1}")),
+            ),
+            ("Cache 读", stats.cache_read_tokens.to_string()),
+            ("Cache 写", stats.cache_write_tokens.to_string()),
+            (
+                "Cache 命中率",
+                cache_hit_rate(&session)
+                    .map_or("暂无数据".into(), |r| format!("{:.0}%", r * 100.0)),
+            ),
+            ("预估费用", format!("${:.4}", stats.estimated_cost_usd)),
+            ("待附件", pending.to_string()),
+        ];
+        Ok(status_table(&rows))
     }
 
     // ================== 轮次与回复 ==================
@@ -1349,6 +1433,17 @@ fn compose_prompt(text: &str, files: &[AttachedFile], quoted: Option<&str>) -> S
     out
 }
 
+/// IM 状态表：Markdown 双栏表格（项 / 值 / 项 / 值），按行优先成对排布
+fn status_table(rows: &[(&str, String)]) -> String {
+    let cell = |(k, v): &(&str, String)| format!("{k} | {}", v.replace('|', "\\|"));
+    let mut out = String::from("| 项 | 值 | 项 | 值 |\n| --- | --- | --- | --- |");
+    for pair in rows.chunks(2) {
+        let right = pair.get(1).map_or(" | ".into(), cell);
+        out.push_str(&format!("\n| {} | {right} |", cell(&pair[0])));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1780,6 +1875,12 @@ mod tests {
         let sent = f.channel.wait(6).await;
         assert!(sent[5].text.contains("agent 模式"), "{}", sent[5].text);
         assert!(file.exists());
+        // 仅 --variant：沿用当前模型只改档位
+        f.runtime
+            .handle(inbound("m7", "/model --variant high"))
+            .await;
+        let sent = f.channel.wait(7).await;
+        assert!(sent[6].text.contains("p/m (high)"), "{}", sent[6].text);
         let _ = std::fs::remove_dir_all(&f.dir);
     }
 

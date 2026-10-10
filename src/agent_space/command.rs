@@ -30,8 +30,8 @@ const HELP: &[(&str, &str)] = &[
     ("/status", "默认会话状态（/stat）"),
     ("/rename <标题>", "重命名默认会话"),
     (
-        "/model [list|[--global] <规格> [档位]]",
-        "查看 / 列出 / 切换模型：改 focus 会话，无 focus 改 agent 模式，--global 两者都改",
+        "/model [list|[--global] [<规格>] [--variant <档位>]]",
+        "查看 / 列出 / 切换模型或推理档位（--variant none 清除档位）：改 focus 会话，无 focus 改 agent 模式，--global 两者都改",
     ),
     ("/skills", "列出本地技能"),
     (
