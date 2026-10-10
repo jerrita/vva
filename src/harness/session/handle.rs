@@ -85,6 +85,12 @@ pub enum Command {
         delivery: PendingDelivery,
         reply: Reply,
     },
+    /// 只追加提示：空闲直接落盘为 User reminder 轮次，运行中排队到轮次间隙；
+    /// 永不触发模型轮次
+    Note {
+        text: String,
+        reply: Reply,
+    },
     /// 后台子代理完成：注入最终消息轮次并自动续跑（无应答，watcher 经句柄投递）
     SubagentFinished {
         session_id: String,
@@ -188,6 +194,21 @@ impl ManagedSession {
             Some(error) => Err(error),
             None => Ok(report),
         }
+    }
+
+    /// 追加一条提示（reminder 文本）到历史末尾，不触发模型轮次；
+    /// 运行中入队，在下一个轮次间隙（或本轮收尾）追加，不打断当前轮次
+    pub async fn note(&self, text: &str) -> Result<(), String> {
+        tracing::debug!(
+            "追加提示: session={} {} 字符",
+            self.id,
+            text.chars().count()
+        );
+        self.request(|reply| Command::Note {
+            text: text.into(),
+            reply,
+        })
+        .await
     }
 
     /// 标记本会话已被 `by` 接替

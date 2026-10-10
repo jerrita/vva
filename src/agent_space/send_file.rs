@@ -109,7 +109,7 @@ mod tests {
 
     use super::super::channel::{ChannelError, Inbound};
     use super::*;
-    use crate::model::{Origin, Session};
+    use crate::model::{Origin, Session, SessionKind};
 
     struct FakeChannel {
         sent: Mutex<Vec<OutboundFile>>,
@@ -209,5 +209,27 @@ mod tests {
         assert_eq!(tools[0].name(), "SendFile");
         header.parent = Some("sess_00000".into());
         assert!(factory(&header).is_empty());
+    }
+
+    #[test]
+    fn factory_covers_topic_oneshot_and_rollover_successor_but_not_curator() {
+        let (channel, _, _) = fixture(false);
+        let factory = session_tool_factory(channel);
+        let header = |kind, origin: bool, continued: bool| {
+            let mut header = Session::new("/w", None).header;
+            header.kind = kind;
+            header.origin = origin.then(|| Origin {
+                channel: "qq".into(),
+                chat_id: "c2c:u1".into(),
+            });
+            header.continued_from = continued.then(|| "sess_00000".into());
+            header
+        };
+        assert_eq!(factory(&header(SessionKind::Topic, true, false)).len(), 1);
+        assert_eq!(factory(&header(SessionKind::Oneshot, true, false)).len(), 1);
+        // rollover 接替会话不是 subagent，仍可发文件
+        assert_eq!(factory(&header(SessionKind::Topic, true, true)).len(), 1);
+        // curator 无 IM 来源
+        assert!(factory(&header(SessionKind::Curator, false, false)).is_empty());
     }
 }

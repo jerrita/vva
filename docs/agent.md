@@ -31,7 +31,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
   Scheduler：cron → Deliver
 ```
 
-新增 `src/agent_space/`（`channel/`、`binding.rs`、`router.rs`、`curator.rs`、`rollover.rs`、`scheduler.rs`），入口 `vva agent`。复用 `SessionManager`、`Deliver`、skills、JSONL，不改动其语义。所有 session 位于固定工作区 `~/.vva/agent/`，`team=false`（不挂 `Agent` / `SendMessage` / `WaitSession`，不做 subagent 编排）。
+新增 `src/agent_space/`（`channel/`、`binding.rs`、`router.rs`、`curator.rs`、`rollover.rs`、`scheduler.rs`），入口 `vva agent`。复用 `SessionManager`、`Deliver`、skills、JSONL，不改动其语义。所有 session 位于固定工作区 `~/.vva/space/`，`team=false`（不挂 `Agent` / `SendMessage` / `WaitSession`，不做 subagent 编排）。
 
 ## 3. 概念
 
@@ -85,7 +85,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 不原地改写历史。回合结束后若上下文达到 `limit.context − 预留`，由**主模型在同一 session 末尾追加压缩 prompt**（请求参数与上一轮完全一致，复用 cache 前缀，按 cache 读价计费），摘要作为追加轮次留在旧 session。随后：
 
-1. 新建 session，`parent` 指向旧 session，首条 `<system-reminder>` 为摘要，其后为最近 K 个完整轮次原文；
+1. 新建 session，`continued_from` 指向旧 session（不借用 subagent 的 `parent`），首条 `<system-reminder>` 为摘要，除 system 前缀外不复制任何对话轮次（交接无冗余，摘要须自足）；
 2. binding focus 与 `message_index` 后续消息切到新 session；
 3. 旧 session 写 `superseded_by`，router 排除，之后走常规 TTL 清理。
 
@@ -102,7 +102,9 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 - 同 session 内 system 与前缀字节级不变，只追加 turn；
 - 技能清单、记忆索引、后台通知、定时触发一律以 `<system-reminder>` user turn 追加；
-- 记忆索引仅在 session 创建时快照；
+- 记忆索引仅在 session 创建时快照：agent space 会话（排除 curator）首次落盘时追加 `<system-reminder type="memory">` 轮次，内容为当时 `memory/MEMORY.md` 全文并注明记忆库绝对路径，细节由模型按需 Read；`MEMORY.md` 不存在则不注入。L1 全文注入、不截断；体量从设计上有界：`MEMORY.md` 只列领域，领域索引与主题按需 Read，增长的是领域数而非条目数；
+- rollover 接替会话复制的 system 前缀中，旧记忆快照以**当前** `MEMORY.md` 原位重生成（旧前缀没有则不加，当前无索引则丢弃旧快照）；
+- 记忆更新通知：curator 结果为 `Updated` 时，向现存 topic / oneshot 会话（排除 curator、已 superseded、来源会话）追加 `<system-reminder type="memory-updated">`（只含 curator 摘要，提示 Read `MEMORY.md`）。该路径为 `ManagedSession::note`：只追加不起轮次，空闲直接落盘，运行中入队到轮次间隙或本轮收尾追加；追加在历史末尾，不改动已有前缀；
 - system prompt 的 `Date` 在 session 创建时冻结（或改由 reminder 提供），避免跨日全体 miss；
 - router 调用前缀固定，session 表与用户消息置尾；
 - 状态页展示各 session cache 命中率与 router 小模型成本，数据来自 `usage` 与成本配置。
@@ -111,7 +113,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 - 由系统在清理前、rollover 时触发的后台 session（`kind=curator`），非聊天模型派生的 subagent，与 `team=false` 无冲突；
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
-- 产出写入 `~/.vva/agent/memory/`（`MEMORY.md` 索引 + 主题文件，纳入 git，每次整理一个 commit，提交信息含来源 session 与范围）；反复出现的工作流晋升为 skill 写入 `~/.vva/skills`；
+- 产出写入 `~/.vva/space/memory/`（三层：`MEMORY.md` 只列领域 → `<领域>/INDEX.md` 列主题 → `<领域>/<topic>.md` 内容；纳入 git，每次整理一个 commit，提交信息含来源 session 与范围）；反复出现的工作流晋升为 skill 写入工作区 `.vva/skills`（`~/.vva/space/.vva/skills`，仅 agent space 会话可发现，不污染全局技能）；
 - 完成后向用户推送摘要；git 冲突时不覆盖，告警并跳过；
 
 ## 9. Channel
@@ -156,7 +158,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - **路由**：reply 命中直达且零模型调用；reply 目标已清理 → warning + 新 session 带引用；`/switch` 歧义拒绝；零 session 直接创建；候选表只含四字段；非法决策全部显式报错；带媒体不得 oneshot；running 且非 guide 拒绝；每次决策落 `router.jsonl`。
 - **oneshot / guide**：oneshot 不进候选并随后清理；guide 经 `Deliver` 不打断运行；竞态降级为 existing；残留插话不丢；stop 清空队列。
 - **生命周期**：TTL 到期先沉淀后删除；沉淀失败保留；运行中不清理；重启恢复。
-- **rollover**：达到预留线回合结束触发；旧 session 内容仅追加；新 session `parent` 正确；binding 切换；旧 session 被 router 排除；失败不改变 session；压缩调用不触发工具；第二轮起重新命中前缀。
+- **rollover**：达到预留线回合结束触发；旧 session 内容仅追加；新 session `continued_from` 正确且 `parent` 为空；binding 切换；旧 session 被 router 排除；失败不改变 session；压缩调用不触发工具；第二轮起重新命中前缀。
 - **cache**：system 不变；动态内容走 reminder；记忆索引仅创建时快照；日期冻结；Anthropic 签名与 `cache_control`、Responses 链路不中断。
 - **curator**：游标增量、幂等；写入产生 commit；skill 可被 `discover_skills` 发现；冲突不覆盖；完成推送摘要。
 - **透明性**：session 可在 TUI/Web 按 `kind`/`origin` 过滤并接管；任一 IM 消息可追溯到决策与 session；所有降级与失败对用户可见，无静默 fallback。
@@ -171,7 +173,6 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | `ttl_secs` | 18000 (5h) | 普通 session 空闲清理 |
 | `oneshot_ttl_secs` | 0 | oneshot 回复完即可清理 |
 | `rollover_reserve_tokens` | 32000 | 上下文预留，覆盖压缩 prompt 与摘要 |
-| `rollover_keep_turns` | 4 | rollover 保留的最近完整轮次 K |
 | `pending_files_ttl_secs` | 600 | 待附件缓冲等待时间 |
 | `channels.qq` | — | `app_id` / `secret` / `allowed_users` |
 

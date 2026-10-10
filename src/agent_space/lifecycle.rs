@@ -68,10 +68,12 @@ impl Lifecycle {
             .await
             .map_err(|e| e.to_string())?;
         let mut deleted = Vec::new();
+        let (mut candidates, mut due) = (0, 0);
         for summary in summaries {
             if !summary.agent_managed() || summary.workspace_root != self.manager.workspace() {
                 continue;
             }
+            candidates += 1;
             let ttl = match summary.kind {
                 SessionKind::Oneshot => self.config.oneshot_ttl_secs,
                 _ => self.config.ttl_secs,
@@ -82,6 +84,7 @@ impl Lifecycle {
             if idle < ttl {
                 continue;
             }
+            due += 1;
             let live = self.manager.live(&summary.id).await;
             if live.as_ref().is_some_and(|handle| handle.is_running()) {
                 continue;
@@ -110,10 +113,20 @@ impl Lifecycle {
                 continue;
             }
             match self.delete(&summary.id).await {
-                Ok(()) => deleted.push(summary.id),
+                Ok(()) => {
+                    tracing::info!(
+                        "会话已删除: id={} 原因=空闲 {idle}s 超过 TTL {ttl}s",
+                        summary.id
+                    );
+                    deleted.push(summary.id);
+                }
                 Err(error) => tracing::warn!("Failed to delete {}: {error}", summary.id),
             }
         }
+        tracing::debug!(
+            "生命周期扫描: 候选 {candidates} 个, 到期 {due} 个, 删除 {} 个",
+            deleted.len()
+        );
         Ok(deleted)
     }
 

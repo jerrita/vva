@@ -186,8 +186,6 @@ pub struct AgentSpaceConfig {
     pub oneshot_ttl_secs: u64,
     /// rollover 预留线：上下文达到 `limit.context - 预留` 时回合结束触发
     pub rollover_reserve_tokens: u64,
-    /// rollover 后新 session 保留的最近完整轮次数
-    pub rollover_keep_turns: usize,
     /// 待附件缓冲等待时长（秒），超时提示并清理
     pub pending_files_ttl_secs: u64,
     pub channels: AgentChannels,
@@ -200,7 +198,6 @@ impl Default for AgentSpaceConfig {
             ttl_secs: 18_000,
             oneshot_ttl_secs: 0,
             rollover_reserve_tokens: 32_000,
-            rollover_keep_turns: 4,
             pending_files_ttl_secs: 600,
             channels: AgentChannels::default(),
         }

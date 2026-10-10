@@ -31,6 +31,7 @@ fn task_with(
             state_path,
             broker: Arc::new(StubBroker(None)),
             tool_factory: None,
+            preamble: None,
         },
         commands.downgrade(),
     );
@@ -1349,4 +1350,125 @@ async fn delete_session_cascades_to_child_sessions() {
         assert_eq!(loaded.is_some(), kept, "{:?}", session.header.title);
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- 会话前导与只追加提示 ----
+
+fn persisted_task() -> SessionTask {
+    let (mut task, _view) = event_task();
+    task.view.persisted = true;
+    task
+}
+
+#[tokio::test]
+async fn new_session_appends_preamble_reminders_before_user_prompt() {
+    let dir = tmp("preamble");
+    std::fs::create_dir_all(&dir).unwrap();
+    let session = Session::with_model(
+        &dir,
+        None,
+        "openai/test_model",
+        None,
+        crate::model::SessionToggles {
+            web_search: false,
+            ..Default::default()
+        },
+    );
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let (mut task, _rx) = task_with(session, store);
+    task.config = Arc::new(openai_config());
+    task.preamble = Some(Arc::new(|_| {
+        vec!["<system-reminder type=\"memory\">\nM\n</system-reminder>".into()]
+    }));
+
+    task.start("hello", Vec::new()).await.unwrap();
+    let turns = &task.view.session.turns;
+    let n = turns.len();
+    assert_eq!(turns[0].role, Role::System);
+    assert!(
+        turns[n - 2]
+            .text_content()
+            .starts_with("<system-reminder type=\"memory\">")
+    );
+    assert_eq!(turns[n - 1].text_content(), "hello");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn note_when_idle_appends_and_persists_without_a_turn() {
+    let mut task = persisted_task();
+    let id = task.view.session.header.id.clone();
+    task.store.save_header(&task.view.session).await.unwrap();
+    task.note("N1".into()).await.unwrap();
+    let turns = &task.view.session.turns;
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].role, Role::User);
+    assert_eq!(turns[0].text_content(), "N1");
+    assert!(matches!(task.view.state, RunState::Idle));
+    let stored = task.store.load_session(&id).await.unwrap().unwrap();
+    assert_eq!(stored.turns.len(), 1);
+    cleanup(&task);
+
+    let (mut fresh, _view) = event_task();
+    assert!(fresh.note("x".into()).await.is_err());
+    cleanup(&fresh);
+}
+
+#[tokio::test]
+async fn note_while_running_is_queued_then_appended_in_order() {
+    let mut task = persisted_task();
+    task.store.save_header(&task.view.session).await.unwrap();
+    let (tx, mut rx) = mpsc::channel(4);
+    let (_events_tx, mut events_rx) = mpsc::channel::<AgentEvent>(1);
+    let (reply, reply_rx) = oneshot::channel();
+    let sender = tx.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let _ = sender
+            .send(Command::Note {
+                text: "N1".into(),
+                reply,
+            })
+            .await;
+    });
+    let outcome = task
+        .drive(
+            async {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                7
+            },
+            &mut rx,
+            &mut events_rx,
+        )
+        .await;
+    assert_eq!(outcome, Some(7));
+    reply_rx.await.unwrap().unwrap();
+    // 运行中只入队：历史不变、不起轮次
+    assert!(task.view.session.turns.is_empty());
+    assert_eq!(task.pending_notes, vec!["N1".to_string()]);
+    assert_eq!(task.turn_tx.borrow().seq, 0);
+
+    // 下一次模型调用前追加（位于助手回复之前），之后到达的在收尾追加
+    let (_tx2, mut rx2) = mpsc::channel(1);
+    task.execute(engine(done_provider(), Default::default()), &mut rx2)
+        .await
+        .unwrap();
+    task.pending_notes.push("N2".into());
+    assert!(!task.finish_turn(Ok(TurnOutcome::Completed)).await);
+    let texts: Vec<_> = task
+        .view
+        .session
+        .turns
+        .iter()
+        .map(|t| (t.role, t.text_content()))
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            (Role::User, "N1".into()),
+            (Role::Assistant, "done".into()),
+            (Role::User, "N2".into()),
+        ]
+    );
+    cleanup(&task);
 }

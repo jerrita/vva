@@ -25,6 +25,8 @@ pub struct SessionManager {
     foreground_children: Mutex<HashMap<String, Vec<String>>>,
     /// 会话工具工厂：按会话 header 追加运行期工具；缺省不追加
     tool_factory: Option<SessionToolFactory>,
+    /// 会话前导：首次落盘时追加的 reminder 提供者；缺省不追加
+    preamble: Option<SessionPreamble>,
 }
 
 impl SessionManager {
@@ -43,12 +45,19 @@ impl SessionManager {
             sessions: Mutex::new(HashMap::new()),
             foreground_children: Mutex::new(HashMap::new()),
             tool_factory: None,
+            preamble: None,
         }
     }
 
     /// 安装会话工具工厂（须在包装为 Arc 之前调用）
     pub fn with_tool_factory(mut self, factory: SessionToolFactory) -> Self {
         self.tool_factory = Some(factory);
+        self
+    }
+
+    /// 安装会话前导提供者（须在包装为 Arc 之前调用）
+    pub fn with_preamble(mut self, preamble: SessionPreamble) -> Self {
+        self.preamble = Some(preamble);
         self
     }
 
@@ -108,6 +117,7 @@ impl SessionManager {
                 state_path: self.state_path.clone(),
                 broker: Arc::new(SessionBrokerHandle::new(self.clone())),
                 tool_factory: self.tool_factory.clone(),
+                preamble: self.preamble.clone(),
             },
             commands.downgrade(),
         );
@@ -295,16 +305,13 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 级联删除 parent 会话的全部 subagent 子会话（派生链递归；仅 `agent` 标记的子会话，
-    /// rollover 接替会话虽以 parent 指向旧会话，但不随之删除）：
+    /// 级联删除 parent 会话的全部 subagent 子会话（派生链递归）：
     /// 活跃句柄经 Stop{delete} 停任务并删盘，冷会话直接删存储记录
     async fn delete_child_sessions(&self, parent_id: &str) {
         let children: Vec<String> = match self.store.list_sessions().await {
             Ok(sessions) => sessions
                 .into_iter()
-                .filter(|session| {
-                    session.parent.as_deref() == Some(parent_id) && session.agent.is_some()
-                })
+                .filter(|session| session.parent.as_deref() == Some(parent_id))
                 .map(|session| session.id)
                 .collect(),
             Err(error) => {

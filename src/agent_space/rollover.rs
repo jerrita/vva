@@ -14,6 +14,7 @@ use crate::model::{ContentPart, Message, Role, Session, TokenUsage, Turn};
 /// 追加到旧会话末尾的压缩 prompt
 pub const COMPRESS_PROMPT: &str = "\
 请对到目前为止的整个对话做一次上下文压缩，产出供后续会话承接的摘要。\
+该摘要将是新会话中仅有的历史，不会附带任何原始对话，因此必须自足。\
 本次回复不得调用任何工具，只输出摘要正文，按以下分节书写（某节没有内容时写“无”）：
 
 ## 目标
@@ -23,6 +24,9 @@ pub const COMPRESS_PROMPT: &str = "\
 ## 决策
 ## 待办
 ## 未决问题
+## 当前进展
+
+“当前进展”写明最近一条用户请求的原意、已完成与正在进行的步骤。
 
 要求：只保留继续工作所需的信息；保留具体的路径、标识符、数值与命令；\
 不确定或未经验证的信息标注“未确认”；不要编造，不要复述寒暄。";
@@ -119,31 +123,36 @@ pub async fn maybe_rollover(
     if !should_rollover(&manager.app_config(), config, &session)? {
         return Ok(None);
     }
-    rollover(manager, config.rollover_keep_turns, handle)
-        .await
-        .map(Some)
+    tracing::info!(
+        "rollover 触发: session={} 上下文 {} tokens",
+        handle.id,
+        context_tokens(&session).unwrap_or_default()
+    );
+    rollover(manager, handle).await.map(Some)
 }
 
 /// 压缩并切换到接替会话。失败时旧会话回到调用前的内容（追加的压缩轮次被回退）。
 pub async fn rollover(
     manager: &Arc<SessionManager>,
-    keep_turns: usize,
     handle: &Arc<ManagedSession>,
 ) -> Result<Rolled, String> {
     if handle.is_running() {
         return Err("会话正在运行，无法 rollover".into());
     }
+    // 压缩前读取：索引读取失败时不留下压缩轮次
+    let memory = super::curator::memory_reminder(manager.workspace())?;
     let before = handle.snapshot().session.turns.len();
     let summary = compress(handle, before).await?;
     let old = handle.snapshot().session.clone();
     let successor = manager
-        .adopt_session(successor_session(&old, before, &summary, keep_turns))
+        .adopt_session(successor_session(&old, before, &summary, memory.as_deref()))
         .await?;
     if let Err(error) = handle.mark_superseded(&successor.id).await {
         // 旧会话未能标记：撤销新会话，避免出现两个活跃分支
         let _ = manager.delete_session(&successor).await;
         return Err(format!("标记旧会话 superseded_by 失败: {error}"));
     }
+    tracing::info!("rollover 完成: {} -> {}", old.header.id, successor.id);
     Ok(Rolled {
         old_id: old.header.id.clone(),
         new_id: successor.id.clone(),
@@ -152,6 +161,7 @@ pub async fn rollover(
 
 /// 在旧会话末尾追加压缩 prompt 并取回摘要；任何失败都回退追加的轮次
 async fn compress(handle: &Arc<ManagedSession>, before: usize) -> Result<String, String> {
+    tracing::info!("rollover 发出压缩请求: session={}", handle.id);
     let outcome = handle.deliver_wait(COMPRESS_PROMPT).await;
     let session = handle.snapshot().session.clone();
     let failure = match outcome {
@@ -160,8 +170,16 @@ async fn compress(handle: &Arc<ManagedSession>, before: usize) -> Result<String,
             Some("压缩请求发起了工具调用，视为失败".into())
         }
         Ok(report) if report.text.trim().is_empty() => Some("压缩请求未返回摘要".into()),
-        Ok(report) => return Ok(report.text.trim().to_string()),
+        Ok(report) => {
+            tracing::info!(
+                "rollover 摘要已生成: session={} {} 字符",
+                handle.id,
+                report.text.trim().chars().count()
+            );
+            return Ok(report.text.trim().to_string());
+        }
     };
+    tracing::warn!("rollover 压缩失败: session={}: {failure:?}", handle.id);
     if session.turns.len() > before
         && let Err(error) = handle.revert(before).await
     {
@@ -183,31 +201,29 @@ fn is_round_start(turn: &Turn) -> bool {
     turn.role == Role::User && !crate::system::is_reminder_text(&turn.text_content())
 }
 
+fn is_memory_reminder(turn: &Turn) -> bool {
+    turn.role == Role::User
+        && turn
+            .text_content()
+            .trim_start()
+            .starts_with("<system-reminder type=\"memory\"")
+}
+
 /// 构造接替会话（纯函数）：仅读取旧会话压缩前的 `turns[..before]`。
-/// 轮次 = system 前缀 + 摘要 reminder + 最近 `keep_turns` 个以用户轮次起始的完整轮次。
-/// 轮次边界取在用户轮次之前，工具调用与结果因同属一轮而不被拆散。
+/// 轮次 = system 前缀（日期随之冻结）+ 摘要 reminder；交接只留摘要，不复制任何对话轮次。
+/// 前缀中旧的记忆索引快照已过时：`memory` 为当前索引 reminder，原位替换
+/// （旧前缀没有则不加；当前无索引则丢弃旧快照）。
 pub fn successor_session(
     old: &Session,
     before: usize,
     summary: &str,
-    keep_turns: usize,
+    memory: Option<&str>,
 ) -> Session {
     let turns = &old.turns[..before];
     let prefix = turns
         .iter()
         .take_while(|turn| turn.role == Role::System || !is_round_start(turn))
         .count();
-    let starts: Vec<usize> = (prefix..before)
-        .filter(|&index| is_round_start(&turns[index]))
-        .collect();
-    let kept_from = if keep_turns == 0 {
-        before
-    } else {
-        starts
-            .get(starts.len().saturating_sub(keep_turns))
-            .copied()
-            .unwrap_or(before)
-    };
 
     let header = &old.header;
     let mut session = Session::with_model(
@@ -218,13 +234,21 @@ pub fn successor_session(
         old.toggles(),
     );
     session.header.editor = header.editor;
-    session.header.parent = Some(header.id.clone());
+    session.header.continued_from = Some(header.id.clone());
     session.header.kind = header.kind;
     session.header.origin = header.origin.clone();
     session.header.routed_by = header.routed_by.clone();
     session.header.last_activity = Some(chrono::Utc::now());
 
-    session.turns.extend(turns[..prefix].iter().cloned());
+    for turn in &turns[..prefix] {
+        if !is_memory_reminder(turn) {
+            session.turns.push(turn.clone());
+        } else if let Some(memory) = memory {
+            session
+                .turns
+                .push(Turn::new(Role::User, vec![Message::text(memory)]));
+        }
+    }
     session.turns.push(Turn::new(
         Role::User,
         vec![Message::text(
@@ -232,27 +256,13 @@ pub fn successor_session(
         )],
     ));
     session
-        .turns
-        .extend(turns[kept_from..].iter().cloned().map(detach_from_old));
-    session
-}
-
-/// 复制到新会话的轮次脱离旧会话的计费与服务端链：usage 留在旧会话（避免成本重复计入），
-/// Responses 的 response_id 链锚点指向旧会话的完整上下文，沿用会让摘要失效
-fn detach_from_old(mut turn: Turn) -> Turn {
-    turn.usage = None;
-    if let Some(response) = &mut turn.meta.response {
-        response.response_id = None;
-        response.previous_response_id = None;
-    }
-    turn
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{ModelConfig, ProviderConfig, model::ModelLimitConfig};
-    use crate::model::{AnthropicTurnMeta, ResponseTurnMeta, TokenUsage, ToolCall, ToolResult};
+    use crate::model::{AnthropicTurnMeta, TokenUsage, ToolCall, ToolResult};
     use crate::storage::jsonl::JsonlSessionStore;
 
     fn user(text: &str) -> Turn {
@@ -394,105 +404,85 @@ mod tests {
     }
 
     #[test]
-    fn successor_keeps_prefix_summary_and_last_k_rounds_at_user_boundaries() {
-        let old = prefixed(vec![
-            tool_round("r1", "c1"),
-            tool_round("r2", "c2"),
-            tool_round("r3", "c3"),
-        ]);
+    fn successor_holds_only_prefix_and_summary() {
+        let old = prefixed(vec![tool_round("r1", "c1"), tool_round("r2", "c2")]);
         let before = old.turns.len();
-        let new = successor_session(&old, before, "SUMMARY", 2);
+        let new = successor_session(&old, before, "SUMMARY", None);
 
-        assert_eq!(new.header.parent.as_deref(), Some(old.header.id.as_str()));
+        assert_eq!(
+            new.header.continued_from.as_deref(),
+            Some(old.header.id.as_str())
+        );
+        assert!(new.header.parent.is_none(), "接替会话不是 subagent");
         assert_ne!(new.header.id, old.header.id);
-        // system 前缀逐字复制（日期随之冻结）
+        // system 前缀逐字复制（日期随之冻结），其后仅有摘要，不含任何对话轮次
+        assert_eq!(new.turns.len(), 3);
         assert_eq!(new.turns[0], old.turns[0]);
         assert_eq!(new.turns[1], old.turns[1]);
-        assert!(new.turns[2].text_content().contains("SUMMARY"));
         assert!(
             new.turns[2]
                 .text_content()
                 .starts_with("<system-reminder type=\"rollover-summary\"")
         );
-        // 保留最近 2 轮（r2、r3），首个保留轮次是用户轮次
-        let kept = &new.turns[3..];
-        assert_eq!(kept.len(), 8);
-        assert_eq!(kept[0].text_content(), "r2");
-        assert_eq!(kept[4].text_content(), "r3");
-        // 工具调用与结果配对完整
-        let ids = |role, f: fn(&ContentPart) -> Option<&str>| -> Vec<String> {
-            kept.iter()
-                .filter(|t| t.role == role)
-                .flat_map(|t| &t.messages)
-                .flat_map(|m| &m.parts)
-                .filter_map(|p| f(p).map(String::from))
-                .collect()
-        };
-        let calls = ids(Role::Assistant, |p| match p {
-            ContentPart::ToolCall(c) => Some(&c.id),
-            _ => None,
-        });
-        let results = ids(Role::Tool, |p| match p {
-            ContentPart::ToolResult(r) => Some(&r.tool_call_id),
-            _ => None,
-        });
-        assert_eq!(calls, ["c2", "c3"]);
-        assert_eq!(calls, results);
+        assert!(new.turns[2].text_content().contains("SUMMARY"));
         // 旧会话原样未动
         assert_eq!(old.turns.len(), before);
     }
 
     #[test]
-    fn successor_edge_cases_for_keep_count() {
-        let old = prefixed(vec![tool_round("r1", "c1"), tool_round("r2", "c2")]);
-        let before = old.turns.len();
-        // K 大于现有轮次：全部保留；K = 0：仅前缀与摘要
-        assert_eq!(
-            successor_session(&old, before, "s", 9).turns.len(),
-            2 + 1 + 8
+    fn successor_replaces_stale_memory_snapshot_with_current() {
+        let mut old = prefixed(vec![tool_round("r1", "c1")]);
+        old.turns.insert(
+            2,
+            user("<system-reminder type=\"memory\">\nOLD INDEX\n</system-reminder>"),
         );
-        assert_eq!(successor_session(&old, before, "s", 0).turns.len(), 3);
-        // 压缩轮次（before 之后）不会被复制
+        let before = old.turns.len();
+        let fresh = "<system-reminder type=\"memory\">\nNEW INDEX\n</system-reminder>";
+
+        let new = successor_session(&old, before, "S", Some(fresh));
+        assert_eq!(new.turns.len(), 4);
+        assert_eq!(new.turns[2].text_content(), fresh);
+        assert!(
+            new.turns
+                .iter()
+                .all(|t| !t.text_content().contains("OLD INDEX"))
+        );
+
+        // 当前无索引：旧快照丢弃，不留过期内容
+        let new = successor_session(&old, before, "S", None);
+        assert_eq!(new.turns.len(), 3);
+        assert!(
+            new.turns
+                .iter()
+                .all(|t| !t.text_content().contains("OLD INDEX"))
+        );
+
+        // 旧前缀没有 memory reminder：不新增
+        let plain = prefixed(vec![tool_round("r1", "c1")]);
+        let new = successor_session(&plain, plain.turns.len(), "S", Some(fresh));
+        assert_eq!(new.turns.len(), 3);
+        assert!(
+            new.turns
+                .iter()
+                .all(|t| !t.text_content().contains("NEW INDEX"))
+        );
+    }
+
+    #[test]
+    fn compression_turns_are_not_copied() {
+        let old = prefixed(vec![tool_round("r1", "c1")]);
+        let before = old.turns.len();
+        // 压缩轮次（before 之后）留在旧会话，不进入接替会话
         let mut with_compress = old.clone();
         with_compress.turns.push(user(COMPRESS_PROMPT));
         with_compress.turns.push(assistant("SUMMARY", 1));
-        let new = successor_session(&with_compress, before, "s", 1);
+        let new = successor_session(&with_compress, before, "s", None);
+        assert_eq!(new.turns.len(), 3);
         assert!(
             new.turns
                 .iter()
                 .all(|t| !t.text_content().contains("上下文压缩"))
         );
-        assert_eq!(new.turns.last().unwrap().text_content(), "done");
-    }
-
-    #[test]
-    fn reminder_injections_do_not_split_rounds() {
-        // 任务完成 reminder 夹在一轮之内，不是边界
-        let mut round = tool_round("r1", "c1");
-        round.insert(
-            3,
-            user("<system-reminder type=\"background-task\">\nfinished\n</system-reminder>"),
-        );
-        let old = prefixed(vec![tool_round("r0", "c0"), round]);
-        let new = successor_session(&old, old.turns.len(), "s", 1);
-        assert_eq!(new.turns[3].text_content(), "r1");
-        assert_eq!(new.turns.len(), 3 + 5);
-    }
-
-    #[test]
-    fn copied_turns_drop_usage_and_response_chain_anchor() {
-        let mut copied = assistant("a", 123);
-        let mut meta = ResponseTurnMeta::new("resp_old");
-        meta.previous_response_id = Some("resp_older".into());
-        copied.meta.response = Some(meta);
-        let old = prefixed(vec![vec![user("q"), copied]]);
-        let new = successor_session(&old, old.turns.len(), "s", 1);
-        let turn = new.turns.last().unwrap();
-        assert!(turn.usage.is_none());
-        assert!(turn.openai_response_id().is_none());
-        assert!(new.latest_openai_response_id(None).is_none());
-        // 旧会话自身的链锚点保持
-        assert_eq!(old.latest_openai_response_id(None), Some("resp_old"));
     }
 
     fn manager(dir: &std::path::Path, app: AppConfig) -> Arc<SessionManager> {
@@ -523,7 +513,7 @@ mod tests {
         manager.store().save_header(&old).await.unwrap();
         let handle = manager.get_or_load(&old.header.id).await.unwrap();
 
-        let error = rollover(&manager, 2, &handle).await.unwrap_err();
+        let error = rollover(&manager, &handle).await.unwrap_err();
         assert!(error.contains("压缩请求失败"), "{error}");
         // 内存视图与磁盘都回到压缩前
         assert_eq!(handle.snapshot().session.turns, old.turns);
@@ -550,7 +540,7 @@ mod tests {
 
         // 模拟压缩已成功追加：摘要轮次留在旧会话
         let before = old.turns.len();
-        let successor = successor_session(&old, before, "SUMMARY", 1);
+        let successor = successor_session(&old, before, "SUMMARY", None);
         let fresh = manager.adopt_session(successor).await.unwrap();
         handle.mark_superseded(&fresh.id).await.unwrap();
 
@@ -572,7 +562,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            stored_new.header.parent.as_deref(),
+            stored_new.header.continued_from.as_deref(),
             Some(old.header.id.as_str())
         );
 

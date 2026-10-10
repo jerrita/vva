@@ -23,12 +23,12 @@ use self::lifecycle::{Lifecycle, SWEEP_PERIOD};
 use self::router::{Router, SmallRouteModel};
 use self::runtime::Runtime;
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
-use crate::harness::SessionManager;
-use crate::model::SessionToggles;
+use crate::harness::{SessionManager, SessionPreamble};
+use crate::model::{SessionKind, SessionToggles};
 use crate::storage::SessionStore;
 
 /// agent space 固定工作区
-const WORKSPACE: &str = "~/.vva/agent";
+const WORKSPACE: &str = "~/.vva/space";
 
 /// agent space 会话的功能开关：web_search 保持默认，team 关闭（不做 subagent 编排）
 pub fn agent_toggles() -> SessionToggles {
@@ -36,6 +36,23 @@ pub fn agent_toggles() -> SessionToggles {
         team: false,
         ..SessionToggles::default()
     }
+}
+
+/// agent space 会话（排除 curator）首次落盘时注入记忆索引快照；无 `MEMORY.md` 不注入，
+/// 读取失败告警后跳过（记忆缺席不应阻断会话）
+fn memory_preamble(root: PathBuf) -> SessionPreamble {
+    Arc::new(move |header| {
+        if !header.agent_managed() || header.kind == SessionKind::Curator {
+            return Vec::new();
+        }
+        curator::memory_reminder(&root)
+            .unwrap_or_else(|error| {
+                tracing::warn!("记忆索引读取失败，新会话不注入: {error}");
+                None
+            })
+            .into_iter()
+            .collect()
+    })
 }
 
 /// agent space 运行时：校验 `settings.agent` 后持有会话管理器
@@ -93,9 +110,11 @@ impl AgentSpace {
         std::fs::create_dir_all(&workspace)
             .map_err(|e| format!("创建 agent 工作区 {} 失败: {e}", workspace.display()))?;
         // channel 先于 manager 构造，SendFile 经工厂按会话 origin 绑定聊天
+        let root = workspace.clone();
         let manager = Arc::new(
             SessionManager::new(store, app_config, workspace, state_path)
-                .with_tool_factory(send_file::session_tool_factory(channel.clone())),
+                .with_tool_factory(send_file::session_tool_factory(channel.clone()))
+                .with_preamble(memory_preamble(root)),
         );
         Ok(Self {
             config,
@@ -119,7 +138,7 @@ impl AgentSpace {
             channel.clone(),
             router,
         )?;
-        let curator = Arc::new(Curator::for_manager(&self.manager, runtime.model())?);
+        let curator = Arc::new(Curator::for_manager(&self.manager, runtime.model()));
         let notify = {
             let runtime = runtime.clone();
             Arc::new(move |report| {
@@ -155,5 +174,45 @@ impl AgentSpace {
         }
         channel_task.abort();
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Origin, SessionHeader};
+
+    fn header(kind: SessionKind, origin: bool) -> SessionHeader {
+        let mut header = crate::model::Session::new("/ws", None).header;
+        header.kind = kind;
+        header.origin = origin.then(|| Origin {
+            channel: "qq".into(),
+            chat_id: "c".into(),
+        });
+        header
+    }
+
+    #[test]
+    fn preamble_injects_current_index_only_for_agent_sessions() {
+        let dir = std::env::temp_dir().join(format!("vva-preamble-{}", uuid::Uuid::new_v4()));
+        let preamble = memory_preamble(dir.clone());
+        let topic = header(SessionKind::Topic, true);
+
+        // 无 MEMORY.md：不注入任何内容
+        assert!(preamble(&topic).is_empty());
+
+        std::fs::create_dir_all(dir.join("memory")).unwrap();
+        std::fs::write(dir.join("memory/MEMORY.md"), "- [偏好](pref.md)\n").unwrap();
+        let texts = preamble(&topic);
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].starts_with("<system-reminder type=\"memory\">"));
+        assert!(texts[0].contains("- [偏好](pref.md)"));
+        assert!(texts[0].contains(&dir.join("memory").to_string_lossy().replace('\\', "/")));
+        assert_eq!(preamble(&header(SessionKind::Oneshot, false)).len(), 1);
+
+        // curator 与非 agent space 会话不注入
+        assert!(preamble(&header(SessionKind::Curator, false)).is_empty());
+        assert!(preamble(&header(SessionKind::Topic, false)).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

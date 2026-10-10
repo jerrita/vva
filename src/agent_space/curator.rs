@@ -1,8 +1,8 @@
 //! Curator：将对话增量沉淀为记忆与 skill。
 //!
 //! 由系统在清理前创建 `kind=curator` 的后台会话（非模型派生的 subagent），
-//! 只处理游标之后的增量 turns；产出写入 `memory/`（`MEMORY.md` 索引 + 主题文件，
-//! 纳入 git，每次整理一个 commit），反复出现的工作流晋升为 `~/.vva/skills` 下的 skill。
+//! 只处理游标之后的增量 turns；产出写入 `memory/`（`MEMORY.md` 领域索引 + 领域/主题文件，
+//! 纳入 git，每次整理一个 commit），反复出现的工作流晋升为工作区 `.vva/skills` 下的 skill（仅 agent space 可见）。
 //! 状态由 git 判定而非模型自述：工作区有变更即 `Updated`，否则 `Unchanged`。
 
 use std::collections::BTreeMap;
@@ -34,11 +34,14 @@ const CURATOR_PROMPT: &str = "\
 你是 vva 的记忆整理员（curator）。你不与用户对话，只负责把一段对话增量整理为长期记忆，\
 并在合适时把反复出现的工作流晋升为 skill。
 
-## 记忆库
-- 位置由任务指定（绝对路径）。`MEMORY.md` 是索引，每条一行：`- [主题](topic.md): 一句话说明`；\
-详细内容按主题写在同目录的 `<topic>.md`。
-- 开始前先 Read `MEMORY.md`（可能尚不存在），再用 Glob / Grep 检索相关主题；\
-优先更新已有主题，不要新建内容重复的文件。
+## 记忆库（按领域分三层）
+- 位置由任务指定（绝对路径）。三层结构：
+  - `MEMORY.md`（L1）：只列**领域**，每行一个：`- [领域名](<领域>/INDEX.md): 一句话范围说明`。它会被整份注入每个新会话，因此只列领域，不列具体条目。
+  - `<领域>/INDEX.md`（L2）：列出该领域下的主题，每行一条：`- [主题](topic.md): 一句话说明`。
+  - `<领域>/<topic>.md`（L3）：具体内容。
+- 开始前先 Read `MEMORY.md`（可能尚不存在），再用 Glob / Grep 检索相关领域与主题。
+- 归类：优先更新已有主题；新主题优先归入已有领域；没有合适领域才新建，新建前必须先检索现有领域，不要建内容重叠的领域。
+- 某个领域的 `INDEX.md` 变得冗长时，在其下再拆子领域，保持 `MEMORY.md` 精简。
 
 ## 记录什么
 - 只记录有长期价值的信息：用户偏好与习惯、稳定事实（环境、路径、人物、别名）、\
@@ -136,6 +139,28 @@ impl CuratorRunner for SessionRunner {
     }
 }
 
+/// agent 工作区下的记忆库目录
+pub fn memory_dir(workspace: &Path) -> PathBuf {
+    workspace.join(MEMORY_DIR)
+}
+
+/// 读取记忆索引 `MEMORY.md` 全文；不存在或全空白为 `None`，其余读取失败显式报错
+pub fn read_memory_index(workspace: &Path) -> Result<Option<String>, String> {
+    let path = memory_dir(workspace).join("MEMORY.md");
+    match std::fs::read_to_string(&path) {
+        Ok(text) if text.trim().is_empty() => Ok(None),
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
+    }
+}
+
+/// 当前记忆索引快照 reminder 文本；无索引时为 `None`
+pub fn memory_reminder(workspace: &Path) -> Result<Option<String>, String> {
+    Ok(read_memory_index(workspace)?
+        .map(|index| crate::system::format_memory_reminder(&memory_dir(workspace), &index)))
+}
+
 pub struct Curator {
     runner: Arc<dyn CuratorRunner>,
     store: Arc<dyn SessionStore>,
@@ -162,22 +187,21 @@ impl Curator {
         }
     }
 
-    /// 生产构造：curator 会话由 `manager` 创建，skills 写入 `~/.vva/skills`
-    pub fn for_manager(manager: &Arc<SessionManager>, model: String) -> Result<Self, String> {
-        let skills_dir = crate::config::home_dir()
-            .ok_or("无法确定主目录，curator 无法定位 ~/.vva/skills")?
-            .join(".vva")
-            .join("skills");
-        Ok(Self::new(
+    /// 生产构造：curator 会话由 `manager` 创建，skills 写入工作区 `.vva/skills`
+    /// （项目级技能，仅 agent space 会话可发现，不污染全局 `~/.vva/skills`）
+    pub fn for_manager(manager: &Arc<SessionManager>, model: String) -> Self {
+        let root = manager.workspace().to_path_buf();
+        let skills_dir = root.join(".vva").join("skills");
+        Self::new(
             Arc::new(SessionRunner::new(manager.clone(), model)),
             manager.store().clone(),
-            manager.workspace().to_path_buf(),
+            root,
             skills_dir,
-        ))
+        )
     }
 
     pub fn memory_dir(&self) -> PathBuf {
-        self.root.join(MEMORY_DIR)
+        memory_dir(&self.root)
     }
 
     fn cursors_path(&self) -> PathBuf {
@@ -186,13 +210,19 @@ impl Curator {
 
     /// 整理会话尚未处理的增量；任何失败都以 `Failed` 返回，游标与记忆库保持不变
     pub async fn curate(&self, session_id: &str) -> CuratorResult {
-        match self.try_curate(session_id).await {
+        let result = match self.try_curate(session_id).await {
             Ok(result) => result,
             Err(summary) => CuratorResult {
                 status: CuratorStatus::Failed,
                 summary,
             },
-        }
+        };
+        tracing::info!(
+            "curate 结束: session={session_id} 状态={:?} 摘要={}",
+            result.status,
+            result.summary.lines().next().unwrap_or_default()
+        );
+        result
     }
 
     async fn try_curate(&self, session_id: &str) -> Result<CuratorResult, String> {
@@ -216,9 +246,14 @@ impl Curator {
         let transcript = render_transcript(start, &session.turns[start..]);
         if transcript.is_empty() {
             cursors.advance(&self.cursors_path(), session_id, &last.id)?;
+            tracing::debug!(
+                "curator 游标推进(无可沉淀内容): session={session_id} -> {}",
+                last.id
+            );
             return Ok(unchanged("新增轮次不含可沉淀的对话内容"));
         }
 
+        tracing::info!("curate 开始: session={session_id} turn 范围 [{start}, {end})");
         let memory = self.memory_dir();
         blocking({
             let memory = memory.clone();
@@ -249,7 +284,9 @@ impl Curator {
 
         let message = format!("curator: {session_id} turns [{start}, {end})\n\n{summary}");
         let committed = blocking(move || git::commit_all(&memory, &message)).await?;
+        tracing::info!("curator git commit: session={session_id} 产生提交={committed}");
         cursors.advance(&self.cursors_path(), session_id, &last.id)?;
+        tracing::debug!("curator 游标推进: session={session_id} -> {}", last.id);
         Ok(if committed {
             CuratorResult {
                 status: CuratorStatus::Updated,

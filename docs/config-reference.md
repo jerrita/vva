@@ -120,10 +120,9 @@
 | `ttl_secs` | `18000`（5h） | 普通 session 空闲清理 |
 | `oneshot_ttl_secs` | `0` | oneshot 回复完即可清理 |
 | `rollover_reserve_tokens` | `32000` | 上下文达到 `limit.context - 预留` 时回合结束触发 rollover |
-| `rollover_keep_turns` | `4` | rollover 后新 session 保留的最近完整轮次数 |
 | `pending_files_ttl_secs` | `600` | 待附件缓冲等待时间 |
 | `channels.qq.app_id` / `secret` | 无 | QQ 机器人凭据；已声明 qq 而二者为空（如 `${VAR}` 未设置）时启动报错 |
-| `channels.qq.allowed_users` | `[]` | 用户白名单；白名单外静默丢弃 |
+| `channels.qq.allowed_users` | `[]` | 用户白名单；白名单外静默丢弃；空表示拒绝所有人，含 `"*"` 表示允许任何用户 |
 
 ---
 

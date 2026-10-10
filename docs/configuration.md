@@ -26,7 +26,7 @@ vva 支持分层配置加载机制：
 
 ### 2.3 agent space 配置组 (`settings.agent`)
 - 强类型 `AgentSpaceConfig`（[`src/config/model.rs`](../src/config/model.rs)），`GlobalSettings.agent` 为 `Option`；项目配置声明该段时整段替换全局（与 `settings.web` 一致），未声明则保留全局；
-- 缺省字段取默认值（见 [config-reference.md](config-reference.md) 的 2.2）；`vva agent` 要求该段存在，工作区固定为 `~/.vva/agent/`；router 复用 `settings.small_model`。
+- 缺省字段取默认值（见 [config-reference.md](config-reference.md) 的 2.2）；`vva agent` 要求该段存在，工作区固定为 `~/.vva/space/`；router 复用 `settings.small_model`。
 
 ---
 

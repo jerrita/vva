@@ -6,5 +6,6 @@ pub(crate) mod testing;
 
 pub use crate::event::AgentEvent;
 pub use session::{
-    ManagedSession, Notice, NoticeKind, RunState, SessionManager, SessionToolFactory, SessionView,
+    ManagedSession, Notice, NoticeKind, RunState, SessionManager, SessionPreamble,
+    SessionToolFactory, SessionView,
 };

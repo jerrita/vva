@@ -73,7 +73,6 @@
             "ttl_secs": { "type": "integer", "minimum": 0, "default": 18000, "description": "普通 session 空闲清理时长（秒）" },
             "oneshot_ttl_secs": { "type": "integer", "minimum": 0, "default": 0, "description": "oneshot 回复后清理等待时长（秒），0 为回复完即可清理" },
             "rollover_reserve_tokens": { "type": "integer", "minimum": 0, "default": 32000, "description": "上下文达到 limit.context - 预留 时触发 rollover" },
-            "rollover_keep_turns": { "type": "integer", "minimum": 0, "default": 4, "description": "rollover 后保留的最近完整轮次数" },
             "pending_files_ttl_secs": { "type": "integer", "minimum": 0, "default": 600, "description": "待附件缓冲等待时长（秒）" },
             "channels": {
               "type": "object",
@@ -85,7 +84,7 @@
                   "properties": {
                     "app_id": { "type": "string" },
                     "secret": { "type": "string", "description": "推荐 \"${QQ_BOT_SECRET}\" 插值；为空时启动报错" },
-                    "allowed_users": { "type": "array", "items": { "type": "string" }, "description": "用户白名单，白名单外静默丢弃" }
+                    "allowed_users": { "type": "array", "items": { "type": "string" }, "description": "用户白名单，白名单外静默丢弃；空表示拒绝所有人，含 \"*\" 表示允许任何用户" }
                   }
                 }
               }

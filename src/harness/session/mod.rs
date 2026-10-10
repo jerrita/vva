@@ -20,8 +20,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
-pub use super::agent::SessionToolFactory;
 use super::agent::{AgentEngine, EngineDeps, generate_title};
+pub use super::agent::{SessionPreamble, SessionToolFactory};
 use crate::config::{AppConfig, AppState};
 use crate::event::AgentEvent;
 use crate::model::{

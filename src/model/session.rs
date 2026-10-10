@@ -141,6 +141,7 @@ impl Session {
                 kind: SessionKind::default(),
                 origin: None,
                 routed_by: None,
+                continued_from: None,
                 superseded_by: None,
                 last_activity: None,
             },
@@ -250,6 +251,9 @@ pub struct SessionHeader {
     /// 路由本会话的决策来源（如 `reply` / `switch` / `router`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_by: Option<String>,
+    /// rollover 接替会话所承接的旧会话 id（与 subagent 的 `parent` 语义分离）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from: Option<String>,
     /// rollover 后接替本会话的新会话 id；router 排除已被取代的会话
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,

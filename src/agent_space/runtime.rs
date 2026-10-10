@@ -98,7 +98,16 @@ impl Runtime {
 
     /// 处理一条入站消息；失败原样回复用户
     pub async fn handle(self: &Arc<Self>, msg: Inbound) {
+        tracing::info!(
+            "收到入站: binding={} message_id={} 文字 {} 字符, 附件 {}",
+            msg.binding,
+            msg.message_id,
+            msg.text.chars().count(),
+            msg.files.len()
+        );
+        tracing::debug!("入站正文预览: {}", preview(&msg.text));
         if let Err(error) = self.dispatch(&msg).await {
+            tracing::warn!("入站处理失败 binding={}: {error}", msg.binding);
             self.say(&msg.binding, Some(&msg.message_id), error).await;
         }
     }
@@ -154,6 +163,7 @@ impl Runtime {
         let now = Utc::now();
         let count = {
             let mut state = self.state.lock().await;
+            tracing::debug!("缓冲 {} 个附件: binding={}", files.len(), msg.binding);
             for file in files {
                 state.pending.push(&msg.binding, file, now);
             }
@@ -186,6 +196,13 @@ impl Runtime {
         } else {
             self.route(msg, &text, &files).await?
         };
+        tracing::info!(
+            "路由结果: binding={} {} routed_by={} warning={}",
+            msg.binding,
+            describe_route(&routed.route),
+            routed.routed_by,
+            routed.warning.is_some()
+        );
         if let Some(warning) = &routed.warning {
             self.say(&msg.binding, Some(&msg.message_id), warning).await;
         }
@@ -311,7 +328,8 @@ impl Runtime {
         routed_by: &str,
     ) -> Result<Arc<ManagedSession>, String> {
         let origin = self.origin(binding)?;
-        self.manager
+        let created = self
+            .manager
             .create_session_with(
                 self.manager.workspace().to_path_buf(),
                 self.model(),
@@ -324,13 +342,20 @@ impl Runtime {
                     header.routed_by = Some(routed_by.to_string());
                 },
             )
-            .await
+            .await?;
+        tracing::info!(
+            "新建会话: id={} kind={kind:?} model={} binding={binding} routed_by={routed_by}",
+            created.id,
+            self.model()
+        );
+        Ok(created)
     }
 
     // ================== 命令 ==================
 
     async fn command(self: &Arc<Self>, msg: &Inbound, cmd: Command) -> Result<(), String> {
         let binding = &msg.binding;
+        tracing::info!("处理命令: {} binding={binding}", command_name(&cmd));
         let reply = match cmd {
             Command::New(text) if text.is_empty() => return Err("用法: /new <消息>".into()),
             Command::New(text) => {
@@ -461,10 +486,32 @@ impl Runtime {
         reply_to: Option<String>,
         prompt: String,
     ) {
-        let text = match handle.deliver_wait(&prompt).await.map(|report| report.text) {
+        tracing::info!(
+            "Deliver 开始: session={} binding={binding} prompt {} 字符",
+            handle.id,
+            prompt.chars().count()
+        );
+        let started = std::time::Instant::now();
+        let turns_before = handle.snapshot().session.turns.len();
+        let delivered = handle.deliver_wait(&prompt).await;
+        let usage = turn_usage(&handle.snapshot().session, turns_before);
+        tracing::info!(
+            "Deliver 结束: session={} 轮次={} 耗时 {:.1}s prompt/completion/cached tokens={}/{}/{} 出错={}",
+            handle.id,
+            delivered.as_ref().map_or(0, |r| r.turn_seq),
+            started.elapsed().as_secs_f32(),
+            usage.0,
+            usage.1,
+            usage.2,
+            delivered.is_err()
+        );
+        let text = match delivered.map(|report| report.text) {
             Ok(text) if text.trim().is_empty() => "（本轮没有文本输出）".to_string(),
             Ok(text) => text,
-            Err(error) => format!("本轮执行失败: {error}"),
+            Err(error) => {
+                tracing::warn!("会话 {} 本轮执行失败: {error}", handle.id);
+                format!("本轮执行失败: {error}")
+            }
         };
         let ids = self.say(&binding, reply_to.as_deref(), text).await;
         {
@@ -500,6 +547,7 @@ impl Runtime {
                 .await;
             }
             Err(error) => {
+                tracing::warn!("会话 {} rollover 失败: {error}", handle.id);
                 self.say(
                     binding,
                     None,
@@ -519,9 +567,11 @@ impl Runtime {
         reply_to: Option<&str>,
         text: impl Into<String>,
     ) -> Vec<String> {
+        let text = text.into();
+        tracing::debug!("出站回复: binding={binding} {} 字符", text.chars().count());
         let msg = Outbound::Text(OutboundText {
             binding: binding.to_string(),
-            text: text.into(),
+            text,
             reply_to: reply_to.map(str::to_string),
         });
         self.channel.send(msg).await.unwrap_or_else(|e| {
@@ -543,6 +593,14 @@ impl Runtime {
                 report.session_id, report.result.summary
             ),
         };
+        tracing::info!(
+            "推送 curator 报告: session={} status={:?}",
+            report.session_id,
+            report.result.status
+        );
+        if report.result.status == CuratorStatus::Updated {
+            self.broadcast_memory_update(&report).await;
+        }
         match report.origin {
             Some(origin) => {
                 self.say(
@@ -556,11 +614,47 @@ impl Runtime {
         }
     }
 
+    /// 记忆已更新：向现存 topic / oneshot 会话追加 `memory-updated` 提示（只追加，不起轮次）。
+    /// 排除 curator 会话、已被接替的会话与来源会话（即将删除）；单个会话失败只告警
+    async fn broadcast_memory_update(&self, report: &CuratorReport) {
+        let summaries = match self.manager.store().list_sessions().await {
+            Ok(summaries) => summaries,
+            Err(error) => {
+                tracing::warn!("记忆更新广播无法列出会话: {error}");
+                return;
+            }
+        };
+        let text = crate::system::format_memory_updated_reminder(
+            &super::curator::memory_dir(self.manager.workspace()),
+            &report.result.summary,
+        );
+        let (mut total, mut failed) = (0, 0);
+        for s in summaries.into_iter().filter(|s| {
+            s.agent_managed()
+                && s.workspace_root == self.manager.workspace()
+                && s.kind != SessionKind::Curator
+                && s.superseded_by.is_none()
+                && s.id != report.session_id
+        }) {
+            total += 1;
+            let delivered = match self.manager.live_or_load(&s.id).await {
+                Ok(handle) => handle.note(&text).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = delivered {
+                failed += 1;
+                tracing::warn!("向会话 {} 追加记忆更新提示失败: {error}", s.id);
+            }
+        }
+        tracing::info!("记忆更新广播: 目标会话 {total} 个, 失败 {failed} 个");
+    }
+
     /// 待附件超时：提示用户并清理缓冲（文件仍保留在磁盘）
     async fn expire_pending(&self) {
         let ttl = chrono::Duration::seconds(self.config.pending_files_ttl_secs as i64);
         let expired = self.state.lock().await.pending.expire(Utc::now(), ttl);
         for (binding, files) in expired {
+            tracing::debug!("待附件过期: binding={binding} {} 个", files.len());
             let names: Vec<_> = files.iter().map(|f| f.name.as_str()).collect();
             self.say(
                 &binding,
@@ -584,6 +678,7 @@ impl Runtime {
     }
 
     async fn try_fire(self: &Arc<Self>, task: &Task) -> Result<(), String> {
+        tracing::info!("定时任务触发: id={} 目标={:?}", task.id, task.target);
         let (handle, binding) = match &task.target {
             Target::Session(id) => {
                 let handle = self
@@ -668,6 +763,50 @@ impl Runtime {
             chat_id: chat_id.to_string(),
         })
     }
+}
+
+/// 正文预览：最多 60 个字符，按字符边界截取并标注
+fn preview(text: &str) -> String {
+    match text.char_indices().nth(60) {
+        Some((end, _)) => format!("{}…（共 {} 字符）", &text[..end], text.chars().count()),
+        None => text.to_string(),
+    }
+}
+
+fn describe_route(route: &Route) -> String {
+    match route {
+        Route::Existing(id) => format!("action=existing session={id}"),
+        Route::Guide(id) => format!("action=guide session={id}"),
+        Route::New { .. } => "action=new".to_string(),
+        Route::Oneshot => "action=oneshot".to_string(),
+    }
+}
+
+fn command_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::New(_) => "/new",
+        Command::Switch(_) => "/switch",
+        Command::Sessions => "/sessions",
+        Command::Stop => "/stop",
+        Command::Status => "/status",
+        Command::Delete => "/delete",
+    }
+}
+
+/// 自 `from` 之后新增 assistant 轮次的 (prompt, completion, cached) token 合计
+fn turn_usage(session: &Session, from: usize) -> (u64, u64, u64) {
+    session
+        .turns
+        .iter()
+        .skip(from)
+        .filter_map(|t| t.usage.as_ref())
+        .fold((0, 0, 0), |acc, u| {
+            (
+                acc.0 + u.prompt_tokens as u64,
+                acc.1 + u.completion_tokens as u64,
+                acc.2 + u.cached_tokens.unwrap_or_default() as u64,
+            )
+        })
 }
 
 /// 用户消息 + 被引用上下文 + 附件绝对路径（历史里只写路径文本）
@@ -1051,6 +1190,67 @@ mod tests {
                 .any(|t| t.text_content().contains("type=\"scheduled\""))
         );
         assert_eq!(f.focus().await, None, "oneshot 不抢占 focus");
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn memory_update_broadcast_notes_eligible_sessions_without_a_turn() {
+        use super::super::curator::CuratorResult;
+        let f = fixture().await;
+        let mut ids = BTreeMap::new();
+        for (name, kind, superseded) in [
+            ("topic", SessionKind::Topic, false),
+            ("oneshot", SessionKind::Oneshot, false),
+            ("curator", SessionKind::Curator, false),
+            ("superseded", SessionKind::Topic, true),
+            ("source", SessionKind::Topic, false),
+        ] {
+            let mut session = Session::new(f.dir.clone(), None);
+            session.header.kind = kind;
+            session.header.origin = Some(Origin {
+                channel: "fake".into(),
+                chat_id: "c2c:u1".into(),
+            });
+            if superseded {
+                session.header.superseded_by = Some("sess_next".into());
+            }
+            f.manager.store().save_header(&session).await.unwrap();
+            ids.insert(name, session.header.id.clone());
+        }
+        // 来源会话已加载（运行时句柄）与冷会话两条路径都要覆盖：预加载 topic
+        f.manager.live_or_load(&ids["topic"]).await.unwrap();
+
+        f.runtime
+            .push_curator(CuratorReport {
+                session_id: ids["source"].clone(),
+                origin: None,
+                result: CuratorResult {
+                    status: CuratorStatus::Updated,
+                    summary: "新增偏好主题".into(),
+                },
+            })
+            .await;
+
+        for (name, id) in &ids {
+            let stored = f.manager.store().load_session(id).await.unwrap().unwrap();
+            if matches!(*name, "topic" | "oneshot") {
+                assert_eq!(stored.turns.len(), 1, "{name}");
+                let text = stored.turns[0].text_content();
+                assert!(text.starts_with("<system-reminder type=\"memory-updated\">"));
+                assert!(text.contains("新增偏好主题"));
+                assert!(text.contains("MEMORY.md"));
+            } else {
+                assert!(stored.turns.is_empty(), "{name}");
+            }
+        }
+        // 广播不触发模型调用：已加载会话也没有助手轮次
+        let live = f.manager.live(&ids["topic"]).await.unwrap().snapshot();
+        assert!(
+            live.session
+                .turns
+                .iter()
+                .all(|t| t.role != crate::model::Role::Assistant)
+        );
         let _ = std::fs::remove_dir_all(&f.dir);
     }
 }

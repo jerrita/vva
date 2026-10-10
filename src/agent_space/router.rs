@@ -331,6 +331,7 @@ impl Router {
         if let Some(reply) = &input.reply_to
             && let Some(session_id) = index.get(&reply.message_id)
         {
+            tracing::debug!("路由 L0 命中 reply 锚点: session={session_id}");
             return Ok(match find(session_id) {
                 Some(c) => Routed::new(Route::Existing(c.id.clone()), "reply"),
                 None => Routed {
@@ -346,6 +347,7 @@ impl Router {
         }
         // L0：零会话直接创建
         if input.candidates.is_empty() {
+            tracing::debug!("路由 L0: 无候选会话，直接新建");
             return Ok(Routed::new(
                 Route::New {
                     quoted: input.reply_to.as_ref().map(|r| r.text.clone()),
@@ -355,7 +357,13 @@ impl Router {
         }
 
         // L1
-        let reply = self.model.decide(SYSTEM_PROMPT, &build_prompt(input)).await;
+        let prompt = build_prompt(input);
+        tracing::debug!(
+            "路由 L1 调用小模型: 候选 {} 个, 提示词 {} 字符",
+            input.candidates.len(),
+            prompt.chars().count()
+        );
+        let reply = self.model.decide(SYSTEM_PROMPT, &prompt).await;
         let (decision, usage) = match reply {
             Ok(r) => (
                 serde_json::from_str::<RouteDecision>(&r.text)
@@ -368,6 +376,19 @@ impl Router {
             let routed = validate(&d, input)?;
             Ok((d, routed))
         });
+        match &validated {
+            Ok((d, _)) => tracing::info!(
+                "路由决策: action={:?} session_id={} reason={} 小模型 usage={}",
+                d.action,
+                d.session_id.as_deref().unwrap_or("-"),
+                d.reason,
+                usage.as_ref().map_or("无".into(), |u| format!(
+                    "{}/{}",
+                    u.prompt_tokens, u.completion_tokens
+                ))
+            ),
+            Err(e) => tracing::warn!("路由失败 binding={}: {e}", input.binding),
+        }
         self.log(input, &validated, usage.as_ref());
         validated.map(|(_, route)| Routed::new(route, "router"))
     }

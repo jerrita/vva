@@ -43,6 +43,7 @@ impl BindingStore {
     }
 
     pub fn set_focus(&mut self, binding: &str, session_id: Option<String>) -> Result<(), String> {
+        tracing::debug!("focus 变更: binding={binding} -> {session_id:?}");
         self.bindings.entry(binding.to_string()).or_default().focus = session_id;
         self.save()
     }
@@ -51,6 +52,7 @@ impl BindingStore {
     pub fn replace_focus(&mut self, old: &str, new: Option<&str>) -> Result<(), String> {
         for state in self.bindings.values_mut() {
             if state.focus.as_deref() == Some(old) {
+                tracing::debug!("focus 改指: {old} -> {new:?}");
                 state.focus = new.map(str::to_string);
             }
         }

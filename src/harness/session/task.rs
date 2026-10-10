@@ -15,6 +15,8 @@ pub(super) struct TaskDeps {
     pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
     /// 会话工具工厂（缺省不追加工具）
     pub tool_factory: Option<SessionToolFactory>,
+    /// 会话前导（缺省不追加）
+    pub preamble: Option<SessionPreamble>,
 }
 
 pub(super) struct SessionTask {
@@ -50,6 +52,9 @@ pub(super) struct SessionTask {
     /// 会话编排接口（子代理派生与跨会话投递）
     pub(super) broker: Arc<dyn crate::tools::agent::SessionBroker>,
     pub(super) tool_factory: Option<SessionToolFactory>,
+    pub(super) preamble: Option<SessionPreamble>,
+    /// 运行中到达、待轮次间隙追加的提示（只追加，不触发轮次）
+    pub(super) pending_notes: Vec<String>,
 }
 
 /// 单个附件的输入能力校验：图片过输入能力（MIME 或模态声明），File 校验 MIME 一致性与 PDF 能力。
@@ -200,6 +205,8 @@ impl SessionTask {
             turn_start: 0,
             broker: deps.broker,
             tool_factory: deps.tool_factory,
+            preamble: deps.preamble,
+            pending_notes: Vec::new(),
         };
         (task, view_rx, turns)
     }
@@ -640,6 +647,15 @@ impl SessionTask {
             let reminder = crate::system::format_skills_reminder(skills);
             session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
         }
+        // 会话前导（如记忆索引快照）：动态内容走 reminder 追加，不进 system prompt
+        for text in self
+            .preamble
+            .as_ref()
+            .map(|preamble| preamble(&session.header))
+            .unwrap_or_default()
+        {
+            session.append_turn(Turn::new(Role::User, vec![Message::text(text)]));
+        }
         if generate {
             session.header.title = Some(crate::model::provisional_title(prompt));
         }
@@ -707,6 +723,24 @@ impl SessionTask {
         Ok(())
     }
 
+    /// 追加提示（只落盘，不起轮次）：空闲直接追加，运行中入队等轮次间隙
+    pub(super) async fn note(&mut self, text: String) -> Result<(), String> {
+        if !self.view.persisted {
+            return Err("Session has no persisted history to append a note to".into());
+        }
+        self.append(Turn::new(Role::User, vec![Message::text(text)]))
+            .await
+    }
+
+    /// 将运行中排队的提示依序追加到历史末尾
+    pub(super) async fn drain_notes(&mut self) -> Result<(), String> {
+        for text in std::mem::take(&mut self.pending_notes) {
+            tracing::debug!("冲刷排队提示: {} 字符", text.chars().count());
+            self.note(text).await?;
+        }
+        Ok(())
+    }
+
     /// 后台子代理完成：入队等待轮次间隙注入最终消息；
     /// 完成状态关联子会话身份，忙闲路径共用。
     pub(super) async fn queue_subagent_completion(&mut self, session_id: String) {
@@ -767,6 +801,11 @@ impl SessionTask {
                         }
                         Command::SubagentFinished { session_id } => {
                             self.queue_subagent_completion(session_id).await;
+                        }
+                        Command::Note { text, reply } => {
+                            tracing::debug!("运行中收到提示，入队: {} 字符", text.chars().count());
+                            self.pending_notes.push(text);
+                            let _ = reply.send(Ok(()));
                         }
                         Command::Deliver { delivery, reply } => {
                             // 程序化消息不拒绝：入队待轮次结束后处理
@@ -862,6 +901,7 @@ impl SessionTask {
         loop {
             self.drain_task_completions().await?;
             self.drain_subagent_completions().await?;
+            self.drain_notes().await?;
             self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
@@ -1113,6 +1153,10 @@ impl SessionTask {
         } else {
             String::new()
         };
+        // 末次模型调用期间到达的提示在轮次收尾处追加（不续跑）
+        if let Err(error) = self.drain_notes().await {
+            tracing::warn!("Failed to append queued notes: {error}");
+        }
         self.view.state = RunState::Idle;
         match result {
             Ok(TurnOutcome::Completed) => self.event(AgentEvent::Finished).await,
@@ -1253,6 +1297,9 @@ impl SessionTask {
                     if self.run_completion_turn(&mut commands).await {
                         break;
                     }
+                }
+                Command::Note { text, reply } => {
+                    let _ = reply.send(self.note(text).await);
                 }
                 Command::Revert { turn_index, reply } => {
                     let _ = reply.send(self.revert(turn_index).await);

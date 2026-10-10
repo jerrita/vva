@@ -294,7 +294,6 @@ mod tests {
         assert_eq!(agent.ttl_secs, 60);
         assert_eq!(agent.oneshot_ttl_secs, 0);
         assert_eq!(agent.rollover_reserve_tokens, 32_000);
-        assert_eq!(agent.rollover_keep_turns, 4);
         assert_eq!(agent.pending_files_ttl_secs, 600);
         assert_eq!(agent.model, None);
         assert!(agent.validate().is_ok());

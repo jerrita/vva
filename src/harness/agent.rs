@@ -38,6 +38,10 @@ pub fn capability_notices(
 pub type SessionToolFactory =
     Arc<dyn Fn(&crate::model::SessionHeader) -> Vec<Arc<dyn crate::tools::Tool>> + Send + Sync>;
 
+/// 会话前导：按会话 header 提供首次落盘时追加的 `<system-reminder>` 文本（如记忆索引快照），
+/// 空列表表示无需注入
+pub type SessionPreamble = Arc<dyn Fn(&crate::model::SessionHeader) -> Vec<String> + Send + Sync>;
+
 pub(super) struct AgentEngine {
     pub provider: Arc<dyn Provider>,
     pub tools: ToolRegistry,
