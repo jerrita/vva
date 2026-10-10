@@ -120,6 +120,26 @@ struct TokenResponse {
     expires_in: String,
 }
 
+/// 令牌接口的应答：成功为 token，凭据被拒时 HTTP 仍可能是 200 但仅携带 `message`
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TokenReply {
+    Token(TokenResponse),
+    Rejected { message: String },
+}
+
+fn parse_token_reply(status: u16, url: &str, body: &str) -> Result<TokenResponse> {
+    match serde_json::from_str::<TokenReply>(body) {
+        Ok(TokenReply::Token(token)) => Ok(token),
+        Ok(TokenReply::Rejected { message }) => Err(ChannelError::Api {
+            status,
+            path: url.to_string(),
+            message,
+        }),
+        Err(e) => Err(ChannelError::Protocol(format!("token 响应非法: {e}"))),
+    }
+}
+
 #[derive(Deserialize)]
 struct GatewayResponse {
     url: String,
@@ -188,12 +208,12 @@ impl QqApi {
         if !status.is_success() {
             return Err(api_error(status.as_u16(), &self.token_url, &body));
         }
-        let parsed: TokenResponse = serde_json::from_str(&body)
-            .map_err(|e| ChannelError::Protocol(format!("token 响应非法: {e}")))?;
+        let parsed = parse_token_reply(status.as_u16(), &self.token_url, &body)?;
         let secs: u64 = parsed.expires_in.parse().map_err(|_| {
             ChannelError::Protocol(format!("expires_in 非法: {}", parsed.expires_in))
         })?;
         let value = parsed.access_token;
+        tracing::debug!("QQ access token 已刷新: 有效期 {secs}s");
         *guard = Some(Token {
             value: value.clone(),
             expires_at: Instant::now() + Duration::from_secs(secs.max(60)),
@@ -202,6 +222,7 @@ impl QqApi {
     }
 
     pub async fn invalidate_token(&self) {
+        tracing::info!("QQ access token 已作废，下次请求重新获取");
         *self.token.lock().await = None;
     }
 
@@ -224,8 +245,14 @@ impl QqApi {
             if let Some(body) = body {
                 req = req.json(body);
             }
+            let started = Instant::now();
             let resp = req.send().await?;
             let status = resp.status();
+            tracing::debug!(
+                "QQ 请求: {method} {path} -> {} 耗时 {}ms",
+                status.as_u16(),
+                started.elapsed().as_millis()
+            );
             if status.as_u16() == 401 && !retried {
                 retried = true;
                 tracing::warn!("QQ 请求 401，刷新 access token 重试一次: {path}");
@@ -235,6 +262,15 @@ impl QqApi {
             }
             let text = resp.text().await?;
             if !status.is_success() {
+                tracing::warn!(
+                    "QQ 请求失败: {method} {path} 状态 {}{}",
+                    status.as_u16(),
+                    if status.as_u16() == 429 {
+                        "（被限流）"
+                    } else {
+                        ""
+                    }
+                );
                 return Err(api_error(status.as_u16(), path, &text));
             }
             return serde_json::from_str(&text)
@@ -441,6 +477,24 @@ mod tests {
         assert_eq!(
             message_payload(&guild, "hi", false, Some("m"), 1),
             json!({"content":"hi","msg_id":"m"})
+        );
+    }
+
+    #[test]
+    fn token_reply_surfaces_rejection_message() {
+        let ok =
+            parse_token_reply(200, "u", r#"{"access_token":"t","expires_in":"7200"}"#).unwrap();
+        assert_eq!(ok.access_token, "t");
+        let err = parse_token_reply(
+            200,
+            "u",
+            r#"{"code":100016,"message":"invalid appid or secret"}"#,
+        )
+        .err()
+        .unwrap();
+        assert!(
+            matches!(&err, ChannelError::Api { message, .. } if message == "invalid appid or secret"),
+            "{err}"
         );
     }
 

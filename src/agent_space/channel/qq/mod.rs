@@ -37,7 +37,7 @@ pub struct QqOptions {
     pub app_id: String,
     pub secret: String,
     /// 允许触达 agent 的用户 id（群为 member_openid，单聊为 user_openid，频道为 author.id）。
-    /// 为空表示拒绝所有人。
+    /// 为空表示拒绝所有人；含 `"*"` 表示允许任何用户（该机器人可执行 agent 工具，慎用）。
     pub allowed_users: Vec<String>,
 }
 
@@ -54,10 +54,15 @@ impl QqChannel {
         }
     }
 
+    /// 白名单含 `"*"` 表示允许任何用户；空白名单拒绝所有人
+    fn allows(&self, user_id: &str) -> bool {
+        self.allowed_users.iter().any(|u| u == "*" || u == user_id)
+    }
+
     /// 白名单外丢弃（warn）；无文字无附件丢弃；其余转为入站消息。
     fn admit(&self, ev: MessageEvent) -> Option<Inbound> {
         let binding = ev.target.binding();
-        if !self.allowed_users.contains(&ev.user_id) {
+        if !self.allows(&ev.user_id) {
             tracing::warn!(
                 "QQ 白名单外用户消息已丢弃: user={} binding={binding}",
                 ev.user_id
@@ -68,6 +73,12 @@ impl QqChannel {
             tracing::debug!("QQ 空消息已忽略: binding={binding}");
             return None;
         }
+        tracing::info!(
+            "QQ 入站事件: binding={binding} user={} 文字 {} 字符, 附件 {}",
+            ev.user_id,
+            ev.text.chars().count(),
+            ev.attachments.len()
+        );
         let files = ev
             .attachments
             .into_iter()
@@ -105,9 +116,17 @@ impl QqChannel {
 
     async fn send_text(&self, m: OutboundText) -> Result<Vec<String>> {
         let target = Target::from_binding(&m.binding)?;
-        self.api
+        let ids = self
+            .api
             .send_text(&target, &m.text, m.reply_to.as_deref())
-            .await
+            .await?;
+        tracing::debug!(
+            "QQ 出站文本: binding={} {} 字符, 返回 id {} 个",
+            m.binding,
+            m.text.chars().count(),
+            ids.len()
+        );
+        Ok(ids)
     }
 
     async fn send_file(&self, m: OutboundFile) -> Result<Vec<String>> {
@@ -137,6 +156,11 @@ impl QqChannel {
             self.api
                 .send_media(&target, file_type, &file_name, data, m.reply_to.as_deref())
                 .await?,
+        );
+        tracing::debug!(
+            "QQ 出站文件: binding={} file_type={file_type} 返回 id {} 个",
+            m.binding,
+            ids.len()
         );
         Ok(ids)
     }
@@ -245,6 +269,15 @@ mod tests {
             channel(&[])
                 .admit(group_event("MEM", "hi", serde_json::json!([])))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn wildcard_allows_any_user() {
+        let ch = channel(&["*"]);
+        assert!(
+            ch.admit(group_event("ANYONE", "hi", serde_json::json!([])))
+                .is_some()
         );
     }
 
