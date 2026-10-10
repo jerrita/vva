@@ -206,11 +206,14 @@ impl ResolvedModel<'_> {
         }
     }
 
+    /// 实际生效的 ProviderType（支持模型级 override；未声明 type 时按 Response）
+    pub fn effective_type(&self) -> ProviderType {
+        self.model_config
+            .effective_type(self.provider_config.provider_type.unwrap_or_default())
+    }
+
     pub fn create_provider(&self) -> Arc<dyn Provider> {
-        // 计算实际生效的 ProviderType（支持模型级 override；未声明 type 时按 Response）
-        let effective_type = self
-            .model_config
-            .effective_type(self.provider_config.provider_type.unwrap_or_default());
+        let effective_type = self.effective_type();
 
         // 规范化 Base URL（针对各 API 标准端点严格对接与去重）
         let base_url = self.provider_config.base_url.trim().trim_end_matches('/');

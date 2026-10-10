@@ -143,6 +143,7 @@ src/
 │   ├── web/                # 外置 web search / fetch provider 与同名客户端工具 (settings.web 配置驱动)
 │   │   ├── mod.rs          # WebSearch/WebFetchProvider Trait、ExternalWeb 解析 (能力校验与 api_key 校验)
 │   │   ├── brave.rs        # Brave Search LLM Context (grounding.generic 按 url 聚合，仅 search)
+│   │   ├── google.rs       # Google：以已配置 Gemini 模型仅挂载原生 google_search / url_context (search + fetch)
 │   │   ├── tavily.rs       # Tavily /search 与 /extract (search + fetch)
 │   │   ├── local.rs        # 内置 fetch：HTTP 抓取 + dom_smoothie 正文提取 + htmd 转 Markdown
 │   │   └── tool.rs         # web_search / web_fetch 工具 (原生能力缺位时注册)

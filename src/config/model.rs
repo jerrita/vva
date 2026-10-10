@@ -296,10 +296,10 @@ pub struct QqChannelConfig {
 pub struct WebSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<WebProviders>,
-    /// web search 使用的 provider 名（`brave` / `tavily`）
+    /// web search 使用的 provider 名（`brave` / `tavily` / `google`）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
-    /// web fetch 使用的 provider 名（`brave` / `local` / `tavily`）
+    /// web fetch 使用的 provider 名（`local` / `tavily`）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fetch: Option<String>,
 }
@@ -311,6 +311,15 @@ pub struct WebProviders {
     pub brave: Option<WebApiAuth>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tavily: Option<WebApiAuth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub google: Option<WebGoogle>,
+}
+
+/// Google provider：以已配置的 Gemini 模型（`provider/model`）执行原生 googleSearch grounding
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebGoogle {
+    #[serde(default)]
+    pub model: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -331,6 +340,9 @@ impl WebSettings {
         }
         if provider.tavily.is_some() {
             names.push("tavily");
+        }
+        if provider.google.is_some() {
+            names.push("google");
         }
         names
     }

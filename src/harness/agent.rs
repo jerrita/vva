@@ -145,7 +145,7 @@ impl AgentEngine {
         let mut external_web = Vec::new();
         let mut external_search = false;
         if session.header.web_search && (search_allowed || fetch_allowed) {
-            let external = crate::tools::web::ExternalWeb::resolve(config.settings.web.as_ref())?;
+            let external = crate::tools::web::ExternalWeb::resolve(config)?;
             let native_search = options.enable_web_search && capabilities.supports_native_search;
             // 独立 web_fetch server tool（Anthropic）按声明位；
             // 无独立工具时，web_search 含 open_page（Response）随原生搜索在位
