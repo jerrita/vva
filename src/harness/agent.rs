@@ -123,6 +123,7 @@ impl AgentEngine {
             enable_web_fetch: web_declared
                 && resolved.model_config.declare_web_fetch()
                 && fetch_allowed,
+            web_tool_version: resolved.model_config.web_tool_version().map(str::to_string),
             service_tier: resolved.model_config.service_tier().map(str::to_string),
             affinity: Some(affinity.clone()),
             ..Default::default()
@@ -306,6 +307,7 @@ pub(super) async fn generate_title(
         enable_web_search: false,
         enable_web_fetch: false,
         reasoning_effort: None,
+        web_tool_version: None,
         service_tier: resolved.model_config.service_tier().map(str::to_string),
         affinity: None,
         response_schema: None,

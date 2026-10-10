@@ -412,6 +412,13 @@ impl ModelConfig {
         self.annotation.as_ref().and_then(|a| a.editor)
     }
 
+    /// 该模型显式指定的 Anthropic 服务端 web 工具版本后缀
+    pub fn web_tool_version(&self) -> Option<&str> {
+        self.annotation
+            .as_ref()
+            .and_then(|a| a.web_tool_version.as_deref())
+    }
+
     /// 该模型的请求服务档位；`annotation.fast: true` 时以 `service_tier: "fast"` 发起请求
     pub fn service_tier(&self) -> Option<&'static str> {
         match self.annotation.as_ref().and_then(|a| a.fast) {
@@ -450,6 +457,10 @@ pub struct ModelAnnotation {
     /// 以 `"service_tier": "fast"` 发起请求（快速档位端点）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<bool>,
+    /// Anthropic web_search / web_fetch 服务端工具的版本后缀（如 `"20260209"`），
+    /// 用于尚未识别最新版本的中转端点；缺省使用最新版本
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_tool_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -221,6 +221,7 @@
 | `annotation.web_search` | `true` | 设为 `false` 标记模型/端点不支持原生 web search，不向端点声明原生搜索；配置 `settings.web.search` 时以客户端工具 `web_search` 补全 |
 | `annotation.affinity` | provider 节点 id | 模型亲和组：同组模型切换时互相复用原生回传状态（response_id 链、encrypted thinking、签名块）；跨组切换时历史降维为通用重建（推理签名丢弃、搜索调用按当前工具面重投影）并发提示。混系网关（同一节点下多家族模型）按模型标注，如 `"gpt"` |
 | `annotation.editor` | `settings.editor` | 文件编辑协议，工具名均为 `Edit`，仅参数与 description 不同。会话创建时写入 Header 并固定，之后换模不改变：`hashline` 为 `[PATH#TAG]` 快照 + `PUT`/`CUT`/`REM`/`MV` 行号补丁；`replace` 为 `old_string`/`new_string`；`patch` 为 Codex V4A `input` |
+| `annotation.web_tool_version` | `20260318` | Anthropic 协议下 `web_search_<版本>` / `web_fetch_<版本>` 服务端工具的版本后缀。用于尚未识别最新版本的中转端点（报 `unknown variant web_search_20260318`），可设为 `"20260209"` |
 | `annotation.fast` | `false` | 设为 `true` 时请求体携带 `"service_tier": "fast"`（Responses API），走端点快速档位 |
 
 ---

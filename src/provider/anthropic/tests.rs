@@ -909,3 +909,21 @@ fn test_response_schema_maps_to_output_config_format() {
     assert_eq!(body["output_config"]["format"]["schema"], schema);
     assert!(body.get("output_format").is_none());
 }
+
+/// annotation.web_tool_version 指定旧版本后缀，供未识别最新版本的中转端点使用
+#[test]
+fn test_anthropic_web_tool_version_override() {
+    let provider = AnthropicProvider::new("test-key");
+    let session = Session::new(PathBuf::from("/tmp"), None);
+    let options = CompletionOptions {
+        model: "claude-haiku-4-5".into(),
+        web_tool_version: Some("20260209".into()),
+        ..Default::default()
+    };
+    let body = provider
+        .build_request_body(&session, &[], &options)
+        .expect("build body");
+    let tools = body["tools"].as_array().unwrap();
+    assert_eq!(tools[0]["type"], "web_search_20260209");
+    assert_eq!(tools[1]["type"], "web_fetch_20260209");
+}

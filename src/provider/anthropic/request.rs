@@ -17,17 +17,18 @@ impl AnthropicProvider {
         let mut api_tools: Vec<serde_json::Value> = Vec::new();
         // 核心原生优势：服务端代执行的 web_search / web_fetch（引用与结果块由服务端直接产出）
         // _20260209 起默认经代码执行容器调用，显式声明直连。
+        let version = options.web_tool_version.as_deref().unwrap_or("20260318");
         let direct_callers = serde_json::json!(["direct"]);
         if options.enable_web_search {
             api_tools.push(serde_json::json!({
-                "type": "web_search_20260318",
+                "type": format!("web_search_{version}"),
                 "name": "web_search",
                 "allowed_callers": direct_callers,
             }));
         }
         if options.enable_web_fetch {
             api_tools.push(serde_json::json!({
-                "type": "web_fetch_20260318",
+                "type": format!("web_fetch_{version}"),
                 "name": "web_fetch",
                 "allowed_callers": direct_callers,
             }));

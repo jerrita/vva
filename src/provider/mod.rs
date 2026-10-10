@@ -68,6 +68,8 @@ pub struct CompletionOptions {
     /// 是否向 API 声明 web_fetch 服务端工具（模型级 `annotation.web_fetch: false` 时关闭）
     pub enable_web_fetch: bool,
     pub reasoning_effort: Option<String>,
+    /// Anthropic 服务端 web 工具版本后缀（模型级 `annotation.web_tool_version`；缺省为最新版本）
+    pub web_tool_version: Option<String>,
     /// 请求服务档位（Responses API 的 `service_tier` 参数；模型级 `annotation.fast: true` 时为 `fast`）
     pub service_tier: Option<String>,
     /// 模型亲和组：组装轮次元数据时打标，回放时据此判定原生状态是否可复用
@@ -85,6 +87,7 @@ impl Default for CompletionOptions {
             enable_web_search: true,
             enable_web_fetch: true,
             reasoning_effort: None,
+            web_tool_version: None,
             service_tier: None,
             affinity: None,
             response_schema: None,
