@@ -140,7 +140,6 @@ impl Session {
                 depth: 0,
                 kind: SessionKind::default(),
                 origin: None,
-                topic: None,
                 routed_by: None,
                 superseded_by: None,
                 last_activity: None,
@@ -248,9 +247,6 @@ pub struct SessionHeader {
     /// 会话来源 IM 位置（agent space 创建的会话携带）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
-    /// router 使用的一句话主题摘要
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topic: Option<String>,
     /// 路由本会话的决策来源（如 `reply` / `switch` / `router`）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routed_by: Option<String>,
@@ -339,8 +335,6 @@ pub struct SessionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub topic: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
@@ -367,7 +361,6 @@ impl SessionSummary {
             agent: header.agent,
             kind: header.kind,
             origin: header.origin,
-            topic: header.topic,
             superseded_by: header.superseded_by,
             last_activity: header.last_activity,
         }
@@ -385,7 +378,7 @@ mod tests {
             panic!("expected header");
         };
         assert_eq!(header.kind, SessionKind::Topic);
-        assert!(header.origin.is_none() && header.topic.is_none());
+        assert!(header.origin.is_none());
         assert!(header.routed_by.is_none() && header.superseded_by.is_none());
         assert!(header.last_activity.is_none());
         // 缺省字段不被序列化，旧格式保持稳定
@@ -393,7 +386,6 @@ mod tests {
         for key in [
             "kind",
             "origin",
-            "topic",
             "routed_by",
             "superseded_by",
             "last_activity",
@@ -410,7 +402,6 @@ mod tests {
             channel: "qq".into(),
             chat_id: "c2c:1".into(),
         });
-        header.topic = Some("t".into());
         header.routed_by = Some("router".into());
         header.superseded_by = Some("sess_00000".into());
         header.last_activity = Some(Utc::now());

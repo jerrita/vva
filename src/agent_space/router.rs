@@ -127,25 +127,20 @@ pub enum RouteError {
 
 // ================== 输入 ==================
 
-/// 候选表行：仅四个字段
+/// 候选表行：仅四个字段（title 为小模型生成的会话标题，首轮完成前是占位标题）
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Candidate {
     pub id: String,
-    pub topic: String,
+    pub title: String,
     pub running: bool,
     pub focus: bool,
 }
 
 impl Candidate {
-    /// `topic` 缺失时沿用 header 已有的占位标题（`provisional_title` 的产物）
     pub fn from_header(header: &SessionHeader, running: bool, focus: Option<&str>) -> Self {
         Self {
             id: header.id.clone(),
-            topic: header
-                .topic
-                .clone()
-                .or_else(|| header.title.clone())
-                .unwrap_or_default(),
+            title: header.title.clone().unwrap_or_default(),
             running,
             focus: focus == Some(header.id.as_str()),
         }
@@ -278,13 +273,13 @@ impl RouteModel for SmallRouteModel {
 const SYSTEM_PROMPT: &str = "\
 你是个人 agent 的消息路由器。你只判断本条用户消息应交给哪个会话，不回答用户的问题。
 
-输入是一个 JSON：candidates 为候选会话表（id、topic 主题摘要、running 是否正在生成、focus 是否为该聊天的默认会话），\
+输入是一个 JSON：candidates 为候选会话表（id、title 会话标题、running 是否正在生成、focus 是否为该聊天的默认会话），\
 files 为随消息到达的附件（仅文件名与类型），reply_to 为用户引用的消息片段，user_text 为用户消息。你看不到任何会话的历史正文。
 
 按以下优先级判断：
 1. oneshot：寒暄、确认在线、简单感谢，或不依赖任何历史、答完即无长期价值的独立小问题。带附件（files 非空）的消息不得选 oneshot。
 2. guide_existing：消息是对某个 running=true 会话的补充、修正、打断或改变方向。此时 action=existing，session_id 为该会话，running_intent=guide_existing。
-3. existing：承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题。通常选 focus 会话；topic 明显指向其他会话时选那个会话。
+3. existing：承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题。通常选 focus 会话；title 明显指向其他会话时选那个会话。
 4. new：用户明确开启与所有候选会话主题完全无关、需要长期上下文的独立任务。
 
 约束：
@@ -512,7 +507,7 @@ mod tests {
     fn cand(id: &str, running: bool, focus: bool) -> Candidate {
         Candidate {
             id: id.into(),
-            topic: format!("主题 {id}"),
+            title: format!("标题 {id}"),
             running,
             focus,
         }
@@ -774,7 +769,7 @@ mod tests {
             .cloned()
             .collect();
         keys.sort();
-        assert_eq!(keys, ["focus", "id", "running", "topic"]);
+        assert_eq!(keys, ["focus", "id", "running", "title"]);
 
         let log = std::fs::read_to_string(e.dir.path().join("router.jsonl")).unwrap();
         let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
@@ -821,16 +816,11 @@ mod tests {
     }
 
     #[test]
-    fn candidate_topic_falls_back_to_header_title() {
-        let mut s = Session::new(".", Some("占位标题".into()));
+    fn candidate_title_comes_from_header() {
+        let s = Session::new(".", Some("占位标题".into()));
         let c = Candidate::from_header(&s.header, true, Some(&s.header.id.clone()));
-        assert_eq!(c.topic, "占位标题");
+        assert_eq!(c.title, "占位标题");
         assert!(c.running && c.focus);
-        s.header.topic = Some("正式主题".into());
-        assert_eq!(
-            Candidate::from_header(&s.header, false, None).topic,
-            "正式主题"
-        );
     }
 
     #[test]

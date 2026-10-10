@@ -1202,7 +1202,6 @@ mod tests {
             agent: None,
             kind: Default::default(),
             origin: None,
-            topic: None,
             superseded_by: None,
             last_activity: None,
         };

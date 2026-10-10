@@ -295,7 +295,7 @@ impl Runtime {
                 .await
                 .is_some_and(|h| h.is_running());
             candidates.push(Candidate {
-                topic: s.topic.or(s.title).unwrap_or_default(),
+                title: s.title.unwrap_or_default(),
                 running,
                 focus: focus.as_deref() == Some(s.id.as_str()),
                 id: s.id,
@@ -387,7 +387,7 @@ impl Runtime {
                     if c.focus { "* " } else { "  " },
                     c.id,
                     if c.running { "[运行中]" } else { "" },
-                    c.topic
+                    c.title
                 )
             })
             .collect::<Vec<_>>()
@@ -461,7 +461,7 @@ impl Runtime {
         reply_to: Option<String>,
         prompt: String,
     ) {
-        let text = match self.deliver(&handle, &binding, &prompt).await {
+        let text = match handle.deliver_wait(&prompt).await.map(|report| report.text) {
             Ok(text) if text.trim().is_empty() => "（本轮没有文本输出）".to_string(),
             Ok(text) => text,
             Err(error) => format!("本轮执行失败: {error}"),
@@ -476,37 +476,6 @@ impl Runtime {
             }
         }
         self.after_turn(&handle, &binding).await;
-    }
-
-    /// `deliver_wait` 并守卫 AskUser：渠道暂不支持提问，出现即中止本轮，不挂起
-    async fn deliver(
-        &self,
-        handle: &Arc<ManagedSession>,
-        binding: &str,
-        prompt: &str,
-    ) -> Result<String, String> {
-        let mut view = handle.subscribe();
-        let turn = handle.deliver_wait(prompt);
-        tokio::pin!(turn);
-        let mut asked = false;
-        let outcome = loop {
-            tokio::select! {
-                outcome = &mut turn => break outcome,
-                changed = view.changed(), if !asked => {
-                    if changed.is_ok() && view.borrow().pending_user_question.is_some() {
-                        asked = true;
-                        self.say(binding, None, "当前渠道暂不支持提问，本轮已中止").await;
-                        if let Err(e) = handle.abort_current().await {
-                            tracing::warn!("中止提问中的会话失败: {e}");
-                        }
-                    }
-                }
-            }
-        };
-        if asked {
-            return Err("当前渠道暂不支持提问（AskUser）".into());
-        }
-        outcome.map(|report| report.text)
     }
 
     async fn after_turn(&self, handle: &Arc<ManagedSession>, binding: &str) {

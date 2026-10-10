@@ -23,6 +23,8 @@ pub struct SessionManager {
     sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
     /// 前台子代理登记：父会话 id → 子会话 id（父会话被中止时联动中止）
     foreground_children: Mutex<HashMap<String, Vec<String>>>,
+    /// 会话工具工厂：按会话 header 追加运行期工具；缺省不追加
+    tool_factory: Option<SessionToolFactory>,
 }
 
 impl SessionManager {
@@ -40,7 +42,14 @@ impl SessionManager {
             state_path: state_path.into(),
             sessions: Mutex::new(HashMap::new()),
             foreground_children: Mutex::new(HashMap::new()),
+            tool_factory: None,
         }
+    }
+
+    /// 安装会话工具工厂（须在包装为 Arc 之前调用）
+    pub fn with_tool_factory(mut self, factory: SessionToolFactory) -> Self {
+        self.tool_factory = Some(factory);
+        self
     }
 
     /// 记录启动时的自定义配置路径，供 reload_config 复用相同寻址
@@ -98,6 +107,7 @@ impl SessionManager {
                 config: self.app_config(),
                 state_path: self.state_path.clone(),
                 broker: Arc::new(SessionBrokerHandle::new(self.clone())),
+                tool_factory: self.tool_factory.clone(),
             },
             commands.downgrade(),
         );

@@ -221,7 +221,6 @@ pub fn successor_session(
     session.header.parent = Some(header.id.clone());
     session.header.kind = header.kind;
     session.header.origin = header.origin.clone();
-    session.header.topic = header.topic.clone();
     session.header.routed_by = header.routed_by.clone();
     session.header.last_activity = Some(chrono::Utc::now());
 

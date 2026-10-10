@@ -108,13 +108,14 @@ src/
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
 ├── agent_space/            # 常驻 IM agent (`vva agent`，设计见 docs/agent.md)
 │   ├── mod.rs              # AgentSpace：启动期配置校验与 run (装配 channel / runtime / scheduler / lifecycle，ctrl-c 退出)、agent_toggles
-│   ├── runtime.rs          # Runtime：入站消息 → 命令 / 文件缓冲 → 路由 → session 轮次 → 出站文本；AskUser 守卫、rollover 切换、定时任务投递
+│   ├── runtime.rs          # Runtime：入站消息 → 命令 / 文件缓冲 → 路由 → session 轮次 → 出站文本；rollover 切换、定时任务投递
 │   ├── command.rs          # 斜杠命令解析 (/new /switch /sessions /stop /status /delete)
 │   ├── binding.rs          # BindingStore (focus) / MessageIndex (消息 id → session) / PendingFiles (待附件缓冲)
 │   ├── router.rs           # Router：L0 reply 锚点 / L1 小模型结构化决策 / L2 显式报错 + router.jsonl
 │   ├── scheduler.rs        # Scheduler：schedule.jsonc 热重载、5 字段 cron、错过任务检测 (不补跑)
 │   ├── lifecycle.rs        # 空闲 TTL → curator 沉淀 → 删除
 │   ├── curator.rs          # 知识沉淀 (kind=curator 会话，游标增量，memory/ git 提交)
+│   ├── send_file.rs        # SendFile 工具与 session_tool_factory：渠道绑定、按会话 origin 运行期注入 (经 SessionManager::with_tool_factory)
 │   ├── rollover.rs         # 上下文达预留线时同会话压缩并切换新会话；context_tokens / cache_hit_rate
 │   └── channel/            # Channel trait 与 Inbound/Outbound；files.rs 附件落盘辅助；qq/ 官方 OpenAPI + 网关
 ├── agents/                 # Subagent 定义：YAML agent 类型解析与发现
@@ -158,7 +159,7 @@ src/
 │       ├── mod.rs          # 模块导出 (SessionManager/ManagedSession/SessionView/RunState)
 │       ├── view.rs         # SessionView 只读快照与 RunState
 │       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议 (Submit/Deliver/SubagentFinished 等) 与 turn_seq 轮次计数
-│       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换 + SessionBrokerHandle (spawn_subagent/deliver/wait_turn 子代理编排)
+│       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换/with_tool_factory 会话工具工厂 + SessionBrokerHandle (spawn_subagent/deliver/wait_turn 子代理编排)
 │       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止时合成未决工具结果/后台任务与子代理完成注入续跑/Deliver 邮箱冲刷)
 ├── ui/                     # 现代化 Ratatui 交互式终端用户界面
     ├── mod.rs              # run_tui 终端生命周期、主循环与单帧 draw 布局

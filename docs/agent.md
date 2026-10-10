@@ -1,6 +1,6 @@
 # Agent Space 设计 (Always-on IM Agent)
 
-状态：P0–P3 已实现（Telegram、AskUser 转发、`send_file`、小模型生成 `topic` 未做）；以下各节中与实现不同处已标注。参考实现：`../agent`（Python，QQ/Telegram + 小模型 router）与 `../fairy-old`（分层 router、knowledge maintenance、scheduler）。
+状态：P0–P3 已实现（`send_file` 已做，AskUser 不挂载；Telegram 未做）；以下各节中与实现不同处已标注。参考实现：`../agent`（Python，QQ/Telegram + 小模型 router）与 `../fairy-old`（分层 router、knowledge maintenance、scheduler）。
 
 ## 1. 目标
 
@@ -53,7 +53,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ### 4.2 L1 输入输出
 
-候选表只含 `id`、`topic`、`running`、`focus`，按 id 排序（前缀稳定）；另含用户文字、被 reply 消息片段（`reply_to_text`）、待附件文件名与类型。不含历史正文。
+候选表只含 `id`、`title`（小模型生成的会话标题，首轮完成前为占位标题）、`running`、`focus`，按 id 排序（前缀稳定）；另含用户文字、被 reply 消息片段（`reply_to_text`）、待附件文件名与类型。不含历史正文。
 
 输出强类型 `RouteDecision`：`action: oneshot | existing | new`、`session_id`、`running_intent: none | guide_existing`、`reason`。使用供应商原生结构化输出，非法值全部显式报错。
 
@@ -113,7 +113,6 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
 - 产出写入 `~/.vva/agent/memory/`（`MEMORY.md` 索引 + 主题文件，纳入 git，每次整理一个 commit，提交信息含来源 session 与范围）；反复出现的工作流晋升为 skill 写入 `~/.vva/skills`；
 - 完成后向用户推送摘要；git 冲突时不覆盖，告警并跳过；
-- `topic`（router 用的一句话摘要）由小模型与标题任务合并生成，写入 header，替代机械截取。
 
 ## 9. Channel
 
@@ -121,7 +120,8 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - 首发 QQ（gateway identify / resume / heartbeat 按官方规范，参考 `../agent` 的 `ref/qq` 已验证实现），其后 Telegram；
 - 白名单外用户静默丢弃并记日志；
 - 文件：无文字 → 进入待附件缓冲，不触发模型，回复"已收到"；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本；多附件保持顺序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；
-- `send_file`、AskUser 转 IM 提问、channel 级工具白名单本期未做。当前 AskUser 一旦触发，runtime 回复“当前渠道暂不支持提问”并中止该轮，不挂起；
+- `SendFile` 工具已实现（`send_file.rs`）：渠道绑定、经 `SessionManager::with_tool_factory` 按会话 header 运行期注入（仅带 origin 的顶层会话，subagent 不挂载）；参数 `path`（工作区相对 / 绝对 / `~`）与可选 `caption`，文件缺失或非普通文件显式报错，渠道错误（如 QQ guild / dm 不支持上传）原样作为工具错误由模型转述；
+- AskUser 不挂载：agent space 会话（`SessionHeader::agent_managed()`）组装工具时不注册 `AskUserTool`，工具定义一并缺席；channel 级工具白名单未做；
 - 命令（`command.rs`）：`/new <消息>`（强制新建 topic，必须带文字）、`/switch <前缀>`（歧义列候选并拒绝，只设置 focus，后续消息仍经 router）、`/sessions`、`/stop`（中止 focus）、`/status`（会话、模型、上下文占比、cache 命中率、待附件数）、`/delete`（直接删除 focus，不经 curator）；
 - 出站只发最终文本（`deliver_wait` 的结果），不做流式增量；失败 / 中止显式回复错误文本；
 - 入站循环顺序完成路由与建会话，轮次在独立任务执行，故运行中的 session 仍可被 reply / guide 插话；oneshot 不抢占 focus；已不存在的 focus 在下次路由时清理；rollover 后 `replace_focus` + `MessageIndex::repoint` 并提示用户；
@@ -146,7 +146,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 11. 数据模型
 
-- `SessionHeader` 新增：`kind`（`topic | oneshot | curator`）、`origin`（`{channel, chat_id}`）、`topic`、`routed_by`、`superseded_by`、`last_activity`（强类型字段）；
+- `SessionHeader` 新增：`kind`（`topic | oneshot | curator`）、`origin`（`{channel, chat_id}`）、`routed_by`、`superseded_by`、`last_activity`（强类型字段）；
 - 目录：`bindings.json`、`message_index.jsonl`、`router.jsonl`、`schedule.jsonc`、`memory/`；
 - 配置：`settings.agent_space`（channels、allow-list、router、TTL、预留、K）。
 
@@ -184,7 +184,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 ## 14. 分期
 
 - **P0**：QQ channel、binding、header 新字段、L0 路由与命令、`vva agent`；
-- **P1**：L1 router、oneshot、`topic`、`router.jsonl`、`message_index`、guide；
+- **P1**：L1 router、oneshot、`router.jsonl`、`message_index`、guide；
 - **P2**：TTL 清理、curator、记忆目录、日期冻结；
 - **P3**：rollover、scheduler；
-- **P4**：Telegram、AskUser 转发、Web agent space 视图。
+- **P4**：Telegram、Web agent space 视图。

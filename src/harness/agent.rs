@@ -34,6 +34,10 @@ pub fn capability_notices(
     notices
 }
 
+/// 会话工具工厂：按会话 header 决定额外挂载的运行期工具（如渠道绑定的 SendFile）
+pub type SessionToolFactory =
+    Arc<dyn Fn(&crate::model::SessionHeader) -> Vec<Arc<dyn crate::tools::Tool>> + Send + Sync>;
+
 pub(super) struct AgentEngine {
     pub provider: Arc<dyn Provider>,
     pub tools: ToolRegistry,
@@ -56,6 +60,8 @@ pub(super) struct EngineDeps {
     pub skills: Vec<crate::skills::Skill>,
     pub agents: Vec<crate::agents::AgentDef>,
     pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
+    /// 工厂产出的会话专属工具，最后注册
+    pub extra_tools: Vec<Arc<dyn crate::tools::Tool>>,
 }
 
 impl AgentEngine {
@@ -205,16 +211,20 @@ impl AgentEngine {
         if team {
             task_stop = task_stop.with_broker(broker.clone());
         }
-        let extra: [Arc<dyn crate::tools::Tool>; 4] = [
-            Arc::new(crate::tools::ask_user::AskUserTool::new(
-                deps.ask_user_requests,
-            )),
+        let mut extra: Vec<Arc<dyn crate::tools::Tool>> = vec![
             Arc::new(crate::tools::background::TaskOutputTool::new(
                 deps.background,
             )),
             Arc::new(task_stop),
             Arc::new(crate::tools::skill::SkillTool::new(Arc::new(deps.skills))),
         ];
+        // agent space 会话无人值守，不挂载 AskUser（工具定义即提示词，一并缺席）
+        if !session.header.agent_managed() {
+            extra.push(Arc::new(crate::tools::ask_user::AskUserTool::new(
+                deps.ask_user_requests,
+            )));
+        }
+        extra.extend(deps.extra_tools);
         for tool in extra {
             tools.register(tool);
         }
@@ -409,6 +419,15 @@ mod tests {
         session: &Session,
         agents: Vec<crate::agents::AgentDef>,
     ) -> Result<AgentEngine, String> {
+        build_engine_full(config, session, agents, Vec::new())
+    }
+
+    fn build_engine_full(
+        config: &AppConfig,
+        session: &Session,
+        agents: Vec<crate::agents::AgentDef>,
+        extra_tools: Vec<Arc<dyn crate::tools::Tool>>,
+    ) -> Result<AgentEngine, String> {
         let (tx, _rx) = mpsc::channel(1);
         AgentEngine::new(
             config,
@@ -424,8 +443,71 @@ mod tests {
                 skills: Vec::new(),
                 agents,
                 broker: Arc::new(crate::harness::testing::StubBroker(None)),
+                extra_tools,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn ask_user_is_absent_for_agent_managed_sessions() {
+        let config = web_config(None);
+        let plain = build_engine(&config, &session_for("p/nos", false)).unwrap();
+        assert!(plain.tools.get("AskUser").is_some());
+
+        let mut managed = session_for("p/nos", false);
+        managed.header.origin = Some(crate::model::Origin {
+            channel: "qq".into(),
+            chat_id: "c2c:1".into(),
+        });
+        let engine = build_engine(&config, &managed).unwrap();
+        assert!(engine.tools.get("AskUser").is_none());
+
+        let mut curator = session_for("p/nos", false);
+        curator.header.kind = crate::model::SessionKind::Curator;
+        assert!(
+            build_engine(&config, &curator)
+                .unwrap()
+                .tools
+                .get("AskUser")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn factory_tools_are_registered_after_static_ones() {
+        struct Probe;
+        #[async_trait::async_trait]
+        impl crate::tools::Tool for Probe {
+            fn name(&self) -> &str {
+                "Probe"
+            }
+            fn description(&self) -> &str {
+                "probe"
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object"})
+            }
+            async fn execute(&self, _: &str) -> Result<String, String> {
+                Ok(String::new())
+            }
+        }
+        let config = web_config(None);
+        let session = session_for("p/nos", false);
+        let engine = build_engine_full(
+            &config,
+            &session,
+            crate::agents::builtin_agents(),
+            vec![Arc::new(Probe)],
+        )
+        .unwrap();
+        assert!(engine.tools.get("Probe").is_some());
+        assert!(
+            build_engine(&config, &session)
+                .unwrap()
+                .tools
+                .get("Probe")
+                .is_none()
+        );
     }
 
     #[tokio::test]

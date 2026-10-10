@@ -9,6 +9,7 @@ pub mod rollover;
 pub mod router;
 pub mod runtime;
 pub mod scheduler;
+pub mod send_file;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,6 +42,7 @@ pub fn agent_toggles() -> SessionToggles {
 pub struct AgentSpace {
     pub config: AgentSpaceConfig,
     pub manager: Arc<SessionManager>,
+    channel: Arc<dyn Channel>,
 }
 
 impl AgentSpace {
@@ -77,20 +79,7 @@ impl AgentSpace {
                 main.full_spec
             ));
         }
-        let workspace = expand_tilde(WORKSPACE);
-        std::fs::create_dir_all(&workspace)
-            .map_err(|e| format!("创建 agent 工作区 {} 失败: {e}", workspace.display()))?;
-        let manager = Arc::new(SessionManager::new(
-            store, app_config, workspace, state_path,
-        ));
-        Ok(Self { config, manager })
-    }
-
-    /// 启动 daemon：channel 收消息、runtime 处理、scheduler 与 lifecycle 后台运行；
-    /// ctrl-c 或 channel 退出时结束
-    pub async fn run(&self) -> Result<(), String> {
-        let qq = self
-            .config
+        let qq = config
             .channels
             .qq
             .clone()
@@ -100,6 +89,25 @@ impl AgentSpace {
             secret: qq.secret,
             allowed_users: qq.allowed_users,
         }));
+        let workspace = expand_tilde(WORKSPACE);
+        std::fs::create_dir_all(&workspace)
+            .map_err(|e| format!("创建 agent 工作区 {} 失败: {e}", workspace.display()))?;
+        // channel 先于 manager 构造，SendFile 经工厂按会话 origin 绑定聊天
+        let manager = Arc::new(
+            SessionManager::new(store, app_config, workspace, state_path)
+                .with_tool_factory(send_file::session_tool_factory(channel.clone())),
+        );
+        Ok(Self {
+            config,
+            manager,
+            channel,
+        })
+    }
+
+    /// 启动 daemon：channel 收消息、runtime 处理、scheduler 与 lifecycle 后台运行；
+    /// ctrl-c 或 channel 退出时结束
+    pub async fn run(&self) -> Result<(), String> {
+        let channel = self.channel.clone();
         let dir = self.manager.workspace().to_path_buf();
         let router = Router::new(
             Box::new(SmallRouteModel::new((*self.manager.app_config()).clone())),

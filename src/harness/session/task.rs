@@ -13,6 +13,8 @@ pub(super) struct TaskDeps {
     pub state_path: PathBuf,
     /// 会话编排接口（子代理派生与跨会话投递）
     pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
+    /// 会话工具工厂（缺省不追加工具）
+    pub tool_factory: Option<SessionToolFactory>,
 }
 
 pub(super) struct SessionTask {
@@ -47,6 +49,7 @@ pub(super) struct SessionTask {
     pub(super) turn_start: usize,
     /// 会话编排接口（子代理派生与跨会话投递）
     pub(super) broker: Arc<dyn crate::tools::agent::SessionBroker>,
+    pub(super) tool_factory: Option<SessionToolFactory>,
 }
 
 /// 单个附件的输入能力校验：图片过输入能力（MIME 或模态声明），File 校验 MIME 一致性与 PDF 能力。
@@ -196,6 +199,7 @@ impl SessionTask {
             turn_tx,
             turn_start: 0,
             broker: deps.broker,
+            tool_factory: deps.tool_factory,
         };
         (task, view_rx, turns)
     }
@@ -497,6 +501,11 @@ impl SessionTask {
                 skills,
                 agents,
                 broker: self.broker.clone(),
+                extra_tools: self
+                    .tool_factory
+                    .as_ref()
+                    .map(|factory| factory(&session.header))
+                    .unwrap_or_default(),
             },
         )
     }

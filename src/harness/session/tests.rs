@@ -30,6 +30,7 @@ fn task_with(
             config: Arc::new(AppConfig::default()),
             state_path,
             broker: Arc::new(StubBroker(None)),
+            tool_factory: None,
         },
         commands.downgrade(),
     );
