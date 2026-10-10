@@ -1000,6 +1000,66 @@ async fn new_session_loads_project_agents_md() {
 }
 
 #[tokio::test]
+async fn skill_changes_are_announced_before_the_next_user_message() {
+    let dir = tmp("skills-changed");
+    let skills = dir.join(".vva").join("skills");
+    std::fs::create_dir_all(skills.join("alpha")).unwrap();
+    let write = |name: &str, desc: &str| {
+        std::fs::create_dir_all(skills.join(name)).unwrap();
+        std::fs::write(
+            skills.join(name).join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {desc}\n---\nbody\n"),
+        )
+        .unwrap();
+    };
+    write("alpha", "Alpha skill.");
+
+    let session = Session::with_model(
+        &dir,
+        None,
+        "openai/test_model",
+        None,
+        crate::model::SessionToggles {
+            web_search: false,
+            ..Default::default()
+        },
+    );
+    let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
+    let (mut task, _rx) = task_with(session, store);
+    task.config = Arc::new(openai_config());
+
+    task.start("first", Vec::new()).await.unwrap();
+    let kinds = |task: &SessionTask| -> Vec<String> {
+        task.view
+            .session
+            .turns
+            .iter()
+            .map(|t| t.text_content())
+            .filter(|t| t.contains("type=\"skills-changed\""))
+            .collect()
+    };
+    assert!(kinds(&task).is_empty(), "首条消息已含完整清单，不重复提示");
+
+    task.start("second", Vec::new()).await.unwrap();
+    assert!(kinds(&task).is_empty(), "无变动不提示");
+
+    write("beta", "Beta skill.");
+    task.start("third", Vec::new()).await.unwrap();
+    let changed = kinds(&task);
+    assert_eq!(changed.len(), 1);
+    assert!(changed[0].contains("Added:\n- beta: Beta skill."));
+    let turns = &task.view.session.turns;
+    let n = turns.len();
+    assert!(turns[n - 2].text_content().contains("skills-changed"));
+    assert_eq!(turns[n - 1].text_content(), "third", "提示位于用户消息之前");
+
+    task.start("fourth", Vec::new()).await.unwrap();
+    assert_eq!(kinds(&task).len(), 1, "同一变动不重复提示");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn submit_expands_at_mentions_into_user_parts() {
     let dir = tmp("mention");
     std::fs::create_dir_all(&dir).unwrap();

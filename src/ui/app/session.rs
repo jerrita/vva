@@ -95,6 +95,8 @@ impl App {
             tokio::task::spawn_blocking(move || crate::skills::discover_skills(&workspace))
                 .await
                 .unwrap_or_default();
+        // 同步刷新补全 / 斜杠调用所用的缓存，/skills 之后立即可用最新技能
+        self.skills = skills.clone();
         self.modal = ActiveModal::Skills(SkillsModalState::new(skills));
     }
 

@@ -333,6 +333,19 @@ async fn edit_basics_diff_replace_all_and_unchanged() {
 }
 
 #[tokio::test]
+async fn write_creates_missing_parent_directories() {
+    let root = workspace(&[]);
+    let tool = WriteTool::new(root.path());
+    tool.execute(r#"{"path":"a/b/c.txt","content":"x"}"#)
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(root.path().join("a/b/c.txt")).unwrap(),
+        "x"
+    );
+}
+
+#[tokio::test]
 async fn write_creates_new_file_and_rejects_existing() {
     let root = workspace(&[("old.txt", "existing")]);
     let tool = WriteTool::new(root.path());

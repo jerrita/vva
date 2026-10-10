@@ -47,3 +47,6 @@ strip = true
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+
+[dev-dependencies]
+tokio = { version = "1.40", features = ["test-util"] }

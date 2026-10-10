@@ -25,7 +25,14 @@ impl crate::tools::Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill's full instructions by name. Use it when the current task matches a skill listed in the conversation's Skills reminder, before attempting that task."
+        "Load a skill's full instructions by name. Use it when the current task matches a skill listed in the conversation's Skills reminder, before attempting that task.
+
+Managing skills (installing, creating, removing): a skill is a directory `<name>/SKILL.md` whose frontmatter has `name` (same as the directory, lowercase letters/digits/hyphens) and `description`. Skills are discovered from these directories, lowest to highest priority; a later directory overrides a same-named skill from an earlier one:
+1. `~/.agents/skills` (global)
+2. `~/.vva/skills` (global)
+3. `<workspace>/.agents/skills` (project)
+4. `<workspace>/.vva/skills` (project)
+Install and create skills in the project directory `<workspace>/.vva/skills` (the workspace is the session's working directory; for the resident agent it is `~/.vva/space`). Use the global directories only when the user explicitly asks for a global install. With `npx skills add`, run it from the workspace root and do not pass `-g`/`--global`: the default project install lands in `<workspace>/.agents/skills`, which is discovered. After installing, confirm the skill directory sits under one of the paths above; new skills are picked up by new sessions."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -131,5 +138,28 @@ mod tests {
             parameters["properties"]["name"]["enum"],
             serde_json::json!(["alpha", "beta"])
         );
+    }
+}
+
+#[cfg(test)]
+mod description_tests {
+    use super::*;
+    use crate::tools::Tool;
+
+    #[test]
+    fn description_documents_skill_locations_and_project_install() {
+        let description = SkillTool::new(Arc::new(Vec::new()))
+            .description()
+            .to_string();
+        for needle in [
+            "~/.agents/skills",
+            "~/.vva/skills",
+            "<workspace>/.agents/skills",
+            "<workspace>/.vva/skills",
+            "npx skills add",
+            "-g",
+        ] {
+            assert!(description.contains(needle), "缺少 {needle}");
+        }
     }
 }

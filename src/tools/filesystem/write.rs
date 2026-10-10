@@ -43,10 +43,10 @@ impl Tool for WriteTool {
 
     fn description(&self) -> &str {
         if self.hashline.is_some() {
-            r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. The parent directory must already exist; this tool does not create directories and fails if the target exists. Returns the created file path and its [PATH#TAG] header with every line registered as displayed, so Edit accepts the header immediately.
+            r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. Missing parent directories are created recursively; fails if the target exists. Returns the created file path and its [PATH#TAG] header with every line registered as displayed, so Edit accepts the header immediately.
 Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","content":"pub fn example() {}\n"}."#
         } else {
-            r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. The parent directory must already exist; this tool does not create directories and fails if the target exists. Returns the created file path.
+            r#"Create a new UTF-8 text file with complete contents. Use Edit to change an existing file. Missing parent directories are created recursively; fails if the target exists. Returns the created file path.
 Paths are absolute or relative to the workspace root; shell variables and ~ are not expanded. Example arguments: {"path":"src/example.rs","content":"pub fn example() {}\n"}."#
         }
     }
@@ -55,7 +55,7 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "format": "path", "description": "New file path, absolute or workspace-relative, with an existing parent directory." },
+                "path": { "type": "string", "format": "path", "description": "New file path, absolute or workspace-relative, missing parent directories are created." },
                 "content": { "type": "string", "description": "Complete literal file contents. Use JSON escapes for newlines and quotes; do not include Markdown fences unless they belong in the file." }
             },
             "required": ["path", "content"]
@@ -65,6 +65,11 @@ Paths are absolute or relative to the workspace root; shell variables and ~ are 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         let args: WriteArgs = parse_args(arguments, "Write")?;
         let path = resolve_path(&self.working_dir, &args.path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("Failed to create directory {}: {error}", parent.display())
+            })?;
+        }
         write_new_file(&path, &args.content)?;
         if let Some(session) = self.hashline.as_ref() {
             let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());

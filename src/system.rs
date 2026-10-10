@@ -33,12 +33,37 @@ fn slash(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+/// 技能指纹：覆盖 description 与正文，任一变化都视为技能变动
+fn skill_hash(skill: &Skill) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(skill.description.as_bytes());
+    hasher.update([0]);
+    hasher.update(skill.body.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(6)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// 技能指纹索引：`name:hash,...`（按 name 排序），随清单 / 变动提醒写入历史，作为下次比对的基线
+fn skills_index(skills: &[Skill]) -> String {
+    let mut entries: Vec<String> = skills
+        .iter()
+        .map(|skill| format!("{}:{}", skill.name, skill_hash(skill)))
+        .collect();
+    entries.sort();
+    entries.join(",")
+}
+
 /// 格式化已发现技能清单为带有 <system-reminder> 标签的 User Message 文本
 /// （对齐 AGENTS.md 注入机制：技能清单不进入 System Prompt）
 pub fn format_skills_reminder(skills: &[Skill]) -> String {
     let lines: Vec<String> = skills.iter().map(Skill::prompt_line).collect();
     reminder(
-        "type=\"skills\"",
+        &format!("type=\"skills\" index=\"{}\"", skills_index(skills)),
         &format!(
             "The following skills provide specialized workflows and knowledge for this \
              environment. When a task matches a skill's purpose, load its full instructions \
@@ -46,6 +71,113 @@ pub fn format_skills_reminder(skills: &[Skill]) -> String {
             lines.join("\n")
         ),
     )
+}
+
+/// 历史中最近一次技能提醒（`skills` / `skills-changed`）所记录的基线
+enum SkillsBaseline {
+    /// 历史中没有技能提醒：创建时无技能
+    Empty,
+    /// 旧版提醒不带指纹索引，无法逐项比对
+    Unindexed,
+    Indexed(std::collections::BTreeMap<String, String>),
+}
+
+fn skills_baseline<'a>(history: impl Iterator<Item = &'a str>) -> SkillsBaseline {
+    let mut baseline = SkillsBaseline::Empty;
+    for text in history {
+        let trimmed = text.trim();
+        if !trimmed.starts_with("<system-reminder") || !trimmed.ends_with("</system-reminder>") {
+            continue;
+        }
+        let Some(open_end) = trimmed.find('>') else {
+            continue;
+        };
+        let open_tag = &trimmed[..open_end];
+        if !matches!(
+            tag_attr(open_tag, "type"),
+            Some("skills" | "skills-changed")
+        ) {
+            continue;
+        }
+        baseline = match tag_attr(open_tag, "index") {
+            Some(index) => SkillsBaseline::Indexed(
+                index
+                    .split(',')
+                    .filter_map(|entry| entry.split_once(':'))
+                    .map(|(name, hash)| (name.to_string(), hash.to_string()))
+                    .collect(),
+            ),
+            None => SkillsBaseline::Unindexed,
+        };
+    }
+    baseline
+}
+
+/// 与会话历史中的基线比对当前技能：有新增 / 更新 / 移除时返回 `skills-changed` 提醒，否则 `None`。
+/// `history` 为会话中用户轮次的文本，按时间顺序
+pub fn skills_change_reminder<'a>(
+    history: impl Iterator<Item = &'a str>,
+    skills: &[Skill],
+) -> Option<String> {
+    let current = skills_index(skills);
+    let line = |skill: &Skill| format!("- {}: {}", skill.name, skill.description);
+    let (mut added, mut updated, mut removed) = (Vec::new(), Vec::new(), Vec::new());
+    let refreshed = match skills_baseline(history) {
+        SkillsBaseline::Indexed(known) => {
+            let now: std::collections::BTreeMap<&str, &Skill> = skills
+                .iter()
+                .map(|skill| (skill.name.as_str(), skill))
+                .collect();
+            for skill in skills {
+                match known.get(&skill.name) {
+                    None => added.push(line(skill)),
+                    Some(old) if *old != skill_hash(skill) => updated.push(line(skill)),
+                    Some(_) => {}
+                }
+            }
+            for name in known.keys() {
+                if !now.contains_key(name.as_str()) {
+                    removed.push(format!("- {name}"));
+                }
+            }
+            false
+        }
+        SkillsBaseline::Empty => {
+            added = skills.iter().map(line).collect();
+            false
+        }
+        SkillsBaseline::Unindexed => {
+            added = skills.iter().map(line).collect();
+            true
+        }
+    };
+    if added.is_empty() && updated.is_empty() && removed.is_empty() && !refreshed {
+        return None;
+    }
+    let mut body = String::from(if refreshed {
+        "The available skills list was refreshed. Load a skill's instructions with the Skill tool \
+         when a task matches its purpose."
+    } else {
+        "The set of available skills changed since the last message. Load a skill's \
+         instructions with the Skill tool when a task matches its purpose."
+    });
+    let sections = [
+        (if refreshed { "Available" } else { "Added" }, added),
+        ("Updated (description or instructions changed)", updated),
+        ("Removed (no longer available)", removed),
+    ];
+    for (title, lines) in sections {
+        if !lines.is_empty() {
+            body.push_str(&format!("\n\n{title}:\n{}", lines.join("\n")));
+        }
+    }
+    if refreshed && skills.is_empty() {
+        body.push_str("\n\nNo skills are currently available.");
+    }
+    Some(reminder(
+        &format!("type=\"skills-changed\" index=\"{current}\""),
+        &body,
+    ))
 }
 
 /// 格式化 /<skill_name> 直接加载的技能正文为 <system-reminder> User Message 文本
@@ -298,7 +430,7 @@ pub fn parse_agents_reminder(text: &str) -> Option<AgentsReminder> {
         "project" => AgentsReminderKind::Project,
         "directory" => AgentsReminderKind::Directory,
         "skill-loaded" => AgentsReminderKind::SkillLoaded,
-        "skills" => AgentsReminderKind::Skills,
+        "skills" | "skills-changed" => AgentsReminderKind::Skills,
         "background-task" => AgentsReminderKind::BackgroundTask,
         _ => return None,
     };
@@ -423,11 +555,65 @@ mod tests {
     }
 
     #[test]
+    fn skills_change_reminder_diffs_against_history_baseline() {
+        let a = skill("alpha", "Alpha skill.", "a body");
+        let b = skill("beta", "Beta skill.", "b body");
+        let base = format_skills_reminder(&[a.clone(), b.clone()]);
+        let history = |texts: &[&str]| texts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        let run = |texts: &[String], now: &[Skill]| {
+            skills_change_reminder(texts.iter().map(String::as_str), now)
+        };
+
+        // 无变化：不注入
+        let h = history(&[&base, "hello"]);
+        assert_eq!(run(&h, &[a.clone(), b.clone()]), None);
+
+        // 新增 + 正文更新 + 移除
+        let c = skill("gamma", "Gamma skill.", "c body");
+        let a2 = skill("alpha", "Alpha skill.", "a body v2");
+        let r = run(&h, &[a2.clone(), c.clone()]).unwrap();
+        assert!(r.starts_with("<system-reminder type=\"skills-changed\" index=\""));
+        assert!(r.contains("Added:\n- gamma: Gamma skill."), "{r}");
+        assert!(
+            r.contains("Updated (description or instructions changed):\n- alpha"),
+            "{r}"
+        );
+        assert!(r.contains("Removed (no longer available):\n- beta"), "{r}");
+        assert_eq!(
+            parse_agents_reminder(&r).unwrap().kind,
+            AgentsReminderKind::Skills
+        );
+
+        // 变动提醒成为新基线：同一状态不重复提示
+        let h2 = history(&[&base, &r, "next"]);
+        assert_eq!(run(&h2, &[a2, c]), None);
+
+        // 创建时无技能（无提醒）：之后出现的技能按新增提示
+        let none: Vec<String> = history(&["hi"]);
+        assert!(
+            run(&none, std::slice::from_ref(&a))
+                .unwrap()
+                .contains("Added:")
+        );
+        assert_eq!(run(&none, &[]), None);
+
+        // 旧版不带指纹的清单：整体刷新一次
+        let legacy = history(&[
+            "<system-reminder type=\"skills\">\n- alpha: Alpha skill.\n</system-reminder>",
+        ]);
+        let r = run(&legacy, std::slice::from_ref(&a)).unwrap();
+        assert!(
+            r.contains("refreshed") && r.contains("Available:\n- alpha"),
+            "{r}"
+        );
+    }
+
+    #[test]
     fn format_and_parse_skill_reminders() {
         let skill = skill("pdf-processing", "Extract PDF text.", "1. Open the file.");
 
         let list = format_skills_reminder(std::slice::from_ref(&skill));
-        assert!(list.starts_with("<system-reminder type=\"skills\">"));
+        assert!(list.starts_with("<system-reminder type=\"skills\" index=\"pdf-processing:"));
         assert!(list.ends_with("</system-reminder>"));
         assert!(list.contains("- pdf-processing: Extract PDF text."));
         assert_eq!(

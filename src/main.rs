@@ -24,7 +24,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
-    /// 日志级别 (error / warn / info / debug / trace)，仅作用于 vva 自身；设置 RUST_LOG 时以其为准
+    /// 日志级别 (error / warn / info / debug / trace)，仅作用于 vva 自身；RUST_LOG 为单一级别时覆盖此项，含 target=level 指令时按指令生效
     #[arg(long, global = true, default_value = "info")]
     log_level: String,
 
@@ -298,12 +298,21 @@ fn print_part(part: &ContentPart) {
     }
 }
 
-/// 日志过滤器：`RUST_LOG` 优先；否则 vva 自身按 `--log-level`，第三方依赖仅 warn
+/// 日志过滤器：第三方依赖（h2 / hyper / reqwest 等）一律关闭，仅输出 vva 自身日志。
+/// `RUST_LOG` 为单一级别（如 `debug`）时作为 vva 的级别，优先于 `--log-level`；
+/// 含目标指令（如 `vva=trace,h2=debug`）时按指令原样生效，供显式排查第三方问题
 fn log_filter(level: &str) -> Result<EnvFilter, String> {
-    if std::env::var_os("RUST_LOG").is_some() {
-        return EnvFilter::try_from_default_env().map_err(|e| format!("RUST_LOG 无效: {e}"));
+    if let Ok(env) = std::env::var("RUST_LOG") {
+        let env = env.trim();
+        if env.contains(['=', ',']) {
+            return EnvFilter::try_new(env).map_err(|e| format!("RUST_LOG 无效: {e}"));
+        }
+        if !env.is_empty() {
+            return EnvFilter::try_new(format!("off,vva={env}"))
+                .map_err(|e| format!("RUST_LOG 无效: {e}"));
+        }
     }
-    EnvFilter::try_new(format!("warn,vva={level}")).map_err(|e| format!("--log-level 无效: {e}"))
+    EnvFilter::try_new(format!("off,vva={level}")).map_err(|e| format!("--log-level 无效: {e}"))
 }
 
 #[tokio::main]

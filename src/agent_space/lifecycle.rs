@@ -90,8 +90,8 @@ impl Lifecycle {
                 continue;
             }
             let seen_turns = live.as_ref().map(|handle| handle.turn_seq());
-            // curator 会话自身是沉淀的执行载体，无需再沉淀
-            if summary.kind != SessionKind::Curator {
+            // curator 会话自身是沉淀的执行载体；oneshot 答完即无长期价值，二者都不沉淀
+            if !matches!(summary.kind, SessionKind::Curator | SessionKind::Oneshot) {
                 let result = self.curator.curate(&summary.id).await;
                 let failed = result.status == CuratorStatus::Failed;
                 if failed {
@@ -272,9 +272,9 @@ mod tests {
         expected.sort();
         assert_eq!(deleted, expected);
         assert!(f.exists(&fresh.header.id).await, "未到期的会话保留");
-        assert_eq!(f.runs(), 3);
+        assert_eq!(f.runs(), 2, "oneshot 不沉淀");
         let reports = f.reports.lock().unwrap();
-        assert_eq!(reports.len(), 3);
+        assert_eq!(reports.len(), 2);
         assert!(
             reports
                 .iter()

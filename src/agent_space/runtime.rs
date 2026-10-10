@@ -18,6 +18,7 @@ use super::channel::files::{sanitize_filename, unique_dest};
 use super::channel::{Channel, Inbound, Outbound, OutboundText};
 use super::command::{self, Command};
 use super::curator::{Curator, CuratorReport, CuratorStatus, ModelSource};
+use super::progress;
 use super::rollover::{cache_hit_rate, context_tokens, maybe_rollover};
 use super::router::{Candidate, ReplyRef, Route, RouteInput, Routed, Router, resolve_prefix};
 use super::scheduler::{self, Failure, Missed, ScheduleStore, Task, Trigger, describe_task};
@@ -44,6 +45,8 @@ pub struct Runtime {
     schedule: Arc<ScheduleStore>,
     /// 正在执行的定时任务 id（同一任务不重叠）
     running_tasks: std::sync::Mutex<HashSet<String>>,
+    /// 正在汇报进度的会话 id（同一会话仅一个汇报者）
+    reporting: std::sync::Mutex<HashSet<String>>,
     /// agent 模式的模型（新会话使用）；`/model --global` 修改并落盘
     mode_model: Arc<std::sync::Mutex<ModeModel>>,
     state: Mutex<State>,
@@ -88,6 +91,7 @@ impl Runtime {
             curator,
             schedule,
             running_tasks: Default::default(),
+            reporting: Default::default(),
             mode_model,
             state: Mutex::new(state),
         }))
@@ -657,11 +661,22 @@ impl Runtime {
         if skills.is_empty() {
             return "暂无技能".into();
         }
-        skills
-            .iter()
-            .map(|s| format!("{} - {}", s.name, s.description))
-            .collect::<Vec<_>>()
-            .join("\n")
+        let mut rows = vec![
+            "| 名称 | 来源 | 描述 |".to_string(),
+            "|---|---|---|".to_string(),
+        ];
+        rows.extend(skills.iter().map(|s| {
+            let source = match s.source {
+                crate::skills::SkillSource::Global => "全局",
+                crate::skills::SkillSource::Project => "项目",
+            };
+            format!(
+                "| {} | {source} | {} |",
+                s.name,
+                skill_desc_cell(&s.description)
+            )
+        }));
+        rows.join("\n")
     }
 
     /// `/schedule [list]`、`pause|resume|delete|run <id 前缀>`；创建走 Schedule 工具（自然语言）
@@ -778,7 +793,9 @@ impl Runtime {
         );
         let started = std::time::Instant::now();
         let turns_before = handle.snapshot().session.turns.len();
-        let delivered = handle.deliver_wait(&prompt).await;
+        let delivered = self
+            .deliver_reporting(&handle, std::slice::from_ref(&binding), &prompt)
+            .await;
         let usage = turn_usage(&handle.snapshot().session, turns_before);
         tracing::info!(
             "Deliver 结束: session={} 轮次={} 耗时 {:.1}s prompt/completion/cached tokens={}/{}/{} 出错={}",
@@ -808,6 +825,45 @@ impl Runtime {
             }
         }
         self.after_turn(&handle, &binding).await;
+    }
+
+    /// 投递并等待一轮；轮次超过 `progress_interval_secs` 未结束时向 `targets` 推送进度摘要。
+    /// 同一会话同时只有一个汇报者（排队的后续投递不重复汇报）；汇报消息计入消息索引，可被 reply 直达该会话
+    async fn deliver_reporting(
+        &self,
+        handle: &Arc<ManagedSession>,
+        targets: &[String],
+        prompt: &str,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        let interval = Duration::from_secs(self.config.progress_interval_secs);
+        let reporter = !interval.is_zero()
+            && self
+                .reporting
+                .lock()
+                .expect("reporting")
+                .insert(handle.id.clone());
+        if !reporter {
+            return handle.deliver_wait(prompt).await;
+        }
+        let result = progress::with_progress(
+            handle.deliver_wait(prompt),
+            interval,
+            || handle.snapshot().session.clone(),
+            |text| async move {
+                for target in targets {
+                    let ids = self.say(target, None, text.clone()).await;
+                    let mut state = self.state.lock().await;
+                    for id in ids {
+                        if let Err(e) = state.index.record(&self.key(&id), &handle.id) {
+                            tracing::warn!("记录进度消息索引失败: {e}");
+                        }
+                    }
+                }
+            },
+        )
+        .await;
+        self.reporting.lock().expect("reporting").remove(&handle.id);
+        result
     }
 
     async fn after_turn(&self, handle: &Arc<ManagedSession>, binding: &str) {
@@ -1026,16 +1082,19 @@ impl Runtime {
         };
         let prompt = format_scheduled_reminder(&task.id, &task.trigger.describe(), &task.prompt);
         let limit = Duration::from_secs(self.config.task_timeout_secs);
-        let report = match tokio::time::timeout(limit, handle.deliver_wait(&prompt)).await {
-            Ok(result) => result.map_err(Failure::Transient)?,
-            Err(_) => {
-                let _ = handle.abort_current().await;
-                return Err(Failure::Transient(format!(
-                    "执行超过 {}s，已中止",
-                    self.config.task_timeout_secs
-                )));
-            }
-        };
+        let report =
+            match tokio::time::timeout(limit, self.deliver_reporting(&handle, &targets, &prompt))
+                .await
+            {
+                Ok(result) => result.map_err(Failure::Transient)?,
+                Err(_) => {
+                    let _ = handle.abort_current().await;
+                    return Err(Failure::Transient(format!(
+                        "执行超过 {}s，已中止",
+                        self.config.task_timeout_secs
+                    )));
+                }
+            };
         let text = report.text.trim();
         if text == "[SILENT]" {
             tracing::info!("定时任务 {} 回复 [SILENT]，不通知", task.id);
@@ -1156,6 +1215,17 @@ impl Runtime {
 }
 
 /// 正文预览：最多 60 个字符，按字符边界截取并标注
+/// 表格单元格中的技能描述：压平空白、转义 `|`，超过 200 个字符截断
+fn skill_desc_cell(description: &str) -> String {
+    const LIMIT: usize = 200;
+    let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cell = match flat.char_indices().nth(LIMIT) {
+        Some((end, _)) => format!("{}…", &flat[..end]),
+        None => flat,
+    };
+    cell.replace('|', "\\|")
+}
+
 fn preview(text: &str) -> String {
     match text.char_indices().nth(60) {
         Some((end, _)) => format!("{}…（共 {} 字符）", &text[..end], text.chars().count()),
@@ -1292,6 +1362,16 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
+    fn skill_desc_cell_truncates_and_escapes() {
+        assert_eq!(skill_desc_cell("短描述"), "短描述");
+        assert_eq!(
+            skill_desc_cell(&"字".repeat(250)),
+            format!("{}…", "字".repeat(200))
+        );
+        assert_eq!(skill_desc_cell("a | b\nc"), "a \\| b c");
+    }
+
+    #[test]
     fn prompt_carries_quote_and_attachment_paths_in_order() {
         let file = |p: &str| AttachedFile {
             path: PathBuf::from(p),
@@ -1355,7 +1435,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl RouteModel for NoModel {
-        async fn decide(&self, _: &str, _: &str) -> Result<ModelReply, String> {
+        async fn decide(
+            &self,
+            _: &str,
+            _: &str,
+            _: &crate::agent_space::router::RouteInput,
+        ) -> Result<ModelReply, String> {
             Err("L0 路径不应调用小模型".into())
         }
     }

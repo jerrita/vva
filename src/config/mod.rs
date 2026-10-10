@@ -6,9 +6,9 @@ pub mod state;
 use std::path::{Path, PathBuf};
 
 pub use model::{
-    AgentChannels, AgentSpaceConfig, AppConfig, GLM_CODING_PLAN_BASE_URL,
+    AgentChannels, AgentSpaceConfig, AppConfig, DecisionsRouterConfig, GLM_CODING_PLAN_BASE_URL,
     GLM_CODING_PLAN_PROVIDER_ID, GlobalSettings, ModelConfig, ProviderConfig, ProviderType,
-    QqChannelConfig,
+    QqChannelConfig, RouterConfig,
 };
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::ResolvedModel;

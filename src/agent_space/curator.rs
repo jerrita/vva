@@ -104,6 +104,16 @@ pub struct CuratorReport {
 pub trait CuratorRunner: Send + Sync {
     /// 运行任务提示词，返回最终消息；`label` 用于会话标题
     async fn run(&self, prompt: &str, label: &str) -> Result<String, String>;
+
+    /// 清理为 `label` 创建过的执行载体（curator 会话）；无载体的后端无需实现
+    async fn cleanup(&self, _label: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// curator 会话标题：`cleanup` 据此找回某来源会话的全部整理会话
+fn curator_title(label: &str) -> String {
+    format!("[curator] {label}")
 }
 
 /// 在 agent 工作区创建 curator 会话并等待其完成
@@ -130,7 +140,7 @@ impl CuratorRunner for SessionRunner {
                 self.manager.workspace().to_path_buf(),
                 (self.model)(),
                 None,
-                Some(format!("[curator] {label}")),
+                Some(curator_title(label)),
                 super::agent_toggles(),
                 |header| {
                     header.kind = SessionKind::Curator;
@@ -139,6 +149,26 @@ impl CuratorRunner for SessionRunner {
             )
             .await?;
         handle.deliver_wait(prompt).await.map(|report| report.text)
+    }
+
+    async fn cleanup(&self, label: &str) -> Result<(), String> {
+        let title = curator_title(label);
+        let ids: Vec<String> = self
+            .manager
+            .store()
+            .list_sessions()
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|s| s.kind == SessionKind::Curator && s.title.as_deref() == Some(&title))
+            .map(|s| s.id)
+            .collect();
+        for id in ids {
+            let handle = self.manager.live_or_load(&id).await?;
+            self.manager.delete_session(&handle).await?;
+            tracing::debug!("已清理 curator 会话 {id}（来源 {label}）");
+        }
+        Ok(())
     }
 }
 
@@ -300,10 +330,16 @@ impl Curator {
         })
     }
 
-    /// 会话被删除后清除其游标
+    /// 会话被删除后同步清理：游标、残留的整理输入与为它创建的 curator 会话。
+    /// curator 会话清理失败只告警（交给 TTL 兜底），不影响来源会话的删除结果
     pub async fn forget(&self, session_id: &str) -> Result<(), String> {
         let _guard = self.lock.lock().await;
-        Cursors::load(&self.cursors_path())?.remove(&self.cursors_path(), session_id)
+        Cursors::load(&self.cursors_path())?.remove(&self.cursors_path(), session_id)?;
+        let _ = std::fs::remove_file(self.root.join(INPUT_DIR).join(format!("{session_id}.md")));
+        if let Err(error) = self.runner.cleanup(session_id).await {
+            tracing::warn!("清理 {session_id} 的 curator 会话失败: {error}");
+        }
+        Ok(())
     }
 }
 
@@ -497,6 +533,34 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             (self.script)(prompt)
         }
+    }
+
+    #[tokio::test]
+    async fn forget_cleans_cursor_input_and_runner_sessions() {
+        struct Spy(std::sync::Mutex<Vec<String>>);
+        #[async_trait::async_trait]
+        impl CuratorRunner for Spy {
+            async fn run(&self, _: &str, _: &str) -> Result<String, String> {
+                Ok(String::new())
+            }
+            async fn cleanup(&self, label: &str) -> Result<(), String> {
+                self.0.lock().unwrap().push(label.into());
+                Ok(())
+            }
+        }
+        let dir =
+            std::env::temp_dir().join(format!("vva-forget-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(dir.join(INPUT_DIR)).unwrap();
+        std::fs::write(dir.join(INPUT_DIR).join("sess_x.md"), "left over").unwrap();
+        let spy = Arc::new(Spy(Default::default()));
+        let store =
+            Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&dir.join("s")).unwrap());
+        let curator = Curator::new(spy.clone(), store, dir.clone(), dir.join("skills"));
+        curator.forget("sess_x").await.unwrap();
+        assert_eq!(*spy.0.lock().unwrap(), ["sess_x"]);
+        assert!(!dir.join(INPUT_DIR).join("sess_x.md").exists());
+        assert_eq!(curator_title("sess_x"), "[curator] sess_x");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn calls(runner: &Scripted) -> usize {

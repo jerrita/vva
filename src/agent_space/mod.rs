@@ -4,7 +4,9 @@ pub mod binding;
 pub mod channel;
 pub mod command;
 pub mod curator;
+pub mod decisions;
 pub mod lifecycle;
+pub mod progress;
 pub mod rollover;
 pub mod router;
 pub mod runtime;
@@ -19,8 +21,9 @@ use tokio::sync::mpsc;
 
 use self::channel::Channel;
 use self::channel::qq::{QqChannel, QqOptions};
+use self::decisions::DecisionsRouteModel;
 use self::lifecycle::{Lifecycle, SWEEP_PERIOD};
-use self::router::{Router, SmallRouteModel};
+use self::router::{RouteModel, Router, SmallRouteModel};
 use self::runtime::Runtime;
 use self::scheduler::ScheduleStore;
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
@@ -30,6 +33,8 @@ use crate::storage::SessionStore;
 
 /// agent space 固定工作区
 const WORKSPACE: &str = "~/.vva/space";
+/// 工作区下启动期创建的子目录：记忆库、curator 输入、项目级 skills / agents
+const WORKSPACE_DIRS: [&str; 4] = ["memory", "curator-input", ".vva/skills", ".vva/agents"];
 
 /// agent space 会话的功能开关：web_search 保持默认，team 关闭（不做 subagent 编排）
 pub fn agent_toggles() -> SessionToggles {
@@ -67,6 +72,19 @@ fn tool_factory(channel: Arc<dyn Channel>, schedule: Arc<ScheduleStore>) -> Sess
     })
 }
 
+/// Decisions 后端的密钥：取自 `providers.<provider>.api_key`，缺失或为空即报错
+fn decisions_api_key(config: &AppConfig, provider: &str) -> Result<String, String> {
+    let p = config.providers.get(provider).ok_or_else(|| {
+        format!("settings.agent.router.decisions.provider `{provider}` 未在 providers 中声明")
+    })?;
+    if p.api_key.is_empty() {
+        return Err(format!(
+            "providers.{provider}.api_key 为空（检查 ${{VAR}} 环境变量是否已设置）"
+        ));
+    }
+    Ok(p.api_key.clone())
+}
+
 /// agent space 运行时：校验 `settings.agent` 后持有会话管理器
 pub struct AgentSpace {
     pub config: AgentSpaceConfig,
@@ -88,14 +106,19 @@ impl AgentSpace {
             .ok_or("缺少 settings.agent 配置，无法启动 agent space")?;
         config.validate()?;
         // router 与主模型在启动期校验，避免首条消息才暴露配置错误
-        let small = app_config
-            .settings
-            .small_model
-            .as_deref()
-            .ok_or("缺少 settings.small_model（router 所需）")?;
-        app_config
-            .resolve_model(small, None)
-            .map_err(|e| e.to_string())?;
+        match &config.router.decisions {
+            Some(d) => {
+                decisions_api_key(&app_config, &d.provider)?;
+            }
+            None => {
+                let small = app_config.settings.small_model.as_deref().ok_or(
+                    "缺少 settings.small_model（router 所需；或配置 settings.agent.router.decisions）",
+                )?;
+                app_config
+                    .resolve_model(small, None)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
         let main = config
             .model
             .as_deref()
@@ -122,6 +145,12 @@ impl AgentSpace {
         let workspace = expand_tilde(WORKSPACE);
         std::fs::create_dir_all(&workspace)
             .map_err(|e| format!("创建 agent 工作区 {} 失败: {e}", workspace.display()))?;
+        // 目录结构启动期建好：模型 Glob / Read 这些路径不应遇到 ENOENT
+        for sub in WORKSPACE_DIRS {
+            let dir = workspace.join(sub);
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("创建 {} 失败: {e}", dir.display()))?;
+        }
         // channel 先于 manager 构造，SendFile 经工厂按会话 origin 绑定聊天
         let root = workspace.clone();
         let schedule = ScheduleStore::open(&workspace)?;
@@ -143,10 +172,15 @@ impl AgentSpace {
     pub async fn run(&self) -> Result<(), String> {
         let channel = self.channel.clone();
         let dir = self.manager.workspace().to_path_buf();
-        let router = Router::new(
-            Box::new(SmallRouteModel::new((*self.manager.app_config()).clone())),
-            dir.join("router.jsonl"),
-        );
+        let app_config = self.manager.app_config();
+        let model: Box<dyn RouteModel> = match &self.config.router.decisions {
+            Some(d) => Box::new(DecisionsRouteModel::new(
+                d.clone(),
+                decisions_api_key(&app_config, &d.provider)?,
+            )),
+            None => Box::new(SmallRouteModel::new((*app_config).clone())),
+        };
+        let router = Router::new(model, dir.join("router.jsonl"));
         let runtime = Runtime::new(
             self.manager.clone(),
             self.config.clone(),

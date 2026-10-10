@@ -194,15 +194,22 @@ pub fn resolve_prefix(candidates: &[Candidate], prefix: &str) -> Result<String, 
 
 // ================== 小模型 ==================
 
+#[derive(Debug)]
 pub struct ModelReply {
     pub text: String,
     pub usage: Option<TokenUsage>,
 }
 
-/// L1 小模型：`system` 为固定前缀，`user` 为候选表在前、用户消息置尾的 JSON
+/// L1 模型：`system` 为固定前缀，`user` 为候选表在前、用户消息置尾的 JSON；
+/// `input` 供自带题目结构的后端（Decisions API）直接取用
 #[async_trait]
 pub trait RouteModel: Send + Sync {
-    async fn decide(&self, system: &str, user: &str) -> Result<ModelReply, String>;
+    async fn decide(
+        &self,
+        system: &str,
+        user: &str,
+        input: &RouteInput,
+    ) -> Result<ModelReply, String>;
 }
 
 /// 基于 `settings.small_model` 与原生结构化输出的生产实现
@@ -218,7 +225,7 @@ impl SmallRouteModel {
 
 #[async_trait]
 impl RouteModel for SmallRouteModel {
-    async fn decide(&self, system: &str, user: &str) -> Result<ModelReply, String> {
+    async fn decide(&self, system: &str, user: &str, _: &RouteInput) -> Result<ModelReply, String> {
         let spec = self
             .config
             .settings
@@ -363,7 +370,7 @@ impl Router {
             input.candidates.len(),
             prompt.chars().count()
         );
-        let reply = self.model.decide(SYSTEM_PROMPT, &prompt).await;
+        let reply = self.model.decide(SYSTEM_PROMPT, &prompt, input).await;
         let (decision, usage) = match reply {
             Ok(r) => (
                 serde_json::from_str::<RouteDecision>(&r.text)
@@ -507,7 +514,12 @@ mod tests {
 
     #[async_trait]
     impl RouteModel for std::sync::Arc<FakeModel> {
-        async fn decide(&self, system: &str, user: &str) -> Result<ModelReply, String> {
+        async fn decide(
+            &self,
+            system: &str,
+            user: &str,
+            _: &RouteInput,
+        ) -> Result<ModelReply, String> {
             self.prompts
                 .lock()
                 .unwrap()

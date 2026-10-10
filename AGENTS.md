@@ -111,6 +111,8 @@ src/
 │   ├── runtime.rs          # Runtime：入站消息 → 命令 / 文件缓冲 → 路由 → session 轮次 → 出站文本；rollover 切换、定时任务投递、记忆更新广播 (ManagedSession::note)
 │   ├── command.rs          # 斜杠命令解析 (/new /switch /sessions /stop /status /delete)
 │   ├── binding.rs          # BindingStore (focus) / MessageIndex (消息 id → session) / PendingFiles (待附件缓冲)
+│   ├── decisions.rs        # OpenRouter Decisions API (alpha) 路由后端：choice/noul 题目映射、置信度门槛，实现 RouteModel
+│   ├── progress.rs         # 长轮次进度汇报：按固定间隔对新增轮次做确定性摘要 (文件 / 命令意图 / 文字) 并推送，with_progress 包裹投递
 │   ├── router.rs           # Router：L0 reply 锚点 / L1 小模型结构化决策 / L2 显式报错 + router.jsonl
 │   ├── scheduler.rs        # ScheduleStore：schedule.json 任务表 (cron / at / every，多 bindings) + schedule_state.json 状态，热重载、失败计数、错过检测 (不补跑)
 │   ├── schedule_tool.rs    # Schedule 工具 (create/list/pause/resume/delete)，按会话 origin 注入

@@ -48,7 +48,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | 层级 | 触发 | 成本 |
 |---|---|---|
 | L0 | reply 命中 `message_index`；`/switch`；零 session 时直接创建 | 0 token |
-| L1 | 其余 | 一次小模型调用（`settings.small_model`） |
+| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions API（`decisions.rs`：`action` / `session` choice 题 + `guide` noul 题，回填为同一 `RouteDecision`；置信度低于 `min_confidence` 显式报错） |
 | L2 | 小模型失败 / 非法输出 | 显式报错，附 `/switch` `/new` 指引，不降级到 focus |
 
 ### 4.2 L1 输入输出
@@ -65,7 +65,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ### 4.4 oneshot
 
-新建 `kind=oneshot` session（跟随主 agent 模型），不进入 router 候选；回复后立即进入清理流程（curator 沉淀 → 删除）。
+新建 `kind=oneshot` session（跟随主 agent 模型），不进入 router 候选；回复后立即进入清理流程（不经 curator 沉淀，直接删除）。
 
 ### 4.5 guide_existing
 
@@ -171,20 +171,30 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 13. 配置与默认值
 
-全部位于 `settings.agent`，可配置；router 复用 `settings.small_model`。
+全部位于 `settings.agent`，可配置；router 缺省复用 `settings.small_model`，可选 `router.decisions`。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `model` | `settings.default` | topic 与 oneshot session 共用的主 agent 模型 |
 | `ttl_secs` | 18000 (5h) | 普通 session 空闲清理 |
-| `oneshot_ttl_secs` | 0 | oneshot 回复完即可清理 |
+| `oneshot_ttl_secs` | 0 | oneshot 回复完即可清理（不做记忆沉淀） |
 | `rollover_reserve_tokens` | 32000 | 上下文预留，覆盖压缩 prompt 与摘要 |
 | `pending_files_ttl_secs` | 600 | 待附件缓冲等待时间 |
 | `task_timeout_secs` | 600 | 定时任务单次执行超时 |
+| `progress_interval_secs` | 180 | 长轮次进度汇报间隔，0 关闭（见 §进度汇报） |
 | `task_max_failures` | 3 | 定时任务连续失败自动停用的次数 |
 | `channels.qq` | — | `app_id` / `secret` / `allowed_users` |
 
 
+
+## 进度汇报
+
+`progress.rs`：轮次（含定时任务）超过 `progress_interval_secs` 未结束时，每隔该时长向聊天推送一段摘要，直到轮次结束。摘要由会话已完成的轮次**确定性**提炼，不额外调用模型：新建 / 修改的文件（Write / Edit，含 hashline 与 V4A 补丁路径）、Shell 的 `intent`（不展示命令原文）、读取/检索与其他工具调用次数、工具报错次数、最近几条助手文字；本段无新动作时仍发「仍在处理」以示存活。同一会话只有一个汇报者（排队的后续投递不重复），汇报消息计入 `message_index`，用户 reply 它会直达该会话。最终回复照旧在轮次结束时发送。
+
+## 技能变动与删除清理
+
+- **技能变动提示**：每条新消息提交前重新发现技能，与会话历史中最近一次 `skills` / `skills-changed` 提醒携带的指纹索引（`index="name:hash,..."`，hash 覆盖 description 与正文）比对；有新增 / 更新 / 移除时，在用户消息之前注入 `<system-reminder type="skills-changed">`，并以新索引作为之后的基线（同一变动不重复提示）。旧版不带索引的清单整体刷新一次。子代理 / curator 会话不注入。`/skills`（IM 与 TUI）每次现扫目录，TUI 同步刷新斜杠调用缓存。
+- **删除同步清理**：来源会话被删除（TTL、`/delete`、`/clear`）时，`Curator::forget` 一并清除其游标、残留的整理输入，并删除为它创建的 curator 会话（标题 `[curator] <session_id>`）；curator 会话清理失败只告警，由 TTL 兜底。
 
 ## 范围约束
 

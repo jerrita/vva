@@ -192,6 +192,10 @@ pub struct AgentSpaceConfig {
     pub task_timeout_secs: u64,
     /// 定时任务连续失败多少次后自动停用
     pub task_max_failures: u32,
+    /// 长轮次进度汇报间隔（秒）：轮次未结束时每隔此时长推送一次摘要；0 关闭
+    pub progress_interval_secs: u64,
+    /// L1 路由后端；缺省使用 `settings.small_model` 的结构化输出
+    pub router: RouterConfig,
     pub channels: AgentChannels,
 }
 
@@ -205,6 +209,8 @@ impl Default for AgentSpaceConfig {
             pending_files_ttl_secs: 600,
             task_timeout_secs: 600,
             task_max_failures: 3,
+            progress_interval_secs: 180,
+            router: RouterConfig::default(),
             channels: AgentChannels::default(),
         }
     }
@@ -213,6 +219,14 @@ impl Default for AgentSpaceConfig {
 impl AgentSpaceConfig {
     /// 启动期校验：已声明的 channel 凭据不得为空
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(d) = &self.router.decisions {
+            if d.model.is_empty() {
+                return Err("settings.agent.router.decisions.model 为空".into());
+            }
+            if !(0.0..=1.0).contains(&d.min_confidence) {
+                return Err("settings.agent.router.decisions.min_confidence 须在 0–1".into());
+            }
+        }
         if let Some(qq) = &self.channels.qq {
             if qq.app_id.is_empty() {
                 return Err("settings.agent.channels.qq.app_id 为空".into());
@@ -226,6 +240,36 @@ impl AgentSpaceConfig {
         }
         Ok(())
     }
+}
+
+/// L1 路由后端选择：声明 `decisions` 时走 OpenRouter Decisions API，否则走 `settings.small_model`
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RouterConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<DecisionsRouterConfig>,
+}
+
+/// OpenRouter Decisions API（alpha）路由后端；密钥取自 `providers.<provider>.api_key`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecisionsRouterConfig {
+    /// 提供 api_key 的 provider 节点名（如 `openrouter`）
+    pub provider: String,
+    /// Decisions 模型，如 `typesafe/jev-1.13`
+    pub model: String,
+    /// 最低置信度（0–1）：关键题低于此值显式报错，交用户 `/switch` 或 `/new`
+    #[serde(default = "default_min_confidence")]
+    pub min_confidence: f64,
+    /// 端点覆写；缺省 OpenRouter alpha 端点
+    #[serde(default = "default_decisions_endpoint")]
+    pub endpoint: String,
+}
+
+fn default_min_confidence() -> f64 {
+    0.6
+}
+
+fn default_decisions_endpoint() -> String {
+    "https://openrouter.ai/api/alpha/decisions".into()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -563,6 +563,27 @@ impl SessionTask {
         let mut parts = images;
         parts.push(ContentPart::text(prompt));
         parts.extend(mention_parts);
+        // 技能变动提示：与历史中最近一次清单基线比对，有新增 / 更新 / 移除时置于用户消息之前
+        if self.view.session.header.agent.is_none() {
+            let changed = crate::system::skills_change_reminder(
+                self.view
+                    .session
+                    .turns
+                    .iter()
+                    .filter(|turn| turn.role == Role::User)
+                    .flat_map(|turn| &turn.messages)
+                    .flat_map(|message| &message.parts)
+                    .filter_map(|part| match part {
+                        ContentPart::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    }),
+                &skills,
+            );
+            if let Some(reminder) = changed {
+                self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
+                    .await?;
+            }
+        }
         self.append(Turn::user_turn(Message::new(parts))).await?;
         // /<skill_name> 斜杠调用：user turn 保留原文，技能正文以独立 reminder 轮次注入
         if let Some(skill) = crate::skills::match_invocation(prompt, &skills) {
@@ -923,6 +944,12 @@ impl SessionTask {
                 return Ok(TurnOutcome::Aborted);
             };
             let response = response.map_err(|e| e.to_string())?;
+            log_response(
+                &self.view.session.header.id,
+                &response.messages,
+                response.usage.as_ref(),
+                response_started.elapsed(),
+            );
             let calls: Vec<_> = response
                 .messages
                 .iter()
@@ -1028,6 +1055,14 @@ impl SessionTask {
                     result = crate::model::ToolResult::error(&call.id, error);
                 }
             }
+            tracing::debug!(
+                "工具结果: session={} {} id={} 出错={} 内容={}",
+                self.view.session.header.id,
+                call.name,
+                call.id,
+                result.is_error,
+                clip_log(&result.content)
+            );
             self.event(AgentEvent::ToolFinished {
                 name: call.name.clone(),
                 result: result.content.clone(),
@@ -1323,4 +1358,50 @@ impl SessionTask {
         }
         self.tasks.shutdown();
     }
+}
+
+/// debug 日志中单段内容（推理 / 文字 / 工具参数与结果）的字符上限
+const LOG_CONTENT_LIMIT: usize = 2000;
+
+fn clip_log(text: &str) -> String {
+    match text.char_indices().nth(LOG_CONTENT_LIMIT) {
+        Some((end, _)) => format!("{}…（共 {} 字符）", &text[..end], text.chars().count()),
+        None => text.to_string(),
+    }
+}
+
+/// 一次模型响应的 debug 细节：推理、文字、工具调用（含参数）与 token 用量
+fn log_response(
+    session_id: &str,
+    messages: &[Message],
+    usage: Option<&crate::model::TokenUsage>,
+    elapsed: std::time::Duration,
+) {
+    if !tracing::enabled!(tracing::Level::DEBUG) {
+        return;
+    }
+    for part in messages.iter().flat_map(|m| &m.parts) {
+        match part {
+            ContentPart::Reasoning { content, .. } if !content.trim().is_empty() => {
+                tracing::debug!("推理: session={session_id} {}", clip_log(content));
+            }
+            ContentPart::Text { text, .. } if !text.trim().is_empty() => {
+                tracing::debug!("文字输出: session={session_id} {}", clip_log(text));
+            }
+            ContentPart::ToolCall(call) => tracing::debug!(
+                "工具调用: session={session_id} {} id={} 参数={}",
+                call.name,
+                call.id,
+                clip_log(&call.arguments)
+            ),
+            _ => {}
+        }
+    }
+    tracing::debug!(
+        "模型响应完成: session={session_id} 耗时 {:.1}s prompt/completion/cached tokens={}/{}/{}",
+        elapsed.as_secs_f32(),
+        usage.map_or(0, |u| u.prompt_tokens),
+        usage.map_or(0, |u| u.completion_tokens),
+        usage.and_then(|u| u.cached_tokens).unwrap_or(0)
+    );
 }

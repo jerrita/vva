@@ -176,7 +176,9 @@ impl App {
                 self.should_quit = true;
             }
             _ => {
-                // /<skill_name> 直接加载：原文提交，技能正文由会话任务注入
+                // /<skill_name> 直接加载：原文提交，技能正文由会话任务注入；
+                // 先重新发现，保证新装 / 刚删的技能立即生效
+                self.skills = crate::skills::discover_skills(self.session_mgr.workspace());
                 if crate::skills::match_invocation(cmd_line, &self.skills).is_some() {
                     self.submit_prompt(cmd_line).await;
                 } else {

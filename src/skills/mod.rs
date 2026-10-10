@@ -67,7 +67,7 @@ pub fn match_invocation<'a>(prompt: &str, skills: &'a [Skill]) -> Option<&'a Ski
     skills.iter().find(|skill| skill.name == name)
 }
 
-/// SKILL.md frontmatter 强类型字段集（规范固定字段，未知字段拒绝）
+/// SKILL.md frontmatter 强类型字段集（规范字段加已知生态字段 `hidden`，其余未知字段拒绝）
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct SkillFrontmatter {
@@ -78,6 +78,9 @@ struct SkillFrontmatter {
     metadata: Option<BTreeMap<String, String>>,
     #[serde(rename = "allowed-tools")]
     allowed_tools: Option<String>,
+    /// 生态扩展字段（如 agent-browser 的存根技能）：接受但 vva 不据此改变行为
+    #[allow(dead_code)]
+    hidden: Option<bool>,
 }
 
 /// 解析并校验单个技能目录（SKILL.md 缺失或规范校验失败时返回错误）
@@ -215,6 +218,18 @@ mod tests {
         assert_eq!(skill.body, "\n# Steps\n\n1. Open the file.");
         assert_eq!(skill.source, SkillSource::Global);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_ecosystem_hidden_field() {
+        let root = temp_root("hidden");
+        write_skill(
+            &root,
+            "agent-browser",
+            "---\nname: agent-browser\ndescription: Browser CLI.\nallowed-tools: Bash(agent-browser:*)\nhidden: true\n---\nBody.\n",
+        );
+        let skill = parse_skill(&root.join("agent-browser"), SkillSource::Global).unwrap();
+        assert_eq!(skill.name, "agent-browser");
     }
 
     #[test]
