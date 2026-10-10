@@ -554,7 +554,7 @@ mod tests {
         std::fs::write(dir.join(INPUT_DIR).join("sess_x.md"), "left over").unwrap();
         let spy = Arc::new(Spy(Default::default()));
         let store =
-            Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&dir.join("s")).unwrap());
+            Arc::new(crate::storage::jsonl::JsonlSessionStore::new(dir.join("s")).unwrap());
         let curator = Curator::new(spy.clone(), store, dir.clone(), dir.join("skills"));
         curator.forget("sess_x").await.unwrap();
         assert_eq!(*spy.0.lock().unwrap(), ["sess_x"]);
