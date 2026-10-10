@@ -419,7 +419,8 @@ impl SessionTask {
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        if selection_changed {
+        // agent 会话的切换不应改写 TUI / Web 的「上次选用模型」偏好
+        if selection_changed && !session.header.agent_managed() {
             AppState::persist_selection(
                 &self.state_path,
                 &session.header.current_model,
@@ -842,6 +843,12 @@ impl SessionTask {
                 if let Err(error) = self.title(title).await {
                     self.event(AgentEvent::Notice(error)).await;
                 }
+            }
+            SharedCommand::Rename { title, reply } => {
+                if let Some(task) = self.title_task.take() {
+                    task.abort();
+                }
+                let _ = reply.send(self.title(title).await);
             }
             SharedCommand::Supersede { by, reply } => {
                 let mut session = (*self.view.session).clone();

@@ -111,7 +111,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 8. Curator（知识沉淀）
 
-- 由系统在清理前、rollover 时触发的后台 session（`kind=curator`），非聊天模型派生的 subagent，与 `team=false` 无冲突；
+- 由系统在删除会话前触发的后台 session（空闲 TTL 到期的周期扫描，或 `/delete`；`/clear` 与 rollover 本身不触发，被接替的旧会话按 TTL 照常整理）（`kind=curator`），非聊天模型派生的 subagent，与 `team=false` 无冲突；
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
 - 产出写入 `~/.vva/space/memory/`（三层：`MEMORY.md` 只列领域 → `<领域>/INDEX.md` 列主题 → `<领域>/<topic>.md` 内容；纳入 git，每次整理一个 commit，提交信息含来源 session 与范围）；反复出现的工作流晋升为 skill 写入工作区 `.vva/skills`（`~/.vva/space/.vva/skills`，仅 agent space 会话可发现，不污染全局技能）；
 - 完成后向用户推送摘要；git 冲突时不覆盖，告警并跳过；
@@ -124,32 +124,38 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - 文件：无文字 → 进入待附件缓冲，不触发模型，回复"已收到"；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本；多附件保持顺序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；
 - `SendFile` 工具已实现（`send_file.rs`）：渠道绑定、经 `SessionManager::with_tool_factory` 按会话 header 运行期注入（仅带 origin 的顶层会话，subagent 不挂载）；参数 `path`（工作区相对 / 绝对 / `~`）与可选 `caption`，文件缺失或非普通文件显式报错，渠道错误（如 QQ guild / dm 不支持上传）原样作为工具错误由模型转述；
 - AskUser 不挂载：agent space 会话（`SessionHeader::agent_managed()`）组装工具时不注册 `AskUserTool`，工具定义一并缺席；channel 级工具白名单未做；
-- 命令（`command.rs`）：`/new <消息>`（强制新建 topic，必须带文字）、`/switch <前缀>`（歧义列候选并拒绝，只设置 focus，后续消息仍经 router）、`/sessions`、`/stop`（中止 focus）、`/status`（会话、模型、上下文占比、cache 命中率、待附件数）、`/delete`（直接删除 focus，不经 curator）；
+- 命令（`command.rs`，`/help` 列出）：`/new <消息>`（强制新建 topic，必须带文字）、`/switch <前缀>`（歧义列候选并拒绝，只设置 focus，后续消息仍经 router）、`/sessions`、`/stop`（中止 focus）、`/status`（`/stat`；会话、模型、上下文占比、cache 命中率、待附件数）、`/rename <标题>`（覆盖标题并取消尚未回写的自动标题）、`/model [list|[--global] <规格> [档位]]`（查看 / 列出 / 切换：有 focus 改 focus 会话，无 focus 改 **agent 模式模型**，`--global` 两者都改；agent 模式模型决定新会话的模型（curator 每次整理时取当前值），落盘于 `~/.vva/space/model.json` 并优先于配置文件，会话与模式切换都须目标模型声明 `limit.context`；agent 会话的切换不写 `state.json` 的「上次选用模型」；会话切换会使其缓存失效）、`/skills`（列出 agent space 可发现技能）、`/schedule [list|pause|resume|delete|run <id>]`（管理定时任务，创建走自然语言 → Schedule 工具）、`/delete [前缀]`（缺省 focus；**先 curator 整理再删除**，后台执行并回报，整理失败则保留会话）、`/clear [前缀]`（**直接删除，跳过整理**）；命令名大小写不敏感并容忍 `/cmd@bot`；**任何 `/` 开头的未知命令都显式回复帮助，不会交给模型**；
 - 出站只发最终文本（`deliver_wait` 的结果），不做流式增量；失败 / 中止显式回复错误文本；
 - 入站循环顺序完成路由与建会话，轮次在独立任务执行，故运行中的 session 仍可被 reply / guide 插话；oneshot 不抢占 focus；已不存在的 focus 在下次路由时清理；rollover 后 `replace_focus` + `MessageIndex::repoint` 并提示用户；
 - `message_index` 键带 channel 前缀（`qq:<id>`）。
 
 ## 10. Scheduler
 
-实现于 `src/agent_space/scheduler.rs`，只负责计时与任务表，投递由 `runtime.rs` 执行。
+实现于 `scheduler.rs`（任务表、状态、计时）、`schedule_tool.rs`（`Schedule` 工具）与 `runtime.rs`（执行与通知）。参考 `../fairy-old`（`../agent` 无此功能）。
 
-- 任务定义 `<agent_dir>/schedule.jsonc`（JSONC），agent 用 Edit / Write 直接改此文件即可增删任务（不新增工具），按 mtime 热重载；解析失败保留旧任务表并告警，同一 mtime 不重复报错：
+- **定义**：`<workspace>/schedule.json`，由 `Schedule` 工具与 `/schedule` 命令写入（原子写），人手修改按 mtime 热重载；自己的写入不触发重载，解析失败保留旧任务表并告警（同一 mtime 不重复报错）。
+- **状态**：`schedule_state.json`，每任务 `enabled`、`last_run`、`last_error`、连续 `failures`、interval 的 `next`，以及全局 `last_tick`。
+- **任务**：`id`、触发三选一、`prompt`、`session`（可选）、`bindings`（可选，二者至少其一）：
 
-  ```jsonc
+  ```json
   { "tasks": [
-    { "id": "morning", "cron": "0 9 * * 1-5", "prompt": "汇总今日待办", "session": "sess_abcde" },
-    { "id": "water",   "cron": "0 */2 * * *", "prompt": "提醒喝水",     "binding": "qq:c2c:<openid>" }
+    { "id": "morning", "cron": "0 9 * * 1-5", "prompt": "汇总今日待办", "bindings": ["qq:c2c:<openid>", "qq:group:<gid>"] },
+    { "id": "remind",  "at": "2026-10-11T09:00", "prompt": "提醒开会", "bindings": ["qq:c2c:<openid>"] },
+    { "id": "check",   "every": "30m", "prompt": "检查新邮件，没有就保持静默", "session": "sess_abcde" }
   ] }
   ```
-- `cron` 为 5 字段（分 时 日 月 周，本地时区），支持 `*`、数字、列表、范围、步长（`*/n`、`a-b/n`、`a/n`）；日与周都受限时取并集（标准 cron 语义），周日可写 0 或 7；
-- 目标二选一（缺一或同时给出为错误）：`session` 投递到已有 session，回复发往其 origin binding，session 不存在或无 origin 时告警并跳过；`binding` 新建 oneshot session 执行，回复发往该 binding；
-- 到点以 `<system-reminder type="scheduled">` 经 `deliver_wait` 投递：空闲触发轮次，忙则入队；
-- 错过的任务：每分钟记录 `schedule_state.json` 的 `last_tick`；启动时回溯（上限 7 天）找出停机期间本应触发的任务，`tracing::warn` 并向任务关联的 binding 提示一次，**不补跑**。
+- **触发**：`cron` 为 5 字段（本地时区，`*`、数字、列表、范围、步长；日与周都受限取并集；周日 0 或 7）；`at` 为一次性本地时刻（`YYYY-MM-DDTHH:MM`），执行后自动停用，已过时刻拒绝创建；`every` 为 `30m / 2h / 1d`（分钟精度），**从上次完成起算**，天然不重叠。cron 到点时同一任务仍在执行则跳过本次（debug 日志）。
+- **执行目标**：`session` 指定时在该会话内执行（保留上下文；会话被 TTL 清理后任务永久失败）；否则在 `bindings[0]` 新建 oneshot 会话执行（无历史，prompt 须自足）。周期任务应走后者。
+- **多聊天通知**：一次触发只执行一次，最终回复发往 `bindings` 全部聊天（含 session 来源，去重）；每条出站消息都登记 `message_index`，在任一聊天里 reply 都回到执行会话（已清理则按 §4.3 处理）。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道，跨渠道随 Telegram 接入再放开。
+- **静默**：触发 reminder 告知模型"无需通知用户时只回复 `[SILENT]`"，Runtime 对精确匹配的回复不发消息（会话历史照常保留）。
+- **失败**：单次失败通知所有目标聊天但任务继续；连续失败达 `task_max_failures`（默认 3）自动停用；永久性错误（目标会话不存在、binding 非法）与一次性任务失败立即停用，并提示 `/schedule resume`。成功清零计数。单次执行超过 `task_timeout_secs`（默认 600）中止并计为失败。
+- **错过的任务**：每分钟记录 `last_tick`；启动时对账（回溯上限 7 天）：cron 错过、interval 的 `next` 已过期、once 已过未执行，均 `tracing::warn` 并向任务目标聊天提示一次，**不补跑**（interval 重排到之后；once 提示可 `/schedule run <id>` 补跑）。
+- **管理**：`Schedule` 工具（`create / list / pause / resume / delete`，仅挂在带 IM 来源的顶层会话，参数当场校验，`list` 与创建失败附当前本地时间供模型换算 `at`）；`/schedule [list|pause|resume|delete|run <id 前缀>]`（`run` 立即执行一次，已停用的需先 resume）。创建只走自然语言 → 工具，不提供 `/schedule add`。
 
 ## 11. 数据模型
 
 - `SessionHeader` 新增：`kind`（`topic | oneshot | curator`）、`origin`（`{channel, chat_id}`）、`routed_by`、`superseded_by`、`last_activity`（强类型字段）；
-- 目录：`bindings.json`、`message_index.jsonl`、`router.jsonl`、`schedule.jsonc`、`memory/`；
+- 目录：`bindings.json`、`message_index.jsonl`、`router.jsonl`、`schedule.json`、`schedule_state.json`、`model.json`、`memory/`；
 - 配置：`settings.agent_space`（channels、allow-list、router、TTL、预留、K）。
 
 ## 12. 预期行为（验收要点）
@@ -174,6 +180,8 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | `oneshot_ttl_secs` | 0 | oneshot 回复完即可清理 |
 | `rollover_reserve_tokens` | 32000 | 上下文预留，覆盖压缩 prompt 与摘要 |
 | `pending_files_ttl_secs` | 600 | 待附件缓冲等待时间 |
+| `task_timeout_secs` | 600 | 定时任务单次执行超时 |
+| `task_max_failures` | 3 | 定时任务连续失败自动停用的次数 |
 | `channels.qq` | — | `app_id` / `secret` / `allowed_users` |
 
 

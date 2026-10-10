@@ -112,7 +112,8 @@ src/
 │   ├── command.rs          # 斜杠命令解析 (/new /switch /sessions /stop /status /delete)
 │   ├── binding.rs          # BindingStore (focus) / MessageIndex (消息 id → session) / PendingFiles (待附件缓冲)
 │   ├── router.rs           # Router：L0 reply 锚点 / L1 小模型结构化决策 / L2 显式报错 + router.jsonl
-│   ├── scheduler.rs        # Scheduler：schedule.jsonc 热重载、5 字段 cron、错过任务检测 (不补跑)
+│   ├── scheduler.rs        # ScheduleStore：schedule.json 任务表 (cron / at / every，多 bindings) + schedule_state.json 状态，热重载、失败计数、错过检测 (不补跑)
+│   ├── schedule_tool.rs    # Schedule 工具 (create/list/pause/resume/delete)，按会话 origin 注入
 │   ├── lifecycle.rs        # 空闲 TTL → curator 沉淀 → 删除
 │   ├── curator.rs          # 知识沉淀 (kind=curator 会话，游标增量，memory/ git 提交；read_memory_index / memory_reminder 供会话注入记忆索引快照)
 │   ├── send_file.rs        # SendFile 工具与 session_tool_factory：渠道绑定、按会话 origin 运行期注入 (经 SessionManager::with_tool_factory)

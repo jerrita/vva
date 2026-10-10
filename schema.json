@@ -74,6 +74,8 @@
             "oneshot_ttl_secs": { "type": "integer", "minimum": 0, "default": 0, "description": "oneshot 回复后清理等待时长（秒），0 为回复完即可清理" },
             "rollover_reserve_tokens": { "type": "integer", "minimum": 0, "default": 32000, "description": "上下文达到 limit.context - 预留 时触发 rollover" },
             "pending_files_ttl_secs": { "type": "integer", "minimum": 0, "default": 600, "description": "待附件缓冲等待时长（秒）" },
+            "task_timeout_secs": { "type": "integer", "minimum": 1, "default": 600, "description": "定时任务单次执行超时（秒），超时中止并计为失败" },
+            "task_max_failures": { "type": "integer", "minimum": 1, "default": 3, "description": "定时任务连续失败多少次后自动停用" },
             "channels": {
               "type": "object",
               "additionalProperties": false,

@@ -1,0 +1,264 @@
+//! Schedule 工具：让 agent 管理定时任务（create / list / pause / resume / delete）。
+//!
+//! 与 `SendFile` 同样按会话 origin 运行期注入。参数在此校验，错误当场返回给模型。
+//! `run`（立即执行）需要 Runtime，只提供 `/schedule run` 命令。
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde::Deserialize;
+
+use super::scheduler::{ScheduleStore, Task, describe_task, format_time, local_now};
+use crate::harness::SessionToolFactory;
+use crate::model::SessionHeader;
+use crate::tools::{Tool, parse_args};
+
+pub struct ScheduleTool {
+    store: Arc<ScheduleStore>,
+    channel: String,
+    /// 当前会话的聊天，形如 `channel:chat_id`
+    binding: String,
+    session_id: String,
+}
+
+#[derive(Deserialize)]
+struct Arguments {
+    action: String,
+    id: Option<String>,
+    cron: Option<String>,
+    at: Option<String>,
+    every: Option<String>,
+    prompt: Option<String>,
+    /// `session`：在当前会话内执行；缺省在新会话中执行
+    target: Option<String>,
+    bindings: Option<Vec<String>>,
+}
+
+impl ScheduleTool {
+    fn create(&self, args: Arguments) -> Result<String, String> {
+        let (kind, value) = match (&args.cron, &args.at, &args.every) {
+            (Some(v), None, None) => ("cron", v),
+            (None, Some(v), None) => ("at", v),
+            (None, None, Some(v)) => ("every", v),
+            _ => return Err("cron / at / every 须且只能提供一个".into()),
+        };
+        let session = match args.target.as_deref() {
+            None | Some("new") => None,
+            Some("session") => Some(self.session_id.clone()),
+            Some(other) => return Err(format!("target `{other}` 非法，应为 new 或 session")),
+        };
+        let bindings = match args.bindings {
+            Some(list) => list,
+            // 在新会话执行时必须有聊天；在当前会话执行时回复默认回到该会话来源
+            None if session.is_none() => vec![self.binding.clone()],
+            None => Vec::new(),
+        };
+        let prefix = format!("{}:", self.channel);
+        if let Some(bad) = bindings.iter().find(|b| !b.starts_with(&prefix)) {
+            return Err(format!("binding `{bad}` 非法，当前仅支持 `{prefix}…`"));
+        }
+        let id = args
+            .id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..6].to_string());
+        let prompt = args.prompt.ok_or("create 需要 prompt")?;
+        let task = Task::build(id.clone(), (kind, value), prompt, session, bindings)?;
+        self.store
+            .add(task)
+            .map_err(|e| format!("{e}（当前时间 {}）", format_time(local_now())))?;
+        let (task, state) = self
+            .store
+            .list()
+            .into_iter()
+            .find(|(t, _)| t.id == id)
+            .ok_or("任务创建后丢失")?;
+        Ok(format!("已创建\n{}", describe_task(&task, &state)))
+    }
+
+    fn require_id(args: &Arguments) -> Result<&str, String> {
+        args.id.as_deref().ok_or_else(|| "需要 id".into())
+    }
+}
+
+#[async_trait]
+impl Tool for ScheduleTool {
+    fn name(&self) -> &str {
+        "Schedule"
+    }
+
+    fn description(&self) -> &str {
+        "Manage scheduled tasks that run on a timer and notify chats. Use only when the user \
+         asks to create, view, pause, resume or delete a scheduled task or reminder. \
+         Exactly one trigger: `cron` (5 fields: min hour day month weekday, local time), \
+         `at` (one-shot local time, e.g. 2026-10-11T09:00) or `every` (30m / 2h / 1d, counted \
+         from the end of the previous run). By default each run happens in a fresh session \
+         with no history, so `prompt` must be fully self-contained (what to do, what to check, \
+         what to report) and should say when to stay silent (the reply is then exactly \
+         [SILENT]). Use target=session only for short-lived follow-ups in this very \
+         conversation: sessions are cleaned up after being idle, which ends the task. \
+         `bindings` lists every chat that receives the result; it defaults to the current chat."
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["create", "list", "pause", "resume", "delete"]},
+                "id": {"type": "string", "description": "Task id (prefix allowed) for pause/resume/delete; optional custom id for create"},
+                "cron": {"type": "string", "description": "5-field cron expression"},
+                "at": {"type": "string", "description": "One-shot local time, YYYY-MM-DDTHH:MM"},
+                "every": {"type": "string", "description": "Interval such as 30m, 2h, 1d"},
+                "prompt": {"type": "string", "description": "Self-contained instruction executed at each trigger"},
+                "target": {"type": "string", "enum": ["new", "session"], "description": "Where to run: a fresh session (default) or this conversation"},
+                "bindings": {"type": "array", "items": {"type": "string"}, "description": "Chats that receive the result, e.g. [\"qq:c2c:<openid>\"]; defaults to the current chat"}
+            },
+            "required": ["action"]
+        })
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<String, String> {
+        let args: Arguments = parse_args(arguments, "Schedule")?;
+        match args.action.as_str() {
+            "create" => self.create(args),
+            "list" => {
+                let tasks = self.store.list();
+                let now = format_time(local_now());
+                if tasks.is_empty() {
+                    return Ok(format!("暂无定时任务（当前时间 {now}）"));
+                }
+                let lines: Vec<_> = tasks.iter().map(|(t, s)| describe_task(t, s)).collect();
+                Ok(format!("当前时间 {now}\n{}", lines.join("\n")))
+            }
+            "pause" => {
+                let task = self.store.set_enabled(Self::require_id(&args)?, false)?;
+                Ok(format!("已暂停 {}", task.id))
+            }
+            "resume" => {
+                let task = self.store.set_enabled(Self::require_id(&args)?, true)?;
+                Ok(format!("已恢复 {}", task.id))
+            }
+            "delete" => {
+                let task = self.store.remove(Self::require_id(&args)?)?;
+                Ok(format!("已删除 {}", task.id))
+            }
+            other => Err(format!("不支持的 action: {other}")),
+        }
+    }
+}
+
+/// 仅带 IM 来源的顶层会话挂载（与 SendFile 同一条件）
+pub fn session_tool_factory(channel: String, store: Arc<ScheduleStore>) -> SessionToolFactory {
+    Arc::new(move |header: &SessionHeader| {
+        let Some(origin) = header.origin.as_ref().filter(|_| header.parent.is_none()) else {
+            return Vec::new();
+        };
+        let tool: Arc<dyn Tool> = Arc::new(ScheduleTool {
+            store: store.clone(),
+            channel: channel.clone(),
+            binding: format!("{}:{}", origin.channel, origin.chat_id),
+            session_id: header.id.clone(),
+        });
+        vec![tool]
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Origin, Session};
+
+    fn tool(dir: &std::path::Path) -> (ScheduleTool, Arc<ScheduleStore>) {
+        let store = ScheduleStore::open(dir).unwrap();
+        let tool = ScheduleTool {
+            store: store.clone(),
+            channel: "qq".into(),
+            binding: "qq:c2c:u1".into(),
+            session_id: "sess_abc".into(),
+        };
+        (tool, store)
+    }
+
+    #[tokio::test]
+    async fn create_list_pause_resume_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, store) = tool(dir.path());
+        let out = tool
+            .execute(r#"{"action":"create","id":"morning","cron":"0 9 * * *","prompt":"汇总待办","bindings":["qq:c2c:u1","qq:group:g1"]}"#)
+            .await
+            .unwrap();
+        assert!(
+            out.contains("morning") && out.contains("qq:group:g1"),
+            "{out}"
+        );
+        // 缺省发往当前聊天
+        tool.execute(r#"{"action":"create","id":"w","every":"1h","prompt":"喝水"}"#)
+            .await
+            .unwrap();
+        let w = store.get("w").unwrap();
+        assert_eq!(w.bindings, ["qq:c2c:u1"]);
+        // target=session：在当前会话内执行
+        tool.execute(
+            r#"{"action":"create","id":"s","every":"20m","prompt":"看结果","target":"session"}"#,
+        )
+        .await
+        .unwrap();
+        let s = store.get("s").unwrap();
+        assert_eq!(s.session.as_deref(), Some("sess_abc"));
+        assert!(s.bindings.is_empty());
+
+        assert!(
+            tool.execute(r#"{"action":"list"}"#)
+                .await
+                .unwrap()
+                .contains("当前时间")
+        );
+        tool.execute(r#"{"action":"pause","id":"mor"}"#)
+            .await
+            .unwrap();
+        assert!(!store.list()[0].1.enabled);
+        tool.execute(r#"{"action":"resume","id":"morning"}"#)
+            .await
+            .unwrap();
+        tool.execute(r#"{"action":"delete","id":"w"}"#)
+            .await
+            .unwrap();
+        assert_eq!(store.list().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn invalid_arguments_are_explicit_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, _) = tool(dir.path());
+        for bad in [
+            r#"{"action":"create","prompt":"p"}"#,
+            r#"{"action":"create","cron":"* * * * *","every":"1h","prompt":"p"}"#,
+            r#"{"action":"create","cron":"bad","prompt":"p"}"#,
+            r#"{"action":"create","cron":"* * * * *"}"#,
+            r#"{"action":"create","cron":"* * * * *","prompt":"p","bindings":["tg:1"]}"#,
+            r#"{"action":"create","cron":"* * * * *","prompt":"p","target":"x"}"#,
+            r#"{"action":"pause"}"#,
+            r#"{"action":"nope"}"#,
+        ] {
+            assert!(tool.execute(bad).await.is_err(), "{bad}");
+        }
+        let err = tool
+            .execute(r#"{"action":"create","at":"2000-01-01T00:00","prompt":"p"}"#)
+            .await
+            .unwrap_err();
+        assert!(err.contains("当前时间"), "{err}");
+    }
+
+    #[test]
+    fn mounted_only_for_top_level_im_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let factory = session_tool_factory("qq".into(), ScheduleStore::open(dir.path()).unwrap());
+        let mut header = Session::new("/w", None).header;
+        assert!(factory(&header).is_empty());
+        header.origin = Some(Origin {
+            channel: "qq".into(),
+            chat_id: "c2c:u1".into(),
+        });
+        assert_eq!(factory(&header)[0].name(), "Schedule");
+        header.parent = Some("sess_00000".into());
+        assert!(factory(&header).is_empty());
+    }
+}

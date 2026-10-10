@@ -188,6 +188,10 @@ pub struct AgentSpaceConfig {
     pub rollover_reserve_tokens: u64,
     /// 待附件缓冲等待时长（秒），超时提示并清理
     pub pending_files_ttl_secs: u64,
+    /// 定时任务单次执行的超时（秒），超时中止并计为失败
+    pub task_timeout_secs: u64,
+    /// 定时任务连续失败多少次后自动停用
+    pub task_max_failures: u32,
     pub channels: AgentChannels,
 }
 
@@ -199,6 +203,8 @@ impl Default for AgentSpaceConfig {
             oneshot_ttl_secs: 0,
             rollover_reserve_tokens: 32_000,
             pending_files_ttl_secs: 600,
+            task_timeout_secs: 600,
+            task_max_failures: 3,
             channels: AgentChannels::default(),
         }
     }

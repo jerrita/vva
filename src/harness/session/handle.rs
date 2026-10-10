@@ -45,6 +45,11 @@ pub enum SharedCommand {
         reply: Reply,
     },
     Title(String),
+    /// 用户改名：先取消尚未回写的自动标题任务，避免被覆盖
+    Rename {
+        title: String,
+        reply: Reply,
+    },
     /// 标记会话已被 rollover 接替（写入 header.superseded_by）
     Supersede {
         by: String,
@@ -207,6 +212,17 @@ impl ManagedSession {
         self.request(|reply| Command::Note {
             text: text.into(),
             reply,
+        })
+        .await
+    }
+
+    /// 用户手动改名（覆盖自动生成的标题）
+    pub async fn rename(&self, title: &str) -> Result<(), String> {
+        self.request(|reply| {
+            Command::Shared(SharedCommand::Rename {
+                title: title.into(),
+                reply,
+            })
         })
         .await
     }

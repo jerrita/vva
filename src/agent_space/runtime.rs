@@ -4,11 +4,12 @@
 //! 轮次执行与回复在独立任务中进行，因此运行中的 session 仍可接收插话。
 //! 本期只回最终文本，不做流式增量发送。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, mpsc};
 
 use super::agent_toggles;
@@ -16,13 +17,13 @@ use super::binding::{AttachedFile, BindingStore, FileKind, MessageIndex, Pending
 use super::channel::files::{sanitize_filename, unique_dest};
 use super::channel::{Channel, Inbound, Outbound, OutboundText};
 use super::command::{self, Command};
-use super::curator::{CuratorReport, CuratorStatus};
+use super::curator::{Curator, CuratorReport, CuratorStatus, ModelSource};
 use super::rollover::{cache_hit_rate, context_tokens, maybe_rollover};
 use super::router::{Candidate, ReplyRef, Route, RouteInput, Routed, Router, resolve_prefix};
-use super::scheduler::{self, Missed, Target, Task};
+use super::scheduler::{self, Failure, Missed, ScheduleStore, Task, Trigger, describe_task};
 use crate::config::AgentSpaceConfig;
 use crate::harness::{ManagedSession, SessionManager};
-use crate::model::{Origin, Session, SessionKind};
+use crate::model::{Origin, Session, SessionKind, ToggleOverrides};
 use crate::system::format_scheduled_reminder;
 
 /// 待附件缓冲的过期检查周期
@@ -39,8 +40,24 @@ pub struct Runtime {
     config: AgentSpaceConfig,
     channel: Arc<dyn Channel>,
     router: Router,
+    curator: Arc<Curator>,
+    schedule: Arc<ScheduleStore>,
+    /// 正在执行的定时任务 id（同一任务不重叠）
+    running_tasks: std::sync::Mutex<HashSet<String>>,
+    /// agent 模式的模型（新会话使用）；`/model --global` 修改并落盘
+    mode_model: Arc<std::sync::Mutex<ModeModel>>,
     state: Mutex<State>,
 }
+
+/// agent 模式的模型选择，持久化于 `<workspace>/model.json`，优先于配置文件
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ModeModel {
+    model: String,
+    #[serde(default)]
+    variant: Option<String>,
+}
+
+const MODE_MODEL_FILE: &str = "model.json";
 
 impl Runtime {
     pub fn new(
@@ -48,6 +65,7 @@ impl Runtime {
         config: AgentSpaceConfig,
         channel: Arc<dyn Channel>,
         router: Router,
+        schedule: Arc<ScheduleStore>,
     ) -> Result<Arc<Self>, String> {
         let dir = manager.workspace();
         let state = State {
@@ -55,21 +73,47 @@ impl Runtime {
             index: MessageIndex::load(dir)?,
             pending: PendingFiles::default(),
         };
+        let mode_model = load_mode_model(&config, &manager)?;
+        let mode_model = Arc::new(std::sync::Mutex::new(mode_model));
+        let source: ModelSource = {
+            let mode_model = mode_model.clone();
+            Arc::new(move || mode_model.lock().expect("mode_model").model.clone())
+        };
+        let curator = Arc::new(Curator::for_manager(&manager, source));
         Ok(Arc::new(Self {
             manager,
             config,
             channel,
             router,
+            curator,
+            schedule,
+            running_tasks: Default::default(),
+            mode_model,
             state: Mutex::new(state),
         }))
     }
 
     /// topic 与 oneshot session 使用的模型规格
     pub fn model(&self) -> String {
-        self.config
-            .model
-            .clone()
-            .unwrap_or_else(|| self.manager.app_config().settings.default.clone())
+        self.mode_model.lock().expect("mode_model").model.clone()
+    }
+
+    fn mode_model(&self) -> ModeModel {
+        self.mode_model.lock().expect("mode_model").clone()
+    }
+
+    /// 校验并设置 agent 模式模型（需声明 `limit.context`，与启动期校验一致）并落盘
+    fn set_mode_model(&self, model: &str, variant: Option<String>) -> Result<(), String> {
+        let next = check_mode_model(&self.manager, model, variant)?;
+        let raw = serde_json::to_string_pretty(&next).map_err(|e| e.to_string())?;
+        let path = self.manager.workspace().join(MODE_MODEL_FILE);
+        std::fs::write(&path, raw).map_err(|e| format!("写入 {} 失败: {e}", path.display()))?;
+        *self.mode_model.lock().expect("mode_model") = next;
+        Ok(())
+    }
+
+    pub fn curator(&self) -> Arc<Curator> {
+        self.curator.clone()
     }
 
     /// 主循环：入站消息、定时事件与待附件过期；入站通道关闭时返回
@@ -86,7 +130,9 @@ impl Runtime {
                     None => return,
                 },
                 Some(event) = events.recv() => match event {
-                    scheduler::Event::Fire(task) => self.fire(task).await,
+                    scheduler::Event::Fire(task) => {
+                        self.fire(task).await;
+                    }
                     scheduler::Event::Missed(missed) => self.report_missed(missed).await,
                 },
                 _ = expire.tick() => self.expire_pending().await,
@@ -328,12 +374,13 @@ impl Runtime {
         routed_by: &str,
     ) -> Result<Arc<ManagedSession>, String> {
         let origin = self.origin(binding)?;
+        let mode = self.mode_model();
         let created = self
             .manager
             .create_session_with(
                 self.manager.workspace().to_path_buf(),
-                self.model(),
-                None,
+                mode.model,
+                mode.variant,
                 None,
                 agent_toggles(),
                 |header| {
@@ -369,7 +416,20 @@ impl Runtime {
                 "已请求中止当前轮次".to_string()
             }
             Command::Status => self.status(binding).await?,
-            Command::Delete => self.delete_focus(binding).await?,
+            Command::Rename(title) => self.rename(binding, &title).await?,
+            Command::Model(arg) => self.model_command(binding, &arg).await?,
+            Command::Skills => self.skills(),
+            Command::Schedule(arg) => self.schedule(&arg).await?,
+            Command::Delete(prefix) => self.delete(binding, &prefix).await?,
+            Command::Clear(prefix) => {
+                let handle = self.target_handle(binding, &prefix).await?;
+                self.remove(&handle).await?;
+                format!("已删除会话 {}", handle.id)
+            }
+            Command::Help => command::help(),
+            Command::Unknown(name) => {
+                return Err(format!("未知命令 /{name}\n{}", command::help()));
+            }
         };
         self.say(binding, Some(&msg.message_id), reply).await;
         Ok(())
@@ -419,15 +479,240 @@ impl Runtime {
             .join("\n"))
     }
 
-    async fn delete_focus(&self, binding: &str) -> Result<String, String> {
-        let handle = self.focus_handle(binding).await?;
-        self.manager.delete_session(&handle).await?;
+    /// 空前缀取默认会话，否则按前缀解析
+    async fn target_handle(
+        &self,
+        binding: &str,
+        prefix: &str,
+    ) -> Result<Arc<ManagedSession>, String> {
+        if prefix.is_empty() {
+            return self.focus_handle(binding).await;
+        }
+        let candidates = self.candidates(binding).await?;
+        let id = resolve_prefix(&candidates, prefix).map_err(|e| e.to_string())?;
+        self.manager.live_or_load(&id).await
+    }
+
+    /// 删除会话并清理游标与 focus（不经 curator）
+    async fn remove(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
+        self.manager.delete_session(handle).await?;
+        self.curator.forget(&handle.id).await?;
         self.state
             .lock()
             .await
             .bindings
-            .replace_focus(&handle.id, None)?;
-        Ok(format!("已删除会话 {}", handle.id))
+            .replace_focus(&handle.id, None)
+    }
+
+    /// 整理记忆后删除：整理耗时较长，后台执行并回报；整理失败则保留会话
+    async fn delete(self: &Arc<Self>, binding: &str, prefix: &str) -> Result<String, String> {
+        let handle = self.target_handle(binding, prefix).await?;
+        if handle.is_running() {
+            return Err("会话正在运行，请先 /stop，或用 /clear 直接删除".into());
+        }
+        let id = handle.id.clone();
+        let (this, binding) = (self.clone(), binding.to_string());
+        tokio::spawn({
+            let id = id.clone();
+            async move {
+                let reply = match this.curate_then_remove(&handle).await {
+                    Ok(()) => format!("已整理并删除会话 {id}"),
+                    Err(error) => format!("删除失败，会话 {id} 已保留: {error}"),
+                };
+                this.say(&binding, None, reply).await;
+            }
+        });
+        Ok(format!("正在整理记忆，完成后删除会话 {id}"))
+    }
+
+    async fn curate_then_remove(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
+        let seen_turns = handle.turn_seq();
+        let result = self.curator.curate(&handle.id).await;
+        let failed = (result.status == CuratorStatus::Failed).then(|| result.summary.clone());
+        let origin = handle.snapshot().session.header.origin.clone();
+        self.push_curator(CuratorReport {
+            session_id: handle.id.clone(),
+            origin,
+            result,
+        })
+        .await;
+        if let Some(summary) = failed {
+            return Err(summary);
+        }
+        if handle.is_running() || handle.turn_seq() != seen_turns {
+            return Err("整理期间会话又有活动".into());
+        }
+        self.remove(handle).await
+    }
+
+    async fn rename(&self, binding: &str, title: &str) -> Result<String, String> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err("用法: /rename <新标题>".into());
+        }
+        let handle = self.focus_handle(binding).await?;
+        handle.rename(title).await?;
+        Ok(format!("已重命名 {} 为: {title}", handle.id))
+    }
+
+    /// 无参查看；`list` 列出可用规格；`<规格> [档位]` 切换 focus 会话模型，
+    /// 无 focus 时改 agent 模式模型；`--global` 同时改 agent 模式与 focus 会话
+    async fn model_command(&self, binding: &str, arg: &str) -> Result<String, String> {
+        let global = arg.split_whitespace().any(|w| w == "--global");
+        let words: Vec<&str> = arg
+            .split_whitespace()
+            .filter(|w| *w != "--global")
+            .collect();
+        let focus = self.focus_handle(binding).await.ok();
+        match words[..] {
+            [] if global => Err("用法: /model --global <规格> [档位]".into()),
+            [] => {
+                let mode = self.mode_model();
+                let mut lines = Vec::new();
+                if let Some(handle) = &focus {
+                    let header = handle.snapshot().session.header.clone();
+                    lines.push(format!(
+                        "默认会话 {} 模型: {}",
+                        handle.id,
+                        spec_label(&header.current_model, header.current_variant.as_deref())
+                    ));
+                }
+                lines.push(format!(
+                    "agent 模式模型（新会话）: {}",
+                    spec_label(&mode.model, mode.variant.as_deref())
+                ));
+                Ok(lines.join("\n"))
+            }
+            ["list"] => {
+                let session = focus
+                    .as_ref()
+                    .map(|h| h.snapshot().session.header.current_model.clone());
+                let mode = self.model();
+                let config = self.manager.app_config();
+                let mut lines: Vec<(String, String)> = config
+                    .providers
+                    .iter()
+                    .flat_map(|(provider, p)| {
+                        p.models.iter().map(move |(id, m)| {
+                            let spec = format!("{provider}/{id}");
+                            let mut info = vec![m.name.clone()];
+                            match &m.limit {
+                                Some(l) => info.push(format!("上下文 {}k", l.context / 1000)),
+                                None => info.push("未声明 limit.context（不可选用）".into()),
+                            }
+                            if let Some(v) = m.variants.as_ref().filter(|v| !v.is_empty()) {
+                                info.push(format!("档位 {}", v.join("/")));
+                            }
+                            (spec, info.join("，"))
+                        })
+                    })
+                    .collect();
+                lines.sort();
+                Ok(lines
+                    .iter()
+                    .map(|(spec, info)| {
+                        let mut mark = String::new();
+                        if session.as_deref() == Some(spec) {
+                            mark.push_str(" [会话]");
+                        }
+                        if *spec == mode {
+                            mark.push_str(" [模式]");
+                        }
+                        format!("{spec}{mark}  {info}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            [spec] | [spec, _] => {
+                let variant = words.get(1).map(|v| v.to_string());
+                let mode = global || focus.is_none();
+                // 会话与模式都要求声明 limit.context，否则 rollover 无法判定
+                check_mode_model(&self.manager, spec, variant.clone())?;
+                let mut lines = Vec::new();
+                if let Some(handle) = focus {
+                    handle
+                        .configure(
+                            Some(spec.into()),
+                            variant.clone().map(Some),
+                            ToggleOverrides::default(),
+                        )
+                        .await?;
+                    lines.push(format!(
+                        "默认会话 {} 已切换到 {spec}（下一轮起生效，切换会使该会话缓存失效）",
+                        handle.id
+                    ));
+                }
+                if mode {
+                    self.set_mode_model(spec, variant)?;
+                    lines.push(format!("agent 模式模型已设为 {spec}（新会话使用）"));
+                }
+                Ok(lines.join("\n"))
+            }
+            _ => Err("用法: /model [list | [--global] <规格> [档位]]".into()),
+        }
+    }
+
+    fn skills(&self) -> String {
+        let skills = crate::skills::discover_skills(self.manager.workspace());
+        if skills.is_empty() {
+            return "暂无技能".into();
+        }
+        skills
+            .iter()
+            .map(|s| format!("{} - {}", s.name, s.description))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `/schedule [list]`、`pause|resume|delete|run <id 前缀>`；创建走 Schedule 工具（自然语言）
+    async fn schedule(self: &Arc<Self>, arg: &str) -> Result<String, String> {
+        let usage = "用法: /schedule [list] | pause|resume|delete|run <id>（创建请直接告诉 agent）";
+        let mut words = arg.split_whitespace();
+        let action = words.next().unwrap_or("list");
+        let id = words.next();
+        if words.next().is_some() {
+            return Err(usage.into());
+        }
+        match (action, id) {
+            ("list", None) => {
+                self.schedule.refresh();
+                let tasks = self.schedule.list();
+                if tasks.is_empty() {
+                    return Ok("暂无定时任务".into());
+                }
+                Ok(tasks
+                    .iter()
+                    .map(|(t, s)| describe_task(t, s))
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+            ("pause", Some(id)) => Ok(format!(
+                "已暂停 {}",
+                self.schedule.set_enabled(id, false)?.id
+            )),
+            ("resume", Some(id)) => Ok(format!(
+                "已恢复 {}",
+                self.schedule.set_enabled(id, true)?.id
+            )),
+            ("delete", Some(id)) => Ok(format!("已删除 {}", self.schedule.remove(id)?.id)),
+            ("run", Some(id)) => {
+                let task = self.schedule.get(id)?;
+                let enabled = self
+                    .schedule
+                    .list()
+                    .into_iter()
+                    .any(|(t, s)| t.id == task.id && s.enabled);
+                if !enabled {
+                    return Err(format!("任务 {} 已停用，请先 /schedule resume", task.id));
+                }
+                if self.fire(task.clone()).await {
+                    Ok(format!("已触发 {}", task.id))
+                } else {
+                    Err(format!("任务 {} 正在执行", task.id))
+                }
+            }
+            _ => Err(usage.into()),
+        }
     }
 
     async fn status(&self, binding: &str) -> Result<String, String> {
@@ -671,33 +956,133 @@ impl Runtime {
 
     // ================== 定时任务 ==================
 
-    pub async fn fire(self: &Arc<Self>, task: Task) {
-        if let Err(error) = self.try_fire(&task).await {
-            tracing::warn!("定时任务 {} 已跳过: {error}", task.id);
+    /// 启动一次任务执行；同一任务仍在执行时跳过并返回 `false`
+    pub async fn fire(self: &Arc<Self>, task: Task) -> bool {
+        if !self
+            .running_tasks
+            .lock()
+            .expect("running_tasks")
+            .insert(task.id.clone())
+        {
+            tracing::debug!("定时任务 {} 上次未结束，跳过本次", task.id);
+            return false;
         }
+        let this = self.clone();
+        tokio::spawn(async move {
+            let outcome = this.execute(&task).await;
+            this.running_tasks
+                .lock()
+                .expect("running_tasks")
+                .remove(&task.id);
+            this.settle(&task, outcome).await;
+        });
+        true
     }
 
-    async fn try_fire(self: &Arc<Self>, task: &Task) -> Result<(), String> {
-        tracing::info!("定时任务触发: id={} 目标={:?}", task.id, task.target);
-        let (handle, binding) = match &task.target {
-            Target::Session(id) => {
-                let handle = self
-                    .manager
-                    .live_or_load(id)
-                    .await
-                    .map_err(|e| format!("目标 session {id} 不可用: {e}"))?;
-                let binding = Self::origin_binding(&handle, id)?;
-                (handle, binding)
+    /// 任务回复的发送目标：session 来源（若有）+ bindings，去重保序
+    async fn task_targets(&self, task: &Task) -> Vec<String> {
+        let mut targets = Vec::new();
+        if let Some(id) = &task.session
+            && let Ok(handle) = self.manager.live_or_load(id).await
+            && let Ok(binding) = Self::origin_binding(&handle, id)
+        {
+            targets.push(binding);
+        }
+        for binding in &task.bindings {
+            if !targets.contains(binding) {
+                targets.push(binding.clone());
             }
-            Target::Binding(binding) => (
+        }
+        targets
+    }
+
+    async fn execute(self: &Arc<Self>, task: &Task) -> Result<(), Failure> {
+        tracing::info!(
+            "定时任务触发: id={} {} session={:?} bindings={:?}",
+            task.id,
+            task.trigger.describe(),
+            task.session,
+            task.bindings
+        );
+        let handle = match (&task.session, task.bindings.first()) {
+            (Some(id), _) => self
+                .manager
+                .live_or_load(id)
+                .await
+                .map_err(|e| Failure::Permanent(format!("目标 session {id} 不可用: {e}")))?,
+            (None, Some(binding)) => {
+                self.origin(binding).map_err(Failure::Permanent)?;
                 self.create(binding, SessionKind::Oneshot, "scheduled")
-                    .await?,
-                binding.clone(),
-            ),
+                    .await
+                    .map_err(Failure::Transient)?
+            }
+            (None, None) => return Err(Failure::Permanent("任务没有执行目标".into())),
         };
-        let prompt = format_scheduled_reminder(&task.id, &task.expr, &task.prompt);
-        tokio::spawn(self.clone().run_turn(handle, binding, None, prompt));
+        let targets = self.task_targets(task).await;
+        let exec_binding = match (&task.session, targets.first()) {
+            (Some(id), _) => Self::origin_binding(&handle, id).map_err(Failure::Permanent)?,
+            (None, Some(binding)) => binding.clone(),
+            (None, None) => return Err(Failure::Permanent("任务没有发送目标".into())),
+        };
+        let prompt = format_scheduled_reminder(&task.id, &task.trigger.describe(), &task.prompt);
+        let limit = Duration::from_secs(self.config.task_timeout_secs);
+        let report = match tokio::time::timeout(limit, handle.deliver_wait(&prompt)).await {
+            Ok(result) => result.map_err(Failure::Transient)?,
+            Err(_) => {
+                let _ = handle.abort_current().await;
+                return Err(Failure::Transient(format!(
+                    "执行超过 {}s，已中止",
+                    self.config.task_timeout_secs
+                )));
+            }
+        };
+        let text = report.text.trim();
+        if text == "[SILENT]" {
+            tracing::info!("定时任务 {} 回复 [SILENT]，不通知", task.id);
+        } else {
+            let text = if text.is_empty() {
+                "（本轮没有文本输出）"
+            } else {
+                text
+            };
+            for target in &targets {
+                let ids = self.say(target, None, text).await;
+                let mut state = self.state.lock().await;
+                for id in ids {
+                    if let Err(e) = state.index.record(&self.key(&id), &handle.id) {
+                        tracing::warn!("记录出站消息索引失败: {e}");
+                    }
+                }
+            }
+        }
+        self.after_turn(&handle, &exec_binding).await;
         Ok(())
+    }
+
+    /// 记录结果；失败时通知所有目标聊天
+    async fn settle(&self, task: &Task, outcome: Result<(), Failure>) {
+        let max = self.config.task_max_failures;
+        let Some(settled) = self.schedule.settle(&task.id, outcome.clone(), max) else {
+            return;
+        };
+        let Err(Failure::Permanent(msg) | Failure::Transient(msg)) = outcome else {
+            return;
+        };
+        tracing::warn!("定时任务 {} 执行失败: {msg}", task.id);
+        let text = if settled.disabled {
+            format!(
+                "⚠️ 定时任务 {} 执行失败并已停用: {msg}（修复后可 /schedule resume {}）",
+                task.id, task.id
+            )
+        } else {
+            format!(
+                "⚠️ 定时任务 {} 执行失败（连续 {}/{max} 次，达到上限将停用）: {msg}",
+                task.id, settled.failures
+            )
+        };
+        for target in self.task_targets(task).await {
+            self.say(&target, None, text.clone()).await;
+        }
     }
 
     fn origin_binding(handle: &Arc<ManagedSession>, id: &str) -> Result<String, String> {
@@ -710,31 +1095,36 @@ impl Runtime {
         Ok(format!("{}:{}", origin.channel, origin.chat_id))
     }
 
-    /// 停机期间错过的任务：按 binding 汇总提示一次，不补跑
+    /// 停机期间错过的任务：按聊天汇总提示一次，不补跑
     async fn report_missed(&self, missed: Vec<Missed>) {
         let mut by_binding: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for m in missed {
-            let binding = match &m.task.target {
-                Target::Binding(b) => Ok(b.clone()),
-                Target::Session(id) => match self.manager.live_or_load(id).await {
-                    Ok(handle) => Self::origin_binding(&handle, id),
-                    Err(e) => Err(format!("目标 session {id} 不可用: {e}")),
-                },
-            };
-            match binding {
-                Ok(b) => by_binding.entry(b).or_default().push(format!(
-                    "{}（最近应于 {}）",
+            let line = match m.task.trigger {
+                Trigger::Once(_) => format!(
+                    "{}（应于 {}，已错过；可 /schedule run {} 补跑）",
+                    m.task.id,
+                    m.last.format("%Y-%m-%d %H:%M"),
+                    m.task.id
+                ),
+                _ => format!(
+                    "{}（最近应于 {}，未补跑）",
                     m.task.id,
                     m.last.format("%Y-%m-%d %H:%M")
-                )),
-                Err(e) => tracing::warn!("错过的定时任务 {} 无法通知: {e}", m.task.id),
+                ),
+            };
+            let targets = self.task_targets(&m.task).await;
+            if targets.is_empty() {
+                tracing::warn!("错过的定时任务 {} 无法通知: 没有可用目标", m.task.id);
+            }
+            for binding in targets {
+                by_binding.entry(binding).or_default().push(line.clone());
             }
         }
         for (binding, lines) in by_binding {
             self.say(
                 &binding,
                 None,
-                format!("停机期间错过了以下定时任务，未补跑: {}", lines.join("；")),
+                format!("停机期间错过了以下定时任务: {}", lines.join("；")),
             )
             .await;
         }
@@ -782,6 +1172,63 @@ fn describe_route(route: &Route) -> String {
     }
 }
 
+/// 校验 agent 模式模型：可解析且声明 `limit.context`（rollover 需要）
+fn check_mode_model(
+    manager: &SessionManager,
+    model: &str,
+    variant: Option<String>,
+) -> Result<ModeModel, String> {
+    let config = manager.app_config();
+    let resolved = config
+        .resolve_model(model, variant.as_deref())
+        .map_err(|e| e.to_string())?;
+    if resolved.model_config.limit.is_none() {
+        return Err(format!(
+            "模型 {} 未声明 limit.context，rollover 无法判定",
+            resolved.full_spec
+        ));
+    }
+    Ok(ModeModel {
+        model: resolved.full_spec,
+        variant,
+    })
+}
+
+/// 启动期：`model.json` 优先，否则取配置（`settings.agent.model` → `settings.default`）
+fn load_mode_model(
+    config: &AgentSpaceConfig,
+    manager: &SessionManager,
+) -> Result<ModeModel, String> {
+    let path = manager.workspace().join(MODE_MODEL_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => {
+            let saved: ModeModel = serde_json::from_str(&raw)
+                .map_err(|e| format!("解析 {} 失败: {e}", path.display()))?;
+            check_mode_model(manager, &saved.model, saved.variant).map_err(|e| {
+                format!(
+                    "{}: {e}（删除该文件可恢复配置文件中的模型）",
+                    path.display()
+                )
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let model = config
+                .model
+                .clone()
+                .unwrap_or_else(|| manager.app_config().settings.default.clone());
+            Ok(ModeModel {
+                model,
+                variant: None,
+            })
+        }
+        Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
+    }
+}
+
+fn spec_label(model: &str, variant: Option<&str>) -> String {
+    variant.map_or(model.to_string(), |v| format!("{model} ({v})"))
+}
+
 fn command_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::New(_) => "/new",
@@ -789,7 +1236,14 @@ fn command_name(cmd: &Command) -> &'static str {
         Command::Sessions => "/sessions",
         Command::Stop => "/stop",
         Command::Status => "/status",
-        Command::Delete => "/delete",
+        Command::Rename(_) => "/rename",
+        Command::Model(_) => "/model",
+        Command::Skills => "/skills",
+        Command::Schedule(_) => "/schedule",
+        Command::Delete(_) => "/delete",
+        Command::Clear(_) => "/clear",
+        Command::Help => "/help",
+        Command::Unknown(_) => "/unknown",
     }
 }
 
@@ -968,6 +1422,7 @@ mod tests {
 
     struct Fixture {
         runtime: Arc<Runtime>,
+        schedule: Arc<ScheduleStore>,
         channel: Arc<FakeChannel>,
         manager: Arc<SessionManager>,
         dir: PathBuf,
@@ -1005,15 +1460,18 @@ mod tests {
         ));
         let channel = Arc::new(FakeChannel::default());
         let router = Router::new(Box::new(NoModel), dir.join("router.jsonl"));
+        let schedule = ScheduleStore::open(&dir).unwrap();
         let runtime = Runtime::new(
             manager.clone(),
             AgentSpaceConfig::default(),
             channel.clone(),
             router,
+            schedule.clone(),
         )
         .unwrap();
         Fixture {
             runtime,
+            schedule,
             channel,
             manager,
             dir,
@@ -1163,10 +1621,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_slash_command_is_rejected_not_sent_to_model() {
+        let f = fixture().await;
+        f.runtime.handle(inbound("m1", "/stat2")).await;
+        let sent = f.channel.wait(1).await;
+        assert!(sent[0].text.contains("未知命令 /stat2"), "{}", sent[0].text);
+        assert!(f.session_ids().await.is_empty());
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn rename_clear_and_info_commands() {
+        let f = fixture().await;
+        f.runtime.handle(inbound("m1", "/new 第一个")).await;
+        f.channel.wait(1).await;
+        let id = f.focus().await.unwrap();
+
+        f.runtime.handle(inbound("m2", "/rename 新标题")).await;
+        let sent = f.channel.wait(2).await;
+        assert!(sent[1].text.contains("新标题"), "{}", sent[1].text);
+        let handle = f.manager.live_or_load(&id).await.unwrap();
+        assert_eq!(
+            handle.snapshot().session.header.title.as_deref(),
+            Some("新标题")
+        );
+
+        f.runtime.handle(inbound("m3", "/help")).await;
+        f.runtime.handle(inbound("m4", "/schedule list")).await;
+        f.runtime.handle(inbound("m5", "/skills")).await;
+        let sent = f.channel.wait(5).await;
+        assert!(sent[2].text.contains("/clear"), "{}", sent[2].text);
+        assert!(sent[3].text.contains("暂无定时任务"), "{}", sent[3].text);
+
+        f.runtime.handle(inbound("m6", "/clear")).await;
+        let sent = f.channel.wait(6).await;
+        assert!(sent[5].text.contains("已删除"), "{}", sent[5].text);
+        assert!(f.session_ids().await.is_empty());
+        assert_eq!(f.focus().await, None);
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn model_switch_targets_focus_session_or_mode() {
+        let f = fixture().await;
+        let file = f.dir.join(MODE_MODEL_FILE);
+        // 无 focus：改 agent 模式并落盘
+        f.runtime.handle(inbound("m1", "/model p/m high")).await;
+        let sent = f.channel.wait(1).await;
+        assert!(sent[0].text.contains("agent 模式"), "{}", sent[0].text);
+        assert!(std::fs::read_to_string(&file).unwrap().contains("high"));
+        // 未声明 limit.context / 不存在的模型显式拒绝
+        f.runtime.handle(inbound("m2", "/model nope/x")).await;
+        f.channel.wait(2).await;
+        assert!(std::fs::read_to_string(&file).unwrap().contains("p/m"));
+
+        // 有 focus：只改会话，不动 agent 模式
+        f.runtime.handle(inbound("m3", "/new 你好")).await;
+        f.channel.wait(3).await;
+        std::fs::remove_file(&file).unwrap();
+        f.runtime.handle(inbound("m3b", "/model list")).await;
+        let sent = f.channel.wait(4).await;
+        assert!(
+            sent[3].text.contains("p/m [会话] [模式]"),
+            "{}",
+            sent[3].text
+        );
+        f.runtime.handle(inbound("m4", "/model p/m")).await;
+        let sent = f.channel.wait(5).await;
+        assert!(!sent[4].text.contains("agent 模式"), "{}", sent[4].text);
+        assert!(!file.exists());
+        // --global：两者都改
+        f.runtime.handle(inbound("m5", "/model --global p/m")).await;
+        let sent = f.channel.wait(6).await;
+        assert!(sent[5].text.contains("agent 模式"), "{}", sent[5].text);
+        assert!(file.exists());
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
     async fn scheduled_task_runs_in_oneshot_session_and_replies_to_binding() {
         let f = fixture().await;
         let task: Task = serde_json::from_str(
-            r#"{"id":"water","cron":"* * * * *","prompt":"喝水","binding":"fake:c2c:u1"}"#,
+            r#"{"id":"water","cron":"* * * * *","prompt":"喝水","bindings":["fake:c2c:u1"]}"#,
         )
         .unwrap();
         f.runtime.fire(task).await;
@@ -1190,6 +1726,97 @@ mod tests {
                 .any(|t| t.text_content().contains("type=\"scheduled\""))
         );
         assert_eq!(f.focus().await, None, "oneshot 不抢占 focus");
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    fn task(json: &str) -> Task {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[tokio::test]
+    async fn scheduled_reply_goes_to_every_binding() {
+        let f = fixture().await;
+        f.runtime
+            .fire(task(
+                r#"{"id":"multi","every":"1h","prompt":"汇报","bindings":["fake:c2c:u1","fake:group:g2"]}"#,
+            ))
+            .await;
+        let sent = f.channel.wait(2).await;
+        let mut bindings: Vec<_> = sent.iter().map(|m| m.binding.as_str()).collect();
+        bindings.sort();
+        assert_eq!(bindings, ["fake:c2c:u1", "fake:group:g2"]);
+        assert!(sent.iter().all(|m| m.text == "pong"));
+        // 只执行一次：只有一个 oneshot 会话，来源是第一个 binding
+        let ids = f.session_ids().await;
+        assert_eq!(ids.len(), 1);
+        let origin = f
+            .manager
+            .live(&ids[0])
+            .await
+            .unwrap()
+            .snapshot()
+            .session
+            .header
+            .origin
+            .clone();
+        assert_eq!(origin.unwrap().chat_id, "c2c:u1");
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn scheduled_failure_notifies_and_disables_on_permanent_error() {
+        let f = fixture().await;
+        let t = task(
+            r#"{"id":"gone","every":"1h","prompt":"p","session":"sess_none0","bindings":["fake:c2c:u1"]}"#,
+        );
+        f.schedule.add(t.clone()).unwrap();
+        f.runtime.fire(t).await;
+        let sent = f.channel.wait(1).await;
+        assert!(sent[0].text.contains("已停用"), "{}", sent[0].text);
+        assert!(sent[0].text.contains("sess_none0"), "{}", sent[0].text);
+        assert!(!f.schedule.list()[0].1.enabled);
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn schedule_command_manages_tasks() {
+        let f = fixture().await;
+        f.runtime.handle(inbound("m1", "/schedule")).await;
+        let sent = f.channel.wait(1).await;
+        assert!(sent[0].text.contains("暂无"), "{}", sent[0].text);
+
+        f.schedule
+            .add(task(
+                r#"{"id":"water1","every":"1h","prompt":"喝水","bindings":["fake:c2c:u1"]}"#,
+            ))
+            .unwrap();
+        f.runtime.handle(inbound("m2", "/schedule list")).await;
+        f.runtime.handle(inbound("m3", "/schedule pause wat")).await;
+        f.runtime
+            .handle(inbound("m4", "/schedule run water1"))
+            .await;
+        f.runtime
+            .handle(inbound("m5", "/schedule resume water1"))
+            .await;
+        let sent = f.channel.wait(5).await;
+        assert!(
+            sent[1].text.contains("water1") && sent[1].text.contains("every 1h"),
+            "{}",
+            sent[1].text
+        );
+        assert!(sent[2].text.contains("已暂停"), "{}", sent[2].text);
+        assert!(sent[3].text.contains("已停用"), "{}", sent[3].text);
+        assert!(sent[4].text.contains("已恢复"), "{}", sent[4].text);
+
+        f.runtime
+            .handle(inbound("m6", "/schedule delete water1"))
+            .await;
+        let sent = f.channel.wait(6).await;
+        assert!(sent[5].text.contains("已删除"), "{}", sent[5].text);
+        assert!(f.schedule.list().is_empty());
+        f.runtime.handle(inbound("m7", "/schedule nope")).await;
+        let sent = f.channel.wait(7).await;
+        assert!(sent[6].text.contains("用法"), "{}", sent[6].text);
         let _ = std::fs::remove_dir_all(&f.dir);
     }
 

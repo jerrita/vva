@@ -105,12 +105,13 @@ pub fn format_memory_updated_reminder(dir: &Path, summary: &str) -> String {
 }
 
 /// 格式化定时任务触发为 <system-reminder> User Message 文本（非用户即时发送的消息）
-pub fn format_scheduled_reminder(id: &str, cron: &str, prompt: &str) -> String {
+pub fn format_scheduled_reminder(id: &str, trigger: &str, prompt: &str) -> String {
     reminder(
-        &format!("type=\"scheduled\" task=\"{id}\" cron=\"{cron}\""),
+        &format!("type=\"scheduled\" task=\"{id}\" trigger=\"{trigger}\""),
         &format!(
             "This is a scheduled trigger, not a message the user just sent. Carry out the \
-             task below and reply with the text to deliver to the user.\n\n{}",
+             task below and reply with the text to deliver to the user. If there is nothing \
+             worth telling the user, reply with exactly [SILENT] and nothing else.\n\n{}",
             prompt.trim()
         ),
     )

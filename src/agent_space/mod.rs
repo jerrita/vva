@@ -8,6 +8,7 @@ pub mod lifecycle;
 pub mod rollover;
 pub mod router;
 pub mod runtime;
+pub mod schedule_tool;
 pub mod scheduler;
 pub mod send_file;
 
@@ -18,12 +19,12 @@ use tokio::sync::mpsc;
 
 use self::channel::Channel;
 use self::channel::qq::{QqChannel, QqOptions};
-use self::curator::Curator;
 use self::lifecycle::{Lifecycle, SWEEP_PERIOD};
 use self::router::{Router, SmallRouteModel};
 use self::runtime::Runtime;
+use self::scheduler::ScheduleStore;
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
-use crate::harness::{SessionManager, SessionPreamble};
+use crate::harness::{SessionManager, SessionPreamble, SessionToolFactory};
 use crate::model::{SessionKind, SessionToggles};
 use crate::storage::SessionStore;
 
@@ -55,11 +56,23 @@ fn memory_preamble(root: PathBuf) -> SessionPreamble {
     })
 }
 
+/// 会话运行期工具：SendFile 与 Schedule 都只挂在带 IM 来源的顶层会话
+fn tool_factory(channel: Arc<dyn Channel>, schedule: Arc<ScheduleStore>) -> SessionToolFactory {
+    let send_file = send_file::session_tool_factory(channel.clone());
+    let schedule = schedule_tool::session_tool_factory(channel.name().to_string(), schedule);
+    Arc::new(move |header| {
+        let mut tools = send_file(header);
+        tools.extend(schedule(header));
+        tools
+    })
+}
+
 /// agent space 运行时：校验 `settings.agent` 后持有会话管理器
 pub struct AgentSpace {
     pub config: AgentSpaceConfig,
     pub manager: Arc<SessionManager>,
     channel: Arc<dyn Channel>,
+    schedule: Arc<ScheduleStore>,
 }
 
 impl AgentSpace {
@@ -111,15 +124,17 @@ impl AgentSpace {
             .map_err(|e| format!("创建 agent 工作区 {} 失败: {e}", workspace.display()))?;
         // channel 先于 manager 构造，SendFile 经工厂按会话 origin 绑定聊天
         let root = workspace.clone();
+        let schedule = ScheduleStore::open(&workspace)?;
         let manager = Arc::new(
             SessionManager::new(store, app_config, workspace, state_path)
-                .with_tool_factory(send_file::session_tool_factory(channel.clone()))
+                .with_tool_factory(tool_factory(channel.clone(), schedule.clone()))
                 .with_preamble(memory_preamble(root)),
         );
         Ok(Self {
             config,
             manager,
             channel,
+            schedule,
         })
     }
 
@@ -137,8 +152,9 @@ impl AgentSpace {
             self.config.clone(),
             channel.clone(),
             router,
+            self.schedule.clone(),
         )?;
-        let curator = Arc::new(Curator::for_manager(&self.manager, runtime.model()));
+        let curator = runtime.curator();
         let notify = {
             let runtime = runtime.clone();
             Arc::new(move |report| {
@@ -156,7 +172,7 @@ impl AgentSpace {
 
         let (inbound_tx, inbound_rx) = mpsc::channel(64);
         let (event_tx, event_rx) = mpsc::channel(16);
-        let scheduler = scheduler::spawn(&dir, event_tx);
+        let scheduler = scheduler::spawn(self.schedule.clone(), event_tx);
         let mut channel_task = tokio::spawn(channel.run(inbound_tx));
         let runtime_task = tokio::spawn(runtime.run(inbound_rx, event_rx));
         println!("agent space 已启动 ({})，ctrl-c 退出", dir.display());

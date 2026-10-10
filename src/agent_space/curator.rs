@@ -107,13 +107,16 @@ pub trait CuratorRunner: Send + Sync {
 }
 
 /// 在 agent 工作区创建 curator 会话并等待其完成
+/// 每次创建 curator 会话时取当前模型（agent 模式模型可在运行期切换）
+pub type ModelSource = Arc<dyn Fn() -> String + Send + Sync>;
+
 pub struct SessionRunner {
     manager: Arc<SessionManager>,
-    model: String,
+    model: ModelSource,
 }
 
 impl SessionRunner {
-    pub fn new(manager: Arc<SessionManager>, model: String) -> Self {
+    pub fn new(manager: Arc<SessionManager>, model: ModelSource) -> Self {
         Self { manager, model }
     }
 }
@@ -125,7 +128,7 @@ impl CuratorRunner for SessionRunner {
             .manager
             .create_session_with(
                 self.manager.workspace().to_path_buf(),
-                self.model.clone(),
+                (self.model)(),
                 None,
                 Some(format!("[curator] {label}")),
                 super::agent_toggles(),
@@ -189,7 +192,7 @@ impl Curator {
 
     /// 生产构造：curator 会话由 `manager` 创建，skills 写入工作区 `.vva/skills`
     /// （项目级技能，仅 agent space 会话可发现，不污染全局 `~/.vva/skills`）
-    pub fn for_manager(manager: &Arc<SessionManager>, model: String) -> Self {
+    pub fn for_manager(manager: &Arc<SessionManager>, model: ModelSource) -> Self {
         let root = manager.workspace().to_path_buf();
         let skills_dir = root.join(".vva").join("skills");
         Self::new(
