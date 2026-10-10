@@ -24,6 +24,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
+    /// 日志级别 (error / warn / info / debug / trace)，仅作用于 vva 自身；设置 RUST_LOG 时以其为准
+    #[arg(long, global = true, default_value = "info")]
+    log_level: String,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -81,7 +85,7 @@ enum Commands {
         workspace: Option<PathBuf>,
     },
 
-    /// 启动 agent space (常驻 IM agent；工作区固定为 ~/.vva/agent/)
+    /// 启动 agent space (常驻 IM agent；工作区固定为 ~/.vva/space/)
     Agent,
 }
 
@@ -294,6 +298,14 @@ fn print_part(part: &ContentPart) {
     }
 }
 
+/// 日志过滤器：`RUST_LOG` 优先；否则 vva 自身按 `--log-level`，第三方依赖仅 warn
+fn log_filter(level: &str) -> Result<EnvFilter, String> {
+    if std::env::var_os("RUST_LOG").is_some() {
+        return EnvFilter::try_from_default_env().map_err(|e| format!("RUST_LOG 无效: {e}"));
+    }
+    EnvFilter::try_new(format!("warn,vva={level}")).map_err(|e| format!("--log-level 无效: {e}"))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -315,6 +327,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let is_tui = matches!(&command, Commands::Run { prompt: None, .. });
 
+    let filter = log_filter(&cli.log_level)?;
     if is_tui {
         // TUI 模式下日志写入文件
         let log_file = std::fs::OpenOptions::new()
@@ -324,13 +337,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(file) = log_file {
             let _ = tracing_subscriber::fmt()
                 .with_writer(Arc::new(file))
-                .with_env_filter(EnvFilter::from_default_env())
+                .with_env_filter(filter)
                 .try_init();
         }
     } else {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .try_init();
+        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
     }
 
     let app_config = match load_config(cli.config.as_deref()) {
