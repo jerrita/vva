@@ -1056,11 +1056,10 @@ impl SessionTask {
                 }
             }
             tracing::debug!(
-                "工具结果: session={} {} id={} 出错={} 内容={}",
+                "工具结果: session={} {} {}{}",
                 self.view.session.header.id,
                 call.name,
-                call.id,
-                result.is_error,
+                if result.is_error { "出错 " } else { "" },
                 clip_log(&result.content)
             );
             self.event(AgentEvent::ToolFinished {
@@ -1360,14 +1359,35 @@ impl SessionTask {
     }
 }
 
-/// debug 日志中单段内容（推理 / 文字 / 工具参数与结果）的字符上限
-const LOG_CONTENT_LIMIT: usize = 2000;
+/// debug 日志中单条内容的字符上限；每条日志只占一行，粒度对齐 web 折叠视图
+const LOG_CONTENT_LIMIT: usize = 100;
 
+/// 压成单行（空白折叠）并按字符数截断
 fn clip_log(text: &str) -> String {
-    match text.char_indices().nth(LOG_CONTENT_LIMIT) {
-        Some((end, _)) => format!("{}…（共 {} 字符）", &text[..end], text.chars().count()),
-        None => text.to_string(),
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    match flat.char_indices().nth(LOG_CONTENT_LIMIT) {
+        Some((end, _)) => format!("{}…", &flat[..end]),
+        None => flat,
     }
+}
+
+/// 工具调用的单行目标摘要：取最能代表意图的入参，缺省退回参数原文
+fn tool_target(arguments: &str) -> String {
+    let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+    [
+        "intent",
+        "description",
+        "path",
+        "pattern",
+        "query",
+        "url",
+        "command",
+        "input",
+        "prompt",
+    ]
+    .iter()
+    .find_map(|key| args.get(key).and_then(serde_json::Value::as_str))
+    .map_or_else(|| clip_log(arguments), clip_log)
 }
 
 /// 一次模型响应的 debug 细节：推理、文字、工具调用（含参数）与 token 用量
@@ -1389,10 +1409,9 @@ fn log_response(
                 tracing::debug!("文字输出: session={session_id} {}", clip_log(text));
             }
             ContentPart::ToolCall(call) => tracing::debug!(
-                "工具调用: session={session_id} {} id={} 参数={}",
+                "工具调用: session={session_id} {} {}",
                 call.name,
-                call.id,
-                clip_log(&call.arguments)
+                tool_target(&call.arguments)
             ),
             _ => {}
         }
