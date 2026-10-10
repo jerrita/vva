@@ -1,5 +1,6 @@
 use crate::model::{
-    ResponseWebSearchAction, SearchStatus, WebSearchAction, WebSearchCall, WebSearchSource,
+    ResponseWebSearchAction, ResponseWebSearchSource, SearchStatus, WebSearchAction, WebSearchCall,
+    WebSearchSource,
 };
 use crate::provider::ProviderError;
 /// 流式条目和最终响应共用同一领域投影。
@@ -26,7 +27,13 @@ pub(super) fn project_web_search_call(
             queries.join(", "),
             sources
                 .iter()
-                .map(|src| WebSearchSource::new(&src.url, &src.url, None))
+                .filter_map(|src| match src {
+                    ResponseWebSearchSource::Url { url } => {
+                        Some(WebSearchSource::new(url, url, None))
+                    }
+                    // API 来源没有可引用的 URL
+                    ResponseWebSearchSource::Api { .. } => None,
+                })
                 .collect(),
         ),
         Some(ResponseWebSearchAction::OpenPage { url }) => (

@@ -16,8 +16,7 @@ pub use meta::{
     AnthropicSearchResultContent, AnthropicToolResultError, AnthropicTurnMeta,
     GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta, ResponseMessageContent,
     ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent, ResponseReasoningSummary,
-    ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
-    ResponseWebSearchSourceType, TurnMeta,
+    ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource, TurnMeta,
 };
 pub use session::{
     EditorKind, JsonlRecord, Origin, Session, SessionHeader, SessionKind, SessionSummary,

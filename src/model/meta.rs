@@ -161,17 +161,12 @@ pub enum ResponseWebSearchAction {
     },
 }
 
+/// 搜索来源：网页 `url`，或结构化数据 API（如天气）`api`，后者没有 URL
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ResponseWebSearchSource {
-    #[serde(rename = "type")]
-    pub source_type: ResponseWebSearchSourceType,
-    pub url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum ResponseWebSearchSourceType {
-    Url,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseWebSearchSource {
+    Url { url: String },
+    Api { name: String },
 }
 
 // ================== Anthropic 专有元数据 ==================

@@ -1481,3 +1481,20 @@ fn test_response_schema_maps_to_text_format_json_schema() {
     assert_eq!(format["schema"], schema);
     assert_eq!(format["strict"], true);
 }
+
+/// 官方 sources 联合类型：`api` 来源（如天气数据）只有 name，没有 URL
+#[test]
+fn test_web_search_api_source_roundtrips_without_citation() {
+    let action: ResponseWebSearchAction = serde_json::from_value(serde_json::json!({
+        "type": "search", "queries": ["weather"],
+        "sources": [{"type": "api", "name": "oai-weather"}, {"type": "url", "url": "https://a.example"}]
+    }))
+    .unwrap();
+    let encoded = serde_json::to_value(&action).unwrap();
+    assert_eq!(
+        encoded["sources"][0],
+        serde_json::json!({"type": "api", "name": "oai-weather"})
+    );
+    let call = super::search::project_web_search_call("ws", "completed", Some(&action)).unwrap();
+    assert_eq!(call.sources.len(), 1);
+}
