@@ -38,11 +38,9 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["c
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = "3.4"
 
-# 日常 release：剥离符号表 + 体积优先优化，不开 LTO，保持增量编译速度
 [profile.release]
 strip = true
 
-# 分发构建 (cargo build --profile dist)：全量 LTO + 单 codegen unit 换取最小体积，链接耗时显著增加
 [profile.dist]
 inherits = "release"
 lto = "fat"
