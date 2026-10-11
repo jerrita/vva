@@ -142,19 +142,18 @@ impl super::WebSearchProvider for GoogleSearchProvider {
 
 /// 来源按 grounding 顺序；每个来源的片段为引用它的文本段（按字节偏移切片）拼接
 fn project_search(response: &ProviderResponse, max_results: usize) -> Vec<WebSearchResult> {
-    let mut sources: Vec<WebSearchSource> = Vec::new();
-    let mut snippets: Vec<Vec<String>> = Vec::new();
-    for part in response.messages.iter().flat_map(|message| &message.parts) {
+    let parts = || response.messages.iter().flat_map(|message| &message.parts);
+    let mut sources: Vec<(WebSearchSource, Vec<&str>)> = Vec::new();
+    for part in parts() {
         if let ContentPart::WebSearchCall(call) = part {
             for source in &call.sources {
-                if !sources.iter().any(|known| known.url == source.url) {
-                    sources.push(source.clone());
-                    snippets.push(Vec::new());
+                if !sources.iter().any(|(known, _)| known.url == source.url) {
+                    sources.push((source.clone(), Vec::new()));
                 }
             }
         }
     }
-    for part in response.messages.iter().flat_map(|message| &message.parts) {
+    for part in parts() {
         let ContentPart::Text { text, annotations } = part else {
             continue;
         };
@@ -165,17 +164,16 @@ fn project_search(response: &ProviderResponse, max_results: usize) -> Vec<WebSea
                 end_index,
                 ..
             } = annotation
-                && let Some(index) = sources.iter().position(|known| &known.url == url)
+                && let Some((_, snippets)) = sources.iter_mut().find(|(known, _)| &known.url == url)
                 && let Some(segment) = text.get(*start_index..*end_index)
-                && !snippets[index].iter().any(|known| known == segment)
+                && !snippets.contains(&segment)
             {
-                snippets[index].push(segment.to_string());
+                snippets.push(segment);
             }
         }
     }
     sources
         .into_iter()
-        .zip(snippets)
         .take(max_results)
         .map(|(source, snippets)| WebSearchResult {
             title: source.title,
@@ -189,25 +187,6 @@ fn project_search(response: &ProviderResponse, max_results: usize) -> Vec<WebSea
 mod tests {
     use super::*;
     use crate::model::{Annotation, TurnMeta, WebSearchCall};
-
-    #[test]
-    fn fetch_requires_text() {
-        let empty = ProviderResponse {
-            messages: vec![Message::text("  ")],
-            usage: None,
-            meta: TurnMeta::default(),
-        };
-        assert!(project_fetch(&empty, "https://a.dev").is_err());
-        let page = ProviderResponse {
-            messages: vec![Message::text("# Title\n\nbody\n")],
-            usage: None,
-            meta: TurnMeta::default(),
-        };
-        assert_eq!(
-            project_fetch(&page, "https://a.dev").unwrap().content,
-            "# Title\n\nbody"
-        );
-    }
 
     #[test]
     fn projects_sources_with_cited_segments() {

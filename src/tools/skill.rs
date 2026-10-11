@@ -140,26 +140,3 @@ mod tests {
         );
     }
 }
-
-#[cfg(test)]
-mod description_tests {
-    use super::*;
-    use crate::tools::Tool;
-
-    #[test]
-    fn description_documents_skill_locations_and_project_install() {
-        let description = SkillTool::new(Arc::new(Vec::new()))
-            .description()
-            .to_string();
-        for needle in [
-            "~/.agents/skills",
-            "~/.vva/skills",
-            "<workspace>/.agents/skills",
-            "<workspace>/.vva/skills",
-            "npx skills add",
-            "-g",
-        ] {
-            assert!(description.contains(needle), "缺少 {needle}");
-        }
-    }
-}

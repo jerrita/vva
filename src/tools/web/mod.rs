@@ -229,25 +229,27 @@ mod tests {
 
     #[test]
     fn resolve_google_requires_gemini_model() {
-        let web = r#""settings":{"default":"g/m","web":{"search":"google","provider":{"google":{"model":"MODEL"}}}}"#;
-        let providers = r#""providers":{
-            "g":{"type":"gemini","api_key":"k","models":{"m":{"name":"m"}}},
-            "r":{"type":"response","api_key":"k","models":{"m":{"name":"m"}}}
-        }"#;
-        let build =
-            |model: &str| config_from(&format!("{{{providers},{}}}", web.replace("MODEL", model)));
-        let external = ExternalWeb::resolve(&build("g/m")).unwrap();
+        let build = |kind: &str, model: &str| {
+            config_from(&format!(
+                r#"{{
+                    "providers": {{
+                        "g": {{"type":"gemini","api_key":"k","models":{{"m":{{"name":"m"}}}}}},
+                        "r": {{"type":"response","api_key":"k","models":{{"m":{{"name":"m"}}}}}}
+                    }},
+                    "settings": {{"default":"g/m","web":{{"{kind}":"google","provider":{{"google":{{"model":"{model}"}}}}}}}}
+                }}"#
+            ))
+        };
+        let external = ExternalWeb::resolve(&build("search", "g/m")).unwrap();
         assert_eq!(external.search.unwrap().name(), "google");
-        assert!(ExternalWeb::resolve(&build("r/m")).is_err());
-        let fetch = ExternalWeb::resolve(&config_from(&format!(
-            "{{{providers},{}}}",
-            web.replace("MODEL", "g/m")
-                .replace("\"search\"", "\"fetch\"")
-        )))
-        .unwrap();
-        assert_eq!(fetch.fetch.unwrap().name(), "google");
-        assert!(ExternalWeb::resolve(&build("")).is_err());
-        assert!(ExternalWeb::resolve(&build("g/missing")).is_err());
+        let external = ExternalWeb::resolve(&build("fetch", "g/m")).unwrap();
+        assert_eq!(external.fetch.unwrap().name(), "google");
+        for model in ["r/m", "", "g/missing"] {
+            assert!(
+                ExternalWeb::resolve(&build("search", model)).is_err(),
+                "{model}"
+            );
+        }
     }
 
     #[test]

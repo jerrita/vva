@@ -7,6 +7,9 @@ use crate::provider::Provider;
 use crate::provider::common::{RoleBlockMerger, WebCallSurface, web_call_surface};
 use crate::provider::{CompletionOptions, ProviderError};
 
+/// web_search / web_fetch 服务端工具的默认版本后缀（模型级 `annotation.web_tool_version` 可覆写）
+const LATEST_WEB_TOOL_VERSION: &str = "20260318";
+
 impl AnthropicProvider {
     pub(super) fn build_request_body(
         &self,
@@ -17,7 +20,10 @@ impl AnthropicProvider {
         let mut api_tools: Vec<serde_json::Value> = Vec::new();
         // 核心原生优势：服务端代执行的 web_search / web_fetch（引用与结果块由服务端直接产出）
         // _20260209 起默认经代码执行容器调用，显式声明直连。
-        let version = options.web_tool_version.as_deref().unwrap_or("20260318");
+        let version = options
+            .web_tool_version
+            .as_deref()
+            .unwrap_or(LATEST_WEB_TOOL_VERSION);
         let direct_callers = serde_json::json!(["direct"]);
         if options.enable_web_search {
             api_tools.push(serde_json::json!({

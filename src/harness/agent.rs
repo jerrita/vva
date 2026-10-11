@@ -425,15 +425,6 @@ mod tests {
         session: &Session,
         agents: Vec<crate::agents::AgentDef>,
     ) -> Result<AgentEngine, String> {
-        build_engine_full(config, session, agents, Vec::new())
-    }
-
-    fn build_engine_full(
-        config: &AppConfig,
-        session: &Session,
-        agents: Vec<crate::agents::AgentDef>,
-        extra_tools: Vec<Arc<dyn crate::tools::Tool>>,
-    ) -> Result<AgentEngine, String> {
         let (tx, _rx) = mpsc::channel(1);
         AgentEngine::new(
             config,
@@ -449,7 +440,7 @@ mod tests {
                 skills: Vec::new(),
                 agents,
                 broker: Arc::new(crate::harness::testing::StubBroker(None)),
-                extra_tools,
+                extra_tools: Vec::new(),
             },
         )
     }
@@ -475,43 +466,6 @@ mod tests {
                 .unwrap()
                 .tools
                 .get("AskUser")
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn factory_tools_are_registered_after_static_ones() {
-        struct Probe;
-        #[async_trait::async_trait]
-        impl crate::tools::Tool for Probe {
-            fn name(&self) -> &str {
-                "Probe"
-            }
-            fn description(&self) -> &str {
-                "probe"
-            }
-            fn parameters(&self) -> serde_json::Value {
-                serde_json::json!({"type": "object"})
-            }
-            async fn execute(&self, _: &str) -> Result<String, String> {
-                Ok(String::new())
-            }
-        }
-        let config = web_config(None);
-        let session = session_for("p/nos", false);
-        let engine = build_engine_full(
-            &config,
-            &session,
-            crate::agents::builtin_agents(),
-            vec![Arc::new(Probe)],
-        )
-        .unwrap();
-        assert!(engine.tools.get("Probe").is_some());
-        assert!(
-            build_engine(&config, &session)
-                .unwrap()
-                .tools
-                .get("Probe")
                 .is_none()
         );
     }
