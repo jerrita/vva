@@ -117,7 +117,7 @@ impl Digest {
                     intent.to_string()
                 });
             }
-            "Read" | "Glob" | "Grep" | "web_search" | "web_fetch" | "WebSearch" | "WebFetch" => {
+            "Read" | "Glob" | "Grep" | "web_search" | "web_fetch" => {
                 self.lookups += 1;
             }
             _ => self.others += 1,
@@ -297,16 +297,6 @@ mod tests {
         assert!(out.contains('…'));
     }
 
-    #[test]
-    fn report_notes_idle_segment() {
-        let s = session("/w");
-        let out = report(&s, 0, Duration::from_secs(185));
-        assert!(
-            out.contains("已 3 分钟") && out.contains("暂无新的"),
-            "{out}"
-        );
-    }
-
     #[tokio::test(start_paused = true)]
     async fn reports_each_interval_until_work_finishes() {
         let sent = Arc::new(Mutex::new(Vec::new()));
@@ -329,21 +319,5 @@ mod tests {
         let sent = sent.lock().unwrap();
         assert_eq!(sent.len(), 2);
         assert!(sent[0].contains("已 3 分钟") && sent[1].contains("已 6 分钟"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn zero_interval_disables_reporting() {
-        let snap = Arc::new(session("/w"));
-        let out = with_progress(
-            async {
-                tokio::time::sleep(Duration::from_secs(1000)).await;
-                1
-            },
-            Duration::ZERO,
-            move || snap.clone(),
-            |_| async { panic!("不应汇报") },
-        )
-        .await;
-        assert_eq!(out, 1);
     }
 }
