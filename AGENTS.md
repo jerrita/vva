@@ -31,6 +31,7 @@
      - **禁止协议退化**：Responses API 适配器不检查 Chat Completions 的 `choices` 字段，不进行数据伪造与猜测；
      - **禁止非标字段别名猜测**：不编写 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等猜测链。厂商官方规范未定义的字段，不在代码中臆造；
    - **UI / Harness 调度层零兜底**：UI 由标准事件流（`AgentEvent`）驱动渲染，不编写从会话历史覆盖聊天记录的同步补丁。界面未展示时排查适配器转换逻辑；
+   - **Agent Space 路由默认规则**：判断不明确时续接当前 focus；Decisions 低置信度由 Router 执行该规则，focus 运行中则按插话投递，无 focus 时显式提示。调用失败与非法报文仍显式报错；
    - **单测 Mock 真实性约束**：单元测试 Mock 报文对照官方标准文档构造，不在生产代码中为错误测试数据添加容错分支。
    - **例外：SKILL.md frontmatter 非规范内容**：生态技能包常携带规范外字段（如 `version`）或非字符串 `metadata` 值，解析时告警后忽略，不跳过技能加载；其余规范字段的校验仍严格执行。
 

@@ -256,7 +256,7 @@ pub struct DecisionsRouterConfig {
     pub provider: String,
     /// Decisions 模型，如 `typesafe/jev-1.13`
     pub model: String,
-    /// 最低置信度（0–1）：关键题低于此值显式报错，交用户 `/switch` 或 `/new`
+    /// 最低置信度（0–1）：关键题低于此值续接 focus；无 focus 时显式提示用户
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f64,
     /// 端点覆写；缺省 OpenRouter alpha 端点

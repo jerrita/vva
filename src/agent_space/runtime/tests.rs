@@ -310,7 +310,13 @@ async fn switch_resolves_prefix_and_rejects_ambiguity() {
         .handle(inbound("m3", &format!("/switch {other}")))
         .await;
     let sent = f.channel.wait(3).await;
-    assert!(sent[2].text.contains(&other), "{}", sent[2].text);
+    assert!(
+        sent[2]
+            .text
+            .contains(&crate::agent_space::markdown::text(&other)),
+        "{}",
+        sent[2].text
+    );
     assert_eq!(f.focus().await, Some(other));
 
     f.runtime.handle(inbound("m4", "/switch sess_")).await;
@@ -319,7 +325,11 @@ async fn switch_resolves_prefix_and_rejects_ambiguity() {
 
     f.runtime.handle(inbound("m5", "/sessions")).await;
     let sent = f.channel.wait(5).await;
-    assert!(ids.iter().all(|id| sent[4].text.contains(id.as_str())));
+    assert!(ids.iter().all(|id| {
+        sent[4]
+            .text
+            .contains(&crate::agent_space::markdown::text(id))
+    }));
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 
@@ -359,7 +369,7 @@ async fn model_switch_targets_focus_session_or_mode() {
     // 无 focus：改 agent 模式并落盘
     f.runtime.handle(inbound("m1", "/model p/m high")).await;
     let sent = f.channel.wait(1).await;
-    assert!(sent[0].text.contains("agent 模式"), "{}", sent[0].text);
+    assert!(sent[0].text.contains("Agent 模式"), "{}", sent[0].text);
     assert!(std::fs::read_to_string(&file).unwrap().contains("high"));
     // 未声明 limit.context / 不存在的模型显式拒绝
     f.runtime.handle(inbound("m2", "/model nope/x")).await;
@@ -373,18 +383,20 @@ async fn model_switch_targets_focus_session_or_mode() {
     f.runtime.handle(inbound("m3b", "/model list")).await;
     let sent = f.channel.wait(4).await;
     assert!(
-        sent[3].text.contains("p/m [会话] [模式]"),
+        sent[3].text.lines().any(|line| line.contains("p/m")
+            && line.contains("默认会话")
+            && line.contains("Agent 模式")),
         "{}",
         sent[3].text
     );
     f.runtime.handle(inbound("m4", "/model p/m")).await;
     let sent = f.channel.wait(5).await;
-    assert!(!sent[4].text.contains("agent 模式"), "{}", sent[4].text);
+    assert!(!sent[4].text.contains("Agent 模式"), "{}", sent[4].text);
     assert!(!file.exists());
     // --global：两者都改
     f.runtime.handle(inbound("m5", "/model --global p/m")).await;
     let sent = f.channel.wait(6).await;
-    assert!(sent[5].text.contains("agent 模式"), "{}", sent[5].text);
+    assert!(sent[5].text.contains("Agent 模式"), "{}", sent[5].text);
     assert!(file.exists());
     // 仅 --variant：沿用当前模型只改档位
     f.runtime

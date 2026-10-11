@@ -10,6 +10,7 @@ use crate::agent_space::binding::{AttachedFile, FileKind};
 use crate::agent_space::channel::Inbound;
 use crate::agent_space::channel::files::{sanitize_filename, unique_dest};
 use crate::agent_space::command;
+use crate::agent_space::markdown;
 use crate::agent_space::router::{Candidate, ReplyRef, Route, RouteInput, Routed};
 use crate::harness::ManagedSession;
 use crate::model::SessionKind;
@@ -33,7 +34,14 @@ impl Runtime {
 
     async fn dispatch(self: &Arc<Self>, msg: &Inbound) -> Result<(), String> {
         if let Some(cmd) = command::parse(&msg.text) {
-            return self.command(msg, cmd).await;
+            return self.command(msg, cmd).await.map_err(|error| {
+                let detail = error
+                    .lines()
+                    .map(markdown::text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                format!("⚠️ **命令未完成**\n\n{detail}")
+            });
         }
         let own = self.save_files(msg).await?;
         if msg.text.trim().is_empty() {

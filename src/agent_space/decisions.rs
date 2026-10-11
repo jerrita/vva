@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::router::{
-    Action, ModelReply, Prompt, RouteDecision, RouteInput, RouteModel, RunningIntent,
+    Action, DecisionError, ModelReply, Prompt, RouteDecision, RouteInput, RouteModel, RunningIntent,
 };
 use crate::config::DecisionsRouterConfig;
 use crate::model::TokenUsage;
@@ -68,7 +68,7 @@ fn build_request(model: &str, input: &RouteInput) -> Value {
         "questions": {
             "action": {
                 "type": "choice",
-                "instructions": "判断 user_text 应如何路由。不要回答用户的问题。有疑问时选 existing。",
+                "instructions": "判断 user_text 应如何路由。不要回答用户的问题。有疑问时选 existing，续接 focus=true 的会话。",
                 "criteria": {
                     "oneshot": "寒暄、确认在线、简单感谢，或不依赖任何历史、答完即无长期价值的独立小问题",
                     "existing": "承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题",
@@ -77,7 +77,7 @@ fn build_request(model: &str, input: &RouteInput) -> Value {
             },
             "session": {
                 "type": "choice",
-                "instructions": "若承接已有会话，user_text 属于哪个会话（值为会话标题）。通常选 focus=true 的会话；title 明显指向其他会话时选那个。",
+                "instructions": "若承接已有会话，user_text 属于哪个会话（值为会话标题）。难以判断时选 focus=true 的会话；title 明显指向其他会话时选那个。",
                 "criteria": sessions
             },
             "guide": {
@@ -127,19 +127,33 @@ fn answer<T: DeserializeOwned>(name: &str, v: Value) -> Result<T, String> {
     serde_json::from_value(v).map_err(|e| format!("Decisions 题目 {name} 答案非法: {e}"))
 }
 
-/// 解析 choice 题并要求置信度不低于 `min`，返回 (选项, 置信度)
-fn confident_choice(name: &str, v: Value, min: f64) -> Result<(String, f64), String> {
+/// 严格解析 choice 题，返回 (选项, 置信度)。
+fn choice_answer(name: &str, v: Value) -> Result<(String, f64), DecisionError> {
     let a: ChoiceAnswer = answer(name, v)?;
     let c = a
         .confidence
         .ok_or_else(|| format!("Decisions 题目 {name} 缺少 confidence"))?;
-    if c < min {
-        return Err(format!(
-            "Decisions 置信度不足: {name}={} ({c:.2} < {min:.2})",
-            a.choice
-        ));
+    if !c.is_finite() || !(0.0..=1.0).contains(&c) {
+        return Err(format!("Decisions 题目 {name} confidence 须在 0–1").into());
     }
     Ok((a.choice, c))
+}
+
+fn require_confidence(
+    question: &'static str,
+    choice: &str,
+    confidence: f64,
+    minimum: f64,
+) -> Result<(), DecisionError> {
+    if confidence < minimum {
+        return Err(DecisionError::LowConfidence {
+            question,
+            choice: choice.into(),
+            confidence,
+            minimum,
+        });
+    }
+    Ok(())
 }
 
 /// 响应结构非法视为调用失败；答案不合格时 usage 仍随回复带回，供 router.jsonl 记账
@@ -161,16 +175,18 @@ fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, St
     })
 }
 
-fn decide(answers: Answers, min_confidence: f64) -> Result<RouteDecision, String> {
-    let (choice, confidence) = confident_choice("action", answers.action, min_confidence)?;
+fn decide(answers: Answers, min_confidence: f64) -> Result<RouteDecision, DecisionError> {
+    let (choice, confidence) = choice_answer("action", answers.action)?;
     let action = match choice.as_str() {
         "oneshot" => Action::Oneshot,
         "existing" => Action::Existing,
         "new" => Action::New,
-        other => return Err(format!("Decisions 返回未知 action: {other}")),
+        other => return Err(format!("Decisions 返回未知 action: {other}").into()),
     };
+    require_confidence("action", &choice, confidence, min_confidence)?;
     let (session_id, running_intent) = if action == Action::Existing {
-        let (session, _) = confident_choice("session", answers.session, min_confidence)?;
+        let (session, confidence) = choice_answer("session", answers.session)?;
+        require_confidence("session", &session, confidence, min_confidence)?;
         let guide: NoulAnswer = answer("guide", answers.guide)?;
         let intent = if guide.noul >= GUIDE_THRESHOLD {
             RunningIntent::GuideExisting
@@ -232,7 +248,7 @@ mod tests {
         })
     }
 
-    fn decision(v: Value) -> Result<RouteDecision, String> {
+    fn decision(v: Value) -> Result<RouteDecision, DecisionError> {
         parse_response(v, 0.6).unwrap().decision
     }
 
@@ -270,18 +286,29 @@ mod tests {
     }
 
     #[test]
-    fn low_or_missing_confidence_is_explicit_error() {
+    fn low_confidence_is_uncertain_and_missing_confidence_is_invalid() {
         // 答案不合格时 usage 仍带回
         let r = parse_response(response("existing", 0.4, "sess_a", 0.0), 0.6).unwrap();
         assert!(r.usage.is_some());
         let e = r.decision.unwrap_err();
-        assert!(e.contains("置信度不足"), "{e}");
+        assert!(
+            matches!(
+                e,
+                DecisionError::LowConfidence {
+                    question: "action",
+                    ..
+                }
+            ),
+            "{e}"
+        );
         let mut v = response("existing", 1.0, "sess_a", 0.0);
         v["answers"]["action"]
             .as_object_mut()
             .unwrap()
             .remove("confidence");
-        assert!(decision(v).unwrap_err().contains("缺少 confidence"));
+        assert!(
+            matches!(decision(v).unwrap_err(), DecisionError::Invalid(e) if e.contains("缺少 confidence"))
+        );
     }
 
     #[test]
@@ -289,8 +316,33 @@ mod tests {
         assert!(
             decision(response("casual", 1.0, "sess_a", 0.0))
                 .unwrap_err()
+                .to_string()
                 .contains("未知 action")
         );
         assert!(parse_response(json!({"answers": {}}), 0.6).is_err());
+    }
+
+    #[test]
+    fn low_session_confidence_is_uncertain_and_invalid_scores_are_rejected() {
+        let mut v = response("existing", 0.9, "sess_b", 0.0);
+        v["answers"]["session"]["confidence"] = json!(0.2);
+        assert!(matches!(
+            decision(v).unwrap_err(),
+            DecisionError::LowConfidence {
+                question: "session",
+                ..
+            }
+        ));
+
+        for confidence in [-0.1, 1.1] {
+            assert!(matches!(
+                decision(response("existing", confidence, "sess_a", 0.0)).unwrap_err(),
+                DecisionError::Invalid(_)
+            ));
+        }
+        assert!(matches!(
+            decision(response("unknown", 0.2, "sess_a", 0.0)).unwrap_err(),
+            DecisionError::Invalid(_)
+        ));
     }
 }

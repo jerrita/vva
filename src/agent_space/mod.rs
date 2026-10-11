@@ -6,6 +6,7 @@ pub mod command;
 pub mod curator;
 pub mod decisions;
 pub mod lifecycle;
+mod markdown;
 pub mod progress;
 pub mod rollover;
 pub mod router;

@@ -48,8 +48,8 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | 层级 | 触发 | 成本 |
 |---|---|---|
 | L0 | reply 命中 `message_index`；`/switch`；零 session 时直接创建 | 0 token |
-| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions API（`decisions.rs`：`action` / `session` choice 题 + `guide` noul 题，回填为同一 `RouteDecision`；置信度低于 `min_confidence` 显式报错） |
-| L2 | 小模型失败 / 非法输出 | 显式报错，附 `/switch` `/new` 指引，不降级到 focus |
+| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions API（`decisions.rs`：`action` / `session` choice 题 + `guide` noul 题，回填为同一 `RouteDecision`；关键题置信度低于 `min_confidence` 时续接当前 focus） |
+| L2 | 小模型失败 / 非法输出 | 显式报错，附引用回复或 `/new <消息>` 指引 |
 
 ### 4.2 L1 输入输出
 
@@ -57,7 +57,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 输出强类型 `RouteDecision`：`action: oneshot | existing | new`、`session_id`、`running_intent: none | guide_existing`、`reason`。使用供应商原生结构化输出，非法值全部显式报错。
 
-规则优先级：oneshot（无需历史、无长期价值）→ `guide_existing`（对运行中 session 补充/修正）→ existing（承接、追问、无法判断）→ new（明确无关的独立任务）。有疑问选 existing。带媒体的消息不得走 oneshot；指向 running session 却非 `guide_existing` 时拒绝。
+规则优先级：oneshot（无需历史、无长期价值）→ `guide_existing`（对运行中 session 补充/修正）→ existing（承接、追问、无法判断）→ new（明确无关的独立任务）。难以判断消息类型或会话归属时续接当前 focus；Decisions 的 `action` 或 `session` 置信度不足时，由 Router 执行这一默认规则，focus 正在运行则以 `guide_existing` 投递。无 focus 时显式提示 `/switch` 设置后重发，或 `/new <消息>` 新建。决策原因与 usage 照常记录在 `router.jsonl`。调用失败、缺失字段、非法取值保持显式报错。带媒体的消息不得走 oneshot；明确选择 running session 却非 `guide_existing` 时拒绝。
 
 ### 4.3 reply 目标已被清理
 
@@ -119,6 +119,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 ## 9. Channel
 
 - `Channel` trait：`run(inbound_tx)` + `send(OutboundMessage)`；出站渲染器订阅 `SessionView`，负责分段（超限时在末段明确标注截断，不静默截断）、markdown 失败降级纯文本；
+- **命令排版**：斜杠命令统一使用 Markdown；帮助、会话、模型、技能与状态以带标题的表格展示，定时任务逐项使用两列表格；操作反馈与错误使用少量 emoji，附必要的后续操作提示。动态文本压平空白并转义 Markdown 标记，描述预览截断时明确显示省略号。
 - 首发 QQ（gateway identify / resume / heartbeat 按官方规范，参考 `../agent` 的 `ref/qq` 已验证实现），其后 Telegram；
 - 白名单外用户静默丢弃并记日志；
 - 文件：无文字 → 进入待附件缓冲，不触发模型，回复"已收到"；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本；多附件保持顺序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；

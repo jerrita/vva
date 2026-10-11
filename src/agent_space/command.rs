@@ -1,5 +1,7 @@
 //! IM 斜杠命令解析与帮助文本。
 
+use super::markdown;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// 带文字强制新建会话
@@ -50,25 +52,39 @@ const HELP: &[(&str, &str)] = &[
     ("/stop", "中止默认会话当前轮次"),
     ("/status", "默认会话状态（/stat）"),
     ("/rename <标题>", "重命名默认会话"),
+    ("/model", "查看当前模型与推理档位"),
+    ("/model list", "列出可用模型与档位"),
     (
-        "/model [list|[--global] [<规格>] [--variant <档位>]]",
-        "查看 / 列出 / 切换模型或推理档位（--variant none 清除档位）：改 focus 会话，无 focus 改 agent 模式，--global 两者都改",
+        "/model <规格> [档位]",
+        "切换默认会话模型；无默认会话时修改新会话模型",
+    ),
+    ("/model --variant <档位>", "切换推理档位；none 清除档位"),
+    (
+        "/model --global <规格> [档位]",
+        "同时修改默认会话与新会话模型",
     ),
     ("/skills", "列出本地技能"),
-    (
-        "/schedule [list|pause|resume|delete|run <id>]",
-        "管理定时任务（创建请直接告诉 agent）",
-    ),
+    ("/schedule [list]", "查看定时任务；创建任务请直接告诉 agent"),
+    ("/schedule pause <id>", "暂停定时任务"),
+    ("/schedule resume <id>", "恢复定时任务"),
+    ("/schedule delete <id>", "删除定时任务"),
+    ("/schedule run <id>", "立即执行一次定时任务"),
     ("/delete [前缀]", "整理记忆后删除会话"),
     ("/clear [前缀]", "直接删除会话，跳过记忆整理"),
     ("/help", "显示本帮助"),
 ];
 
 pub fn help() -> String {
-    HELP.iter()
-        .map(|(usage, desc)| format!("{usage}  {desc}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = markdown::table(
+        "📖 命令帮助",
+        ["命令", "说明"],
+        HELP.iter()
+            .map(|(usage, desc)| [usage.to_string(), desc.to_string()]),
+    );
+    out.push_str(
+        "\n\n💡 会话与任务 ID 均可使用唯一前缀。`/delete`、`/clear` 省略前缀时操作默认会话。",
+    );
+    out
 }
 
 /// 非斜杠开头返回 `None`，按普通消息处理；`/xxx` 一律是命令（命令名大小写不敏感，容忍 `/cmd@bot`）

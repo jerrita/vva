@@ -7,16 +7,20 @@ use super::mode_model::check_mode_model;
 use crate::agent_space::channel::Inbound;
 use crate::agent_space::command::{self, Command};
 use crate::agent_space::curator::{CuratorReport, CuratorStatus};
+use crate::agent_space::markdown;
 use crate::agent_space::rollover::{cache_hit_rate, context_tokens};
 use crate::agent_space::router::resolve_prefix;
-use crate::agent_space::scheduler::describe_task;
+use crate::agent_space::scheduler::{
+    ScheduleStore, Task, TaskState, Trigger, format_time, now_minute,
+};
 use crate::harness::ManagedSession;
 use crate::model::ToggleOverrides;
 use crate::ui::history::compute_stats;
 
-const MODEL_USAGE: &str = "用法: /model [list|[--global] [<规格>] [--variant <档位>]]";
+const MODEL_USAGE: &str =
+    "用法：/model [<规格>] [--variant <档位>] [--global]；/model list 查看可用模型";
 const SCHEDULE_USAGE: &str =
-    "用法: /schedule [list] | pause|resume|delete|run <id>（创建请直接告诉 agent）";
+    "用法：/schedule [list] 或 /schedule <pause|resume|delete|run> <id>；创建请直接告诉 agent";
 
 impl Runtime {
     pub(super) async fn command(
@@ -36,7 +40,7 @@ impl Runtime {
             Command::Sessions => self.list_sessions(binding).await?,
             Command::Stop => {
                 self.focus_handle(binding).await?.abort_current().await?;
-                "已请求中止当前轮次".to_string()
+                "⏹️ 已请求中止当前轮次。".to_string()
             }
             Command::Status => self.status(binding).await?,
             Command::Rename(title) => self.rename(binding, &title).await?,
@@ -47,11 +51,15 @@ impl Runtime {
             Command::Clear(prefix) => {
                 let handle = self.target_handle(binding, &prefix).await?;
                 self.remove(&handle).await?;
-                format!("已删除会话 {}", handle.id)
+                format!("✅ 已删除会话 **{}**。", markdown::text(&handle.id))
             }
             Command::Help => command::help(),
             Command::Unknown(name) => {
-                return Err(format!("未知命令 /{name}\n{}", command::help()));
+                format!(
+                    "⚠️ 未知命令 /{}\n\n{}",
+                    markdown::text(&name),
+                    command::help()
+                )
             }
         };
         self.say(binding, Some(&msg.message_id), reply).await;
@@ -100,30 +108,31 @@ impl Runtime {
             .await
             .bindings
             .set_focus(binding, Some(id.clone()))?;
-        Ok(format!("已切换到 {id}"))
+        Ok(format!("✅ 已切换到会话 **{}**。", markdown::text(&id)))
     }
 
     async fn list_sessions(&self, binding: &str) -> Result<String, String> {
         let mut candidates = self.candidates(binding).await?;
         if candidates.is_empty() {
-            return Ok("暂无会话".into());
+            return Ok(
+                "### 💬 会话列表\n\n暂无会话。直接发送消息，或使用 `/new <消息>` 新建。".into(),
+            );
         }
         candidates.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(candidates
-            .iter()
-            .map(|c| {
-                // 行首空白会被 IM 渠道裁掉，用可见标记保持对齐
-                let running = if c.running { " [运行中]" } else { "" };
-                format!(
-                    "{} {}{} {}",
-                    if c.focus { "●" } else { "○" },
-                    c.id,
-                    running,
-                    c.title
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n"))
+        let mut out = markdown::table(
+            "💬 会话列表",
+            ["会话 ID", "标题", "状态", "默认"],
+            candidates.iter().map(|c| {
+                [
+                    c.id.clone(),
+                    c.title.clone(),
+                    if c.running { "运行中" } else { "空闲" }.into(),
+                    if c.focus { "📌 当前" } else { "—" }.into(),
+                ]
+            }),
+        );
+        out.push_str("\n\n💡 使用 `/switch <前缀>` 切换默认会话。");
+        Ok(out)
     }
 
     /// 删除会话并清理游标与 focus（不经 curator）
@@ -143,13 +152,20 @@ impl Runtime {
         if handle.is_running() {
             return Err("会话正在运行，请先 /stop，或用 /clear 直接删除".into());
         }
-        let reply = format!("正在整理记忆，完成后删除会话 {}", handle.id);
+        let reply = format!(
+            "⏳ 正在整理记忆，完成后删除会话 **{}**。",
+            markdown::text(&handle.id)
+        );
         let (this, binding) = (self.clone(), binding.to_string());
         tokio::spawn(async move {
             let id = &handle.id;
             let reply = match this.curate_then_remove(&handle).await {
-                Ok(()) => format!("已整理并删除会话 {id}"),
-                Err(error) => format!("删除失败，会话 {id} 已保留: {error}"),
+                Ok(()) => format!("✅ 已整理并删除会话 **{}**。", markdown::text(id)),
+                Err(error) => format!(
+                    "⚠️ 删除失败，会话 **{}** 已保留。\n\n{}",
+                    markdown::text(id),
+                    markdown::text(&error)
+                ),
             };
             this.say(&binding, None, reply).await;
         });
@@ -183,7 +199,11 @@ impl Runtime {
         }
         let handle = self.focus_handle(binding).await?;
         handle.rename(title).await?;
-        Ok(format!("已重命名 {} 为: {title}", handle.id))
+        Ok(format!(
+            "✅ 已重命名会话 **{}**。\n\n**新标题：** {}",
+            markdown::text(&handle.id),
+            markdown::text(title)
+        ))
     }
 
     /// 无参查看；`list` 列出可用规格；`<规格> [档位]` 切换 focus 会话模型，
@@ -227,64 +247,81 @@ impl Runtime {
     /// 默认会话与 agent 模式各自的模型、档位与可用档位
     fn model_overview(&self, focus: Option<&ManagedSession>) -> String {
         let mode = self.mode_model();
-        let mut lines = Vec::new();
+        let mut rows = Vec::new();
         if let Some(handle) = focus {
             let header = handle.snapshot().session.header.clone();
-            lines.push(format!(
-                "默认会话 {} 模型: {}\n  当前档位: {}\n  可用档位: {}",
-                handle.id,
+            rows.push([
+                format!("默认会话 {}", handle.id),
                 header.current_model,
-                header.current_variant.as_deref().unwrap_or("none"),
-                self.variants_label(&header.current_model)
-            ));
+                header.current_variant.unwrap_or_else(|| "none".into()),
+            ]);
         }
-        lines.push(format!(
-            "agent 模式模型（新会话）: {}\n  当前档位: {}\n  可用档位: {}",
+        rows.push([
+            "Agent 模式（新会话）".into(),
             mode.model,
-            mode.variant.as_deref().unwrap_or("none"),
-            self.variants_label(&mode.model)
-        ));
-        lines.join("\n")
+            mode.variant.unwrap_or_else(|| "none".into()),
+        ]);
+        let mut out = markdown::table(
+            "🤖 当前模型",
+            ["作用范围", "模型规格", "当前档位", "可用档位"],
+            rows.into_iter().map(|[scope, model, variant]| {
+                let variants = self.variants_label(&model);
+                [scope, model, variant, variants]
+            }),
+        );
+        out.push_str("\n\n💡 `/model list` 查看可用模型；`/model --variant <档位>` 切换档位，`none` 清除档位。");
+        out
     }
 
     /// 配置中全部模型规格，标注默认会话与 agent 模式当前所用
     fn model_list(&self, focus: Option<&ManagedSession>) -> String {
         let session = focus.map(|h| h.snapshot().session.header.current_model.clone());
         let mode = self.mode_model().model;
+        let session = session.as_deref();
+        let mode = mode.as_str();
         let config = self.manager.app_config();
-        let mut lines: Vec<(String, String)> = config
+        let mut rows: Vec<[String; 5]> = config
             .providers
             .iter()
             .flat_map(|(provider, p)| {
                 p.models.iter().map(move |(id, m)| {
                     let spec = format!("{provider}/{id}");
-                    let mut info = vec![m.name.clone()];
-                    match &m.limit {
-                        Some(l) => info.push(format!("上下文 {}k", l.context / 1000)),
-                        None => info.push("未声明 limit.context（不可选用）".into()),
+                    let context =
+                        m.limit.as_ref().map_or("未声明（不可选用）".into(), |l| {
+                            format!("{}k", l.context / 1000)
+                        });
+                    let variants = m
+                        .variants
+                        .as_ref()
+                        .filter(|v| !v.is_empty())
+                        .map_or("无".into(), |v| v.join(" / "));
+                    let mut scopes = Vec::new();
+                    if session == Some(spec.as_str()) {
+                        scopes.push("默认会话");
                     }
-                    if let Some(v) = m.variants.as_ref().filter(|v| !v.is_empty()) {
-                        info.push(format!("档位 {}", v.join("/")));
+                    if spec == mode {
+                        scopes.push("Agent 模式");
                     }
-                    (spec, info.join("，"))
+                    let scope = if scopes.is_empty() {
+                        "—".into()
+                    } else {
+                        scopes.join(" / ")
+                    };
+                    [spec, m.name.clone(), context, variants, scope]
                 })
             })
             .collect();
-        lines.sort();
-        lines
-            .iter()
-            .map(|(spec, info)| {
-                let mut mark = String::new();
-                if session.as_deref() == Some(spec) {
-                    mark.push_str(" [会话]");
-                }
-                if *spec == mode {
-                    mark.push_str(" [模式]");
-                }
-                format!("{spec}{mark}  {info}")
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        if rows.is_empty() {
+            return "### 🤖 可用模型\n\n暂无已配置的模型。".into();
+        }
+        rows.sort();
+        let mut out = markdown::table(
+            "🤖 可用模型",
+            ["模型规格", "名称", "上下文", "可用档位", "当前使用"],
+            rows,
+        );
+        out.push_str("\n\n💡 `/model <规格> [档位]` 切换模型；加 `--global` 同时修改新会话模型。");
+        out
     }
 
     /// 模型声明的可用档位（`/` 分隔），未声明时给出提示
@@ -295,7 +332,7 @@ impl Runtime {
             .ok()
             .and_then(|m| m.model_config.variants.clone())
             .filter(|v| !v.is_empty())
-            .map_or("无".into(), |v| v.join("/"))
+            .map_or("无".into(), |v| v.join(" / "))
     }
 
     /// 切换模型与/或档位：`spec` 缺省时沿用当前模型；档位 `none` 清除
@@ -316,44 +353,48 @@ impl Runtime {
         // 会话与模式都要求声明 limit.context，否则 rollover 无法判定
         let checked = check_mode_model(&self.manager, &spec, variant.clone())?;
         let label = spec_label(&spec, variant.as_deref());
-        let mut lines = Vec::new();
+        let mut rows = Vec::new();
         if let Some(handle) = focus {
             handle
                 .configure(Some(spec), Some(variant), ToggleOverrides::default())
                 .await?;
-            lines.push(format!(
-                "默认会话 {} 已切换到 {label}（下一轮起生效，切换会使该会话缓存失效）",
-                handle.id
-            ));
+            rows.push([
+                format!("默认会话 {}", handle.id),
+                label.clone(),
+                "下一轮起生效；会话缓存将失效".into(),
+            ]);
         }
         if update_mode {
             self.save_mode_model(checked)?;
-            lines.push(format!("agent 模式模型已设为 {label}（新会话使用）"));
+            rows.push(["Agent 模式".into(), label, "新会话使用".into()]);
         }
-        Ok(lines.join("\n"))
+        Ok(markdown::table(
+            "✅ 模型已更新",
+            ["作用范围", "模型 / 档位", "生效说明"],
+            rows,
+        ))
     }
 
     fn skills(&self) -> String {
         let skills = crate::skills::discover_skills(self.manager.workspace());
         if skills.is_empty() {
-            return "暂无技能".into();
+            return "### 🧩 本地技能\n\n暂无技能。".into();
         }
-        let mut rows = vec![
-            "| 名称 | 来源 | 描述 |".to_string(),
-            "|---|---|---|".to_string(),
-        ];
-        rows.extend(skills.iter().map(|s| {
-            let source = match s.source {
-                crate::skills::SkillSource::Global => "全局",
-                crate::skills::SkillSource::Project => "项目",
-            };
-            format!(
-                "| {} | {source} | {} |",
-                s.name,
-                skill_desc_cell(&s.description)
-            )
-        }));
-        rows.join("\n")
+        markdown::table(
+            "🧩 本地技能",
+            ["名称", "来源", "描述"],
+            skills.iter().map(|s| {
+                let source = match s.source {
+                    crate::skills::SkillSource::Global => "全局",
+                    crate::skills::SkillSource::Project => "项目",
+                };
+                [
+                    s.name.clone(),
+                    source.into(),
+                    description_preview(&s.description),
+                ]
+            }),
+        )
     }
 
     /// `/schedule [list]`、`pause|resume|delete|run <id 前缀>`；创建走 Schedule 工具（自然语言）
@@ -371,31 +412,41 @@ impl Runtime {
                 }
                 let tasks = self.schedule.list();
                 if tasks.is_empty() {
-                    return Ok("暂无定时任务".into());
+                    return Ok("### 🗓️ 定时任务\n\n暂无定时任务。直接告诉 agent 任务内容与执行时间即可创建。".into());
                 }
-                Ok(tasks
+                let details = tasks
                     .iter()
-                    .map(|(t, s)| describe_task(t, s))
+                    .map(|(t, s)| schedule_table(t, s))
                     .collect::<Vec<_>>()
-                    .join("\n"))
+                    .join("\n\n");
+                Ok(format!(
+                    "### 🗓️ 定时任务\n\n共 **{}** 项 · 时间为本地时区\n\n{details}\n\n💡 `/schedule <pause|resume|delete|run> <id>` 管理任务；创建请直接告诉 agent。",
+                    tasks.len()
+                ))
             }
             ("pause", Some(id)) => Ok(format!(
-                "已暂停 {}",
-                self.schedule.set_enabled(id, false)?.id
+                "⏸️ 已暂停任务 **{}**。",
+                markdown::text(&self.schedule.set_enabled(id, false)?.id)
             )),
             ("resume", Some(id)) => Ok(format!(
-                "已恢复 {}",
-                self.schedule.set_enabled(id, true)?.id
+                "▶️ 已恢复任务 **{}**。",
+                markdown::text(&self.schedule.set_enabled(id, true)?.id)
             )),
-            ("delete", Some(id)) => Ok(format!("已删除 {}", self.schedule.remove(id)?.id)),
+            ("delete", Some(id)) => Ok(format!(
+                "✅ 已删除任务 **{}**。",
+                markdown::text(&self.schedule.remove(id)?.id)
+            )),
             ("run", Some(id)) => {
                 let (task, state) = self.schedule.get(id)?;
                 if !state.enabled {
-                    return Err(format!("任务 {} 已停用，请先 /schedule resume", task.id));
+                    return Err(format!(
+                        "任务 {} 已停用，请先 /schedule resume {}",
+                        task.id, task.id
+                    ));
                 }
                 let id = task.id.clone();
                 if self.fire(task).await {
-                    Ok(format!("已触发 {id}"))
+                    Ok(format!("▶️ 已触发任务 **{}**。", markdown::text(&id)))
                 } else {
                     Err(format!("任务 {id} 正在执行"))
                 }
@@ -438,12 +489,17 @@ impl Runtime {
             ("标题", header.title.clone().unwrap_or_else(|| "-".into())),
             ("工作区", header.workspace_root.display().to_string()),
             (
-                "运行中",
-                if handle.is_running() { "是" } else { "否" }.into(),
+                "运行状态",
+                if handle.is_running() {
+                    "运行中"
+                } else {
+                    "空闲"
+                }
+                .into(),
             ),
             ("轮次", stats.total_turns.to_string()),
             ("模型", model.to_string()),
-            ("Provider", provider.to_string()),
+            ("供应商", provider.to_string()),
             (
                 "推理档位",
                 header
@@ -457,13 +513,13 @@ impl Runtime {
                 format!("{} / {}", stats.prompt_tokens, stats.completion_tokens),
             ),
             (
-                "TPS",
+                "输出速度（token/s）",
                 stats.tps.map_or("暂无数据".into(), |v| format!("{v:.1}")),
             ),
-            ("Cache 读", stats.cache_read_tokens.to_string()),
-            ("Cache 写", stats.cache_write_tokens.to_string()),
+            ("缓存读取", stats.cache_read_tokens.to_string()),
+            ("缓存写入", stats.cache_write_tokens.to_string()),
             (
-                "Cache 命中率",
+                "缓存命中率",
                 cache_hit_rate(&session)
                     .map_or("暂无数据".into(), |r| format!("{:.0}%", r * 100.0)),
             ),
@@ -478,26 +534,55 @@ fn spec_label(model: &str, variant: Option<&str>) -> String {
     variant.map_or(model.to_string(), |v| format!("{model} ({v})"))
 }
 
-/// 表格单元格中的技能描述：压平空白、转义 `|`，超过 200 个字符截断
-fn skill_desc_cell(description: &str) -> String {
+/// 描述预览：压平空白，超过 200 个字符时以省略号明确截断。
+fn description_preview(description: &str) -> String {
     const LIMIT: usize = 200;
     let flat = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    let cell = match flat.char_indices().nth(LIMIT) {
+    match flat.char_indices().nth(LIMIT) {
         Some((end, _)) => format!("{}…", &flat[..end]),
         None => flat,
-    };
-    cell.replace('|', "\\|")
+    }
 }
 
-/// IM 状态表：Markdown 双栏表格（项 / 值 / 项 / 值），按行优先成对排布
+/// IM 状态表使用两列，长路径与标题在窄屏上也便于阅读。
 fn status_table(rows: &[(&str, String)]) -> String {
-    let cell = |(k, v): &(&str, String)| format!("{k} | {}", v.replace('|', "\\|"));
-    let mut out = String::from("| 项 | 值 | 项 | 值 |\n| --- | --- | --- | --- |");
-    for pair in rows.chunks(2) {
-        let right = pair.get(1).map_or(" | ".into(), cell);
-        out.push_str(&format!("\n| {} | {right} |", cell(&pair[0])));
+    markdown::table(
+        "📊 会话状态",
+        ["项目", "内容"],
+        rows.iter()
+            .map(|(key, value)| [key.to_string(), value.clone()]),
+    )
+}
+
+/// 每项任务独立成表，避免目标、提示词和错误信息挤在同一行。
+fn schedule_table(task: &Task, state: &TaskState) -> String {
+    let status = match (state.enabled, &task.trigger) {
+        (true, _) => "启用",
+        (false, Trigger::Once(_)) if state.last_run.is_some() => "已完成",
+        (false, _) => "停用",
+    };
+    let mut targets: Vec<String> = task.session.iter().map(|id| format!("会话 {id}")).collect();
+    targets.extend(task.bindings.iter().cloned());
+    let mut rows = vec![
+        ["任务 ID".into(), task.id.clone()],
+        ["状态".into(), status.into()],
+        ["触发规则".into(), task.trigger.describe()],
+        ["执行目标".into(), targets.join(" / ")],
+        [
+            "下次执行".into(),
+            ScheduleStore::next_fire(task, state, now_minute()).map_or("—".into(), format_time),
+        ],
+        [
+            "上次执行".into(),
+            state.last_run.map_or("尚未执行".into(), format_time),
+        ],
+        ["任务内容".into(), description_preview(&task.prompt)],
+    ];
+    if let Some(error) = &state.last_error {
+        rows.push(["连续失败".into(), format!("{} 次", state.failures)]);
+        rows.push(["最近错误".into(), error.clone()]);
     }
-    out
+    markdown::table("任务详情", ["项目", "内容"], rows)
 }
 
 #[cfg(test)]
@@ -507,9 +592,12 @@ mod tests {
     #[test]
     fn skill_desc_cell_truncates_and_escapes() {
         assert_eq!(
-            skill_desc_cell(&"字".repeat(250)),
+            markdown::text(&description_preview(&"字".repeat(250))),
             format!("{}…", "字".repeat(200))
         );
-        assert_eq!(skill_desc_cell("a | b\nc"), "a \\| b c");
+        assert_eq!(
+            markdown::text(&description_preview("a | b\nc")),
+            "a \\| b c"
+        );
     }
 }

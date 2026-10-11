@@ -1,6 +1,6 @@
 //! Router：L0 确定性锚点 / L1 小模型 / L2 显式报错。
 //! 只依据元数据（候选表、用户文字、reply 片段、附件名）选择 session，不读历史；
-//! 任何非法决策都显式报错，不降级到 focus。
+//! 低置信度决策续接当前 focus；调用失败与非法决策显式报错。
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -102,17 +102,23 @@ impl Routed {
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum RouteError {
-    #[error("自动路由模型调用失败: {0}。请用 /switch <id> 指定会话，或 /new 新建")]
+    #[error("自动路由失败: {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
     Model(String),
-    #[error("自动路由选择了不存在的会话 {0}。请用 /sessions 查看，/switch 指定或 /new 新建")]
+    #[error(
+        "自动路由置信度不足且当前没有默认会话: {0}。请用 /switch <id> 设置默认会话后重发，或用 /new <消息> 新建"
+    )]
+    Uncertain(String),
+    #[error("自动路由选择了不存在的会话 {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
     UnknownSession(String),
-    #[error("自动路由选择 existing 却未给出 session_id。请用 /switch 指定或 /new 新建")]
+    #[error(
+        "自动路由选择 existing 却未给出 session_id。请引用回复目标会话的消息，或用 /new <消息> 新建"
+    )]
     MissingSessionId,
-    #[error("带附件的消息不能作为一次性问答处理。请用 /switch 指定会话，或 /new 新建")]
+    #[error("带附件的消息不能作为一次性问答处理。请引用回复目标会话的消息，或用 /new <消息> 新建")]
     OneshotWithMedia,
     #[error("自动路由选择了正在运行的会话 {0}，但并非插话。请等待其完成，或用 /new 新建")]
     RunningNotGuide(String),
-    #[error("自动路由决策自相矛盾: {0}。请用 /switch 指定会话，或 /new 新建")]
+    #[error("自动路由决策自相矛盾: {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
     Inconsistent(&'static str),
     #[error("没有匹配 `{0}` 的会话")]
     PrefixNotFound(String),
@@ -181,10 +187,30 @@ pub fn resolve_prefix(candidates: &[Candidate], prefix: &str) -> Result<String, 
 
 // ================== 小模型 ==================
 
-/// 模型已应答（已计费）的结果：输出不合格时 `decision` 为错误，usage 照常记账
+/// 区分判断不明确与非法输出，供调度层应用默认续接规则。
+#[derive(Debug, thiserror::Error)]
+pub enum DecisionError {
+    #[error("{0}")]
+    Invalid(String),
+    #[error("Decisions 置信度不足: {question}={choice} ({confidence:.2} < {minimum:.2})")]
+    LowConfidence {
+        question: &'static str,
+        choice: String,
+        confidence: f64,
+        minimum: f64,
+    },
+}
+
+impl From<String> for DecisionError {
+    fn from(error: String) -> Self {
+        Self::Invalid(error)
+    }
+}
+
+/// 模型已应答（已计费）的结果：usage 随决策与错误一起交回调度层。
 #[derive(Debug)]
 pub struct ModelReply {
-    pub decision: Result<RouteDecision, String>,
+    pub decision: Result<RouteDecision, DecisionError>,
     pub usage: Option<TokenUsage>,
 }
 
@@ -261,7 +287,7 @@ impl RouteModel for SmallRouteModel {
             .collect();
         Ok(ModelReply {
             decision: serde_json::from_str(&text)
-                .map_err(|e| format!("小模型返回了非法 JSON: {e}: {text}")),
+                .map_err(|e| DecisionError::Invalid(format!("小模型返回了非法 JSON: {e}: {text}"))),
             usage: response.usage,
         })
     }
@@ -285,7 +311,7 @@ files 为随消息到达的附件（仅文件名与类型），reply_to 为用�
 - 除 guide_existing 外，不要选择 running=true 的会话；独立任务应选 new。
 - session_id 仅在 action=existing 时填写候选表中的 id，其余情况为 null。
 - running_intent 仅在 guide_existing 时取该值，其余为 none。
-- 对是否新话题有疑问时，选 existing，不要轻易 new。
+- 对是否新话题或会话归属有疑问时，选 existing，session_id 指向 focus=true 的会话；该会话 running=true 时选 guide_existing。
 - reason 用一句话说明理由。";
 
 /// 路由输入载荷（小模型提示词与 Decisions `state` 共用）：字段顺序即序列化顺序，
@@ -373,7 +399,33 @@ impl Router {
         let (validated, usage) = match self.model.decide(input).await {
             Ok(ModelReply { decision, usage }) => (
                 decision
-                    .map_err(RouteError::Model)
+                    .or_else(|error| match error {
+                        DecisionError::Invalid(error) => Err(RouteError::Model(error)),
+                        DecisionError::LowConfidence {
+                            question: "session",
+                            ref choice,
+                            ..
+                        } if find(choice).is_none() => {
+                            Err(RouteError::UnknownSession(choice.clone()))
+                        }
+                        DecisionError::LowConfidence { .. } => {
+                            let focus = input
+                                .candidates
+                                .iter()
+                                .find(|c| c.focus)
+                                .ok_or_else(|| RouteError::Uncertain(error.to_string()))?;
+                            Ok(RouteDecision {
+                                action: Action::Existing,
+                                session_id: Some(focus.id.clone()),
+                                running_intent: if focus.running {
+                                    RunningIntent::GuideExisting
+                                } else {
+                                    RunningIntent::None
+                                },
+                                reason: format!("续接默认会话: {error}"),
+                            })
+                        }
+                    })
                     .and_then(|d| validate(&d, input).map(|route| (d, route))),
                 usage,
             ),
@@ -571,6 +623,96 @@ mod tests {
 
     fn no_model() -> FakeModel {
         FakeModel::with(Err("不应调用".into()))
+    }
+
+    fn uncertain(question: &'static str, choice: &str) -> FakeModel {
+        FakeModel::with(Ok(ModelReply {
+            decision: Err(DecisionError::LowConfidence {
+                question,
+                choice: choice.into(),
+                confidence: 0.25,
+                minimum: 0.75,
+            }),
+            usage: Some(TokenUsage {
+                prompt_tokens: 80,
+                ..TokenUsage::default()
+            }),
+        }))
+    }
+
+    #[tokio::test]
+    async fn uncertain_action_or_session_continues_focus_and_records_reason() {
+        for (question, choice) in [
+            ("action", "existing"),
+            ("action", "new"),
+            ("action", "oneshot"),
+            ("session", "sess_b"),
+        ] {
+            let e = env(uncertain(question, choice));
+            let mut i = input(candidates());
+            i.files.push(AttachedFile {
+                path: "/tmp/diagram.png".into(),
+                name: "diagram.png".into(),
+                kind: FileKind::Image,
+            });
+            let r = e.router.route(&i, &e.index).await.unwrap();
+            assert_eq!(r.route, Route::Existing("sess_a".into()));
+            let log = std::fs::read_to_string(e.dir.path().join("router.jsonl")).unwrap();
+            let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+            assert_eq!(entry["decision"]["session_id"], "sess_a");
+            assert!(
+                entry["decision"]["reason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("置信度不足")
+            );
+            assert_eq!(entry["usage"]["prompt_tokens"], 80);
+            assert!(entry["error"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn uncertain_message_is_delivered_to_running_focus() {
+        let e = env(uncertain("action", "new"));
+        let i = input(vec![
+            cand("sess_a", true, true),
+            cand("sess_b", false, false),
+        ]);
+        assert_eq!(
+            e.router.route(&i, &e.index).await.unwrap().route,
+            Route::Guide("sess_a".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn uncertainty_without_focus_and_invalid_answers_remain_errors() {
+        let e = env(uncertain("action", "existing"));
+        let i = input(vec![cand("sess_b", false, false)]);
+        assert!(matches!(
+            e.router.route(&i, &e.index).await.unwrap_err(),
+            RouteError::Uncertain(_)
+        ));
+
+        let e = env(uncertain("session", "sess_missing"));
+        assert_eq!(
+            e.router
+                .route(&input(candidates()), &e.index)
+                .await
+                .unwrap_err(),
+            RouteError::UnknownSession("sess_missing".into())
+        );
+
+        let e = env(FakeModel::with(Ok(ModelReply {
+            decision: Err(DecisionError::Invalid("缺少必填字段".into())),
+            usage: None,
+        })));
+        assert_eq!(
+            e.router
+                .route(&input(candidates()), &e.index)
+                .await
+                .unwrap_err(),
+            RouteError::Model("缺少必填字段".into())
+        );
     }
 
     #[tokio::test]
