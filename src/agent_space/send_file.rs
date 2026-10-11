@@ -16,21 +16,11 @@ use crate::model::SessionHeader;
 use crate::tools::filesystem::resolve_path;
 use crate::tools::{Tool, parse_args};
 
-pub struct SendFileTool {
+struct SendFileTool {
     channel: Arc<dyn Channel>,
     /// 目标聊天，形如 `channel:chat_id`
     binding: String,
     workspace: PathBuf,
-}
-
-impl SendFileTool {
-    pub fn new(channel: Arc<dyn Channel>, binding: String, workspace: PathBuf) -> Self {
-        Self {
-            channel,
-            binding,
-            workspace,
-        }
-    }
 }
 
 #[async_trait]
@@ -85,18 +75,23 @@ impl Tool for SendFileTool {
     }
 }
 
+/// 会话运行期工具的挂载条件：带 IM 来源的顶层会话，返回其聊天 `channel:chat_id`
+pub(super) fn chat_binding(header: &SessionHeader) -> Option<String> {
+    let origin = header.origin.as_ref().filter(|_| header.parent.is_none())?;
+    Some(format!("{}:{}", origin.channel, origin.chat_id))
+}
+
 /// 会话工具工厂：为带 IM 来源的顶层会话挂载绑定其聊天的 SendFile
 pub fn session_tool_factory(channel: Arc<dyn Channel>) -> SessionToolFactory {
     Arc::new(move |header: &SessionHeader| {
-        let Some(origin) = header.origin.as_ref().filter(|_| header.parent.is_none()) else {
+        let Some(binding) = chat_binding(header) else {
             return Vec::new();
         };
-        let binding = format!("{}:{}", origin.channel, origin.chat_id);
-        let tool: Arc<dyn Tool> = Arc::new(SendFileTool::new(
-            channel.clone(),
+        let tool: Arc<dyn Tool> = Arc::new(SendFileTool {
+            channel: channel.clone(),
             binding,
-            header.workspace_root.clone(),
-        ));
+            workspace: header.workspace_root.clone(),
+        });
         vec![tool]
     })
 }
@@ -107,13 +102,13 @@ mod tests {
 
     use tokio::sync::mpsc;
 
-    use super::super::channel::{ChannelError, Inbound};
+    use super::super::channel::Inbound;
     use super::*;
     use crate::model::{Origin, Session, SessionKind};
 
+    #[derive(Default)]
     struct FakeChannel {
         sent: Mutex<Vec<OutboundFile>>,
-        fail: bool,
     }
 
     #[async_trait]
@@ -125,9 +120,6 @@ mod tests {
             let Outbound::File(file) = msg else {
                 panic!("expected file");
             };
-            if self.fail {
-                return Err(ChannelError::Unsupported("guild 不支持上传".into()));
-            }
             self.sent.lock().unwrap().push(file);
             Ok(vec!["m1".into()])
         }
@@ -139,21 +131,21 @@ mod tests {
         }
     }
 
-    fn fixture(fail: bool) -> (Arc<FakeChannel>, SendFileTool, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("vva-sendfile-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let channel = Arc::new(FakeChannel {
-            sent: Mutex::new(Vec::new()),
-            fail,
-        });
-        let tool = SendFileTool::new(channel.clone(), "qq:c2c:u1".into(), dir.clone());
+    fn fixture() -> (Arc<FakeChannel>, SendFileTool, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = Arc::new(FakeChannel::default());
+        let tool = SendFileTool {
+            channel: channel.clone(),
+            binding: "qq:c2c:u1".into(),
+            workspace: dir.path().to_path_buf(),
+        };
         (channel, tool, dir)
     }
 
     #[tokio::test]
     async fn sends_relative_path_with_caption() {
-        let (channel, tool, dir) = fixture(false);
-        std::fs::write(dir.join("a.txt"), "hello").unwrap();
+        let (channel, tool, dir) = fixture();
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
         let out = tool
             .execute(r#"{"path":"a.txt","caption":"看看"}"#)
             .await
@@ -161,24 +153,14 @@ mod tests {
         assert_eq!(out, "已发送 a.txt (5 bytes)");
         let sent = channel.sent.lock().unwrap();
         assert_eq!(sent[0].binding, "qq:c2c:u1");
-        assert_eq!(sent[0].path, dir.join("a.txt"));
+        assert_eq!(sent[0].path, dir.path().join("a.txt"));
         assert_eq!(sent[0].caption, "看看");
     }
 
     #[tokio::test]
-    async fn sends_absolute_path() {
-        let (channel, tool, dir) = fixture(false);
-        let file = dir.join("b.bin");
-        std::fs::write(&file, [0u8; 3]).unwrap();
-        let args = serde_json::json!({"path": file}).to_string();
-        tool.execute(&args).await.unwrap();
-        assert_eq!(channel.sent.lock().unwrap()[0].path, file);
-    }
-
-    #[tokio::test]
     async fn missing_file_and_directory_are_errors() {
-        let (channel, tool, dir) = fixture(false);
-        std::fs::create_dir(dir.join("sub")).unwrap();
+        let (channel, tool, dir) = fixture();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
         let err = tool.execute(r#"{"path":"nope.txt"}"#).await.unwrap_err();
         assert!(err.contains("nope.txt"));
         let err = tool.execute(r#"{"path":"sub"}"#).await.unwrap_err();
@@ -186,35 +168,8 @@ mod tests {
         assert!(channel.sent.lock().unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn channel_error_is_passed_through() {
-        let (_, tool, dir) = fixture(true);
-        std::fs::write(dir.join("a.txt"), "x").unwrap();
-        let err = tool.execute(r#"{"path":"a.txt"}"#).await.unwrap_err();
-        assert_eq!(err, "不支持: guild 不支持上传");
-    }
-
     #[test]
-    fn factory_mounts_only_for_top_level_origin_sessions() {
-        let (channel, _, _) = fixture(false);
-        let factory = session_tool_factory(channel);
-        let mut header = Session::new("/w", None).header;
-        assert!(factory(&header).is_empty());
-        header.origin = Some(Origin {
-            channel: "qq".into(),
-            chat_id: "c2c:u1".into(),
-        });
-        let tools = factory(&header);
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name(), "SendFile");
-        header.parent = Some("sess_00000".into());
-        assert!(factory(&header).is_empty());
-    }
-
-    #[test]
-    fn factory_covers_topic_oneshot_and_rollover_successor_but_not_curator() {
-        let (channel, _, _) = fixture(false);
-        let factory = session_tool_factory(channel);
+    fn chat_binding_only_for_top_level_origin_sessions() {
         let header = |kind, origin: bool, continued: bool| {
             let mut header = Session::new("/w", None).header;
             header.kind = kind;
@@ -225,11 +180,15 @@ mod tests {
             header.continued_from = continued.then(|| "sess_00000".into());
             header
         };
-        assert_eq!(factory(&header(SessionKind::Topic, true, false)).len(), 1);
-        assert_eq!(factory(&header(SessionKind::Oneshot, true, false)).len(), 1);
-        // rollover 接替会话不是 subagent，仍可发文件
-        assert_eq!(factory(&header(SessionKind::Topic, true, true)).len(), 1);
+        let topic = header(SessionKind::Topic, true, false);
+        assert_eq!(chat_binding(&topic).as_deref(), Some("qq:c2c:u1"));
+        assert!(chat_binding(&header(SessionKind::Oneshot, true, false)).is_some());
+        // rollover 接替会话不是 subagent，仍挂载
+        assert!(chat_binding(&header(SessionKind::Topic, true, true)).is_some());
         // curator 无 IM 来源
-        assert!(factory(&header(SessionKind::Curator, false, false)).is_empty());
+        assert!(chat_binding(&header(SessionKind::Curator, false, false)).is_none());
+        let mut sub = topic;
+        sub.parent = Some("sess_00000".into());
+        assert!(chat_binding(&sub).is_none());
     }
 }

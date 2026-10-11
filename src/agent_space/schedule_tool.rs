@@ -8,12 +8,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use super::scheduler::{ScheduleStore, Task, describe_task, format_time, local_now};
+use super::scheduler::{RawTask, ScheduleStore, Task, describe_task, format_time, now_minute};
+use super::send_file::chat_binding;
 use crate::harness::SessionToolFactory;
 use crate::model::SessionHeader;
 use crate::tools::{Tool, parse_args};
 
-pub struct ScheduleTool {
+struct ScheduleTool {
     store: Arc<ScheduleStore>,
     channel: String,
     /// 当前会话的聊天，形如 `channel:chat_id`
@@ -36,12 +37,6 @@ struct Arguments {
 
 impl ScheduleTool {
     fn create(&self, args: Arguments) -> Result<String, String> {
-        let (kind, value) = match (&args.cron, &args.at, &args.every) {
-            (Some(v), None, None) => ("cron", v),
-            (None, Some(v), None) => ("at", v),
-            (None, None, Some(v)) => ("every", v),
-            _ => return Err("cron / at / every 须且只能提供一个".into()),
-        };
         let session = match args.target.as_deref() {
             None | Some("new") => None,
             Some("session") => Some(self.session_id.clone()),
@@ -57,20 +52,21 @@ impl ScheduleTool {
         if let Some(bad) = bindings.iter().find(|b| !b.starts_with(&prefix)) {
             return Err(format!("binding `{bad}` 非法，当前仅支持 `{prefix}…`"));
         }
-        let id = args
-            .id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..6].to_string());
-        let prompt = args.prompt.ok_or("create 需要 prompt")?;
-        let task = Task::build(id.clone(), (kind, value), prompt, session, bindings)?;
-        self.store
-            .add(task)
-            .map_err(|e| format!("{e}（当前时间 {}）", format_time(local_now())))?;
-        let (task, state) = self
+        let task = Task::try_from(RawTask {
+            id: args
+                .id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string()[..6].to_string()),
+            cron: args.cron,
+            at: args.at,
+            every: args.every,
+            prompt: args.prompt.ok_or("create 需要 prompt")?,
+            session,
+            bindings,
+        })?;
+        let state = self
             .store
-            .list()
-            .into_iter()
-            .find(|(t, _)| t.id == id)
-            .ok_or("任务创建后丢失")?;
+            .add(task.clone())
+            .map_err(|e| format!("{e}（当前时间 {}）", format_time(now_minute())))?;
         Ok(format!("已创建\n{}", describe_task(&task, &state)))
     }
 
@@ -121,7 +117,7 @@ impl Tool for ScheduleTool {
             "create" => self.create(args),
             "list" => {
                 let tasks = self.store.list();
-                let now = format_time(local_now());
+                let now = format_time(now_minute());
                 if tasks.is_empty() {
                     return Ok(format!("暂无定时任务（当前时间 {now}）"));
                 }
@@ -148,13 +144,13 @@ impl Tool for ScheduleTool {
 /// 仅带 IM 来源的顶层会话挂载（与 SendFile 同一条件）
 pub fn session_tool_factory(channel: String, store: Arc<ScheduleStore>) -> SessionToolFactory {
     Arc::new(move |header: &SessionHeader| {
-        let Some(origin) = header.origin.as_ref().filter(|_| header.parent.is_none()) else {
+        let Some(binding) = chat_binding(header) else {
             return Vec::new();
         };
         let tool: Arc<dyn Tool> = Arc::new(ScheduleTool {
             store: store.clone(),
             channel: channel.clone(),
-            binding: format!("{}:{}", origin.channel, origin.chat_id),
+            binding,
             session_id: header.id.clone(),
         });
         vec![tool]
@@ -164,7 +160,6 @@ pub fn session_tool_factory(channel: String, store: Arc<ScheduleStore>) -> Sessi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Origin, Session};
 
     fn tool(dir: &std::path::Path) -> (ScheduleTool, Arc<ScheduleStore>) {
         let store = ScheduleStore::open(dir).unwrap();
@@ -245,20 +240,5 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("当前时间"), "{err}");
-    }
-
-    #[test]
-    fn mounted_only_for_top_level_im_sessions() {
-        let dir = tempfile::tempdir().unwrap();
-        let factory = session_tool_factory("qq".into(), ScheduleStore::open(dir.path()).unwrap());
-        let mut header = Session::new("/w", None).header;
-        assert!(factory(&header).is_empty());
-        header.origin = Some(Origin {
-            channel: "qq".into(),
-            chat_id: "c2c:u1".into(),
-        });
-        assert_eq!(factory(&header)[0].name(), "Schedule");
-        header.parent = Some("sess_00000".into());
-        assert!(factory(&header).is_empty());
     }
 }
