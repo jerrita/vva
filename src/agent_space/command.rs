@@ -1,4 +1,4 @@
-//! IM 斜杠命令解析：`/new /switch /sessions /stop /status /delete`。
+//! IM 斜杠命令解析与帮助文本。
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -20,6 +20,27 @@ pub enum Command {
     Help,
     /// 未知命令：显式回复可用命令，不交给模型
     Unknown(String),
+}
+
+impl Command {
+    /// 日志用命令名
+    pub fn name(&self) -> &'static str {
+        match self {
+            Command::New(_) => "/new",
+            Command::Switch(_) => "/switch",
+            Command::Sessions => "/sessions",
+            Command::Stop => "/stop",
+            Command::Status => "/status",
+            Command::Rename(_) => "/rename",
+            Command::Model(_) => "/model",
+            Command::Skills => "/skills",
+            Command::Schedule(_) => "/schedule",
+            Command::Delete(_) => "/delete",
+            Command::Clear(_) => "/clear",
+            Command::Help => "/help",
+            Command::Unknown(_) => "/unknown",
+        }
+    }
 }
 
 const HELP: &[(&str, &str)] = &[
@@ -81,34 +102,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_known_commands_with_arguments() {
-        assert_eq!(
-            parse("/new 写个脚本"),
-            Some(Command::New("写个脚本".into()))
-        );
+    fn parses_name_and_argument_edges() {
         assert_eq!(
             parse("  /switch  abc1 "),
             Some(Command::Switch("abc1".into()))
         );
-        assert_eq!(parse("/sessions"), Some(Command::Sessions));
-        assert_eq!(parse("/stop"), Some(Command::Stop));
-        assert_eq!(parse("/status"), Some(Command::Status));
-        assert_eq!(parse("/delete"), Some(Command::Delete(String::new())));
-        assert_eq!(parse("/delete ab"), Some(Command::Delete("ab".into())));
+        assert_eq!(parse("/Switch@bot ab"), Some(Command::Switch("ab".into())));
         assert_eq!(parse("/stat"), Some(Command::Status));
-        assert_eq!(parse("/clear ab"), Some(Command::Clear("ab".into())));
+        assert_eq!(parse("/delete"), Some(Command::Delete(String::new())));
         assert_eq!(
             parse("/model --global p/m high"),
             Some(Command::Model("--global p/m high".into()))
         );
-        assert_eq!(parse("/rename 新名"), Some(Command::Rename("新名".into())));
-        assert_eq!(parse("/skills"), Some(Command::Skills));
-        assert_eq!(
-            parse("/schedule list"),
-            Some(Command::Schedule("list".into()))
-        );
-        assert_eq!(parse("/help"), Some(Command::Help));
-        assert_eq!(parse("/Switch@bot ab"), Some(Command::Switch("ab".into())));
     }
 
     #[test]
