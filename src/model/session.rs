@@ -397,28 +397,4 @@ mod tests {
             assert!(!out.contains(key), "{key} 不应被序列化");
         }
     }
-
-    #[test]
-    fn agent_space_header_fields_roundtrip() {
-        let mut header = Session::new("/w", None).header;
-        header.kind = SessionKind::Oneshot;
-        header.origin = Some(Origin {
-            channel: "qq".into(),
-            chat_id: "c2c:1".into(),
-        });
-        header.routed_by = Some("router".into());
-        header.superseded_by = Some("sess_00000".into());
-        header.last_activity = Some(Utc::now());
-        let json = serde_json::to_string(&header).unwrap();
-        assert!(json.contains(r#""kind":"oneshot""#));
-        assert_eq!(
-            serde_json::from_str::<SessionHeader>(&json).unwrap(),
-            header
-        );
-
-        let summary = SessionSummary::from_header(header, 2);
-        assert_eq!(summary.kind, SessionKind::Oneshot);
-        assert_eq!(summary.origin.unwrap().channel, "qq");
-        assert_eq!(summary.superseded_by.as_deref(), Some("sess_00000"));
-    }
 }

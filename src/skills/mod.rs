@@ -221,24 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn accepts_ecosystem_hidden_field() {
-        let root = temp_root("hidden");
-        write_skill(
-            &root,
-            "agent-browser",
-            "---\nname: agent-browser\ndescription: Browser CLI.\nallowed-tools: Bash(agent-browser:*)\nhidden: true\n---\nBody.\n",
-        );
-        let skill = parse_skill(&root.join("agent-browser"), SkillSource::Global).unwrap();
-        assert_eq!(skill.name, "agent-browser");
-    }
-
-    #[test]
     fn parses_optional_fields() {
         let root = temp_root("optional");
         write_skill(
             &root,
             "web-scrape",
-            "---\nname: web-scrape\ndescription: Scrape pages.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.12+\nmetadata:\n  author: example-org\n  version: \"1.0\"\nallowed-tools: Bash(curl:*) Read\n---\nBody here.\n",
+            "---\nname: web-scrape\ndescription: Scrape pages.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.12+\nmetadata:\n  author: example-org\n  version: \"1.0\"\nallowed-tools: Bash(curl:*) Read\nhidden: true\n---\nBody here.\n",
         );
         let skill = parse_skill(&root.join("web-scrape"), SkillSource::Project).unwrap();
         assert_eq!(skill.license.as_deref(), Some("Apache-2.0"));

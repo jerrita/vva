@@ -433,14 +433,21 @@ impl SessionTask {
         Ok(())
     }
 
-    async fn save_header_if_persisted(&self, session: &Session) -> Result<(), String> {
-        if !self.view.persisted {
-            return Ok(());
+    /// 修改 header：已落盘会话先重写 header，成功后替换视图
+    async fn update_header(
+        &mut self,
+        update: impl FnOnce(&mut crate::model::SessionHeader),
+    ) -> Result<(), String> {
+        let mut session = (*self.view.session).clone();
+        update(&mut session.header);
+        if self.view.persisted {
+            self.store
+                .save_header(&session)
+                .await
+                .map_err(|e| e.to_string())?;
         }
-        self.store
-            .save_header(session)
-            .await
-            .map_err(|e| e.to_string())
+        self.replace_session(session);
+        Ok(())
     }
 
     async fn title(&mut self, title: String) -> Result<(), String> {
@@ -872,12 +879,9 @@ impl SessionTask {
                 let _ = reply.send(self.title(title).await);
             }
             SharedCommand::Supersede { by, reply } => {
-                let mut session = (*self.view.session).clone();
-                session.header.superseded_by = Some(by);
-                let result = self.save_header_if_persisted(&session).await;
-                if result.is_ok() {
-                    self.replace_session(session);
-                }
+                let result = self
+                    .update_header(|header| header.superseded_by = Some(by))
+                    .await;
                 let _ = reply.send(result);
             }
             SharedCommand::DismissNotice { id, reply } => {
@@ -1222,11 +1226,12 @@ impl SessionTask {
         if !self.view.persisted || !self.view.session.header.agent_managed() {
             return;
         }
-        let mut session = (*self.view.session).clone();
-        session.header.last_activity = Some(chrono::Utc::now());
-        match self.save_header_if_persisted(&session).await {
-            Ok(()) => self.replace_session(session),
-            Err(error) => tracing::warn!("Failed to persist last_activity: {error}"),
+        let now = chrono::Utc::now();
+        if let Err(error) = self
+            .update_header(|header| header.last_activity = Some(now))
+            .await
+        {
+            tracing::warn!("Failed to persist last_activity: {error}");
         }
     }
 

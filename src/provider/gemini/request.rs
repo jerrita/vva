@@ -159,6 +159,13 @@ impl GeminiProvider {
             }));
         }
 
+        // 内置工具与函数调用混用时，官方要求显式开启服务端工具调用回传
+        if !tools_list.is_empty() && !tools.is_empty() {
+            body["toolConfig"] = serde_json::json!({
+                "includeServerSideToolInvocations": true
+            });
+        }
+
         if !tools.is_empty() {
             let function_declarations: Vec<serde_json::Value> = tools
                 .iter()
@@ -167,13 +174,6 @@ impl GeminiProvider {
             tools_list.push(serde_json::json!({
                 "functionDeclarations": function_declarations
             }));
-        }
-
-        // 内置工具与函数调用混用时，官方要求显式开启服务端工具调用回传
-        if (options.enable_web_search || options.enable_web_fetch) && !tools.is_empty() {
-            body["toolConfig"] = serde_json::json!({
-                "includeServerSideToolInvocations": true
-            });
         }
 
         if !tools_list.is_empty() {

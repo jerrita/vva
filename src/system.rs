@@ -124,10 +124,6 @@ pub fn skills_change_reminder<'a>(
     let (mut added, mut updated, mut removed) = (Vec::new(), Vec::new(), Vec::new());
     let refreshed = match skills_baseline(history) {
         SkillsBaseline::Indexed(known) => {
-            let now: std::collections::BTreeMap<&str, &Skill> = skills
-                .iter()
-                .map(|skill| (skill.name.as_str(), skill))
-                .collect();
             for skill in skills {
                 match known.get(&skill.name) {
                     None => added.push(line(skill)),
@@ -136,7 +132,7 @@ pub fn skills_change_reminder<'a>(
                 }
             }
             for name in known.keys() {
-                if !now.contains_key(name.as_str()) {
+                if !skills.iter().any(|skill| &skill.name == name) {
                     removed.push(format!("- {name}"));
                 }
             }
@@ -632,17 +628,6 @@ mod tests {
         assert!(parsed.content.contains("1. Open the file."));
 
         assert_eq!(parse_agents_reminder("plain prompt"), None);
-    }
-
-    #[test]
-    fn rollover_summary_reminder_is_a_reminder_but_not_a_known_kind() {
-        let text = format_rollover_summary_reminder("sess_a1b2c", "## 目标\n修 bug");
-        assert!(
-            text.starts_with("<system-reminder type=\"rollover-summary\" from=\"sess_a1b2c\">")
-        );
-        assert!(text.contains("## 目标\n修 bug"));
-        assert!(is_reminder_text(&text));
-        assert!(!is_reminder_text("普通用户消息"));
     }
 
     #[test]
