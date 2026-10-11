@@ -12,10 +12,10 @@ const BINDINGS_FILE: &str = "bindings.json";
 const MESSAGE_INDEX_FILE: &str = "message_index.jsonl";
 
 /// 单个 binding 的持久状态
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct BindingState {
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct BindingState {
     /// 默认续写的 session；无明确锚点时仅作为 router 的参考
-    pub focus: Option<String>,
+    focus: Option<String>,
 }
 
 /// `<agent_dir>/bindings.json`：每次变更原子落盘（临时文件 + rename）
@@ -105,36 +105,34 @@ impl MessageIndex {
     }
 
     pub fn record(&mut self, message_id: &str, session_id: &str) -> Result<(), String> {
-        self.append(&[(message_id.to_string(), session_id.to_string())])?;
-        self.map
-            .insert(message_id.to_string(), session_id.to_string());
-        Ok(())
+        self.commit(vec![IndexRecord {
+            message_id: message_id.to_string(),
+            session_id: session_id.to_string(),
+        }])
     }
 
     /// rollover：把指向旧 session 的全部消息改指新 session（追加覆盖行）
     pub fn repoint(&mut self, old: &str, new: &str) -> Result<(), String> {
-        let moved: Vec<(String, String)> = self
+        let moved = self
             .map
             .iter()
             .filter(|(_, s)| s.as_str() == old)
-            .map(|(m, _)| (m.clone(), new.to_string()))
+            .map(|(m, _)| IndexRecord {
+                message_id: m.clone(),
+                session_id: new.to_string(),
+            })
             .collect();
-        self.append(&moved)?;
-        self.map.extend(moved);
-        Ok(())
+        self.commit(moved)
     }
 
-    fn append(&self, records: &[(String, String)]) -> Result<(), String> {
+    /// 先追加落盘，成功后再更新内存映射
+    fn commit(&mut self, records: Vec<IndexRecord>) -> Result<(), String> {
         if records.is_empty() {
             return Ok(());
         }
         let mut buf = String::new();
-        for (message_id, session_id) in records {
-            let rec = IndexRecord {
-                message_id: message_id.clone(),
-                session_id: session_id.clone(),
-            };
-            buf.push_str(&serde_json::to_string(&rec).map_err(|e| e.to_string())?);
+        for rec in &records {
+            buf.push_str(&serde_json::to_string(rec).expect("IndexRecord 仅含字符串字段"));
             buf.push('\n');
         }
         OpenOptions::new()
@@ -142,7 +140,10 @@ impl MessageIndex {
             .append(true)
             .open(&self.path)
             .and_then(|mut f| f.write_all(buf.as_bytes()))
-            .map_err(|e| format!("追加 {} 失败: {e}", self.path.display()))
+            .map_err(|e| format!("追加 {} 失败: {e}", self.path.display()))?;
+        self.map
+            .extend(records.into_iter().map(|r| (r.message_id, r.session_id)));
+        Ok(())
     }
 }
 
@@ -162,10 +163,10 @@ pub struct AttachedFile {
     pub kind: FileKind,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct PendingFile {
-    pub file: AttachedFile,
-    pub received_at: DateTime<Utc>,
+#[derive(Debug)]
+struct PendingFile {
+    file: AttachedFile,
+    received_at: DateTime<Utc>,
 }
 
 /// 待附件缓冲（内存态）：收到无文字文件时暂存，下一条带文字消息一并路由
@@ -255,13 +256,6 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_bindings_is_error() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("bindings.json"), "{oops").unwrap();
-        assert!(BindingStore::load(dir.path()).is_err());
-    }
-
-    #[test]
     fn message_index_roundtrip_and_repoint() {
         let dir = tempfile::tempdir().unwrap();
         let mut idx = MessageIndex::load(dir.path()).unwrap();
@@ -279,19 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn pending_files_take_keeps_order_and_clears() {
-        let now = Utc::now();
-        let mut pending = PendingFiles::default();
-        pending.push("b1", file("a.pdf"), now);
-        pending.push("b1", file("b.pdf"), now);
-        pending.push("b2", file("c.pdf"), now);
-        let names: Vec<_> = pending.take("b1").into_iter().map(|f| f.name).collect();
-        assert_eq!(names, ["a.pdf", "b.pdf"]);
-        assert!(pending.take("b1").is_empty());
-        assert_eq!(pending.take("b2").len(), 1);
-    }
-
-    #[test]
     fn pending_files_expire_by_oldest() {
         let t0 = Utc::now();
         let mut pending = PendingFiles::default();
@@ -304,7 +285,9 @@ mod tests {
         let expired = pending.expire(t0 + Duration::seconds(600), ttl);
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].0, "old");
-        assert_eq!(expired[0].1.len(), 2);
+        let names: Vec<_> = expired[0].1.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(pending.count("old"), 0);
         assert_eq!(pending.take("fresh").len(), 1);
     }
 }

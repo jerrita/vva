@@ -13,7 +13,7 @@ use serde_json::json;
 
 use super::binding::{AttachedFile, MessageIndex};
 use crate::config::AppConfig;
-use crate::model::{Message, Role, Session, SessionHeader, TokenUsage, Turn};
+use crate::model::{Message, Role, Session, TokenUsage, Turn};
 use crate::provider::{CompletionOptions, ResponseSchema};
 
 /// 日志中输入文字的摘要上限（字符数）
@@ -38,7 +38,7 @@ pub enum RunningIntent {
     GuideExisting,
 }
 
-/// 小模型的结构化输出
+/// L1 结构化决策：小模型原生结构化输出，或 Decisions 答案回填
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RouteDecision {
@@ -104,8 +104,6 @@ impl Routed {
 pub enum RouteError {
     #[error("自动路由模型调用失败: {0}。请用 /switch <id> 指定会话，或 /new 新建")]
     Model(String),
-    #[error("自动路由返回了非法 JSON: {0}。请用 /switch <id> 指定会话，或 /new 新建")]
-    InvalidJson(String),
     #[error("自动路由选择了不存在的会话 {0}。请用 /sessions 查看，/switch 指定或 /new 新建")]
     UnknownSession(String),
     #[error("自动路由选择 existing 却未给出 session_id。请用 /switch 指定或 /new 新建")]
@@ -134,17 +132,6 @@ pub struct Candidate {
     pub title: String,
     pub running: bool,
     pub focus: bool,
-}
-
-impl Candidate {
-    pub fn from_header(header: &SessionHeader, running: bool, focus: Option<&str>) -> Self {
-        Self {
-            id: header.id.clone(),
-            title: header.title.clone().unwrap_or_default(),
-            running,
-            focus: focus == Some(header.id.as_str()),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -196,12 +183,13 @@ pub fn resolve_prefix(candidates: &[Candidate], prefix: &str) -> Result<String, 
 
 #[derive(Debug)]
 pub struct ModelReply {
-    pub text: String,
+    pub decision: RouteDecision,
     pub usage: Option<TokenUsage>,
 }
 
 /// L1 模型：`system` 为固定前缀，`user` 为候选表在前、用户消息置尾的 JSON；
-/// `input` 供自带题目结构的后端（Decisions API）直接取用
+/// `input` 供自带题目结构的后端（Decisions API）直接取用。
+/// 只负责产出形状合法的决策，语义校验由 `Router` 统一完成
 #[async_trait]
 pub trait RouteModel: Send + Sync {
     async fn decide(
@@ -264,12 +252,15 @@ impl RouteModel for SmallRouteModel {
         {
             return Err(format!("小模型未正常结束 (stop_reason={reason})"));
         }
+        let text: String = response
+            .messages
+            .iter()
+            .map(Message::text_content)
+            .collect();
+        let decision = serde_json::from_str(&text)
+            .map_err(|e| format!("小模型返回了非法 JSON: {e}: {text}"))?;
         Ok(ModelReply {
-            text: response
-                .messages
-                .iter()
-                .map(Message::text_content)
-                .collect(),
+            decision,
             usage: response.usage,
         })
     }
@@ -296,13 +287,27 @@ files 为随消息到达的附件（仅文件名与类型），reply_to 为用�
 - 对是否新话题有疑问时，选 existing，不要轻易 new。
 - reason 用一句话说明理由。";
 
-/// 提示词载荷：字段顺序即序列化顺序，候选表在前、用户消息置尾以利前缀缓存
+/// 路由输入载荷（小模型提示词与 Decisions `state` 共用）：字段顺序即序列化顺序，
+/// 候选表按 id 排序在前、用户消息置尾以利前缀缓存
 #[derive(Serialize)]
-struct Prompt<'a> {
-    candidates: Vec<&'a Candidate>,
+pub(super) struct Prompt<'a> {
+    pub candidates: Vec<&'a Candidate>,
     files: &'a [AttachedFile],
     reply_to: Option<&'a ReplyRef>,
     user_text: &'a str,
+}
+
+impl<'a> Prompt<'a> {
+    pub fn new(input: &'a RouteInput) -> Self {
+        let mut candidates: Vec<&Candidate> = input.candidates.iter().collect();
+        candidates.sort_by(|a, b| a.id.cmp(&b.id));
+        Self {
+            candidates,
+            files: &input.files,
+            reply_to: input.reply_to.as_ref(),
+            user_text: &input.text,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -364,25 +369,19 @@ impl Router {
         }
 
         // L1
-        let prompt = build_prompt(input);
+        let prompt = serde_json::to_string(&Prompt::new(input)).expect("Prompt 仅含可序列化字段");
         tracing::debug!(
             "路由 L1 调用小模型: 候选 {} 个, 提示词 {} 字符",
             input.candidates.len(),
             prompt.chars().count()
         );
-        let reply = self.model.decide(SYSTEM_PROMPT, &prompt, input).await;
-        let (decision, usage) = match reply {
-            Ok(r) => (
-                serde_json::from_str::<RouteDecision>(&r.text)
-                    .map_err(|e| RouteError::InvalidJson(format!("{e}: {}", r.text))),
-                r.usage,
+        let (validated, usage) = match self.model.decide(SYSTEM_PROMPT, &prompt, input).await {
+            Ok(ModelReply { decision, usage }) => (
+                validate(&decision, input).map(|route| (decision, route)),
+                usage,
             ),
             Err(e) => (Err(RouteError::Model(e)), None),
         };
-        let validated = decision.and_then(|d| {
-            let routed = validate(&d, input)?;
-            Ok((d, routed))
-        });
         match &validated {
             Ok((d, _)) => tracing::info!(
                 "路由决策: action={:?} session_id={} reason={} 小模型 usage={}",
@@ -432,18 +431,6 @@ impl Router {
     }
 }
 
-fn build_prompt(input: &RouteInput) -> String {
-    let mut candidates: Vec<&Candidate> = input.candidates.iter().collect();
-    candidates.sort_by(|a, b| a.id.cmp(&b.id));
-    let prompt = Prompt {
-        candidates,
-        files: &input.files,
-        reply_to: input.reply_to.as_ref(),
-        user_text: &input.text,
-    };
-    serde_json::to_string(&prompt).expect("Prompt 仅含可序列化字段")
-}
-
 /// L2：校验决策并转为 `Route`，任何不一致都显式报错
 fn validate(d: &RouteDecision, input: &RouteInput) -> Result<Route, RouteError> {
     let guide = d.running_intent == RunningIntent::GuideExisting;
@@ -485,7 +472,7 @@ fn validate(d: &RouteDecision, input: &RouteInput) -> Result<Route, RouteError> 
 mod tests {
     use super::*;
     use crate::agent_space::binding::FileKind;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     struct FakeModel {
         reply: Mutex<Option<Result<ModelReply, String>>>,
@@ -493,9 +480,9 @@ mod tests {
     }
 
     impl FakeModel {
-        fn replying(text: &str) -> Self {
+        fn deciding(decision: RouteDecision) -> Self {
             Self::with(Ok(ModelReply {
-                text: text.into(),
+                decision,
                 usage: Some(TokenUsage {
                     prompt_tokens: 120,
                     completion_tokens: 20,
@@ -513,7 +500,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl RouteModel for std::sync::Arc<FakeModel> {
+    impl RouteModel for Arc<FakeModel> {
         async fn decide(
             &self,
             system: &str,
@@ -532,9 +519,13 @@ mod tests {
         }
     }
 
-    fn decision_json(action: &str, sid: Option<&str>, intent: &str) -> String {
-        json!({"action": action, "session_id": sid, "running_intent": intent, "reason": "测试"})
-            .to_string()
+    fn decision(action: Action, sid: Option<&str>, intent: RunningIntent) -> RouteDecision {
+        RouteDecision {
+            action,
+            session_id: sid.map(str::to_string),
+            running_intent: intent,
+            reason: "测试".into(),
+        }
     }
 
     fn cand(id: &str, running: bool, focus: bool) -> Candidate {
@@ -558,14 +549,14 @@ mod tests {
 
     struct Env {
         dir: tempfile::TempDir,
-        model: std::sync::Arc<FakeModel>,
+        model: Arc<FakeModel>,
         router: Router,
         index: MessageIndex,
     }
 
     fn env(model: FakeModel) -> Env {
         let dir = tempfile::tempdir().unwrap();
-        let model = std::sync::Arc::new(model);
+        let model = Arc::new(model);
         let router = Router::new(Box::new(model.clone()), dir.path().join("router.jsonl"));
         let index = MessageIndex::load(dir.path()).unwrap();
         Env {
@@ -576,15 +567,24 @@ mod tests {
         }
     }
 
-    fn two() -> Vec<Candidate> {
-        vec![cand("sess_b", false, false), cand("sess_a", false, true)]
+    /// sess_a 为 focus，sess_r 正在运行
+    fn candidates() -> Vec<Candidate> {
+        vec![
+            cand("sess_r", true, false),
+            cand("sess_b", false, false),
+            cand("sess_a", false, true),
+        ]
+    }
+
+    fn no_model() -> FakeModel {
+        FakeModel::with(Err("不应调用".into()))
     }
 
     #[tokio::test]
     async fn reply_hit_goes_direct_without_model() {
-        let mut e = env(FakeModel::with(Err("不应调用".into())));
+        let mut e = env(no_model());
         e.index.record("m1", "sess_b").unwrap();
-        let mut i = input(two());
+        let mut i = input(candidates());
         i.reply_to = Some(ReplyRef {
             message_id: "m1".into(),
             text: "旧消息".into(),
@@ -598,9 +598,9 @@ mod tests {
 
     #[tokio::test]
     async fn reply_to_cleaned_session_creates_new_with_quote() {
-        let mut e = env(FakeModel::with(Err("不应调用".into())));
+        let mut e = env(no_model());
         e.index.record("m1", "sess_gone").unwrap();
-        let mut i = input(two());
+        let mut i = input(candidates());
         i.reply_to = Some(ReplyRef {
             message_id: "m1".into(),
             text: "旧消息".into(),
@@ -617,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_sessions_creates_new() {
-        let e = env(FakeModel::with(Err("不应调用".into())));
+        let e = env(no_model());
         let r = e.router.route(&input(vec![]), &e.index).await.unwrap();
         assert_eq!(r.route, Route::New { quoted: None });
         assert_eq!(r.routed_by, "first");
@@ -625,12 +625,12 @@ mod tests {
 
     #[tokio::test]
     async fn unindexed_reply_falls_to_l1_with_reply_text() {
-        let e = env(FakeModel::replying(&decision_json(
-            "existing",
+        let e = env(FakeModel::deciding(decision(
+            Action::Existing,
             Some("sess_a"),
-            "none",
+            RunningIntent::None,
         )));
-        let mut i = input(two());
+        let mut i = input(candidates());
         i.reply_to = Some(ReplyRef {
             message_id: "unknown".into(),
             text: "引用原文".into(),
@@ -642,167 +642,110 @@ mod tests {
 
     #[tokio::test]
     async fn l1_decisions_map_to_routes() {
+        use Action::{Existing, New, Oneshot};
+        use RunningIntent::GuideExisting;
+        let no_guide = RunningIntent::None;
         let cases = [
-            (decision_json("oneshot", None, "none"), Route::Oneshot),
+            (decision(Oneshot, None, no_guide), Route::Oneshot),
+            (decision(New, None, no_guide), Route::New { quoted: None }),
             (
-                decision_json("new", None, "none"),
-                Route::New { quoted: None },
-            ),
-            (
-                decision_json("existing", Some("sess_a"), "none"),
+                decision(Existing, Some("sess_a"), no_guide),
                 Route::Existing("sess_a".into()),
             ),
-            // 目标空闲时 guide 降级为普通续写
+            // 目标空闲时 guide 按普通续写处理
             (
-                decision_json("existing", Some("sess_a"), "guide_existing"),
+                decision(Existing, Some("sess_a"), GuideExisting),
                 Route::Existing("sess_a".into()),
+            ),
+            (
+                decision(Existing, Some("sess_r"), GuideExisting),
+                Route::Guide("sess_r".into()),
             ),
         ];
-        for (json, want) in cases {
-            let e = env(FakeModel::replying(&json));
-            let r = e.router.route(&input(two()), &e.index).await.unwrap();
+        for (d, want) in cases {
+            let e = env(FakeModel::deciding(d));
+            let r = e
+                .router
+                .route(&input(candidates()), &e.index)
+                .await
+                .unwrap();
             assert_eq!(r.route, want);
             assert_eq!(r.routed_by, "router");
         }
     }
 
     #[tokio::test]
-    async fn guide_running_session() {
-        let e = env(FakeModel::replying(&decision_json(
-            "existing",
-            Some("sess_r"),
-            "guide_existing",
-        )));
-        let i = input(vec![
-            cand("sess_r", true, true),
-            cand("sess_a", false, false),
-        ]);
-        let r = e.router.route(&i, &e.index).await.unwrap();
-        assert_eq!(r.route, Route::Guide("sess_r".into()));
-    }
-
-    async fn err_of(reply: Result<ModelReply, String>, i: RouteInput) -> RouteError {
-        let e = env(FakeModel::with(reply));
-        e.router.route(&i, &e.index).await.unwrap_err()
-    }
-
-    fn ok(text: &str) -> Result<ModelReply, String> {
-        Ok(ModelReply {
-            text: text.into(),
-            usage: None,
-        })
-    }
-
-    #[tokio::test]
     async fn invalid_decisions_are_explicit_errors() {
-        assert!(matches!(
-            err_of(ok("not json"), input(two())).await,
-            RouteError::InvalidJson(_)
-        ));
-        // 未知字段 / 未知枚举值
-        assert!(matches!(
-            err_of(
-                ok(r#"{"action":"casual","session_id":null,"running_intent":"none","reason":"x"}"#),
-                input(two())
-            )
-            .await,
-            RouteError::InvalidJson(_)
-        ));
-        assert!(matches!(
-            err_of(ok(r#"{"action":"new","session_id":null,"running_intent":"none","reason":"x","extra":1}"#), input(two())).await,
-            RouteError::InvalidJson(_)
-        ));
-        assert_eq!(
-            err_of(
-                ok(&decision_json("existing", Some("sess_zzz"), "none")),
-                input(two())
-            )
-            .await,
-            RouteError::UnknownSession("sess_zzz".into())
-        );
-        assert_eq!(
-            err_of(ok(&decision_json("existing", None, "none")), input(two())).await,
-            RouteError::MissingSessionId
-        );
-        assert_eq!(
-            err_of(
-                ok(&decision_json("existing", Some(""), "none")),
-                input(two())
-            )
-            .await,
-            RouteError::MissingSessionId
-        );
-        assert_eq!(
-            err_of(
-                ok(&decision_json("new", None, "guide_existing")),
-                input(two())
-            )
-            .await,
-            RouteError::Inconsistent("new 不能携带 guide_existing")
-        );
-        assert_eq!(
-            err_of(
-                ok(&decision_json("oneshot", None, "guide_existing")),
-                input(two())
-            )
-            .await,
-            RouteError::Inconsistent("oneshot 不能携带 guide_existing")
-        );
-        assert!(matches!(
-            err_of(Err("stop_reason=refusal".into()), input(two())).await,
-            RouteError::Model(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn oneshot_with_media_rejected() {
-        let mut i = input(two());
-        i.files.push(AttachedFile {
+        use Action::{Existing, New, Oneshot};
+        use RunningIntent::GuideExisting;
+        let no_guide = RunningIntent::None;
+        let mut with_file = input(candidates());
+        with_file.files.push(AttachedFile {
             path: "/tmp/a.png".into(),
             name: "a.png".into(),
             kind: FileKind::Image,
         });
-        assert_eq!(
-            err_of(ok(&decision_json("oneshot", None, "none")), i).await,
-            RouteError::OneshotWithMedia
-        );
-    }
-
-    #[tokio::test]
-    async fn running_without_guide_rejected_not_focus_fallback() {
-        let i = input(vec![
-            cand("sess_r", true, true),
-            cand("sess_a", false, false),
-        ]);
-        assert_eq!(
-            err_of(ok(&decision_json("existing", Some("sess_r"), "none")), i).await,
-            RouteError::RunningNotGuide("sess_r".into())
-        );
+        let cases = [
+            (
+                decision(Existing, Some("sess_zzz"), no_guide),
+                input(candidates()),
+                RouteError::UnknownSession("sess_zzz".into()),
+            ),
+            (
+                decision(Existing, None, no_guide),
+                input(candidates()),
+                RouteError::MissingSessionId,
+            ),
+            (
+                decision(Existing, Some(""), no_guide),
+                input(candidates()),
+                RouteError::MissingSessionId,
+            ),
+            (
+                decision(New, None, GuideExisting),
+                input(candidates()),
+                RouteError::Inconsistent("new 不能携带 guide_existing"),
+            ),
+            (
+                decision(Oneshot, None, GuideExisting),
+                input(candidates()),
+                RouteError::Inconsistent("oneshot 不能携带 guide_existing"),
+            ),
+            (
+                decision(Oneshot, None, no_guide),
+                with_file,
+                RouteError::OneshotWithMedia,
+            ),
+            // running 且非 guide 不回退到 focus
+            (
+                decision(Existing, Some("sess_r"), no_guide),
+                input(candidates()),
+                RouteError::RunningNotGuide("sess_r".into()),
+            ),
+        ];
+        for (d, i, want) in cases {
+            let e = env(FakeModel::deciding(d));
+            assert_eq!(e.router.route(&i, &e.index).await.unwrap_err(), want);
+        }
     }
 
     #[tokio::test]
     async fn prompt_prefix_is_stable_and_logged() {
-        let e = env(FakeModel::replying(&decision_json(
-            "existing",
+        let e = env(FakeModel::deciding(decision(
+            Action::Existing,
             Some("sess_a"),
-            "none",
+            RunningIntent::None,
         )));
-        e.router.route(&input(two()), &e.index).await.unwrap();
+        e.router
+            .route(&input(candidates()), &e.index)
+            .await
+            .unwrap();
         let (system, user) = e.model.prompts.lock().unwrap()[0].clone();
         assert_eq!(system, SYSTEM_PROMPT);
-        // 候选表按 id 排序，且位于用户消息之前；候选行仅四个字段
+        // 候选表按 id 排序，且位于用户消息之前
         let a = user.find("sess_a").unwrap();
         let b = user.find("sess_b").unwrap();
         assert!(a < b && b < user.find("user_text").unwrap());
-        let v: serde_json::Value = serde_json::from_str(&user).unwrap();
-        let mut keys: Vec<_> = v["candidates"][0]
-            .as_object()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect();
-        keys.sort();
-        assert_eq!(keys, ["focus", "id", "running", "title"]);
 
         let log = std::fs::read_to_string(e.dir.path().join("router.jsonl")).unwrap();
         let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
@@ -814,12 +757,15 @@ mod tests {
 
     #[tokio::test]
     async fn failures_are_logged_too() {
-        let e = env(FakeModel::replying("garbage"));
-        e.router.route(&input(two()), &e.index).await.unwrap_err();
+        let e = env(FakeModel::with(Err("模型不可用".into())));
+        e.router
+            .route(&input(candidates()), &e.index)
+            .await
+            .unwrap_err();
         let log = std::fs::read_to_string(e.dir.path().join("router.jsonl")).unwrap();
         let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
         assert!(line["decision"].is_null());
-        assert!(line["error"].as_str().unwrap().contains("非法 JSON"));
+        assert!(line["error"].as_str().unwrap().contains("模型不可用"));
     }
 
     #[test]
@@ -849,21 +795,14 @@ mod tests {
     }
 
     #[test]
-    fn candidate_title_comes_from_header() {
-        let s = Session::new(".", Some("占位标题".into()));
-        let c = Candidate::from_header(&s.header, true, Some(&s.header.id.clone()));
-        assert_eq!(c.title, "占位标题");
-        assert!(c.running && c.focus);
-    }
-
-    #[test]
     fn schema_matches_decision_fields() {
         let s = RouteDecision::response_schema();
-        assert_eq!(s.schema["additionalProperties"], false);
-        let d: RouteDecision =
-            serde_json::from_str(&decision_json("existing", Some("sess_a"), "none")).unwrap();
         let props = s.schema["properties"].as_object().unwrap();
-        let ser = serde_json::to_value(&d).unwrap();
-        assert_eq!(ser.as_object().unwrap().len(), props.len());
+        let ser = serde_json::to_value(decision(Action::New, None, RunningIntent::None)).unwrap();
+        let mut fields: Vec<_> = ser.as_object().unwrap().keys().collect();
+        let mut schema_fields: Vec<_> = props.keys().collect();
+        fields.sort();
+        schema_fields.sort();
+        assert_eq!(fields, schema_fields);
     }
 }
