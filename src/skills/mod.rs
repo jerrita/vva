@@ -67,20 +67,23 @@ pub fn match_invocation<'a>(prompt: &str, skills: &'a [Skill]) -> Option<&'a Ski
     skills.iter().find(|skill| skill.name == name)
 }
 
-/// SKILL.md frontmatter 强类型字段集（规范字段加已知生态字段 `hidden`，其余未知字段拒绝）
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+/// SKILL.md frontmatter 强类型字段集（规范字段加已知生态字段 `hidden`，其余未知字段告警后忽略）
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 struct SkillFrontmatter {
     name: String,
     description: String,
     license: Option<String>,
     compatibility: Option<String>,
-    metadata: Option<BTreeMap<String, String>>,
+    /// 规范为 string → string；非字符串值告警后丢弃
+    metadata: Option<BTreeMap<String, serde_yaml::Value>>,
     #[serde(rename = "allowed-tools")]
     allowed_tools: Option<String>,
     /// 生态扩展字段（如 agent-browser 的存根技能）：接受但 vva 不据此改变行为
     #[allow(dead_code)]
     hidden: Option<bool>,
+    /// 未知字段：仅用于告警
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_yaml::Value>,
 }
 
 /// 解析并校验单个技能目录（SKILL.md 缺失或规范校验失败时返回错误）
@@ -96,6 +99,24 @@ pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
     let (frontmatter, body) = split_frontmatter(&content)?;
     let frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
         .map_err(|error| format!("Invalid SKILL.md frontmatter: {error}"))?;
+    for key in frontmatter.unknown.keys() {
+        tracing::warn!(
+            "Ignoring unknown SKILL.md frontmatter field `{key}` in {}",
+            skill_file.display()
+        );
+    }
+    let mut metadata = BTreeMap::new();
+    for (key, value) in frontmatter.metadata.unwrap_or_default() {
+        match value {
+            serde_yaml::Value::String(text) => {
+                metadata.insert(key, text);
+            }
+            _ => tracing::warn!(
+                "Ignoring non-string SKILL.md metadata `{key}` in {}",
+                skill_file.display()
+            ),
+        }
+    }
 
     crate::discover::validate_name(&frontmatter.name, dir_name, "skill", "directory name")?;
     crate::discover::validate_description(&frontmatter.description, "skill", &frontmatter.name)?;
@@ -115,7 +136,7 @@ pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
         description: frontmatter.description,
         license: frontmatter.license,
         compatibility: frontmatter.compatibility,
-        metadata: frontmatter.metadata.unwrap_or_default(),
+        metadata,
         allowed_tools: frontmatter.allowed_tools,
         path: dir.to_path_buf(),
         source,
@@ -226,7 +247,7 @@ mod tests {
         write_skill(
             &root,
             "web-scrape",
-            "---\nname: web-scrape\ndescription: Scrape pages.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.12+\nmetadata:\n  author: example-org\n  version: \"1.0\"\nallowed-tools: Bash(curl:*) Read\nhidden: true\n---\nBody here.\n",
+            "---\nname: web-scrape\ndescription: Scrape pages.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.12+\nmetadata:\n  author: example-org\n  version: \"1.0\"\n  hermes:\n    tags: [a]\nallowed-tools: Bash(curl:*) Read\nhidden: true\nversion: 2\n---\nBody here.\n",
         );
         let skill = parse_skill(&root.join("web-scrape"), SkillSource::Project).unwrap();
         assert_eq!(skill.license.as_deref(), Some("Apache-2.0"));
@@ -242,6 +263,7 @@ mod tests {
             skill.metadata.get("version").map(String::as_str),
             Some("1.0")
         );
+        assert!(!skill.metadata.contains_key("hermes"));
         assert_eq!(skill.allowed_tools.as_deref(), Some("Bash(curl:*) Read"));
         assert_eq!(skill.source, SkillSource::Project);
         let _ = std::fs::remove_dir_all(root);
@@ -304,14 +326,6 @@ mod tests {
             ),
         );
         assert!(parse_skill(&root.join("long-compat"), SkillSource::Global).is_err());
-
-        // 未知 frontmatter 字段拒绝
-        write_skill(
-            &root,
-            "unknown-field",
-            "---\nname: unknown-field\ndescription: d\ncolor: blue\n---\n",
-        );
-        assert!(parse_skill(&root.join("unknown-field"), SkillSource::Global).is_err());
 
         // 缺失 / 未闭合 frontmatter
         write_skill(&root, "no-fm", "# Just markdown\n");

@@ -32,6 +32,7 @@
      - **禁止非标字段别名猜测**：不编写 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等猜测链。厂商官方规范未定义的字段，不在代码中臆造；
    - **UI / Harness 调度层零兜底**：UI 由标准事件流（`AgentEvent`）驱动渲染，不编写从会话历史覆盖聊天记录的同步补丁。界面未展示时排查适配器转换逻辑；
    - **单测 Mock 真实性约束**：单元测试 Mock 报文对照官方标准文档构造，不在生产代码中为错误测试数据添加容错分支。
+   - **例外：SKILL.md frontmatter 非规范内容**：生态技能包常携带规范外字段（如 `version`）或非字符串 `metadata` 值，解析时告警后忽略，不跳过技能加载；其余规范字段的校验仍严格执行。
 
 ### 2.2 强类型供应商元数据 (Strict Typed Meta)
 > **类型系统约束**：使用强类型结构体，不使用松散的 `HashMap<String, serde_json::Value>`。
