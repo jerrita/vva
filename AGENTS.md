@@ -107,18 +107,23 @@ src/
 │   │   └── stream.rs       # SseEventHandler 实现 (合并后按背压转发增量事件)
 │   └── sse.rs              # 通用标准 Server-Sent Events (SSE) 流式事件解码器 (仅 data: 行)
 ├── agent_space/            # 常驻 IM agent (`vva agent`，设计见 docs/agent.md)
-│   ├── mod.rs              # AgentSpace：启动期配置校验与 run (装配 channel / runtime / scheduler / lifecycle，ctrl-c 退出)、agent_toggles
-│   ├── runtime.rs          # Runtime：入站消息 → 命令 / 文件缓冲 → 路由 → session 轮次 → 出站文本；rollover 切换、定时任务投递、记忆更新广播 (ManagedSession::note)
-│   ├── command.rs          # 斜杠命令解析 (/new /switch /sessions /stop /status /delete)
+│   ├── mod.rs              # AgentSpace：启动期配置校验与 run (装配 channel / runtime / scheduler / lifecycle，ctrl-c 退出)、agent_toggles、tool_factory (SendFile / Schedule 按会话 origin 运行期注入，经 SessionManager::with_tool_factory)
+│   ├── runtime/            # Runtime：入站消息 → 命令 / 文件缓冲 → 路由 → session 轮次 → 出站文本
+│   │   ├── mod.rs          # 主循环、轮次执行、出站与推送 (rollover 切换、记忆更新广播 ManagedSession::note)
+│   │   ├── inbound.rs      # 入站、路由与建会话
+│   │   ├── commands.rs     # 斜杠命令执行与 /status 统计表
+│   │   ├── schedule.rs     # 定时任务执行、多聊天通知与错过提示
+│   │   └── mode_model.rs   # agent 模式模型 (model.json) 读取、校验与落盘
+│   ├── command.rs          # 斜杠命令解析
 │   ├── binding.rs          # BindingStore (focus) / MessageIndex (消息 id → session) / PendingFiles (待附件缓冲)
 │   ├── decisions.rs        # OpenRouter Decisions API (alpha) 路由后端：choice/noul 题目映射、置信度门槛，实现 RouteModel
 │   ├── progress.rs         # 长轮次进度汇报：按固定间隔对新增轮次做确定性摘要 (文件 / 命令意图 / 文字) 并推送，with_progress 包裹投递
 │   ├── router.rs           # Router：L0 reply 锚点 / L1 小模型结构化决策 / L2 显式报错 + router.jsonl
 │   ├── scheduler.rs        # ScheduleStore：schedule.json 任务表 (cron / at / every，多 bindings) + schedule_state.json 状态，热重载、失败计数、错过检测 (不补跑)
-│   ├── schedule_tool.rs    # Schedule 工具 (create/list/pause/resume/delete)，按会话 origin 注入
+│   ├── schedule_tool.rs    # Schedule 工具 (create/list/pause/resume/delete)
 │   ├── lifecycle.rs        # 空闲 TTL → curator 沉淀 → 删除
-│   ├── curator.rs          # 知识沉淀 (kind=curator 会话，游标增量，memory/ git 提交；read_memory_index / memory_reminder 供会话注入记忆索引快照)
-│   ├── send_file.rs        # SendFile 工具与 session_tool_factory：渠道绑定、按会话 origin 运行期注入 (经 SessionManager::with_tool_factory)
+│   ├── curator.rs          # 知识沉淀 (kind=curator 会话，游标增量，memory/ git 提交；memory_reminder 供会话注入记忆索引快照)
+│   ├── send_file.rs        # SendFile 工具：经会话所在渠道发送本地文件
 │   ├── rollover.rs         # 上下文达预留线时同会话压缩并切换新会话（接替会话重生成当前记忆索引快照）；context_tokens / cache_hit_rate
 │   └── channel/            # Channel trait 与 Inbound/Outbound；files.rs 附件落盘辅助；qq/ 官方 OpenAPI + 网关
 ├── agents/                 # Subagent 定义：YAML agent 类型解析与发现

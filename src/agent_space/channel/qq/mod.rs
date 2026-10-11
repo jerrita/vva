@@ -103,7 +103,7 @@ impl QqChannel {
             client: self.api.http().clone(),
             url,
         };
-        InboundFile::new(filename, a.content_type, a.size, source)
+        InboundFile::new(filename, a.content_type, source)
     }
 
     async fn send_text(&self, m: OutboundText) -> Result<Vec<String>> {
@@ -272,7 +272,6 @@ mod tests {
         assert_eq!(msg.files.len(), 2);
         assert_eq!(msg.files[0].filename, "a.png");
         assert_eq!(msg.files[0].mime, "image/png");
-        assert_eq!(msg.files[0].size, 3);
         assert_eq!(msg.files[1].filename, "b.pdf");
         assert!(format!("{:?}", msg.files[1]).contains("https://cdn.example.com/dl/b.pdf?x=1"));
     }

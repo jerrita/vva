@@ -131,7 +131,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 10. Scheduler
 
-实现于 `scheduler.rs`（任务表、状态、计时）、`schedule_tool.rs`（`Schedule` 工具）与 `runtime.rs`（执行与通知）。参考 `../fairy-old`（`../agent` 无此功能）。
+实现于 `scheduler.rs`（任务表、状态、计时）、`schedule_tool.rs`（`Schedule` 工具）与 `runtime/schedule.rs`（执行与通知）。参考 `../fairy-old`（`../agent` 无此功能）。
 
 - **定义**：`<workspace>/schedule.json`，由 `Schedule` 工具与 `/schedule` 命令写入（原子写），人手修改按 mtime 热重载；自己的写入不触发重载，解析失败保留旧任务表并告警（同一 mtime 不重复报错）。
 - **状态**：`schedule_state.json`，每任务 `enabled`、`last_run`、`last_error`、连续 `failures`、interval 的 `next`，以及全局 `last_tick`。

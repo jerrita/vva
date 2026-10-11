@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{EMPTY_REPLY, Runtime, origin_binding};
-use crate::agent_space::scheduler::{Failure, Missed, Task, Trigger};
+use super::{EMPTY_REPLY, Runtime};
+use crate::agent_space::scheduler::{Failure, Missed, Task, Trigger, format_time};
 use crate::harness::ManagedSession;
 use crate::model::SessionKind;
 use crate::system::format_scheduled_reminder;
@@ -140,7 +140,7 @@ impl Runtime {
     pub(super) async fn report_missed(&self, missed: Vec<Missed>) {
         let mut by_binding: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for m in missed {
-            let last = m.last.format("%Y-%m-%d %H:%M");
+            let last = format_time(m.last);
             let line = match m.task.trigger {
                 Trigger::Once(_) => format!(
                     "{}（应于 {last}，已错过；可 /schedule run {} 补跑）",
@@ -176,7 +176,7 @@ fn session_binding(handle: &ManagedSession) -> Result<String, String> {
         .origin
         .as_ref()
         .ok_or_else(|| format!("session {} 无 origin，无法回复", handle.id))?;
-    Ok(origin_binding(origin))
+    Ok(origin.binding())
 }
 
 /// 会话来源（若有）在前，随后 bindings，去重保序

@@ -9,9 +9,6 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::scheduler::{RawTask, ScheduleStore, Task, describe_task, format_time, now_minute};
-use super::send_file::chat_binding;
-use crate::harness::SessionToolFactory;
-use crate::model::SessionHeader;
 use crate::tools::{Tool, parse_args};
 
 struct ScheduleTool {
@@ -141,19 +138,18 @@ impl Tool for ScheduleTool {
     }
 }
 
-/// 仅带 IM 来源的顶层会话挂载（与 SendFile 同一条件）
-pub fn session_tool_factory(channel: String, store: Arc<ScheduleStore>) -> SessionToolFactory {
-    Arc::new(move |header: &SessionHeader| {
-        let Some(binding) = chat_binding(header) else {
-            return Vec::new();
-        };
-        let tool: Arc<dyn Tool> = Arc::new(ScheduleTool {
-            store: store.clone(),
-            channel: channel.clone(),
-            binding,
-            session_id: header.id.clone(),
-        });
-        vec![tool]
+/// 绑定 `binding` 聊天的 Schedule 工具，`channel` 为渠道名
+pub(super) fn tool(
+    store: Arc<ScheduleStore>,
+    channel: String,
+    binding: String,
+    session_id: String,
+) -> Arc<dyn Tool> {
+    Arc::new(ScheduleTool {
+        store,
+        channel,
+        binding,
+        session_id,
     })
 }
 
@@ -188,7 +184,7 @@ mod tests {
         tool.execute(r#"{"action":"create","id":"w","every":"1h","prompt":"喝水"}"#)
             .await
             .unwrap();
-        let w = store.get("w").unwrap();
+        let w = store.get("w").unwrap().0;
         assert_eq!(w.bindings, ["qq:c2c:u1"]);
         // target=session：在当前会话内执行
         tool.execute(
@@ -196,7 +192,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let s = store.get("s").unwrap();
+        let s = store.get("s").unwrap().0;
         assert_eq!(s.session.as_deref(), Some("sess_abc"));
         assert!(s.bindings.is_empty());
 

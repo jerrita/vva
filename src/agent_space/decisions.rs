@@ -33,7 +33,7 @@ impl DecisionsRouteModel {
 
 #[async_trait]
 impl RouteModel for DecisionsRouteModel {
-    async fn decide(&self, _: &str, _: &str, input: &RouteInput) -> Result<ModelReply, String> {
+    async fn decide(&self, input: &RouteInput) -> Result<ModelReply, String> {
         let body = build_request(&self.config.model, input);
         let mut headers = HeaderMap::new();
         let bearer =
@@ -142,10 +142,27 @@ fn confident_choice(name: &str, v: Value, min: f64) -> Result<(String, f64), Str
     Ok((a.choice, c))
 }
 
+/// 响应结构非法视为调用失败；答案不合格时 usage 仍随回复带回，供 router.jsonl 记账
 fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, String> {
     let r: DecisionsResponse =
         serde_json::from_value(response).map_err(|e| format!("Decisions 响应非法: {e}"))?;
-    let (choice, confidence) = confident_choice("action", r.answers.action, min_confidence)?;
+    let Usage {
+        input_tokens,
+        output_tokens,
+    } = r.usage;
+    Ok(ModelReply {
+        decision: decide(r.answers, min_confidence),
+        usage: Some(TokenUsage {
+            prompt_tokens: input_tokens,
+            completion_tokens: output_tokens,
+            total_tokens: input_tokens + output_tokens,
+            ..TokenUsage::default()
+        }),
+    })
+}
+
+fn decide(answers: Answers, min_confidence: f64) -> Result<RouteDecision, String> {
+    let (choice, confidence) = confident_choice("action", answers.action, min_confidence)?;
     let action = match choice.as_str() {
         "oneshot" => Action::Oneshot,
         "existing" => Action::Existing,
@@ -153,8 +170,8 @@ fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, St
         other => return Err(format!("Decisions 返回未知 action: {other}")),
     };
     let (session_id, running_intent) = if action == Action::Existing {
-        let (session, _) = confident_choice("session", r.answers.session, min_confidence)?;
-        let guide: NoulAnswer = answer("guide", r.answers.guide)?;
+        let (session, _) = confident_choice("session", answers.session, min_confidence)?;
+        let guide: NoulAnswer = answer("guide", answers.guide)?;
         let intent = if guide.noul >= GUIDE_THRESHOLD {
             RunningIntent::GuideExisting
         } else {
@@ -164,23 +181,11 @@ fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, St
     } else {
         (None, RunningIntent::None)
     };
-    let Usage {
-        input_tokens,
-        output_tokens,
-    } = r.usage;
-    Ok(ModelReply {
-        decision: RouteDecision {
-            action,
-            session_id,
-            running_intent,
-            reason: format!("decisions: action={choice} ({confidence:.2})"),
-        },
-        usage: Some(TokenUsage {
-            prompt_tokens: input_tokens,
-            completion_tokens: output_tokens,
-            total_tokens: input_tokens + output_tokens,
-            ..TokenUsage::default()
-        }),
+    Ok(RouteDecision {
+        action,
+        session_id,
+        running_intent,
+        reason: format!("decisions: action={choice} ({confidence:.2})"),
     })
 }
 
@@ -227,6 +232,10 @@ mod tests {
         })
     }
 
+    fn decision(v: Value) -> Result<RouteDecision, String> {
+        parse_response(v, 0.6).unwrap().decision
+    }
+
     #[test]
     fn request_maps_candidates_to_choices() {
         let body = build_request("typesafe/jev-1.13", &input());
@@ -243,42 +252,42 @@ mod tests {
     #[test]
     fn answers_map_to_decision() {
         let r = parse_response(response("existing", 0.95, "sess_a", 0.1), 0.6).unwrap();
-        assert_eq!(r.decision.action, Action::Existing);
-        assert_eq!(r.decision.session_id.as_deref(), Some("sess_a"));
-        assert_eq!(r.decision.running_intent, RunningIntent::None);
         assert_eq!(r.usage.unwrap().total_tokens, 592);
+        let d = r.decision.unwrap();
+        assert_eq!(d.action, Action::Existing);
+        assert_eq!(d.session_id.as_deref(), Some("sess_a"));
+        assert_eq!(d.running_intent, RunningIntent::None);
 
-        let g = parse_response(response("existing", 0.9, "sess_b", 0.96), 0.6).unwrap();
-        assert_eq!(g.decision.running_intent, RunningIntent::GuideExisting);
+        let g = decision(response("existing", 0.9, "sess_b", 0.96)).unwrap();
+        assert_eq!(g.running_intent, RunningIntent::GuideExisting);
 
         // 非 existing 时忽略 session / guide 答案
-        let n = parse_response(response("new", 0.9, "sess_a", 0.9), 0.6).unwrap();
+        let n = decision(response("new", 0.9, "sess_a", 0.9)).unwrap();
         assert_eq!(
-            (n.decision.session_id, n.decision.running_intent),
+            (n.session_id, n.running_intent),
             (None, RunningIntent::None)
         );
     }
 
     #[test]
     fn low_or_missing_confidence_is_explicit_error() {
-        let e = parse_response(response("existing", 0.4, "sess_a", 0.0), 0.6).unwrap_err();
+        // 答案不合格时 usage 仍带回
+        let r = parse_response(response("existing", 0.4, "sess_a", 0.0), 0.6).unwrap();
+        assert!(r.usage.is_some());
+        let e = r.decision.unwrap_err();
         assert!(e.contains("置信度不足"), "{e}");
         let mut v = response("existing", 1.0, "sess_a", 0.0);
         v["answers"]["action"]
             .as_object_mut()
             .unwrap()
             .remove("confidence");
-        assert!(
-            parse_response(v, 0.6)
-                .unwrap_err()
-                .contains("缺少 confidence")
-        );
+        assert!(decision(v).unwrap_err().contains("缺少 confidence"));
     }
 
     #[test]
     fn unknown_action_and_malformed_rejected() {
         assert!(
-            parse_response(response("casual", 1.0, "sess_a", 0.0), 0.6)
+            decision(response("casual", 1.0, "sess_a", 0.0))
                 .unwrap_err()
                 .contains("未知 action")
         );

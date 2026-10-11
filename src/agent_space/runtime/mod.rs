@@ -278,7 +278,7 @@ impl Runtime {
         }
         match &report.origin {
             Some(origin) => {
-                self.say(&origin_binding(origin), None, text).await;
+                self.say(&origin.binding(), None, text).await;
             }
             None => tracing::warn!("curator 报告无 origin，未推送: {text}"),
         }
@@ -379,11 +379,6 @@ impl Drop for ReporterGuard<'_> {
     fn drop(&mut self) {
         self.reporting.lock().expect("reporting").remove(self.id);
     }
-}
-
-/// session 来源 → binding `channel:chat_id`
-fn origin_binding(origin: &Origin) -> String {
-    format!("{}:{}", origin.channel, origin.chat_id)
 }
 
 /// 自 `from` 之后新增 assistant 轮次的 (prompt, completion, cached) token 合计

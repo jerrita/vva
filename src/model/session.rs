@@ -288,6 +288,13 @@ pub struct Origin {
     pub chat_id: String,
 }
 
+impl Origin {
+    /// binding 键 `channel:chat_id`
+    pub fn binding(&self) -> String {
+        format!("{}:{}", self.channel, self.chat_id)
+    }
+}
+
 /// agent space 会话携带 IM 来源或非 Topic 类别；TUI / Web 创建的普通会话两者皆无
 fn is_agent_managed(kind: SessionKind, origin: Option<&Origin>) -> bool {
     origin.is_some() || !kind.is_topic()

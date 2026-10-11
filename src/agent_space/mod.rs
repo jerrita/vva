@@ -28,7 +28,7 @@ use self::runtime::Runtime;
 use self::scheduler::ScheduleStore;
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
 use crate::harness::{SessionManager, SessionPreamble, SessionToolFactory};
-use crate::model::{SessionKind, SessionToggles};
+use crate::model::{SessionHeader, SessionKind, SessionToggles};
 use crate::storage::SessionStore;
 
 /// agent space 固定工作区
@@ -61,14 +61,31 @@ fn memory_preamble(root: PathBuf) -> SessionPreamble {
     })
 }
 
+/// 会话运行期工具的挂载条件：带 IM 来源的顶层会话，返回其聊天 `channel:chat_id`
+fn chat_binding(header: &SessionHeader) -> Option<String> {
+    let origin = header.origin.as_ref().filter(|_| header.parent.is_none())?;
+    Some(origin.binding())
+}
+
 /// 会话运行期工具：SendFile 与 Schedule 都只挂在带 IM 来源的顶层会话
 fn tool_factory(channel: Arc<dyn Channel>, schedule: Arc<ScheduleStore>) -> SessionToolFactory {
-    let send_file = send_file::session_tool_factory(channel.clone());
-    let schedule = schedule_tool::session_tool_factory(channel.name().to_string(), schedule);
     Arc::new(move |header| {
-        let mut tools = send_file(header);
-        tools.extend(schedule(header));
-        tools
+        let Some(binding) = chat_binding(header) else {
+            return Vec::new();
+        };
+        vec![
+            send_file::tool(
+                channel.clone(),
+                binding.clone(),
+                header.workspace_root.clone(),
+            ),
+            schedule_tool::tool(
+                schedule.clone(),
+                channel.name().to_string(),
+                binding,
+                header.id.clone(),
+            ),
+        ]
     })
 }
 
@@ -230,7 +247,7 @@ impl AgentSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Origin, SessionHeader};
+    use crate::model::Origin;
 
     fn header(kind: SessionKind, origin: bool) -> SessionHeader {
         let mut header = crate::model::Session::new("/ws", None).header;
@@ -264,5 +281,29 @@ mod tests {
         assert!(preamble(&header(SessionKind::Curator, false)).is_empty());
         assert!(preamble(&header(SessionKind::Topic, false)).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chat_binding_only_for_top_level_origin_sessions() {
+        let header = |kind, origin: bool, continued: bool| {
+            let mut header = crate::model::Session::new("/w", None).header;
+            header.kind = kind;
+            header.origin = origin.then(|| Origin {
+                channel: "qq".into(),
+                chat_id: "c2c:u1".into(),
+            });
+            header.continued_from = continued.then(|| "sess_00000".into());
+            header
+        };
+        let topic = header(SessionKind::Topic, true, false);
+        assert_eq!(chat_binding(&topic).as_deref(), Some("qq:c2c:u1"));
+        assert!(chat_binding(&header(SessionKind::Oneshot, true, false)).is_some());
+        // rollover 接替会话不是 subagent，仍挂载
+        assert!(chat_binding(&header(SessionKind::Topic, true, true)).is_some());
+        // curator 无 IM 来源
+        assert!(chat_binding(&header(SessionKind::Curator, false, false)).is_none());
+        let mut sub = topic;
+        sub.parent = Some("sess_00000".into());
+        assert!(chat_binding(&sub).is_none());
     }
 }

@@ -181,23 +181,18 @@ pub fn resolve_prefix(candidates: &[Candidate], prefix: &str) -> Result<String, 
 
 // ================== 小模型 ==================
 
+/// 模型已应答（已计费）的结果：输出不合格时 `decision` 为错误，usage 照常记账
 #[derive(Debug)]
 pub struct ModelReply {
-    pub decision: RouteDecision,
+    pub decision: Result<RouteDecision, String>,
     pub usage: Option<TokenUsage>,
 }
 
-/// L1 模型：`system` 为固定前缀，`user` 为候选表在前、用户消息置尾的 JSON；
-/// `input` 供自带题目结构的后端（Decisions API）直接取用。
+/// L1 模型：自行把 `input` 组装为后端请求，`Err` 表示调用未得到应答。
 /// 只负责产出形状合法的决策，语义校验由 `Router` 统一完成
 #[async_trait]
 pub trait RouteModel: Send + Sync {
-    async fn decide(
-        &self,
-        system: &str,
-        user: &str,
-        input: &RouteInput,
-    ) -> Result<ModelReply, String>;
+    async fn decide(&self, input: &RouteInput) -> Result<ModelReply, String>;
 }
 
 /// 基于 `settings.small_model` 与原生结构化输出的生产实现
@@ -213,7 +208,14 @@ impl SmallRouteModel {
 
 #[async_trait]
 impl RouteModel for SmallRouteModel {
-    async fn decide(&self, system: &str, user: &str, _: &RouteInput) -> Result<ModelReply, String> {
+    async fn decide(&self, input: &RouteInput) -> Result<ModelReply, String> {
+        // 系统提示固定在前，候选表在前、用户消息置尾的 JSON 作为 user 轮
+        let prompt = serde_json::to_string(&Prompt::new(input)).expect("Prompt 仅含可序列化字段");
+        tracing::debug!(
+            "路由 L1 调用小模型: 候选 {} 个, 提示词 {} 字符",
+            input.candidates.len(),
+            prompt.chars().count()
+        );
         let spec = self
             .config
             .settings
@@ -225,8 +227,8 @@ impl RouteModel for SmallRouteModel {
             .resolve_model(spec, None)
             .map_err(|e| e.to_string())?;
         let mut session = Session::new(".", None);
-        session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
-        session.append_turn(Turn::user_turn(Message::text(user)));
+        session.append_turn(Turn::new(Role::System, vec![Message::text(SYSTEM_PROMPT)]));
+        session.append_turn(Turn::user_turn(Message::text(prompt)));
         let options = CompletionOptions {
             model: resolved.model_id.clone(),
             temperature: Some(0.0),
@@ -257,10 +259,9 @@ impl RouteModel for SmallRouteModel {
             .iter()
             .map(Message::text_content)
             .collect();
-        let decision = serde_json::from_str(&text)
-            .map_err(|e| format!("小模型返回了非法 JSON: {e}: {text}"))?;
         Ok(ModelReply {
-            decision,
+            decision: serde_json::from_str(&text)
+                .map_err(|e| format!("小模型返回了非法 JSON: {e}: {text}")),
             usage: response.usage,
         })
     }
@@ -369,15 +370,11 @@ impl Router {
         }
 
         // L1
-        let prompt = serde_json::to_string(&Prompt::new(input)).expect("Prompt 仅含可序列化字段");
-        tracing::debug!(
-            "路由 L1 调用小模型: 候选 {} 个, 提示词 {} 字符",
-            input.candidates.len(),
-            prompt.chars().count()
-        );
-        let (validated, usage) = match self.model.decide(SYSTEM_PROMPT, &prompt, input).await {
+        let (validated, usage) = match self.model.decide(input).await {
             Ok(ModelReply { decision, usage }) => (
-                validate(&decision, input).map(|route| (decision, route)),
+                decision
+                    .map_err(RouteError::Model)
+                    .and_then(|d| validate(&d, input).map(|route| (d, route))),
                 usage,
             ),
             Err(e) => (Err(RouteError::Model(e)), None),
@@ -476,13 +473,14 @@ mod tests {
 
     struct FakeModel {
         reply: Mutex<Option<Result<ModelReply, String>>>,
-        prompts: Mutex<Vec<(String, String)>>,
+        /// 每次调用收到的提示词载荷
+        prompts: Mutex<Vec<String>>,
     }
 
     impl FakeModel {
         fn deciding(decision: RouteDecision) -> Self {
             Self::with(Ok(ModelReply {
-                decision,
+                decision: Ok(decision),
                 usage: Some(TokenUsage {
                     prompt_tokens: 120,
                     completion_tokens: 20,
@@ -501,16 +499,11 @@ mod tests {
 
     #[async_trait]
     impl RouteModel for Arc<FakeModel> {
-        async fn decide(
-            &self,
-            system: &str,
-            user: &str,
-            _: &RouteInput,
-        ) -> Result<ModelReply, String> {
+        async fn decide(&self, input: &RouteInput) -> Result<ModelReply, String> {
             self.prompts
                 .lock()
                 .unwrap()
-                .push((system.into(), user.into()));
+                .push(serde_json::to_string(&Prompt::new(input)).unwrap());
             self.reply
                 .lock()
                 .unwrap()
@@ -637,7 +630,7 @@ mod tests {
         });
         let r = e.router.route(&i, &e.index).await.unwrap();
         assert_eq!(r.route, Route::Existing("sess_a".into()));
-        assert!(e.model.prompts.lock().unwrap()[0].1.contains("引用原文"));
+        assert!(e.model.prompts.lock().unwrap()[0].contains("引用原文"));
     }
 
     #[tokio::test]
@@ -740,8 +733,7 @@ mod tests {
             .route(&input(candidates()), &e.index)
             .await
             .unwrap();
-        let (system, user) = e.model.prompts.lock().unwrap()[0].clone();
-        assert_eq!(system, SYSTEM_PROMPT);
+        let user = e.model.prompts.lock().unwrap()[0].clone();
         // 候选表按 id 排序，且位于用户消息之前
         let a = user.find("sess_a").unwrap();
         let b = user.find("sess_b").unwrap();

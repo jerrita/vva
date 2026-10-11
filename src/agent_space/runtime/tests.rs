@@ -59,7 +59,7 @@ struct NoModel;
 
 #[async_trait::async_trait]
 impl RouteModel for NoModel {
-    async fn decide(&self, _: &str, _: &str, _: &RouteInput) -> Result<ModelReply, String> {
+    async fn decide(&self, _: &RouteInput) -> Result<ModelReply, String> {
         Err("L0 路径不应调用小模型".into())
     }
 }
@@ -265,7 +265,6 @@ async fn files_without_text_are_buffered_then_merged_into_next_message() {
     only_file.files = vec![InboundFile::new(
         "a.pdf".into(),
         "application/pdf".into(),
-        3,
         BytesSource(b"pdf"),
     )];
     f.runtime.handle(only_file).await;

@@ -389,13 +389,8 @@ impl Runtime {
             )),
             ("delete", Some(id)) => Ok(format!("已删除 {}", self.schedule.remove(id)?.id)),
             ("run", Some(id)) => {
-                let task = self.schedule.get(id)?;
-                let enabled = self
-                    .schedule
-                    .list()
-                    .into_iter()
-                    .any(|(t, s)| t.id == task.id && s.enabled);
-                if !enabled {
+                let (task, state) = self.schedule.get(id)?;
+                if !state.enabled {
                     return Err(format!("任务 {} 已停用，请先 /schedule resume", task.id));
                 }
                 let id = task.id.clone();

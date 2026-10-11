@@ -69,22 +69,14 @@ pub trait FileSource: Send + Sync + Debug {
 pub struct InboundFile {
     pub filename: String,
     pub mime: String,
-    /// 平台声明的字节数，可能为 0（不可信）。
-    pub size: u64,
     source: Arc<dyn FileSource>,
 }
 
 impl InboundFile {
-    pub fn new(
-        filename: String,
-        mime: String,
-        size: u64,
-        source: impl FileSource + 'static,
-    ) -> Self {
+    pub fn new(filename: String, mime: String, source: impl FileSource + 'static) -> Self {
         Self {
             filename,
             mime,
-            size,
             source: Arc::new(source),
         }
     }

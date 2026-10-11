@@ -1,6 +1,6 @@
 //! SendFile 工具：经当前会话所在渠道把本地文件发给用户。
 //!
-//! 渠道绑定、运行期按会话注入（见 [`session_tool_factory`]），不属于静态注册表；
+//! 渠道绑定、运行期按会话注入（见 `agent_space::tool_factory`），不属于静态注册表；
 //! subagent 会话不挂载。渠道返回的错误（如 QQ guild / dm 不支持上传）原样作为工具错误，由模型转述。
 
 use std::path::PathBuf;
@@ -11,8 +11,6 @@ use serde::Deserialize;
 
 use super::channel::{Channel, Outbound, OutboundFile};
 use crate::config::expand_tilde;
-use crate::harness::SessionToolFactory;
-use crate::model::SessionHeader;
 use crate::tools::filesystem::resolve_path;
 use crate::tools::{Tool, parse_args};
 
@@ -75,24 +73,16 @@ impl Tool for SendFileTool {
     }
 }
 
-/// 会话运行期工具的挂载条件：带 IM 来源的顶层会话，返回其聊天 `channel:chat_id`
-pub(super) fn chat_binding(header: &SessionHeader) -> Option<String> {
-    let origin = header.origin.as_ref().filter(|_| header.parent.is_none())?;
-    Some(format!("{}:{}", origin.channel, origin.chat_id))
-}
-
-/// 会话工具工厂：为带 IM 来源的顶层会话挂载绑定其聊天的 SendFile
-pub fn session_tool_factory(channel: Arc<dyn Channel>) -> SessionToolFactory {
-    Arc::new(move |header: &SessionHeader| {
-        let Some(binding) = chat_binding(header) else {
-            return Vec::new();
-        };
-        let tool: Arc<dyn Tool> = Arc::new(SendFileTool {
-            channel: channel.clone(),
-            binding,
-            workspace: header.workspace_root.clone(),
-        });
-        vec![tool]
+/// 绑定 `binding` 聊天的 SendFile 工具
+pub(super) fn tool(
+    channel: Arc<dyn Channel>,
+    binding: String,
+    workspace: PathBuf,
+) -> Arc<dyn Tool> {
+    Arc::new(SendFileTool {
+        channel,
+        binding,
+        workspace,
     })
 }
 
@@ -104,7 +94,6 @@ mod tests {
 
     use super::super::channel::Inbound;
     use super::*;
-    use crate::model::{Origin, Session, SessionKind};
 
     #[derive(Default)]
     struct FakeChannel {
@@ -166,29 +155,5 @@ mod tests {
         let err = tool.execute(r#"{"path":"sub"}"#).await.unwrap_err();
         assert!(err.contains("Not a regular file"));
         assert!(channel.sent.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn chat_binding_only_for_top_level_origin_sessions() {
-        let header = |kind, origin: bool, continued: bool| {
-            let mut header = Session::new("/w", None).header;
-            header.kind = kind;
-            header.origin = origin.then(|| Origin {
-                channel: "qq".into(),
-                chat_id: "c2c:u1".into(),
-            });
-            header.continued_from = continued.then(|| "sess_00000".into());
-            header
-        };
-        let topic = header(SessionKind::Topic, true, false);
-        assert_eq!(chat_binding(&topic).as_deref(), Some("qq:c2c:u1"));
-        assert!(chat_binding(&header(SessionKind::Oneshot, true, false)).is_some());
-        // rollover 接替会话不是 subagent，仍挂载
-        assert!(chat_binding(&header(SessionKind::Topic, true, true)).is_some());
-        // curator 无 IM 来源
-        assert!(chat_binding(&header(SessionKind::Curator, false, false)).is_none());
-        let mut sub = topic;
-        sub.parent = Some("sess_00000".into());
-        assert!(chat_binding(&sub).is_none());
     }
 }

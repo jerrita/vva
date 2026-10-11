@@ -15,8 +15,6 @@ pub struct Attachment {
     pub filename: Option<String>,
     #[serde(default)]
     pub content_type: String,
-    #[serde(default)]
-    pub size: u64,
     /// 原始 URL，可能缺协议头。
     pub url: String,
 }
@@ -183,7 +181,6 @@ mod tests {
         assert_eq!(ev.text, "看看这个");
         assert_eq!(ev.attachments.len(), 1);
         assert_eq!(ev.attachments[0].filename.as_deref(), Some("a.png"));
-        assert_eq!(ev.attachments[0].size, 12);
         assert!(ev.reply_to.is_none());
     }
 

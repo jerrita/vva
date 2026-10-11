@@ -345,6 +345,13 @@ struct Inner {
     state: StateFile,
 }
 
+impl Inner {
+    /// 任务当前状态；尚无记录时为默认值
+    fn state_of(&self, id: &str) -> TaskState {
+        self.state.tasks.get(id).cloned().unwrap_or_default()
+    }
+}
+
 /// 任务定义与状态的唯一持有者；Runtime、Schedule 工具与计时循环共享
 pub struct ScheduleStore {
     schedule_path: PathBuf,
@@ -490,12 +497,7 @@ impl ScheduleStore {
         inner
             .tasks
             .iter()
-            .map(|t| {
-                (
-                    t.clone(),
-                    inner.state.tasks.get(&t.id).cloned().unwrap_or_default(),
-                )
-            })
+            .map(|t| (t.clone(), inner.state_of(&t.id)))
             .collect()
     }
 
@@ -579,9 +581,10 @@ impl ScheduleStore {
         Ok(task)
     }
 
-    pub fn get(&self, token: &str) -> Result<Task, String> {
+    pub fn get(&self, token: &str) -> Result<(Task, TaskState), String> {
         let inner = self.inner();
-        Self::resolve(&inner, token).map(|i| inner.tasks[i].clone())
+        let task = &inner.tasks[Self::resolve(&inner, token)?];
+        Ok((task.clone(), inner.state_of(&task.id)))
     }
 
     /// 在该分钟到点的已启用任务
@@ -591,7 +594,7 @@ impl ScheduleStore {
             .tasks
             .iter()
             .filter(|t| {
-                let state = inner.state.tasks.get(&t.id).cloned().unwrap_or_default();
+                let state = inner.state_of(&t.id);
                 state.enabled && Self::is_due(t, &state, minute)
             })
             .cloned()
@@ -953,7 +956,7 @@ mod tests {
         s.add(hourly("water2")).unwrap();
         assert!(s.add(hourly("water1")).is_err(), "id 重复");
         assert!(s.get("water").unwrap_err().contains("匹配多个"));
-        assert_eq!(s.get("water1").unwrap().id, "water1");
+        assert_eq!(s.get("water1").unwrap().0.id, "water1");
 
         s.set_enabled("water1", false).unwrap();
         assert!(!s.list()[0].1.enabled);
