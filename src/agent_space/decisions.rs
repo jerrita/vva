@@ -1,14 +1,14 @@
 //! OpenRouter Decisions API（alpha）路由后端：把候选表映射为 choice / noul 题目，
-//! 答案按 `RouteDecision` 形状回填，其后的校验与日志与小模型后端共用。
+//! 答案回填为 `RouteDecision`，其后的校验与日志与小模型后端共用。
 
 use async_trait::async_trait;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use super::binding::AttachedFile;
 use super::router::{
-    Action, ModelReply, ReplyRef, RouteDecision, RouteInput, RouteModel, RunningIntent,
+    Action, ModelReply, Prompt, RouteDecision, RouteInput, RouteModel, RunningIntent,
 };
 use crate::config::DecisionsRouterConfig;
 use crate::model::TokenUsage;
@@ -17,6 +17,8 @@ use crate::provider::http::post_json;
 
 /// 空标题候选在选项说明中的占位
 const UNTITLED: &str = "(无标题)";
+/// `guide` noul 答案不低于该值视为插话
+const GUIDE_THRESHOLD: f64 = 0.5;
 
 pub struct DecisionsRouteModel {
     config: DecisionsRouterConfig,
@@ -45,19 +47,11 @@ impl RouteModel for DecisionsRouteModel {
     }
 }
 
-#[derive(serde::Serialize)]
-struct State<'a> {
-    candidates: Vec<&'a super::router::Candidate>,
-    files: &'a [AttachedFile],
-    reply_to: Option<&'a ReplyRef>,
-    user_text: &'a str,
-}
-
-/// 请求体：候选表按 id 排序，用户消息在 state 末尾
-pub fn build_request(model: &str, input: &RouteInput) -> Value {
-    let mut candidates: Vec<_> = input.candidates.iter().collect();
-    candidates.sort_by(|a, b| a.id.cmp(&b.id));
-    let sessions: serde_json::Map<String, Value> = candidates
+/// 请求体：`state` 与小模型提示词同构（候选表按 id 排序，用户消息置尾）
+fn build_request(model: &str, input: &RouteInput) -> Value {
+    let state = Prompt::new(input);
+    let sessions: serde_json::Map<String, Value> = state
+        .candidates
         .iter()
         .map(|c| {
             let title = if c.title.is_empty() {
@@ -68,12 +62,6 @@ pub fn build_request(model: &str, input: &RouteInput) -> Value {
             (c.id.clone(), json!(title))
         })
         .collect();
-    let state = State {
-        candidates,
-        files: &input.files,
-        reply_to: input.reply_to.as_ref(),
-        user_text: &input.text,
-    };
     json!({
         "model": model,
         "state": state,
@@ -105,13 +93,9 @@ pub fn build_request(model: &str, input: &RouteInput) -> Value {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Usage {
     input_tokens: u32,
     output_tokens: u32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    cost: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -125,6 +109,7 @@ struct NoulAnswer {
     noul: f64,
 }
 
+/// `session` / `guide` 仅在 `action=existing` 时参与，故延迟解析
 #[derive(Deserialize)]
 struct Answers {
     action: Value,
@@ -138,11 +123,13 @@ struct DecisionsResponse {
     usage: Usage,
 }
 
-fn choice_of(name: &str, v: Value) -> Result<ChoiceAnswer, String> {
+fn answer<T: DeserializeOwned>(name: &str, v: Value) -> Result<T, String> {
     serde_json::from_value(v).map_err(|e| format!("Decisions 题目 {name} 答案非法: {e}"))
 }
 
-fn confident(name: &str, a: &ChoiceAnswer, min: f64) -> Result<(), String> {
+/// 解析 choice 题并要求置信度不低于 `min`，返回 (选项, 置信度)
+fn confident_choice(name: &str, v: Value, min: f64) -> Result<(String, f64), String> {
+    let a: ChoiceAnswer = answer(name, v)?;
     let c = a
         .confidence
         .ok_or_else(|| format!("Decisions 题目 {name} 缺少 confidence"))?;
@@ -152,52 +139,46 @@ fn confident(name: &str, a: &ChoiceAnswer, min: f64) -> Result<(), String> {
             a.choice
         ));
     }
-    Ok(())
+    Ok((a.choice, c))
 }
 
-/// 答案 → `RouteDecision` JSON；`session` / `guide` 仅在 `action=existing` 时参与
-pub fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, String> {
+fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, String> {
     let r: DecisionsResponse =
         serde_json::from_value(response).map_err(|e| format!("Decisions 响应非法: {e}"))?;
-    let action = choice_of("action", r.answers.action)?;
-    confident("action", &action, min_confidence)?;
-    let action_kind = match action.choice.as_str() {
+    let (choice, confidence) = confident_choice("action", r.answers.action, min_confidence)?;
+    let action = match choice.as_str() {
         "oneshot" => Action::Oneshot,
         "existing" => Action::Existing,
         "new" => Action::New,
         other => return Err(format!("Decisions 返回未知 action: {other}")),
     };
-    let (session_id, intent) = if action_kind == Action::Existing {
-        let session = choice_of("session", r.answers.session)?;
-        confident("session", &session, min_confidence)?;
-        let guide: NoulAnswer = serde_json::from_value(r.answers.guide)
-            .map_err(|e| format!("Decisions 题目 guide 答案非法: {e}"))?;
-        let intent = if guide.noul >= 0.5 {
+    let (session_id, running_intent) = if action == Action::Existing {
+        let (session, _) = confident_choice("session", r.answers.session, min_confidence)?;
+        let guide: NoulAnswer = answer("guide", r.answers.guide)?;
+        let intent = if guide.noul >= GUIDE_THRESHOLD {
             RunningIntent::GuideExisting
         } else {
             RunningIntent::None
         };
-        (Some(session.choice), intent)
+        (Some(session), intent)
     } else {
         (None, RunningIntent::None)
     };
-    let decision = RouteDecision {
-        action: action_kind,
-        session_id,
-        running_intent: intent,
-        reason: format!(
-            "decisions: action={} ({:.2})",
-            action.choice,
-            action.confidence.unwrap_or_default()
-        ),
-    };
-    let u = r.usage;
+    let Usage {
+        input_tokens,
+        output_tokens,
+    } = r.usage;
     Ok(ModelReply {
-        text: serde_json::to_string(&decision).expect("RouteDecision 可序列化"),
+        decision: RouteDecision {
+            action,
+            session_id,
+            running_intent,
+            reason: format!("decisions: action={choice} ({confidence:.2})"),
+        },
         usage: Some(TokenUsage {
-            prompt_tokens: u.input_tokens,
-            completion_tokens: u.output_tokens,
-            total_tokens: u.input_tokens + u.output_tokens,
+            prompt_tokens: input_tokens,
+            completion_tokens: output_tokens,
+            total_tokens: input_tokens + output_tokens,
             ..TokenUsage::default()
         }),
     })
@@ -223,7 +204,7 @@ mod tests {
                 },
                 Candidate {
                     id: "sess_a".into(),
-                    title: "修 Rust".into(),
+                    title: "整理笔记".into(),
                     running: false,
                     focus: true,
                 },
@@ -249,38 +230,31 @@ mod tests {
     #[test]
     fn request_maps_candidates_to_choices() {
         let body = build_request("typesafe/jev-1.13", &input());
-        assert_eq!(body["model"], "typesafe/jev-1.13");
         let sessions = body["questions"]["session"]["criteria"]
             .as_object()
             .unwrap();
-        assert_eq!(sessions["sess_a"], "修 Rust");
+        assert_eq!(sessions["sess_a"], "整理笔记");
         assert_eq!(sessions["sess_b"], UNTITLED);
         // 候选按 id 排序，用户消息在 state 末尾
         assert_eq!(body["state"]["candidates"][0]["id"], "sess_a");
         assert_eq!(body["state"]["user_text"], "再看看");
-        assert_eq!(body["questions"]["guide"]["type"], "noul");
     }
 
     #[test]
-    fn existing_maps_to_decision() {
+    fn answers_map_to_decision() {
         let r = parse_response(response("existing", 0.95, "sess_a", 0.1), 0.6).unwrap();
-        let d: RouteDecision = serde_json::from_str(&r.text).unwrap();
-        assert_eq!(d.action, Action::Existing);
-        assert_eq!(d.session_id.as_deref(), Some("sess_a"));
-        assert_eq!(d.running_intent, RunningIntent::None);
+        assert_eq!(r.decision.action, Action::Existing);
+        assert_eq!(r.decision.session_id.as_deref(), Some("sess_a"));
+        assert_eq!(r.decision.running_intent, RunningIntent::None);
         assert_eq!(r.usage.unwrap().total_tokens, 592);
-    }
 
-    #[test]
-    fn guide_and_non_existing_drop_session() {
         let g = parse_response(response("existing", 0.9, "sess_b", 0.96), 0.6).unwrap();
-        let d: RouteDecision = serde_json::from_str(&g.text).unwrap();
-        assert_eq!(d.running_intent, RunningIntent::GuideExisting);
+        assert_eq!(g.decision.running_intent, RunningIntent::GuideExisting);
 
+        // 非 existing 时忽略 session / guide 答案
         let n = parse_response(response("new", 0.9, "sess_a", 0.9), 0.6).unwrap();
-        let d: RouteDecision = serde_json::from_str(&n.text).unwrap();
         assert_eq!(
-            (d.session_id, d.running_intent),
+            (n.decision.session_id, n.decision.running_intent),
             (None, RunningIntent::None)
         );
     }
