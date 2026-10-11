@@ -248,7 +248,8 @@ mod tests {
 
     #[test]
     fn project_overrides_global_and_builtin() {
-        let global = temp_root("global").join(".vva").join("agents");
+        let global_root = temp_root("global");
+        let global = global_root.join(".vva").join("agents");
         let workspace = temp_root("project");
         // 同名覆盖内置 general；项目新增自定义 def；项目 .vva 覆盖项目 .agents
         write_def(
@@ -275,7 +276,7 @@ mod tests {
         let custom = defs.iter().find(|def| def.name == "custom").unwrap();
         assert_eq!(custom.description, "Vva dir version.");
 
-        let _ = std::fs::remove_dir_all(global);
+        let _ = std::fs::remove_dir_all(global_root);
         let _ = std::fs::remove_dir_all(workspace);
     }
 

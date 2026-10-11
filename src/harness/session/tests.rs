@@ -690,6 +690,7 @@ async fn notice_lifecycle_uses_identity_and_current_capabilities() {
     task.event(capabilities(&[])).await;
     assert_eq!(task.view.notices.len(), 1);
     assert_eq!(task.view.notices[0].id, second);
+    cleanup(&task);
 }
 
 #[tokio::test]
@@ -708,6 +709,7 @@ async fn turn_failure_keeps_its_anchor_when_another_turn_starts() {
     assert!(
         matches!(&task.view.notices[0].kind, NoticeKind::Turn { turn_id, aborted: false } if turn_id == &id)
     );
+    cleanup(&task);
 }
 
 // ---- 管理器：模型选择 / 回退 / 分叉 / 编辑器 ----
