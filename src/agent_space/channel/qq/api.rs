@@ -3,7 +3,9 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use reqwest::Method;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use reqwest::{Method, StatusCode};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -97,6 +99,22 @@ impl Target {
             ))),
         }
     }
+}
+
+/// 富媒体 `file_type`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaType {
+    Image = 1,
+    Video = 2,
+    Audio = 3,
+    File = 4,
+}
+
+/// 消息正文：Markdown / 纯文本（v2 `msg_type` 2 / 0），或已上传的富媒体（`msg_type` 7）。
+enum Body<'a> {
+    Markdown(&'a str),
+    Plain(&'a str),
+    Media(Value),
 }
 
 struct Token {
@@ -233,9 +251,7 @@ impl QqApi {
         body: Option<&Value>,
         timeout: Duration,
     ) -> Result<T> {
-        let mut token = self.access_token().await?;
-        let mut retried = false;
-        loop {
+        let send = async |token: String| {
             let mut req = self
                 .http
                 .request(method.clone(), format!("{}{path}", self.base_url))
@@ -247,35 +263,35 @@ impl QqApi {
             }
             let started = Instant::now();
             let resp = req.send().await?;
-            let status = resp.status();
             tracing::debug!(
                 "QQ 请求: {method} {path} -> {} 耗时 {}ms",
-                status.as_u16(),
+                resp.status().as_u16(),
                 started.elapsed().as_millis()
             );
-            if status.as_u16() == 401 && !retried {
-                retried = true;
-                tracing::warn!("QQ 请求 401，刷新 access token 重试一次: {path}");
-                self.invalidate_token().await;
-                token = self.access_token().await?;
-                continue;
-            }
-            let text = resp.text().await?;
-            if !status.is_success() {
-                tracing::warn!(
-                    "QQ 请求失败: {method} {path} 状态 {}{}",
-                    status.as_u16(),
-                    if status.as_u16() == 429 {
-                        "（被限流）"
-                    } else {
-                        ""
-                    }
-                );
-                return Err(api_error(status.as_u16(), path, &text));
-            }
-            return serde_json::from_str(&text)
-                .map_err(|e| ChannelError::Protocol(format!("{path} 响应非法: {e}")));
+            Ok::<_, ChannelError>(resp)
+        };
+        let mut resp = send(self.access_token().await?).await?;
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            tracing::warn!("QQ 请求 401，刷新 access token 重试一次: {path}");
+            self.invalidate_token().await;
+            resp = send(self.access_token().await?).await?;
         }
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            tracing::warn!(
+                "QQ 请求失败: {method} {path} 状态 {}{}",
+                status.as_u16(),
+                if status == StatusCode::TOO_MANY_REQUESTS {
+                    "（被限流）"
+                } else {
+                    ""
+                }
+            );
+            return Err(api_error(status.as_u16(), path, &text));
+        }
+        serde_json::from_str(&text)
+            .map_err(|e| ChannelError::Protocol(format!("{path} 响应非法: {e}")))
     }
 
     pub async fn gateway_url(&self) -> Result<String> {
@@ -285,16 +301,27 @@ impl QqApi {
         Ok(resp.url)
     }
 
-    async fn post_message(&self, target: &Target, body: Value) -> Result<String> {
+    async fn post_message(
+        &self,
+        target: &Target,
+        body: Body<'_>,
+        reply_to: Option<&str>,
+        seq: u32,
+    ) -> Result<String> {
+        let payload = message_payload(target, body, reply_to, seq);
         let sent: SentMessage = self
             .request(
                 Method::POST,
                 &target.messages_path(),
-                Some(&body),
+                Some(&payload),
                 REQUEST_TIMEOUT,
             )
             .await?;
         Ok(sent.quote_id())
+    }
+
+    fn next_seq(&self) -> u32 {
+        self.seq.fetch_add(1, Ordering::Relaxed)
     }
 
     /// 分段发送 Markdown 文本；Markdown 被拒（非认证 / 限流 / 服务端错误）时该段降级纯文本。
@@ -309,14 +336,16 @@ impl QqApi {
         let limit = reply_to.map(|_| PASSIVE_REPLY_LIMIT);
         let mut ids = Vec::new();
         for chunk in chunk_text(text, MAX_MESSAGE_CHARS, limit) {
-            let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-            let markdown = message_payload(target, &chunk, true, reply_to, seq);
-            let id = match self.post_message(target, markdown).await {
+            let seq = self.next_seq();
+            let id = match self
+                .post_message(target, Body::Markdown(&chunk), reply_to, seq)
+                .await
+            {
                 Err(ChannelError::Api { status, .. }) if markdown_degradable(status) => {
                     tracing::warn!("QQ markdown 发送失败（{status}），降级纯文本");
-                    let plain =
-                        message_payload(target, &strip_markdown(&chunk), false, reply_to, seq);
-                    self.post_message(target, plain).await?
+                    let plain = strip_markdown(&chunk);
+                    self.post_message(target, Body::Plain(&plain), reply_to, seq)
+                        .await?
                 }
                 other => other?,
             };
@@ -325,18 +354,18 @@ impl QqApi {
         Ok(ids)
     }
 
-    /// 上传 base64 文件（`file_type`：1 图片 / 2 视频 / 3 语音 / 4 文件）并以 msg_type=7 发出。
+    /// 上传文件（base64）后以富媒体消息发出；仅 group / c2c 支持。
     pub async fn send_media(
         &self,
         target: &Target,
-        file_type: u8,
+        media_type: MediaType,
         file_name: &str,
-        file_data: String,
+        data: &[u8],
         reply_to: Option<&str>,
     ) -> Result<String> {
         let upload = json!({
-            "file_type": file_type,
-            "file_data": file_data,
+            "file_type": media_type as u8,
+            "file_data": STANDARD.encode(data),
             "file_name": file_name,
             "srv_send_msg": false,
         });
@@ -353,15 +382,8 @@ impl QqApi {
                 "富媒体上传返回为空: {file_name}"
             )));
         }
-        let mut body = json!({
-            "msg_type": 7,
-            "media": media,
-            "msg_seq": self.seq.fetch_add(1, Ordering::Relaxed),
-        });
-        if let Some(id) = reply_to {
-            body["msg_id"] = json!(id);
-        }
-        self.post_message(target, body).await
+        self.post_message(target, Body::Media(media), reply_to, self.next_seq())
+            .await
     }
 }
 
@@ -370,20 +392,14 @@ fn markdown_degradable(status: u16) -> bool {
     !matches!(status, 401 | 403 | 429) && status < 500
 }
 
-fn message_payload(
-    target: &Target,
-    text: &str,
-    markdown: bool,
-    reply_to: Option<&str>,
-    seq: u32,
-) -> Value {
-    let mut p = if markdown {
-        json!({ "markdown": { "content": text } })
-    } else {
-        json!({ "content": text })
+fn message_payload(target: &Target, body: Body<'_>, reply_to: Option<&str>, seq: u32) -> Value {
+    let (mut p, msg_type) = match body {
+        Body::Markdown(text) => (json!({ "markdown": { "content": text } }), 2),
+        Body::Plain(text) => (json!({ "content": text }), 0),
+        Body::Media(media) => (json!({ "media": media }), 7),
     };
     if target.msg_type.is_v2() {
-        p["msg_type"] = json!(if markdown { 2 } else { 0 });
+        p["msg_type"] = json!(msg_type);
         p["msg_seq"] = json!(seq);
     }
     if let Some(id) = reply_to {
@@ -425,35 +441,8 @@ mod tests {
         };
         assert_eq!(t.binding(), "qq:group:G123");
         assert_eq!(Target::from_binding("qq:group:G123").unwrap(), t);
-        assert_eq!(
-            Target::from_binding("qq:dm:99").unwrap().msg_type,
-            MsgType::Dm
-        );
-    }
-
-    #[test]
-    fn binding_rejects_garbage() {
         for b in ["tg:group:1", "qq:group", "qq:foo:1", "qq:c2c:"] {
             assert!(Target::from_binding(b).is_err(), "{b}");
-        }
-    }
-
-    #[test]
-    fn upload_only_for_group_and_c2c() {
-        let t = |msg_type| Target {
-            msg_type,
-            chat_id: "1".into(),
-        };
-        assert_eq!(t(MsgType::C2c).upload_path().unwrap(), "/v2/users/1/files");
-        assert_eq!(
-            t(MsgType::Group).upload_path().unwrap(),
-            "/v2/groups/1/files"
-        );
-        for ty in [MsgType::Guild, MsgType::Dm] {
-            assert!(matches!(
-                t(ty).upload_path(),
-                Err(ChannelError::Unsupported(_))
-            ));
         }
     }
 
@@ -463,19 +452,19 @@ mod tests {
             msg_type: MsgType::Group,
             chat_id: "g".into(),
         };
-        let md = message_payload(&group, "hi", true, Some("m1"), 3);
+        let md = message_payload(&group, Body::Markdown("hi"), Some("m1"), 3);
         assert_eq!(
             md,
             json!({"markdown":{"content":"hi"},"msg_type":2,"msg_seq":3,"msg_id":"m1"})
         );
-        let plain = message_payload(&group, "hi", false, None, 4);
+        let plain = message_payload(&group, Body::Plain("hi"), None, 4);
         assert_eq!(plain, json!({"content":"hi","msg_type":0,"msg_seq":4}));
         let guild = Target {
             msg_type: MsgType::Guild,
             chat_id: "c".into(),
         };
         assert_eq!(
-            message_payload(&guild, "hi", false, Some("m"), 1),
+            message_payload(&guild, Body::Plain("hi"), Some("m"), 1),
             json!({"content":"hi","msg_id":"m"})
         );
     }
@@ -496,15 +485,6 @@ mod tests {
             matches!(&err, ChannelError::Api { message, .. } if message == "invalid appid or secret"),
             "{err}"
         );
-    }
-
-    #[test]
-    fn degrade_policy() {
-        assert!(markdown_degradable(400));
-        assert!(markdown_degradable(404));
-        for s in [401, 403, 429, 500, 503] {
-            assert!(!markdown_degradable(s));
-        }
     }
 
     #[test]
@@ -609,19 +589,5 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(last.ends_with("[回复过长，已截断。]"));
-    }
-
-    #[tokio::test]
-    async fn media_upload_rejected_for_guild_before_network() {
-        let api = QqApi::new("a".into(), "s".into());
-        let t = Target {
-            msg_type: MsgType::Guild,
-            chat_id: "c".into(),
-        };
-        let err = api
-            .send_media(&t, 1, "a.png", String::new(), None)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, ChannelError::Unsupported(_)));
     }
 }

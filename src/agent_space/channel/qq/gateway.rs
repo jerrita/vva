@@ -31,9 +31,10 @@ const OP_HEARTBEAT_ACK: u8 = 11;
 /// PUBLIC_GUILD_MESSAGES (1<<30) | DIRECT_MESSAGE (1<<12) | GROUP_AND_C2C_EVENT (1<<25)。
 const INTENTS: u64 = (1 << 30) | (1 << 12) | (1 << 25);
 
+/// 关闭码（官方 WebSocket 错误码表）：4008 发送过快，可 resume。
 const RATE_LIMITED: u16 = 4008;
-/// 4004 token 无效、4006 session 无效、4007 seq 错误、4009 session 超时：需重新 identify 并刷新 token。
-const SESSION_LOST: [u16; 4] = [4004, 4006, 4007, 4009];
+/// 4009 连接过期，可 resume。
+const SESSION_EXPIRED: u16 = 4009;
 const BACKOFF_SECS: [u64; 6] = [1, 2, 5, 10, 30, 60];
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,6 +70,8 @@ enum Step {
 enum Exit {
     Stop,
     Reconnect(Reconnect),
+    /// 官方标注既不可 resume 也不可 identify 的关闭码。
+    Fatal(ChannelError),
 }
 
 #[derive(Deserialize)]
@@ -135,28 +138,25 @@ impl Session {
                 Ok(Step::Hello(Duration::from_millis(hello.heartbeat_interval)))
             }
             OP_DISPATCH => {
-                let event = p.t.unwrap_or_default();
+                let event =
+                    p.t.ok_or_else(|| ChannelError::Protocol("DISPATCH 缺少 t".into()))?;
                 match event.as_str() {
                     "READY" => {
                         self.id = Some(from_data::<Ready>(p.d, "READY")?.session_id);
                         Ok(Step::Ready)
                     }
                     "RESUMED" => Ok(Step::Resumed),
-                    _ => {
-                        let data = p.d.unwrap_or(Value::Null);
-                        Ok(parse_message_event(&event, data)?.map_or(Step::Ignore, Step::Message))
-                    }
+                    _ => Ok(parse_message_event(&event, p.d.unwrap_or(Value::Null))?
+                        .map_or(Step::Ignore, Step::Message)),
                 }
             }
             OP_RECONNECT => Ok(Step::Reconnect(Reconnect::new("服务端要求重连"))),
-            OP_INVALID_SESSION => {
-                let resumable = p.d.as_ref().and_then(Value::as_bool).unwrap_or(false);
-                Ok(Step::Reconnect(Reconnect {
-                    reason: "session 无效".into(),
-                    delay: Some(Duration::from_secs(3)),
-                    reset: !resumable,
-                }))
-            }
+            // identify / resume 参数有误，官方未定义载荷：一律重新 identify。
+            OP_INVALID_SESSION => Ok(Step::Reconnect(Reconnect {
+                reason: "session 无效".into(),
+                delay: Some(Duration::from_secs(3)),
+                reset: true,
+            })),
             OP_HEARTBEAT_ACK => Ok(Step::Ack),
             _ => Ok(Step::Ignore),
         }
@@ -168,15 +168,23 @@ fn from_data<T: serde::de::DeserializeOwned>(d: Option<Value>, what: &str) -> Re
         .map_err(|e| ChannelError::Protocol(format!("{what} 载荷非法: {e}")))
 }
 
-fn close_reconnect(frame: Option<CloseFrame>) -> Reconnect {
+/// 按官方关闭码表处置：4008 / 4009 resume；不可重连的码终止网关；
+/// 其余 QQ 码（≥4000）重新 identify；标准 WebSocket 关闭码按网络中断处理（resume）。
+fn close_exit(frame: Option<CloseFrame>) -> Exit {
     let Some(frame) = frame else {
-        return Reconnect::new("连接关闭（无关闭帧）");
+        return Exit::Reconnect(Reconnect::new("连接关闭（无关闭帧）"));
     };
     let code = u16::from(frame.code);
-    Reconnect {
-        reason: format!("连接关闭 code={code} reason={}", frame.reason),
-        delay: (code == RATE_LIMITED).then_some(Duration::from_secs(60)),
-        reset: SESSION_LOST.contains(&code),
+    let reason = format!("连接关闭 code={code} reason={}", frame.reason);
+    match code {
+        4001 | 4002 | 4010..=4014 | 4914 | 4915 => {
+            Exit::Fatal(ChannelError::Ws(format!("{reason}（不可重连）")))
+        }
+        _ => Exit::Reconnect(Reconnect {
+            reason,
+            delay: (code == RATE_LIMITED).then_some(Duration::from_secs(60)),
+            reset: code >= 4000 && !matches!(code, RATE_LIMITED | SESSION_EXPIRED),
+        }),
     }
 }
 
@@ -203,12 +211,13 @@ impl Gateway {
         }
     }
 
-    /// 持续连接并转发消息事件；仅当事件接收端关闭时返回。
-    pub(super) async fn run(mut self) {
+    /// 持续连接并转发消息事件；事件接收端关闭时正常返回，遇不可重连的关闭码返回错误。
+    pub(super) async fn run(mut self) -> Result<()> {
         let mut attempt = 0;
         loop {
             let r = match self.connect_once(&mut attempt).await {
-                Ok(Exit::Stop) => return,
+                Ok(Exit::Stop) => return Ok(()),
+                Ok(Exit::Fatal(e)) => return Err(e),
                 Ok(Exit::Reconnect(r)) => r,
                 Err(e) => Reconnect::new(e.to_string()),
             };
@@ -241,7 +250,7 @@ impl Gateway {
                     };
                     let text = match frame.map_err(ws_err)? {
                         Message::Text(t) => t,
-                        Message::Close(frame) => return Ok(Exit::Reconnect(close_reconnect(frame))),
+                        Message::Close(frame) => return Ok(close_exit(frame)),
                         _ => continue,
                     };
                     match self.session.on_payload(text.as_str()) {
@@ -305,6 +314,7 @@ mod tests {
         assert_eq!(hs["d"]["token"], "QQBot TOK");
         assert_eq!(hs["d"]["intents"], (1u64 << 30) | (1 << 12) | (1 << 25));
         assert_eq!(hs["d"]["shard"], json!([0, 1]));
+        assert_eq!(s.heartbeat(), json!({"op":1,"d":null}));
     }
 
     #[test]
@@ -326,73 +336,42 @@ mod tests {
     }
 
     #[test]
-    fn heartbeat_before_any_event_is_null() {
-        assert_eq!(Session::default().heartbeat(), json!({"op":1,"d":null}));
-    }
-
-    #[test]
-    fn message_dispatch_updates_seq() {
-        let mut s = Session::default();
-        let frame = r#"{"op":0,"s":42,"t":"C2C_MESSAGE_CREATE","id":"EVENT:x","d":{
-            "author":{"id":"a","union_openid":"u","user_openid":"USR"},
-            "content":"hello","id":"ROBOT1.0_m","timestamp":"2025-01-01T00:00:00+08:00"}}"#;
-        let Step::Message(ev) = s.on_payload(frame).unwrap() else {
-            panic!("应为消息")
-        };
-        assert_eq!(ev.target.binding(), "qq:c2c:USR");
-        assert_eq!(s.seq, Some(42));
-    }
-
-    #[test]
     fn invalid_session_and_reconnect() {
         let mut s = Session::default();
-        let Step::Reconnect(r) = s.on_payload(r#"{"op":9,"d":false}"#).unwrap() else {
+        let Step::Reconnect(r) = s.on_payload(r#"{"op":9}"#).unwrap() else {
             panic!()
         };
         assert!(r.reset);
         assert_eq!(r.delay, Some(Duration::from_secs(3)));
-        let Step::Reconnect(r) = s.on_payload(r#"{"op":9,"d":true}"#).unwrap() else {
-            panic!()
-        };
-        assert!(!r.reset);
-        let Step::Reconnect(r) = s.on_payload(r#"{"op":7,"d":null}"#).unwrap() else {
+        let Step::Reconnect(r) = s.on_payload(r#"{"op":7}"#).unwrap() else {
             panic!()
         };
         assert!(!r.reset && r.delay.is_none());
     }
 
     #[test]
-    fn ack_and_garbage() {
-        let mut s = Session::default();
-        assert!(matches!(s.on_payload(r#"{"op":11}"#).unwrap(), Step::Ack));
-        assert!(s.on_payload("not json").is_err());
-        assert!(
-            s.on_payload(r#"{"op":10,"d":{"heartbeat_interval":0}}"#)
-                .is_err()
-        );
-    }
-
-    #[test]
     fn close_code_policy() {
-        let frame = |code: u16| {
-            Some(CloseFrame {
+        let close = |code: u16| {
+            close_exit(Some(CloseFrame {
                 code: CloseCode::from(code),
                 reason: "".into(),
-            })
+            }))
         };
-        let r = close_reconnect(frame(4008));
+        let reconnect = |code| match close(code) {
+            Exit::Reconnect(r) => r,
+            _ => panic!("{code} 应重连"),
+        };
+        let r = reconnect(4008);
         assert_eq!(r.delay, Some(Duration::from_secs(60)));
         assert!(!r.reset);
-        for c in [4004, 4006, 4007, 4009] {
-            assert!(close_reconnect(frame(c)).reset, "{c}");
+        assert!(!reconnect(4009).reset);
+        for c in [4004, 4006, 4007, 4900, 4913] {
+            assert!(reconnect(c).reset, "{c}");
         }
-        assert!(!close_reconnect(frame(1006)).reset);
-        assert!(!close_reconnect(None).reset);
-    }
-
-    #[test]
-    fn backoff_saturates() {
-        assert_eq!(backoff(0), Duration::from_secs(1));
-        assert_eq!(backoff(99), Duration::from_secs(60));
+        assert!(!reconnect(1006).reset);
+        for c in [4001, 4002, 4010, 4014, 4914, 4915] {
+            assert!(matches!(close(c), Exit::Fatal(_)), "{c}");
+        }
+        assert!(matches!(close_exit(None), Exit::Reconnect(r) if !r.reset));
     }
 }

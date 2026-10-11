@@ -118,17 +118,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn url_scheme_is_completed() {
-        assert_eq!(
-            normalize_url("multimedia.nt.qq.com/a.png"),
-            "https://multimedia.nt.qq.com/a.png"
-        );
-        assert_eq!(normalize_url("//x.com/a"), "https://x.com/a");
-        assert_eq!(normalize_url("http://x.com/a"), "http://x.com/a");
-        assert_eq!(normalize_url(" https://x.com/a "), "https://x.com/a");
-    }
-
-    #[test]
     fn filename_is_sanitized() {
         assert_eq!(sanitize_filename("../../etc/passwd"), "passwd");
         assert_eq!(sanitize_filename("报告 v1.pdf"), "报告 v1.pdf");

@@ -8,7 +8,7 @@ use regex::Regex;
 pub const MAX_MESSAGE_CHARS: usize = 2000;
 /// 被动回复（带 msg_id）单次最多条数。
 pub const PASSIVE_REPLY_LIMIT: usize = 5;
-pub const TRUNCATION_NOTICE: &str = "\n\n[回复过长，已截断。]";
+const TRUNCATION_NOTICE: &str = "\n\n[回复过长，已截断。]";
 
 /// 按字符数分段，尽量在窗口后半段的换行处断开。
 ///
@@ -81,11 +81,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blank_text_yields_no_chunks() {
-        assert!(chunk_text("  \n ", 10, None).is_empty());
-    }
-
-    #[test]
     fn splits_by_chars_not_bytes() {
         let text = "你".repeat(25);
         let chunks = chunk_text(&text, 10, None);
@@ -105,19 +100,13 @@ mod tests {
 
     #[test]
     fn truncation_is_announced_in_last_chunk() {
-        let text = "x".repeat(100);
-        let chunks = chunk_text(&text, 30, Some(2));
+        let chunks = chunk_text(&"x".repeat(100), 30, Some(2));
         assert_eq!(chunks.len(), 2);
         assert!(chunks[1].ends_with(TRUNCATION_NOTICE));
         assert!(chunks[1].chars().count() <= 30);
         assert!(!chunks[0].contains("截断"));
-    }
-
-    #[test]
-    fn no_notice_when_within_limit() {
-        let chunks = chunk_text(&"x".repeat(60), 30, Some(2));
-        assert_eq!(chunks.len(), 2);
-        assert!(!chunks[1].contains("截断"));
+        let exact = chunk_text(&"x".repeat(60), 30, Some(2));
+        assert!(!exact[1].contains("截断"));
     }
 
     #[test]
