@@ -114,9 +114,8 @@ impl BackgroundTasks {
     /// 后台启动命令，立即返回任务 id。子进程 kill_on_drop：
     /// monitor 中止（TaskStop / 会话回收）或运行时回收时兜底杀进程。
     pub fn spawn(&self, intent: &str, command: &str, working_dir: &Path) -> Result<String, String> {
-        let mut cmd = super::shell::build_shell_command(command);
-        cmd.current_dir(working_dir)
-            .stdin(Stdio::null())
+        let mut cmd = super::shell::workspace_shell_command(command, working_dir)?;
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);

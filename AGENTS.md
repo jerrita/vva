@@ -73,6 +73,7 @@ src/
 │   ├── mod.rs              # load_config 自动寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
 │   ├── model.rs            # AppConfig, ProviderConfig (provider_type 为 Option，合并时仅显式声明才覆写), ModelConfig；glm-coding-plan 预设补全
 │   ├── parser.rs           # strip_jsonc_comments 与 interpolate_env_vars
+│   ├── env.rs              # env 文件 dotenv 子集解析 (全局 ~/.vva/env 启动写入进程环境；项目 .vva/env 每条 shell 命令读取注入)
 │   ├── resolver.rs         # resolve_model 只做配置解析并返回 ResolvedModel；Provider 由 ResolvedModel::create_provider 单独构造
 │   └── state.rs            # 运行时偏好 (~/.vva/state.json)：上次选用的模型与推理档位
 ├── model/                  # 领域模型与强类型体系

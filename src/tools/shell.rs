@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -93,10 +93,20 @@ impl ShellTool {
             ));
         }
 
-        let mut command = build_shell_command(&args.command);
-        command.current_dir(&self.working_dir);
+        let command = workspace_shell_command(&args.command, &self.working_dir)?;
         run_shell_command(command).await.map(|text| (text, None))
     }
+}
+
+/// 在工作区内组装 shell 命令：设置工作目录，并注入本次读取的项目 env（`.vva/env`）
+pub(crate) fn workspace_shell_command(
+    command: &str,
+    working_dir: &Path,
+) -> Result<tokio::process::Command, String> {
+    let env = crate::config::env::workspace_env(working_dir)?;
+    let mut cmd = build_shell_command(command);
+    cmd.current_dir(working_dir).envs(env);
+    Ok(cmd)
 }
 
 /// 组装平台相关的 shell 命令（bash -c / PowerShell 包装），前台与后台执行共用

@@ -315,11 +315,24 @@ fn log_filter(level: &str) -> Result<EnvFilter, String> {
     EnvFilter::try_new(format!("off,vva={level}")).map_err(|e| format!("--log-level 无效: {e}"))
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let home_dir = home_dir().unwrap_or_else(|| PathBuf::from("."));
     let vva_dir = home_dir.join(".vva");
+    // 全局 env 在运行时启动前写入进程环境，已存在的变量不覆盖
+    for (key, value) in vva::config::env::load_env_file(&vva_dir.join("env"))? {
+        if std::env::var_os(&key).is_none() {
+            // SAFETY: tokio 运行时尚未构建，此时进程内只有主线程
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(vva_dir))
+}
+
+async fn run(vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
     let sessions_dir = vva_dir.join("sessions");
     let store = Arc::new(JsonlSessionStore::new(&sessions_dir)?);
 

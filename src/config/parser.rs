@@ -71,6 +71,11 @@ pub fn strip_jsonc_comments(input: &str) -> String {
 
 /// 展开文本中的 `${ENV_VAR}` 环境变量
 pub fn interpolate_env_vars(input: &str) -> String {
+    interpolate_with(input, |name| std::env::var(name).ok())
+}
+
+/// 按 `lookup` 展开文本中的 `${VAR}`，未命中展开为空字符串
+pub(crate) fn interpolate_with(input: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
     let mut out = String::with_capacity(input.len());
     let mut rest = input;
     while let Some(start) = rest.find("${") {
@@ -78,7 +83,7 @@ pub fn interpolate_env_vars(input: &str) -> String {
             break;
         };
         out.push_str(&rest[..start]);
-        out.push_str(&std::env::var(&rest[start + 2..start + 2 + len]).unwrap_or_default());
+        out.push_str(&lookup(&rest[start + 2..start + 2 + len]).unwrap_or_default());
         rest = &rest[start + 3 + len..];
     }
     out.push_str(rest);
