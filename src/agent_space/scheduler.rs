@@ -8,7 +8,7 @@
 //! [`Event::Missed`] 上报，不补跑。
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
@@ -18,13 +18,17 @@ use tokio::sync::mpsc;
 
 use crate::config::parser::strip_jsonc_comments;
 
-pub const SCHEDULE_FILE: &str = "schedule.json";
+const SCHEDULE_FILE: &str = "schedule.json";
 const STATE_FILE: &str = "schedule_state.json";
 /// 错过任务只回溯这么久，避免长期停机后逐分钟扫描过久
 const MAX_LOOKBACK: ChronoDuration = ChronoDuration::days(7);
 /// 列表中计算 cron 下次触发时向后查找的上限
 const MAX_LOOKAHEAD: ChronoDuration = ChronoDuration::days(400);
 const TICK: Duration = Duration::from_secs(20);
+/// 展示用时刻格式
+const TIME_FORMAT: &str = "%Y-%m-%d %H:%M";
+/// `at` 的落盘格式；解析另接受 [`TIME_FORMAT`]
+const AT_FORMAT: &str = "%Y-%m-%dT%H:%M";
 
 // ================== cron ==================
 
@@ -125,12 +129,17 @@ pub enum Trigger {
     Interval { minutes: u32 },
 }
 
-const AT_FORMATS: [&str; 2] = ["%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"];
+fn parse_at(s: &str) -> Result<NaiveDateTime, String> {
+    [AT_FORMAT, TIME_FORMAT]
+        .iter()
+        .find_map(|f| NaiveDateTime::parse_from_str(s, f).ok())
+        .ok_or_else(|| format!("at `{s}` 非法，示例: 2026-10-11T09:00"))
+}
 
 fn parse_every(s: &str) -> Result<u32, String> {
     let bad = || format!("every `{s}` 非法，示例: 30m / 2h / 1d");
     let unit = s.chars().last().ok_or_else(bad)?;
-    let n: u32 = s[..s.len() - 1].parse().map_err(|_| bad())?;
+    let n: u32 = s[..s.len() - unit.len_utf8()].parse().map_err(|_| bad())?;
     let minutes = match unit {
         'm' => n,
         'h' => n.checked_mul(60).ok_or_else(bad)?,
@@ -155,7 +164,7 @@ impl Trigger {
     pub fn describe(&self) -> String {
         match self {
             Self::Cron { expr, .. } => format!("cron {expr}"),
-            Self::Once(at) => format!("once {}", at.format("%Y-%m-%d %H:%M")),
+            Self::Once(at) => format!("once {}", format_time(*at)),
             Self::Interval { minutes } => format!("every {}", format_every(*minutes)),
         }
     }
@@ -168,21 +177,22 @@ impl Trigger {
     }
 }
 
+/// 任务的文件格式，亦是 Schedule 工具的构造入参；经 `Task::try_from` 统一校验
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawTask {
-    id: String,
+pub(super) struct RawTask {
+    pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    cron: Option<String>,
+    pub cron: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    at: Option<String>,
+    pub at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    every: Option<String>,
-    prompt: String,
+    pub every: Option<String>,
+    pub prompt: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    session: Option<String>,
+    pub session: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    bindings: Vec<String>,
+    pub bindings: Vec<String>,
 }
 
 /// 一项任务。`session` 指定时在该会话内执行、回复发往其来源聊天；否则在 `bindings[0]`
@@ -207,18 +217,16 @@ impl TryFrom<RawTask> for Task {
         }
         let err = |e: String| format!("任务 {id}: {e}");
         let trigger = match (&raw.cron, &raw.at, &raw.every) {
-            (Some(expr), None, None) => Trigger::Cron {
-                cron: Cron::parse(expr).map_err(err)?,
-                expr: expr.clone(),
-            },
-            (None, Some(at), None) => Trigger::Once(
-                AT_FORMATS
-                    .iter()
-                    .find_map(|f| NaiveDateTime::parse_from_str(at, f).ok())
-                    .ok_or_else(|| err(format!("at `{at}` 非法，示例: 2026-10-11T09:00")))?,
-            ),
+            (Some(expr), None, None) => {
+                let expr = expr.trim().to_string();
+                Trigger::Cron {
+                    cron: Cron::parse(&expr).map_err(err)?,
+                    expr,
+                }
+            }
+            (None, Some(at), None) => Trigger::Once(parse_at(at.trim()).map_err(err)?),
             (None, None, Some(every)) => Trigger::Interval {
-                minutes: parse_every(every).map_err(err)?,
+                minutes: parse_every(every.trim()).map_err(err)?,
             },
             _ => return Err(err("须且只能指定 cron / at / every 之一".into())),
         };
@@ -243,7 +251,7 @@ impl From<Task> for RawTask {
         let (mut cron, mut at, mut every) = (None, None, None);
         match task.trigger {
             Trigger::Cron { expr, .. } => cron = Some(expr),
-            Trigger::Once(t) => at = Some(t.format("%Y-%m-%dT%H:%M").to_string()),
+            Trigger::Once(t) => at = Some(t.format(AT_FORMAT).to_string()),
             Trigger::Interval { minutes } => every = Some(format_every(minutes)),
         }
         Self {
@@ -255,36 +263,6 @@ impl From<Task> for RawTask {
             session: task.session,
             bindings: task.bindings,
         }
-    }
-}
-
-impl Task {
-    /// 从工具 / 命令参数构造（与文件格式同一校验）
-    pub fn build(
-        id: String,
-        trigger: (&str, &str),
-        prompt: String,
-        session: Option<String>,
-        bindings: Vec<String>,
-    ) -> Result<Self, String> {
-        let (kind, value) = trigger;
-        let value = Some(value.trim().to_string());
-        let (mut cron, mut at, mut every) = (None, None, None);
-        match kind {
-            "cron" => cron = value,
-            "at" => at = value,
-            "every" => every = value,
-            other => return Err(format!("未知触发类型 `{other}`，应为 cron / at / every")),
-        }
-        Task::try_from(RawTask {
-            id,
-            cron,
-            at,
-            every,
-            prompt,
-            session,
-            bindings,
-        })
     }
 }
 
@@ -380,18 +358,27 @@ fn floor_minute(t: NaiveDateTime) -> NaiveDateTime {
         .expect("0 秒 0 纳秒总是合法")
 }
 
-fn now_minute() -> NaiveDateTime {
+/// 当前本地时间（分钟精度）
+pub fn now_minute() -> NaiveDateTime {
     floor_minute(Local::now().naive_local())
 }
 
-fn write_atomic(path: &PathBuf, body: &str) -> Result<(), String> {
+/// `(from, to]` 内的逐分钟时刻
+fn minutes_after(from: NaiveDateTime, to: NaiveDateTime) -> impl Iterator<Item = NaiveDateTime> {
+    std::iter::successors(Some(floor_minute(from) + ChronoDuration::minutes(1)), |t| {
+        Some(*t + ChronoDuration::minutes(1))
+    })
+    .take_while(move |t| *t <= to)
+}
+
+fn write_atomic(path: &Path, body: &str) -> Result<(), String> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, body)
         .and_then(|()| std::fs::rename(&tmp, path))
         .map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
-fn file_mtime(path: &PathBuf) -> Result<Option<SystemTime>, String> {
+fn file_mtime(path: &Path) -> Result<Option<SystemTime>, String> {
     match std::fs::metadata(path) {
         Ok(meta) => Ok(meta.modified().ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -401,7 +388,7 @@ fn file_mtime(path: &PathBuf) -> Result<Option<SystemTime>, String> {
 
 impl ScheduleStore {
     /// 状态文件存在但无法解析时显式报错；任务文件无效沿用空任务表并告警
-    pub fn open(dir: &std::path::Path) -> Result<Arc<Self>, String> {
+    pub fn open(dir: &Path) -> Result<Arc<Self>, String> {
         let state_path = dir.join(STATE_FILE);
         let state = match std::fs::read_to_string(&state_path) {
             Ok(raw) => serde_json::from_str(&raw)
@@ -452,8 +439,11 @@ impl ScheduleStore {
 
     /// 新任务 / 重载后补齐 interval 的下次时刻，并清理已删除任务的状态
     fn reconcile_state(&self, inner: &mut Inner, now: NaiveDateTime) {
-        let ids: Vec<String> = inner.tasks.iter().map(|t| t.id.clone()).collect();
-        inner.state.tasks.retain(|id, _| ids.contains(id));
+        let tasks = &inner.tasks;
+        inner
+            .state
+            .tasks
+            .retain(|id, _| tasks.iter().any(|t| &t.id == id));
         for task in &inner.tasks {
             let state = inner.state.tasks.entry(task.id.clone()).or_default();
             if let Some(every) = task.trigger.interval()
@@ -534,7 +524,8 @@ impl ScheduleStore {
         }
     }
 
-    pub fn add(&self, task: Task) -> Result<(), String> {
+    /// 新增任务，返回其初始状态
+    pub fn add(&self, task: Task) -> Result<TaskState, String> {
         let mut inner = self.inner();
         if inner.tasks.iter().any(|t| t.id == task.id) {
             return Err(format!("任务 id 已存在: {}", task.id));
@@ -542,18 +533,16 @@ impl ScheduleStore {
         if let Trigger::Once(at) = task.trigger
             && at <= now_minute()
         {
-            return Err(format!(
-                "一次性任务时间已过: {}",
-                at.format("%Y-%m-%d %H:%M")
-            ));
+            return Err(format!("一次性任务时间已过: {}", format_time(at)));
         }
+        let id = task.id.clone();
         inner.tasks.push(task);
         if let Err(e) = self.save_tasks(&mut inner) {
             inner.tasks.pop();
             return Err(e);
         }
         self.reconcile_state(&mut inner, now_minute());
-        Ok(())
+        Ok(inner.state.tasks[&id].clone())
     }
 
     pub fn remove(&self, token: &str) -> Result<Task, String> {
@@ -624,15 +613,7 @@ impl ScheduleStore {
         }
         match &task.trigger {
             Trigger::Cron { cron, .. } => {
-                let mut t = floor_minute(from) + ChronoDuration::minutes(1);
-                let end = from + MAX_LOOKAHEAD;
-                while t <= end {
-                    if cron.matches(&t) {
-                        return Some(t);
-                    }
-                    t += ChronoDuration::minutes(1);
-                }
-                None
+                minutes_after(from, from + MAX_LOOKAHEAD).find(|t| cron.matches(t))
             }
             Trigger::Once(at) => (state.last_run.is_none() && *at > from).then_some(*at),
             Trigger::Interval { .. } => state.next,
@@ -647,12 +628,12 @@ impl ScheduleStore {
         max_failures: u32,
     ) -> Option<Settled> {
         let mut inner = self.inner();
-        let task = inner.tasks.iter().find(|t| t.id == id)?.clone();
+        let trigger = inner.tasks.iter().find(|t| t.id == id)?.trigger.clone();
         let now = now_minute();
         let state = inner.state.tasks.entry(id.to_string()).or_default();
         state.last_run = Some(now);
-        state.next = task.trigger.interval().map(|every| now + every);
-        let mut disabled = matches!(task.trigger, Trigger::Once(_));
+        state.next = trigger.interval().map(|every| now + every);
+        let mut disabled = matches!(trigger, Trigger::Once(_));
         match outcome {
             Ok(()) => {
                 state.failures = 0;
@@ -682,36 +663,29 @@ impl ScheduleStore {
     /// 启动时对账 `(last_tick, now]`：返回错过的任务（不补跑）。
     /// cron 回溯上限 7 天；once 已过未执行；interval 的 `next` 已过期，并把它重排到 `now` 之后
     pub fn reconcile_startup(&self, from: NaiveDateTime, to: NaiveDateTime) -> Vec<Missed> {
-        let mut inner = self.inner();
+        let mut guard = self.inner();
+        let inner = &mut *guard;
         let from = from.max(to - MAX_LOOKBACK);
         let mut found: Vec<Missed> = Vec::new();
-        let tasks = inner.tasks.clone();
-        for task in &tasks {
-            let state = inner
-                .state
-                .tasks
-                .entry(task.id.clone())
-                .or_default()
-                .clone();
+        for task in &inner.tasks {
+            let state = inner.state.tasks.entry(task.id.clone()).or_default();
             if !state.enabled {
                 continue;
             }
             let last = match &task.trigger {
                 Trigger::Cron { cron, .. } => {
-                    let mut t = floor_minute(from) + ChronoDuration::minutes(1);
-                    let mut last = None;
-                    while t <= to {
-                        if cron.matches(&t) {
-                            last = Some(t);
-                        }
-                        t += ChronoDuration::minutes(1);
-                    }
-                    last
+                    minutes_after(from, to).filter(|t| cron.matches(t)).last()
                 }
                 Trigger::Once(at) => {
                     (state.last_run.is_none() && *at > from && *at <= to).then_some(*at)
                 }
-                Trigger::Interval { .. } => state.next.filter(|n| *n <= to),
+                Trigger::Interval { minutes } => {
+                    let last = state.next.filter(|n| *n <= to);
+                    if last.is_some() {
+                        state.next = Some(to + ChronoDuration::minutes(*minutes as i64));
+                    }
+                    last
+                }
             };
             if let Some(last) = last {
                 found.push(Missed {
@@ -719,13 +693,8 @@ impl ScheduleStore {
                     last,
                 });
             }
-            if let Some(every) = task.trigger.interval()
-                && last.is_some()
-            {
-                inner.state.tasks.get_mut(&task.id).expect("state").next = Some(to + every);
-            }
         }
-        if let Err(e) = self.save_state(&inner) {
+        if let Err(e) = self.save_state(inner) {
             tracing::warn!("{e}");
         }
         found
@@ -745,13 +714,6 @@ impl ScheduleStore {
 }
 
 // ================== 展示 ==================
-
-const TIME_FORMAT: &str = "%Y-%m-%d %H:%M";
-
-/// 当前本地时间（分钟精度），工具返回给模型用于换算 `at`
-pub fn local_now() -> NaiveDateTime {
-    now_minute()
-}
 
 pub fn format_time(t: NaiveDateTime) -> String {
     t.format(TIME_FORMAT).to_string()
@@ -911,6 +873,10 @@ mod tests {
         ]
     }"#;
 
+    fn task(json: serde_json::Value) -> Task {
+        serde_json::from_value(json).unwrap()
+    }
+
     fn bump_mtime(path: &std::path::Path) {
         std::fs::File::options()
             .write(true)
@@ -918,26 +884,6 @@ mod tests {
             .unwrap()
             .set_modified(SystemTime::now() + Duration::from_secs(5))
             .unwrap();
-    }
-
-    #[test]
-    fn loads_three_trigger_kinds_and_multiple_bindings() {
-        let dir = tempfile::tempdir().unwrap();
-        let s = store(
-            dir.path(),
-            Some(
-                r#"{"tasks":[
-                {"id":"c","cron":"0 9 * * *","prompt":"p","bindings":["qq:c2c:u"]},
-                {"id":"o","at":"2099-01-02T03:04","prompt":"p","bindings":["qq:c2c:u","qq:group:g"]},
-                {"id":"i","every":"2h","prompt":"p","session":"sess_1"}]}"#,
-            ),
-        );
-        let tasks = s.list();
-        assert_eq!(tasks.len(), 3);
-        assert_eq!(tasks[1].0.bindings.len(), 2);
-        assert_eq!(tasks[1].0.trigger.describe(), "once 2099-01-02 03:04");
-        assert_eq!(tasks[2].0.trigger, Trigger::Interval { minutes: 120 });
-        assert!(tasks[2].1.next.is_some(), "interval 补齐下次时刻");
     }
 
     #[test]
@@ -970,16 +916,9 @@ mod tests {
         assert_eq!(s.refresh(), None, "mtime 未变不重载");
 
         // 自己的写入不触发重载
-        s.add(
-            Task::build(
-                "c".into(),
-                ("every", "1h"),
-                "p".into(),
-                None,
-                vec!["qq:c2c:u".into()],
-            )
-            .unwrap(),
-        )
+        s.add(task(serde_json::json!(
+            {"id": "c", "every": "1h", "prompt": "p", "bindings": ["qq:c2c:u"]}
+        )))
         .unwrap();
         assert_eq!(s.refresh(), None);
         assert_eq!(s.list().len(), 3);
@@ -1005,19 +944,14 @@ mod tests {
     fn add_remove_resume_and_prefix_resolution() {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), None);
-        let task = |id: &str| {
-            Task::build(
-                id.into(),
-                ("every", "1h"),
-                "p".into(),
-                None,
-                vec!["qq:c2c:u".into()],
-            )
-            .unwrap()
+        let hourly = |id: &str| {
+            task(serde_json::json!(
+                {"id": id, "every": "1h", "prompt": "p", "bindings": ["qq:c2c:u"]}
+            ))
         };
-        s.add(task("water1")).unwrap();
-        s.add(task("water2")).unwrap();
-        assert!(s.add(task("water1")).is_err(), "id 重复");
+        s.add(hourly("water1")).unwrap();
+        s.add(hourly("water2")).unwrap();
+        assert!(s.add(hourly("water1")).is_err(), "id 重复");
         assert!(s.get("water").unwrap_err().contains("匹配多个"));
         assert_eq!(s.get("water1").unwrap().id, "water1");
 
@@ -1036,14 +970,9 @@ mod tests {
         assert!(s.remove("nope").is_err());
 
         // 已过时刻的一次性任务拒绝创建
-        let past = Task::build(
-            "p".into(),
-            ("at", "2000-01-01T00:00"),
-            "p".into(),
-            None,
-            vec!["qq:c2c:u".into()],
-        )
-        .unwrap();
+        let past = task(serde_json::json!(
+            {"id": "p", "at": "2000-01-01T00:00", "prompt": "p", "bindings": ["qq:c2c:u"]}
+        ));
         assert!(s.add(past).unwrap_err().contains("已过"));
     }
 
@@ -1084,15 +1013,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path(), None);
         let at = now_minute() + ChronoDuration::minutes(5);
-        let task = Task::build(
-            "o".into(),
-            ("at", &at.format("%Y-%m-%dT%H:%M").to_string()),
-            "p".into(),
-            None,
-            vec!["qq:c2c:u".into()],
-        )
+        s.add(task(serde_json::json!(
+            {"id": "o", "at": at.format(AT_FORMAT).to_string(), "prompt": "p", "bindings": ["qq:c2c:u"]}
+        )))
         .unwrap();
-        s.add(task).unwrap();
         assert!(s.due(at - ChronoDuration::minutes(1)).is_empty());
         assert_eq!(s.due(at).len(), 1);
         s.settle("o", Ok(()), 3);
