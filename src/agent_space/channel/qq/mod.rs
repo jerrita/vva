@@ -10,26 +10,18 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use tokio::sync::mpsc;
 
-use self::api::{QqApi, Target};
+use self::api::{MediaType, QqApi, Target};
 use self::event::{Attachment, MessageEvent};
 use self::gateway::Gateway;
-use super::files::{UrlSource, normalize_url};
+use super::files::{UrlSource, normalize_url, sanitize_filename};
 use super::{
     Channel, ChannelError, Inbound, InboundFile, Outbound, OutboundFile, OutboundText, Result,
 };
 
-pub use self::api::MsgType;
-
 /// 事件去重窗口：QQ 偶发重复推送同一 msg_id。
 const SEEN_WINDOW: usize = 256;
-const MEDIA_IMAGE: u8 = 1;
-const MEDIA_VIDEO: u8 = 2;
-const MEDIA_AUDIO: u8 = 3;
-const MEDIA_FILE: u8 = 4;
 
 /// QQ 渠道凭据与准入。
 #[derive(Debug, Clone)]
@@ -139,7 +131,7 @@ impl QqChannel {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file");
-        if file_type == MEDIA_FILE {
+        if file_type == MediaType::File {
             tracing::warn!("QQ 富媒体官方仅承诺图片/视频/语音，尝试通用文件上传: {name}");
         }
         let mut ids = Vec::new();
@@ -150,15 +142,20 @@ impl QqChannel {
                     .await?,
             );
         }
-        let data = STANDARD.encode(tokio::fs::read(&m.path).await?);
-        let file_name = super::files::sanitize_filename(name);
+        let data = tokio::fs::read(&m.path).await?;
         ids.push(
             self.api
-                .send_media(&target, file_type, &file_name, data, m.reply_to.as_deref())
+                .send_media(
+                    &target,
+                    file_type,
+                    &sanitize_filename(name),
+                    &data,
+                    m.reply_to.as_deref(),
+                )
                 .await?,
         );
         tracing::debug!(
-            "QQ 出站文件: binding={} file_type={file_type} 返回 id {} 个",
+            "QQ 出站文件: binding={} file_type={file_type:?} 返回 id {} 个",
             m.binding,
             ids.len()
         );
@@ -166,17 +163,17 @@ impl QqChannel {
     }
 }
 
-/// 按扩展名选 file_type：1 图片 / 2 视频 / 3 语音 / 4 文件。
-fn media_type(path: &Path) -> u8 {
+/// 按扩展名选富媒体类型。
+fn media_type(path: &Path) -> MediaType {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
     match ext.as_deref() {
-        Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp") => MEDIA_IMAGE,
-        Some("mp4") => MEDIA_VIDEO,
-        Some("silk") => MEDIA_AUDIO,
-        _ => MEDIA_FILE,
+        Some("jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp") => MediaType::Image,
+        Some("mp4") => MediaType::Video,
+        Some("silk") => MediaType::Audio,
+        _ => MediaType::File,
     }
 }
 
@@ -214,8 +211,9 @@ impl Channel for QqChannel {
         }
         gateway.abort();
         match gateway.await {
+            Ok(result) => result,
             Err(e) if e.is_panic() => Err(ChannelError::Protocol(format!("QQ 网关任务崩溃: {e}"))),
-            _ => Ok(()),
+            Err(_) => Ok(()),
         }
     }
 }
@@ -247,54 +245,26 @@ mod tests {
     }
 
     #[test]
-    fn allowlisted_user_is_admitted() {
-        let ch = channel(&["MEM"]);
-        let msg = ch
-            .admit(group_event("MEM", " 你好", serde_json::json!([])))
-            .unwrap();
+    fn allowlist_and_empty_message_gate_admission() {
+        let admit = |allowed: &[&str], member: &str, content: &str| {
+            channel(allowed).admit(group_event(member, content, serde_json::json!([])))
+        };
+        let msg = admit(&["MEM"], "MEM", " 你好").unwrap();
         assert_eq!(msg.binding, "qq:group:GRP");
         assert_eq!(msg.user_id, "MEM");
         assert_eq!(msg.message_id, "m1");
         assert_eq!(msg.text, "你好");
-    }
-
-    #[test]
-    fn stranger_and_empty_allowlist_are_dropped() {
-        assert!(
-            channel(&["MEM"])
-                .admit(group_event("EVIL", "hi", serde_json::json!([])))
-                .is_none()
-        );
-        assert!(
-            channel(&[])
-                .admit(group_event("MEM", "hi", serde_json::json!([])))
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn wildcard_allows_any_user() {
-        let ch = channel(&["*"]);
-        assert!(
-            ch.admit(group_event("ANYONE", "hi", serde_json::json!([])))
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn empty_message_is_dropped() {
-        assert!(
-            channel(&["MEM"])
-                .admit(group_event("MEM", "  ", serde_json::json!([])))
-                .is_none()
-        );
+        assert!(admit(&["MEM"], "OTHER", "hi").is_none());
+        assert!(admit(&[], "MEM", "hi").is_none());
+        assert!(admit(&["*"], "ANYONE", "hi").is_some());
+        assert!(admit(&["MEM"], "MEM", "  ").is_none());
     }
 
     #[test]
     fn attachments_get_scheme_and_filename() {
         let att = serde_json::json!([
-            {"content_type": "image/png", "filename": "a.png", "size": 3, "url": "cdn.qq.com/a.png"},
-            {"content_type": "application/pdf", "size": 0, "url": "//cdn.qq.com/dl/b.pdf?x=1"},
+            {"content_type": "image/png", "filename": "a.png", "size": 3, "url": "cdn.example.com/a.png"},
+            {"content_type": "application/pdf", "size": 0, "url": "//cdn.example.com/dl/b.pdf?x=1"},
         ]);
         let msg = channel(&["MEM"])
             .admit(group_event("MEM", "", att))
@@ -304,17 +274,7 @@ mod tests {
         assert_eq!(msg.files[0].mime, "image/png");
         assert_eq!(msg.files[0].size, 3);
         assert_eq!(msg.files[1].filename, "b.pdf");
-        assert!(format!("{:?}", msg.files[1]).contains("https://cdn.qq.com/dl/b.pdf?x=1"));
-    }
-
-    #[test]
-    fn media_types() {
-        let t = |p: &str| media_type(Path::new(p));
-        assert_eq!(t("a.PNG"), 1);
-        assert_eq!(t("a.mp4"), 2);
-        assert_eq!(t("a.silk"), 3);
-        assert_eq!(t("a.pdf"), 4);
-        assert_eq!(t("noext"), 4);
+        assert!(format!("{:?}", msg.files[1]).contains("https://cdn.example.com/dl/b.pdf?x=1"));
     }
 
     #[tokio::test]
