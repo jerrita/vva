@@ -1,9 +1,10 @@
 //! Session 生命周期：空闲超过 TTL → curator 沉淀 → 删除。
 //!
 //! 周期扫描 agent 工作区中由 agent space 管理的会话（带 IM 来源或非 Topic 类别）。
-//! 沉淀失败的会话保留并告警，下个周期重试；运行中的会话不清理。
+//! 沉淀失败的会话保留并告警，按指数退避重试（同一原因只推送一次）；运行中的会话不清理。
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -16,6 +17,17 @@ use crate::model::SessionKind;
 /// 默认扫描周期
 pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
 
+/// 沉淀失败后的首次重试间隔，之后逐次翻倍直至上限
+const RETRY_BASE_SECS: i64 = 300;
+const RETRY_MAX_SECS: i64 = 6 * 3600;
+
+/// 某会话的连续沉淀失败状态
+struct Failure {
+    count: u32,
+    retry_at: DateTime<Utc>,
+    summary: String,
+}
+
 /// 每次整理完成（含失败）的回调，上层据 `origin` 推送摘要到 IM
 pub type CuratorNotify = Arc<dyn Fn(CuratorReport) + Send + Sync>;
 
@@ -24,6 +36,7 @@ pub struct Lifecycle {
     curator: Arc<Curator>,
     config: AgentSpaceConfig,
     notify: CuratorNotify,
+    failures: Mutex<HashMap<String, Failure>>,
 }
 
 impl Lifecycle {
@@ -38,7 +51,29 @@ impl Lifecycle {
             curator,
             config,
             notify,
+            failures: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn backing_off(&self, id: &str, now: DateTime<Utc>) -> bool {
+        let failures = self.failures.lock().unwrap();
+        failures.get(id).is_some_and(|f| now < f.retry_at)
+    }
+
+    /// 记录一次失败并返回是否需要推送（首次失败或原因变化）
+    fn record_failure(&self, id: &str, summary: &str, now: DateTime<Utc>) -> bool {
+        let mut failures = self.failures.lock().unwrap();
+        let entry = failures.entry(id.to_string()).or_insert(Failure {
+            count: 0,
+            retry_at: now,
+            summary: String::new(),
+        });
+        let announce = entry.count == 0 || entry.summary != summary;
+        entry.count += 1;
+        let delay = (RETRY_BASE_SECS << (entry.count - 1).min(16)).min(RETRY_MAX_SECS);
+        entry.retry_at = now + chrono::Duration::seconds(delay);
+        entry.summary = summary.to_string();
+        announce
     }
 
     /// 启动周期清理任务；调用方持有句柄，退出时 abort
@@ -89,19 +124,28 @@ impl Lifecycle {
             if live.as_ref().is_some_and(|handle| handle.is_running()) {
                 continue;
             }
+            if self.backing_off(&summary.id, now) {
+                continue;
+            }
             let seen_turns = live.as_ref().map(|handle| handle.turn_seq());
             // curator 会话自身是沉淀的执行载体；oneshot 答完即无长期价值，二者都不沉淀
             if !matches!(summary.kind, SessionKind::Curator | SessionKind::Oneshot) {
                 let result = self.curator.curate(&summary.id).await;
                 let failed = result.status == CuratorStatus::Failed;
-                if failed {
+                let announce = if failed {
                     tracing::warn!("Curator failed for {}: {}", summary.id, result.summary);
+                    self.record_failure(&summary.id, &result.summary, now)
+                } else {
+                    self.failures.lock().unwrap().remove(&summary.id);
+                    true
+                };
+                if announce {
+                    (self.notify)(CuratorReport {
+                        session_id: summary.id.clone(),
+                        origin: summary.origin.clone(),
+                        result,
+                    });
                 }
-                (self.notify)(CuratorReport {
-                    session_id: summary.id.clone(),
-                    origin: summary.origin.clone(),
-                    result,
-                });
                 if failed {
                     continue;
                 }
@@ -133,6 +177,7 @@ impl Lifecycle {
     async fn delete(&self, id: &str) -> Result<(), String> {
         let handle = self.manager.live_or_load(id).await?;
         self.manager.delete_session(&handle).await?;
+        self.failures.lock().unwrap().remove(id);
         self.curator.forget(id).await
     }
 }
@@ -296,9 +341,16 @@ mod tests {
             CuratorStatus::Failed
         );
 
-        // 下个周期重试：游标未推进，仍会再次整理
+        // 退避期内不重试、不重复推送
         assert!(f.lifecycle.sweep().await.unwrap().is_empty());
+        assert_eq!(f.runs(), 1);
+        assert_eq!(f.reports.lock().unwrap().len(), 1);
+
+        // 退避结束后重试：游标未推进，仍会再次整理；同一原因不再推送
+        let later = Utc::now() + chrono::Duration::seconds(RETRY_BASE_SECS + 1);
+        assert!(f.lifecycle.sweep_at(later).await.unwrap().is_empty());
         assert_eq!(f.runs(), 2);
+        assert_eq!(f.reports.lock().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&f.dir);
     }
 

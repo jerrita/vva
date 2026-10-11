@@ -478,19 +478,21 @@ mod git {
         run(dir, &["status", "--porcelain"]).map(|out| !out.trim().is_empty())
     }
 
-    /// 首次使用时 `git init`；工作区有未提交修改（含冲突）时拒绝整理，不覆盖人工改动
+    /// 首次使用时 `git init`；工作区有未提交修改（会话或人工直接写入）时先单独提交保存，
+    /// 使后续回滚只丢弃本次整理的半成品；存在未解决的合并冲突时才拒绝整理
     pub fn prepare(dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("创建记忆库 {} 失败: {e}", dir.display()))?;
         if !dir.join(".git").exists() {
             run(dir, &["-c", "init.defaultBranch=main", "init"])?;
         }
-        if is_dirty(dir)? {
+        if !run(dir, &["ls-files", "--unmerged"])?.trim().is_empty() {
             return Err(format!(
-                "记忆库 {} 存在未提交的修改或冲突，拒绝覆盖；请人工处理后重试",
+                "记忆库 {} 存在未解决的合并冲突；请人工处理后重试",
                 dir.display()
             ));
         }
+        commit_all(dir, "curator: 保存整理前的外部修改")?;
         Ok(())
     }
 
@@ -673,7 +675,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dirty_memory_repo_is_never_overwritten() {
+    async fn external_edits_are_committed_before_curation() {
         let (curator, runner, store, root) = fixture(write_topic).await;
         let session = seed(&store, &root, &[("user", "x"), ("assistant", "y")]).await;
         let memory = curator.memory_dir();
@@ -682,13 +684,14 @@ mod tests {
         std::fs::write(memory.join("manual.md"), "人工笔记").unwrap();
 
         let result = curator.curate(&session.header.id).await;
-        assert_eq!(result.status, CuratorStatus::Failed);
-        assert!(result.summary.contains("拒绝覆盖"));
-        assert_eq!(calls(&runner), 0);
+        assert_ne!(result.status, CuratorStatus::Failed, "{}", result.summary);
+        assert_eq!(calls(&runner), 1);
         assert_eq!(
             std::fs::read_to_string(memory.join("manual.md")).unwrap(),
             "人工笔记"
         );
+        let log = git::run(&memory, &["log", "--format=%s"]).unwrap();
+        assert!(log.contains("保存整理前的外部修改"), "{log}");
         let _ = std::fs::remove_dir_all(root);
     }
 

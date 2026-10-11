@@ -472,11 +472,13 @@ impl Runtime {
         Ok(candidates
             .iter()
             .map(|c| {
+                // 行首空白会被 IM 渠道裁掉，用可见标记保持对齐
+                let running = if c.running { " [运行中]" } else { "" };
                 format!(
-                    "{}{} {} {}",
-                    if c.focus { "* " } else { "  " },
+                    "{} {}{} {}",
+                    if c.focus { "●" } else { "○" },
                     c.id,
-                    if c.running { "[运行中]" } else { "" },
+                    running,
                     c.title
                 )
             })
