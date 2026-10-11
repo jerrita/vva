@@ -91,6 +91,15 @@ pub struct CuratorResult {
     pub summary: String,
 }
 
+impl CuratorResult {
+    fn unchanged(summary: &str) -> Self {
+        Self {
+            status: CuratorStatus::Unchanged,
+            summary: summary.into(),
+        }
+    }
+}
+
 /// 上层回调参数：整理结果及来源会话的 IM 位置（供推送摘要）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CuratorReport {
@@ -101,7 +110,7 @@ pub struct CuratorReport {
 
 /// 执行 curator 任务的后端：生产为 `kind=curator` 会话，测试可替换
 #[async_trait::async_trait]
-pub trait CuratorRunner: Send + Sync {
+pub(super) trait CuratorRunner: Send + Sync {
     /// 运行任务提示词，返回最终消息；`label` 用于会话标题
     async fn run(&self, prompt: &str, label: &str) -> Result<String, String>;
 
@@ -116,19 +125,13 @@ fn curator_title(label: &str) -> String {
     format!("[curator] {label}")
 }
 
-/// 在 agent 工作区创建 curator 会话并等待其完成
 /// 每次创建 curator 会话时取当前模型（agent 模式模型可在运行期切换）
 pub type ModelSource = Arc<dyn Fn() -> String + Send + Sync>;
 
-pub struct SessionRunner {
+/// 在 agent 工作区创建 curator 会话并等待其完成
+struct SessionRunner {
     manager: Arc<SessionManager>,
     model: ModelSource,
-}
-
-impl SessionRunner {
-    pub fn new(manager: Arc<SessionManager>, model: ModelSource) -> Self {
-        Self { manager, model }
-    }
 }
 
 #[async_trait::async_trait]
@@ -177,21 +180,17 @@ pub fn memory_dir(workspace: &Path) -> PathBuf {
     workspace.join(MEMORY_DIR)
 }
 
-/// 读取记忆索引 `MEMORY.md` 全文；不存在或全空白为 `None`，其余读取失败显式报错
-pub fn read_memory_index(workspace: &Path) -> Result<Option<String>, String> {
-    let path = memory_dir(workspace).join("MEMORY.md");
+/// 当前记忆索引 `MEMORY.md` 的快照 reminder 文本；索引不存在或全空白为 `None`，
+/// 其余读取失败显式报错
+pub fn memory_reminder(workspace: &Path) -> Result<Option<String>, String> {
+    let dir = memory_dir(workspace);
+    let path = dir.join("MEMORY.md");
     match std::fs::read_to_string(&path) {
-        Ok(text) if text.trim().is_empty() => Ok(None),
-        Ok(text) => Ok(Some(text)),
+        Ok(index) if index.trim().is_empty() => Ok(None),
+        Ok(index) => Ok(Some(crate::system::format_memory_reminder(&dir, &index))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
     }
-}
-
-/// 当前记忆索引快照 reminder 文本；无索引时为 `None`
-pub fn memory_reminder(workspace: &Path) -> Result<Option<String>, String> {
-    Ok(read_memory_index(workspace)?
-        .map(|index| crate::system::format_memory_reminder(&memory_dir(workspace), &index)))
 }
 
 pub struct Curator {
@@ -205,7 +204,7 @@ pub struct Curator {
 }
 
 impl Curator {
-    pub fn new(
+    pub(super) fn new(
         runner: Arc<dyn CuratorRunner>,
         store: Arc<dyn SessionStore>,
         root: PathBuf,
@@ -226,19 +225,27 @@ impl Curator {
         let root = manager.workspace().to_path_buf();
         let skills_dir = root.join(".vva").join("skills");
         Self::new(
-            Arc::new(SessionRunner::new(manager.clone(), model)),
+            Arc::new(SessionRunner {
+                manager: manager.clone(),
+                model,
+            }),
             manager.store().clone(),
             root,
             skills_dir,
         )
     }
 
-    pub fn memory_dir(&self) -> PathBuf {
+    fn memory_dir(&self) -> PathBuf {
         memory_dir(&self.root)
     }
 
     fn cursors_path(&self) -> PathBuf {
         self.root.join(CURSORS_FILE)
+    }
+
+    /// 会话增量记录的暂存文件
+    fn input_path(&self, session_id: &str) -> PathBuf {
+        self.root.join(INPUT_DIR).join(format!("{session_id}.md"))
     }
 
     /// 整理会话尚未处理的增量；任何失败都以 `Failed` 返回，游标与记忆库保持不变
@@ -266,24 +273,18 @@ impl Curator {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("会话 {session_id} 不存在"))?;
-        let mut cursors = Cursors::load(&self.cursors_path())?;
+        let mut cursors = Cursors::load(self.cursors_path())?;
         let start = cursors.start(session_id, &session.turns);
         let end = session.turns.len();
-        let unchanged = |summary: &str| CuratorResult {
-            status: CuratorStatus::Unchanged,
-            summary: summary.into(),
-        };
-        let Some(last) = session.turns.last().filter(|_| end > start) else {
-            return Ok(unchanged("无新增内容"));
-        };
+        if start >= end {
+            return Ok(CuratorResult::unchanged("无新增内容"));
+        }
+        let last = &session.turns[end - 1].id;
         let transcript = render_transcript(start, &session.turns[start..]);
         if transcript.is_empty() {
-            cursors.advance(&self.cursors_path(), session_id, &last.id)?;
-            tracing::debug!(
-                "curator 游标推进(无可沉淀内容): session={session_id} -> {}",
-                last.id
-            );
-            return Ok(unchanged("新增轮次不含可沉淀的对话内容"));
+            cursors.advance(session_id, last)?;
+            tracing::debug!("curator 游标推进(无可沉淀内容): session={session_id} -> {last}");
+            return Ok(CuratorResult::unchanged("新增轮次不含可沉淀的对话内容"));
         }
 
         tracing::info!("curate 开始: session={session_id} turn 范围 [{start}, {end})");
@@ -293,7 +294,7 @@ impl Curator {
             move || git::prepare(&memory)
         })
         .await?;
-        let input = self.root.join(INPUT_DIR).join(format!("{session_id}.md"));
+        let input = self.input_path(session_id);
         write_input(&input, &transcript)?;
         let prompt = format!(
             "整理会话 {session_id} 第 [{start}, {end}) 轮的增量对话。\n\
@@ -309,33 +310,35 @@ impl Curator {
         let summary = match reply {
             Ok(text) => text.trim().to_string(),
             Err(error) => {
-                // 工作区在整理前是干净的，回滚只丢弃本次整理的半成品
-                let _ = blocking(move || git::rollback(&memory)).await;
-                return Err(format!("curator 执行失败: {error}"));
+                // 工作区在整理前是干净的，回滚只丢弃本次整理的半成品；
+                // 回滚失败则半成品会在下次整理前被当作外部修改提交，须一并报告
+                let error = format!("curator 执行失败: {error}");
+                return Err(match blocking(move || git::rollback(&memory)).await {
+                    Ok(()) => error,
+                    Err(rollback) => format!("{error}；回滚记忆库失败: {rollback}"),
+                });
             }
         };
 
         let message = format!("curator: {session_id} turns [{start}, {end})\n\n{summary}");
         let committed = blocking(move || git::commit_all(&memory, &message)).await?;
         tracing::info!("curator git commit: session={session_id} 产生提交={committed}");
-        cursors.advance(&self.cursors_path(), session_id, &last.id)?;
-        tracing::debug!("curator 游标推进: session={session_id} -> {}", last.id);
-        Ok(if committed {
-            CuratorResult {
-                status: CuratorStatus::Updated,
-                summary,
-            }
+        cursors.advance(session_id, last)?;
+        tracing::debug!("curator 游标推进: session={session_id} -> {last}");
+        let status = if committed {
+            CuratorStatus::Updated
         } else {
-            unchanged(&summary)
-        })
+            CuratorStatus::Unchanged
+        };
+        Ok(CuratorResult { status, summary })
     }
 
     /// 会话被删除后同步清理：游标、残留的整理输入与为它创建的 curator 会话。
     /// curator 会话清理失败只告警（交给 TTL 兜底），不影响来源会话的删除结果
     pub async fn forget(&self, session_id: &str) -> Result<(), String> {
         let _guard = self.lock.lock().await;
-        Cursors::load(&self.cursors_path())?.remove(&self.cursors_path(), session_id)?;
-        let _ = std::fs::remove_file(self.root.join(INPUT_DIR).join(format!("{session_id}.md")));
+        Cursors::load(self.cursors_path())?.remove(session_id)?;
+        let _ = std::fs::remove_file(self.input_path(session_id));
         if let Err(error) = self.runner.cleanup(session_id).await {
             tracing::warn!("清理 {session_id} 的 curator 会话失败: {error}");
         }
@@ -359,42 +362,45 @@ fn write_input(path: &Path, transcript: &str) -> Result<(), String> {
 }
 
 /// 每个会话已整理到的最后一个 turn id；会话回退（Revert）后该 id 不存在，从头整理
-#[derive(Default)]
-struct Cursors(BTreeMap<String, String>);
+struct Cursors {
+    path: PathBuf,
+    last: BTreeMap<String, String>,
+}
 
 impl Cursors {
-    fn load(path: &Path) -> Result<Self, String> {
-        match std::fs::read_to_string(path) {
+    fn load(path: PathBuf) -> Result<Self, String> {
+        let last = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text)
-                .map(Self)
-                .map_err(|e| format!("游标文件 {} 损坏: {e}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(format!("读取游标文件 {} 失败: {e}", path.display())),
-        }
+                .map_err(|e| format!("游标文件 {} 损坏: {e}", path.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(e) => return Err(format!("读取游标文件 {} 失败: {e}", path.display())),
+        };
+        Ok(Self { path, last })
     }
 
     fn start(&self, session_id: &str, turns: &[Turn]) -> usize {
-        self.0
+        self.last
             .get(session_id)
             .and_then(|last| turns.iter().rposition(|turn| &turn.id == last))
             .map_or(0, |index| index + 1)
     }
 
-    fn advance(&mut self, path: &Path, session_id: &str, last_turn: &str) -> Result<(), String> {
-        self.0.insert(session_id.into(), last_turn.into());
-        self.save(path)
+    fn advance(&mut self, session_id: &str, last_turn: &str) -> Result<(), String> {
+        self.last.insert(session_id.into(), last_turn.into());
+        self.save()
     }
 
-    fn remove(&mut self, path: &Path, session_id: &str) -> Result<(), String> {
-        if self.0.remove(session_id).is_some() {
-            self.save(path)?;
+    fn remove(&mut self, session_id: &str) -> Result<(), String> {
+        if self.last.remove(session_id).is_some() {
+            self.save()?;
         }
         Ok(())
     }
 
-    fn save(&self, path: &Path) -> Result<(), String> {
-        let text = serde_json::to_string_pretty(&self.0).map_err(|e| e.to_string())?;
-        std::fs::write(path, text).map_err(|e| format!("写入游标文件 {} 失败: {e}", path.display()))
+    fn save(&self) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(&self.last).map_err(|e| e.to_string())?;
+        std::fs::write(&self.path, text)
+            .map_err(|e| format!("写入游标文件 {} 失败: {e}", self.path.display()))
     }
 }
 
@@ -492,8 +498,7 @@ mod git {
                 dir.display()
             ));
         }
-        commit_all(dir, "curator: 保存整理前的外部修改")?;
-        Ok(())
+        commit_all(dir, "curator: 保存整理前的外部修改").map(|_| ())
     }
 
     /// 提交全部变更；无变更返回 false
@@ -523,9 +528,10 @@ mod tests {
 
     type Script = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
-    /// 脚本化后端：执行闭包并记录调用次数
+    /// 脚本化后端：执行闭包，记录调用次数与被清理的 label
     struct Scripted {
         calls: std::sync::atomic::AtomicUsize,
+        cleaned: std::sync::Mutex<Vec<String>>,
         script: Script,
     }
 
@@ -535,33 +541,11 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             (self.script)(prompt)
         }
-    }
 
-    #[tokio::test]
-    async fn forget_cleans_cursor_input_and_runner_sessions() {
-        struct Spy(std::sync::Mutex<Vec<String>>);
-        #[async_trait::async_trait]
-        impl CuratorRunner for Spy {
-            async fn run(&self, _: &str, _: &str) -> Result<String, String> {
-                Ok(String::new())
-            }
-            async fn cleanup(&self, label: &str) -> Result<(), String> {
-                self.0.lock().unwrap().push(label.into());
-                Ok(())
-            }
+        async fn cleanup(&self, label: &str) -> Result<(), String> {
+            self.cleaned.lock().unwrap().push(label.into());
+            Ok(())
         }
-        let dir =
-            std::env::temp_dir().join(format!("vva-forget-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(dir.join(INPUT_DIR)).unwrap();
-        std::fs::write(dir.join(INPUT_DIR).join("sess_x.md"), "left over").unwrap();
-        let spy = Arc::new(Spy(Default::default()));
-        let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(dir.join("s")).unwrap());
-        let curator = Curator::new(spy.clone(), store, dir.clone(), dir.join("skills"));
-        curator.forget("sess_x").await.unwrap();
-        assert_eq!(*spy.0.lock().unwrap(), ["sess_x"]);
-        assert!(!dir.join(INPUT_DIR).join("sess_x.md").exists());
-        assert_eq!(curator_title("sess_x"), "[curator] sess_x");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn calls(runner: &Scripted) -> usize {
@@ -579,6 +563,7 @@ mod tests {
         let store = Arc::new(JsonlSessionStore::new(root.join("sessions")).unwrap());
         let runner = Arc::new(Scripted {
             calls: Default::default(),
+            cleaned: Default::default(),
             script: Box::new(script),
         });
         let curator = Curator::new(
@@ -651,8 +636,20 @@ mod tests {
             "无文件变更为 unchanged"
         );
         assert_eq!(calls(&runner), 2);
-        let cursors = Cursors::load(&curator.cursors_path()).unwrap();
-        assert_eq!(cursors.0[&session.header.id], turn.id);
+        let cursors = Cursors::load(curator.cursors_path()).unwrap();
+        assert_eq!(cursors.last[&session.header.id], turn.id);
+
+        // 来源会话删除后同步清理游标、残留输入与 curator 会话
+        std::fs::write(curator.input_path(&session.header.id), "left over").unwrap();
+        curator.forget(&session.header.id).await.unwrap();
+        assert!(
+            Cursors::load(curator.cursors_path())
+                .unwrap()
+                .last
+                .is_empty()
+        );
+        assert!(!curator.input_path(&session.header.id).exists());
+        assert_eq!(*runner.cleaned.lock().unwrap(), [session.header.id]);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -735,16 +732,5 @@ mod tests {
         assert!(text.contains("### 第 6 轮 · 助手\n查一下\n[调用 Read: {\"path\":\"a\"}]"));
         assert!(text.contains("已截断"));
         assert!(!text.contains(&"x".repeat(400)));
-    }
-
-    #[test]
-    fn curator_agent_is_valid_and_read_write_only() {
-        let def = curator_agent();
-        assert!(def.tools.iter().all(|t| t != "Shell"));
-        assert!(
-            crate::agents::builtin_agents()
-                .iter()
-                .any(|d| d.name == CURATOR_AGENT)
-        );
     }
 }

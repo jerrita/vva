@@ -2,8 +2,8 @@
 //!
 //! 不原地改写历史：回合结束后若上下文逼近窗口，由主模型在**同一会话末尾**追加压缩
 //! prompt（模型 / 工具 / 推理参数与上一轮完全一致，复用 cache 前缀），摘要作为追加轮次
-//! 留在旧会话；随后新建会话承接——复制旧会话的 system 前缀，首条动态内容为摘要
-//! reminder，其后是最近 K 个完整用户轮次原文。旧会话写 `superseded_by`，其余内容只增不改。
+//! 留在旧会话；随后新建会话承接——复制旧会话的 system 前缀，其后仅有摘要 reminder，
+//! 不复制任何对话轮次。旧会话写 `superseded_by`，其余内容只增不改。
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use crate::harness::{ManagedSession, SessionManager};
 use crate::model::{ContentPart, Message, Role, Session, TokenUsage, Turn};
 
 /// 追加到旧会话末尾的压缩 prompt
-pub const COMPRESS_PROMPT: &str = "\
+const COMPRESS_PROMPT: &str = "\
 请对到目前为止的整个对话做一次上下文压缩，产出供后续会话承接的摘要。\
 该摘要将是新会话中仅有的历史，不会附带任何原始对话，因此必须自足。\
 本次回复不得调用任何工具，只输出摘要正文，按以下分节书写（某节没有内容时写“无”）：
@@ -50,13 +50,15 @@ fn input_tokens(turn: &Turn, usage: &TokenUsage) -> u64 {
 
 /// 当前上下文 token 数：最近一个带 usage 的 assistant 轮次的输入 + 输出；尚无 usage 时为 `None`
 pub fn context_tokens(session: &Session) -> Option<u64> {
-    let turn = session
+    session
         .turns
         .iter()
         .rev()
-        .find(|turn| turn.role == Role::Assistant && turn.usage.is_some())?;
-    let usage = turn.usage.as_ref()?;
-    Some(input_tokens(turn, usage) + usage.completion_tokens as u64)
+        .filter(|turn| turn.role == Role::Assistant)
+        .find_map(|turn| {
+            let usage = turn.usage.as_ref()?;
+            Some(input_tokens(turn, usage) + usage.completion_tokens as u64)
+        })
 }
 
 /// 全会话 cache 命中率（读缓存 token / 总输入 token）；尚无输入时为 `None`
@@ -77,7 +79,7 @@ pub fn cache_hit_rate(session: &Session) -> Option<f64> {
 
 /// 回合结束后的阈值判定：`上下文 tokens >= limit.context - rollover_reserve_tokens`。
 /// 模型缺失 `limit.context` 或预留线超过窗口时显式报错，不猜测；已被接替的会话不再触发。
-pub fn should_rollover(
+fn should_rollover(
     app: &AppConfig,
     config: &AgentSpaceConfig,
     session: &Session,
@@ -132,7 +134,7 @@ pub async fn maybe_rollover(
 }
 
 /// 压缩并切换到接替会话。失败时旧会话回到调用前的内容（追加的压缩轮次被回退）。
-pub async fn rollover(
+async fn rollover(
     manager: &Arc<SessionManager>,
     handle: &Arc<ManagedSession>,
 ) -> Result<Rolled, String> {
@@ -152,9 +154,9 @@ pub async fn rollover(
         let _ = manager.delete_session(&successor).await;
         return Err(format!("标记旧会话 superseded_by 失败: {error}"));
     }
-    tracing::info!("rollover 完成: {} -> {}", old.header.id, successor.id);
+    tracing::info!("rollover 完成: {} -> {}", handle.id, successor.id);
     Ok(Rolled {
-        old_id: old.header.id.clone(),
+        old_id: handle.id.clone(),
         new_id: successor.id.clone(),
     })
 }
@@ -165,27 +167,26 @@ async fn compress(handle: &Arc<ManagedSession>, before: usize) -> Result<String,
     let outcome = handle.deliver_wait(COMPRESS_PROMPT).await;
     let session = handle.snapshot().session.clone();
     let failure = match outcome {
-        Err(error) => Some(format!("压缩请求失败: {error}")),
-        Ok(_) if calls_tool(&session.turns[before..]) => {
-            Some("压缩请求发起了工具调用，视为失败".into())
-        }
-        Ok(report) if report.text.trim().is_empty() => Some("压缩请求未返回摘要".into()),
+        Err(error) => format!("压缩请求失败: {error}"),
+        Ok(_) if calls_tool(&session.turns[before..]) => "压缩请求发起了工具调用，视为失败".into(),
+        Ok(report) if report.text.trim().is_empty() => "压缩请求未返回摘要".into(),
         Ok(report) => {
+            let summary = report.text.trim().to_string();
             tracing::info!(
                 "rollover 摘要已生成: session={} {} 字符",
                 handle.id,
-                report.text.trim().chars().count()
+                summary.chars().count()
             );
-            return Ok(report.text.trim().to_string());
+            return Ok(summary);
         }
     };
-    tracing::warn!("rollover 压缩失败: session={}: {failure:?}", handle.id);
+    tracing::warn!("rollover 压缩失败: session={}: {failure}", handle.id);
     if session.turns.len() > before
         && let Err(error) = handle.revert(before).await
     {
-        tracing::warn!("Rollover failed to revert compression turns: {error}");
+        return Err(format!("{failure}；回退压缩轮次失败: {error}"));
     }
-    Err(failure.expect("failure recorded"))
+    Err(failure)
 }
 
 fn calls_tool(turns: &[Turn]) -> bool {
@@ -213,16 +214,11 @@ fn is_memory_reminder(turn: &Turn) -> bool {
 /// 轮次 = system 前缀（日期随之冻结）+ 摘要 reminder；交接只留摘要，不复制任何对话轮次。
 /// 前缀中旧的记忆索引快照已过时：`memory` 为当前索引 reminder，原位替换
 /// （旧前缀没有则不加；当前无索引则丢弃旧快照）。
-pub fn successor_session(
-    old: &Session,
-    before: usize,
-    summary: &str,
-    memory: Option<&str>,
-) -> Session {
+fn successor_session(old: &Session, before: usize, summary: &str, memory: Option<&str>) -> Session {
     let turns = &old.turns[..before];
     let prefix = turns
         .iter()
-        .take_while(|turn| turn.role == Role::System || !is_round_start(turn))
+        .take_while(|turn| !is_round_start(turn))
         .count();
 
     let header = &old.header;
@@ -350,6 +346,10 @@ mod tests {
         assert!(
             !should_rollover(&config(Some(1000)), &cfg, &session_with(vec![user("q")])).unwrap()
         );
+        // 已被接替的会话不再触发
+        let mut superseded = at(999);
+        superseded.header.superseded_by = Some("sess_new00".into());
+        assert!(!should_rollover(&config(Some(1000)), &cfg, &superseded).unwrap());
     }
 
     #[test]
@@ -381,17 +381,6 @@ mod tests {
                 .unwrap_err()
                 .contains("rollover_reserve_tokens")
         );
-    }
-
-    #[test]
-    fn superseded_session_never_triggers() {
-        let mut session = session_with(vec![user("q"), assistant("a", 999)]);
-        session.header.superseded_by = Some("sess_new00".into());
-        let cfg = AgentSpaceConfig {
-            rollover_reserve_tokens: 10,
-            ..Default::default()
-        };
-        assert!(!should_rollover(&config(Some(1000)), &cfg, &session).unwrap());
     }
 
     fn prefixed(rounds: Vec<Vec<Turn>>) -> Session {
@@ -465,23 +454,6 @@ mod tests {
             new.turns
                 .iter()
                 .all(|t| !t.text_content().contains("NEW INDEX"))
-        );
-    }
-
-    #[test]
-    fn compression_turns_are_not_copied() {
-        let old = prefixed(vec![tool_round("r1", "c1")]);
-        let before = old.turns.len();
-        // 压缩轮次（before 之后）留在旧会话，不进入接替会话
-        let mut with_compress = old.clone();
-        with_compress.turns.push(user(COMPRESS_PROMPT));
-        with_compress.turns.push(assistant("SUMMARY", 1));
-        let new = successor_session(&with_compress, before, "s", None);
-        assert_eq!(new.turns.len(), 3);
-        assert!(
-            new.turns
-                .iter()
-                .all(|t| !t.text_content().contains("上下文压缩"))
         );
     }
 

@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use super::curator::{Curator, CuratorReport, CuratorStatus};
 use crate::config::AgentSpaceConfig;
 use crate::harness::SessionManager;
-use crate::model::SessionKind;
+use crate::model::{SessionKind, SessionSummary};
 
 /// 默认扫描周期
 pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
@@ -90,12 +90,12 @@ impl Lifecycle {
         })
     }
 
-    pub async fn sweep(&self) -> Result<Vec<String>, String> {
+    async fn sweep(&self) -> Result<Vec<String>, String> {
         self.sweep_at(Utc::now()).await
     }
 
     /// 以 `now` 为基准扫描一次，返回本次删除的会话 id
-    pub async fn sweep_at(&self, now: DateTime<Utc>) -> Result<Vec<String>, String> {
+    async fn sweep_at(&self, now: DateTime<Utc>) -> Result<Vec<String>, String> {
         let summaries = self
             .manager
             .store()
@@ -129,26 +129,10 @@ impl Lifecycle {
             }
             let seen_turns = live.as_ref().map(|handle| handle.turn_seq());
             // curator 会话自身是沉淀的执行载体；oneshot 答完即无长期价值，二者都不沉淀
-            if !matches!(summary.kind, SessionKind::Curator | SessionKind::Oneshot) {
-                let result = self.curator.curate(&summary.id).await;
-                let failed = result.status == CuratorStatus::Failed;
-                let announce = if failed {
-                    tracing::warn!("Curator failed for {}: {}", summary.id, result.summary);
-                    self.record_failure(&summary.id, &result.summary, now)
-                } else {
-                    self.failures.lock().unwrap().remove(&summary.id);
-                    true
-                };
-                if announce {
-                    (self.notify)(CuratorReport {
-                        session_id: summary.id.clone(),
-                        origin: summary.origin.clone(),
-                        result,
-                    });
-                }
-                if failed {
-                    continue;
-                }
+            if !matches!(summary.kind, SessionKind::Curator | SessionKind::Oneshot)
+                && !self.curate(&summary, now).await
+            {
+                continue;
             }
             // 沉淀期间会话又有活动：保留，下个周期增量沉淀
             if let Some(handle) = &live
@@ -174,6 +158,27 @@ impl Lifecycle {
         Ok(deleted)
     }
 
+    /// 沉淀并按需推送结果；返回是否成功（失败则保留会话、进入退避）
+    async fn curate(&self, summary: &SessionSummary, now: DateTime<Utc>) -> bool {
+        let result = self.curator.curate(&summary.id).await;
+        let failed = result.status == CuratorStatus::Failed;
+        let announce = if failed {
+            tracing::warn!("Curator failed for {}: {}", summary.id, result.summary);
+            self.record_failure(&summary.id, &result.summary, now)
+        } else {
+            self.failures.lock().unwrap().remove(&summary.id);
+            true
+        };
+        if announce {
+            (self.notify)(CuratorReport {
+                session_id: summary.id.clone(),
+                origin: summary.origin.clone(),
+                result,
+            });
+        }
+        !failed
+    }
+
     async fn delete(&self, id: &str) -> Result<(), String> {
         let handle = self.manager.live_or_load(id).await?;
         self.manager.delete_session(&handle).await?;
@@ -190,7 +195,6 @@ mod tests {
     use crate::model::{Message, Origin, Session, Turn};
     use crate::storage::jsonl::JsonlSessionStore;
     use std::path::PathBuf;
-    use std::sync::Mutex;
 
     /// 固定结果的 curator 后端，记录被整理的次数
     struct Stub {
