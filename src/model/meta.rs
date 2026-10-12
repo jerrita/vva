@@ -243,11 +243,15 @@ pub enum AnthropicCitation {
 }
 
 /// web_search_tool_result.content：结果列表或错误对象（HTTP 200 内嵌失败语义）
+///
+/// 例外于零兜底：部分兼容网关把错误对象包进数组（`[{"type":"web_search_tool_result_error",..}]`），
+/// 且回传时同样要求数组；`WrappedError` 保留该形态原样回传。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum AnthropicSearchResultContent {
     Results(Vec<AnthropicSearchResult>),
     Error(AnthropicToolResultError),
+    WrappedError([AnthropicToolResultError; 1]),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

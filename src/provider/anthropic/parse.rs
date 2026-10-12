@@ -175,7 +175,9 @@ pub(super) fn project_search_call(
                 })
                 .collect(),
         ),
-        AnthropicSearchResultContent::Error(_) => (SearchStatus::Failed, Vec::new()),
+        AnthropicSearchResultContent::Error(_) | AnthropicSearchResultContent::WrappedError(_) => {
+            (SearchStatus::Failed, Vec::new())
+        }
     };
     Ok(WebSearchCall {
         id: id.to_string(),

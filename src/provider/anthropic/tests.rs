@@ -556,6 +556,24 @@ fn test_anthropic_search_error_result_marks_failed() {
     }
 }
 
+/// 兼容网关把错误对象包进数组：保留数组形态回传
+#[test]
+fn test_anthropic_web_search_error_wrapped_in_array() {
+    let wrapped = serde_json::json!([
+        { "type": "web_search_tool_result_error", "error_code": "unavailable" }
+    ]);
+    let content: AnthropicSearchResultContent =
+        serde_json::from_value(wrapped).expect("wrapped error");
+    assert!(matches!(
+        content,
+        AnthropicSearchResultContent::WrappedError(_)
+    ));
+    assert_eq!(
+        serde_json::to_value(&content).unwrap(),
+        serde_json::json!([{ "type": "web_search_tool_result_error", "error_code": "unavailable" }])
+    );
+}
+
 /// 官方流式序列：server_tool_use 经 input_json_delta 增量下发，结果块整块到达，
 /// 引用经 citations_delta 逐条追加；流式与非流式产出同一条原生块链
 #[tokio::test]
