@@ -9,9 +9,10 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use super::markdown;
 use crate::model::{ContentPart, Role, Session};
 
-/// 每类条目在单条汇报中的展示上限，超出以「等 N 项」收尾
+/// 每类条目在单条汇报中的展示上限，超出时单独列出剩余数量与总数
 const MAX_FILES: usize = 8;
 const MAX_COMMANDS: usize = 6;
 const MAX_TEXTS: usize = 3;
@@ -125,67 +126,56 @@ impl Digest {
     }
 
     fn render(self) -> Option<String> {
-        let mut lines = Vec::new();
-        let files = |set: &BTreeSet<String>| {
-            let shown: Vec<_> = set.iter().take(MAX_FILES).cloned().collect();
-            let more = set.len().saturating_sub(MAX_FILES);
-            if more > 0 {
-                format!("{} 等 {} 个", shown.join("、"), set.len())
-            } else {
-                shown.join("、")
+        let mut rows = Vec::new();
+        for (label, files) in [("新建文件", &self.created), ("修改文件", &self.edited)] {
+            for file in files.iter().take(MAX_FILES) {
+                rows.push([label.into(), file.clone()]);
             }
-        };
-        if !self.created.is_empty() {
-            lines.push(format!("新建文件: {}", files(&self.created)));
+            if files.len() > MAX_FILES {
+                rows.push([
+                    label.into(),
+                    format!("另 {} 个，共 {} 个", files.len() - MAX_FILES, files.len()),
+                ]);
+            }
         }
-        if !self.edited.is_empty() {
-            lines.push(format!("修改文件: {}", files(&self.edited)));
+        for command in self.commands.iter().take(MAX_COMMANDS) {
+            rows.push(["执行命令".into(), command.clone()]);
         }
-        if !self.commands.is_empty() {
-            let more = self.commands.len().saturating_sub(MAX_COMMANDS);
-            let mut text = format!(
-                "执行命令: {}",
-                self.commands
-                    .iter()
-                    .take(MAX_COMMANDS)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join("；")
-            );
-            if more > 0 {
-                text.push_str(&format!("（共 {} 条）", self.commands.len()));
-            }
-            lines.push(text);
+        if self.commands.len() > MAX_COMMANDS {
+            rows.push([
+                "执行命令".into(),
+                format!(
+                    "另 {} 条，共 {} 条",
+                    self.commands.len() - MAX_COMMANDS,
+                    self.commands.len()
+                ),
+            ]);
         }
-        if self.lookups + self.others > 0 {
-            let mut parts = Vec::new();
-            if self.lookups > 0 {
-                parts.push(format!("读取/检索 {} 次", self.lookups));
-            }
-            if self.others > 0 {
-                parts.push(format!("其他工具 {} 次", self.others));
-            }
-            lines.push(parts.join("，"));
+        if self.lookups > 0 {
+            rows.push(["读取 / 检索".into(), format!("{} 次", self.lookups)]);
+        }
+        if self.others > 0 {
+            rows.push(["其他工具".into(), format!("{} 次", self.others)]);
         }
         if self.errors > 0 {
-            lines.push(format!("工具报错 {} 次", self.errors));
+            rows.push(["工具报错".into(), format!("{} 次", self.errors)]);
         }
         // 文字消息取最近几条
         let skip = self.texts.len().saturating_sub(MAX_TEXTS);
         for text in self.texts.into_iter().skip(skip) {
-            lines.push(format!("说: {text}"));
+            rows.push(["最新消息".into(), text]);
         }
-        (!lines.is_empty()).then(|| lines.join("\n"))
+        (!rows.is_empty()).then(|| markdown::table("本段进展", ["项目", "内容"], rows))
     }
 }
 
 /// 汇报文本：本段有动作时附摘要，否则注明无新动作（让用户知道仍在运行）
 fn report(session: &Session, from: usize, elapsed: Duration) -> String {
     let minutes = elapsed.as_secs() / 60;
-    let head = format!("⏳ 仍在处理（已 {minutes} 分钟）");
+    let head = format!("### ⏳ 仍在处理（已 {minutes} 分钟）");
     match digest(session, from) {
-        Some(body) => format!("{head}\n{body}"),
-        None => format!("{head}\n本段暂无新的工具调用或文字输出"),
+        Some(body) => format!("{head}\n\n{body}"),
+        None => format!("{head}\n\n本段暂无新的工具调用或文字输出。"),
     }
 }
 
@@ -269,14 +259,13 @@ mod tests {
             call("Grep", r#"{"pattern":"p"}"#),
         ]));
         let out = digest(&s, 0).unwrap();
-        assert!(out.contains("新建文件: memory/a.md"), "{out}");
-        assert!(out.contains("修改文件: c.rs、src/b.rs"), "{out}");
-        assert!(
-            out.contains("执行命令: 运行测试；启动服务（后台）"),
-            "{out}"
-        );
-        assert!(out.contains("读取/检索 2 次"), "{out}");
-        assert!(out.contains("说: 开始整理"), "{out}");
+        assert!(out.contains("| 新建文件 | memory/a.md |"), "{out}");
+        assert!(out.contains("| 修改文件 | c.rs |"), "{out}");
+        assert!(out.contains("| 修改文件 | src/b.rs |"), "{out}");
+        assert!(out.contains("| 执行命令 | 运行测试 |"), "{out}");
+        assert!(out.contains("| 执行命令 | 启动服务（后台） |"), "{out}");
+        assert!(out.contains("| 读取 / 检索 | 2 次 |"), "{out}");
+        assert!(out.contains("| 最新消息 | 开始整理 |"), "{out}");
         assert!(!out.contains("cargo test"), "只汇报意图，不泄露命令原文");
     }
 
@@ -292,7 +281,7 @@ mod tests {
         s.append_turn(assistant(many));
         s.append_turn(assistant(vec![text(&"长".repeat(300))]));
         let out = digest(&s, from).unwrap();
-        assert!(out.contains("等 10 个"), "{out}");
+        assert!(out.contains("另 2 个，共 10 个"), "{out}");
         assert!(!out.contains("旧消息"));
         assert!(out.contains('…'));
     }

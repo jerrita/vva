@@ -544,13 +544,19 @@ fn description_preview(description: &str) -> String {
     }
 }
 
-/// IM 状态表使用两列，长路径与标题在窄屏上也便于阅读。
+/// IM 状态表使用双栏，每行并排展示两组项目与内容。
 fn status_table(rows: &[(&str, String)]) -> String {
     markdown::table(
         "📊 会话状态",
-        ["项目", "内容"],
-        rows.iter()
-            .map(|(key, value)| [key.to_string(), value.clone()]),
+        ["项目", "内容", "项目", "内容"],
+        rows.chunks(2).map(|pair| {
+            let (key, value) = &pair[0];
+            let (next_key, next_value) = pair
+                .get(1)
+                .map(|(key, value)| (key.to_string(), value.clone()))
+                .unwrap_or_default();
+            [key.to_string(), value.clone(), next_key, next_value]
+        }),
     )
 }
 
