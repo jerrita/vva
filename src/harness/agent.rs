@@ -307,6 +307,7 @@ pub(super) async fn generate_title(
         enable_web_search: false,
         enable_web_fetch: false,
         reasoning_effort: None,
+        disable_thinking: resolved.model_config.reasoning,
         web_tool_version: None,
         service_tier: resolved.model_config.service_tier().map(str::to_string),
         affinity: None,
@@ -335,6 +336,85 @@ pub(super) async fn generate_title(
 mod tests {
     use super::*;
     use crate::provider::{ProviderError, ProviderResponse};
+
+    #[tokio::test]
+    async fn title_generation_disables_thinking_with_native_parameters() {
+        use axum::{Json, Router, routing::post};
+        use serde_json::{Value, json};
+
+        let cases = [
+            (
+                "response",
+                json!({
+                    "id": "resp_title", "status": "completed",
+                    "output": [{
+                        "type": "message", "id": "msg_title", "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "整理项目文档", "annotations": []}]
+                    }]
+                }),
+                "/reasoning",
+                json!({"effort": "none"}),
+            ),
+            (
+                "anthropic",
+                json!({
+                    "id": "msg_title", "type": "message", "role": "assistant",
+                    "model": "title-model",
+                    "content": [{"type": "text", "text": "整理项目文档"}],
+                    "stop_reason": "end_turn", "stop_sequence": null,
+                    "usage": {"input_tokens": 50, "output_tokens": 6}
+                }),
+                "/thinking",
+                json!({"type": "disabled"}),
+            ),
+            (
+                "gemini",
+                json!({
+                    "candidates": [{
+                        "content": {"role": "model", "parts": [{"text": "整理项目文档"}]},
+                        "finishReason": "STOP"
+                    }]
+                }),
+                "/generationConfig/thinkingConfig",
+                json!({"thinkingBudget": 0}),
+            ),
+        ];
+        for (protocol, response, parameter, disabled) in cases {
+            for reasoning in [true, false] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let (requests, mut received) = mpsc::channel(1);
+                let response = response.clone();
+                let app = Router::new().fallback(post(move |Json(body): Json<Value>| {
+                    let requests = requests.clone();
+                    let response = response.clone();
+                    async move {
+                        requests.send(body).await.unwrap();
+                        Json(response)
+                    }
+                }));
+                let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+                let config: AppConfig = serde_json::from_value(json!({
+                    "settings": {"small_model": "test/title-model"},
+                    "providers": {"test": {
+                        "type": "response", "base_url": format!("http://{address}"),
+                        "api_key": "test-key",
+                        "models": {"title-model": {"name": "Title", "type": protocol, "reasoning": reasoning}}
+                    }}
+                })).unwrap();
+                let result = generate_title(&config, "unused/model", "整理项目文档").await;
+                server.abort();
+                assert_eq!(result.unwrap(), "整理项目文档");
+                let body = received.try_recv().unwrap();
+                if reasoning {
+                    assert_eq!(body.pointer(parameter), Some(&disabled), "{protocol}");
+                } else {
+                    assert!(body.pointer(parameter).is_none(), "{protocol}");
+                }
+            }
+        }
+    }
 
     /// 无原生搜索能力的供应商桩：覆盖能力协商的降级通知分支
     struct NoSearchProvider;

@@ -258,7 +258,7 @@ impl ResponseProvider {
         });
 
         let mut include = Vec::new();
-        if options.reasoning_effort.is_some() {
+        if options.reasoning_effort.is_some() && !options.disable_thinking {
             include.push(serde_json::json!("reasoning.encrypted_content"));
         }
         if options.enable_web_search {
@@ -291,7 +291,9 @@ impl ResponseProvider {
             body["service_tier"] = serde_json::Value::String(tier.clone());
         }
 
-        if let Some(effort) = &options.reasoning_effort
+        if options.disable_thinking {
+            body["reasoning"] = serde_json::json!({ "effort": "none" });
+        } else if let Some(effort) = &options.reasoning_effort
             && !effort.is_empty()
         {
             // OpenAI 仅在显式请求 summary 时才生成思考摘要，否则 reasoning item 的 summary 恒为空

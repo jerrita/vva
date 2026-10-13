@@ -274,6 +274,10 @@ impl AnthropicProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
+        if options.disable_thinking {
+            body["thinking"] = serde_json::json!({ "type": "disabled" });
+        }
+
         // 原生 structured outputs：无需 beta header，JSON 文本落在 text 块中
         if let Some(rs) = &options.response_schema {
             body["output_config"] = serde_json::json!({

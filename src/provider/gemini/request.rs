@@ -187,6 +187,12 @@ impl GeminiProvider {
         if let Some(max_tokens) = options.max_tokens {
             gen_config.insert("maxOutputTokens".to_string(), serde_json::json!(max_tokens));
         }
+        if options.disable_thinking {
+            gen_config.insert(
+                "thinkingConfig".to_string(),
+                serde_json::json!({ "thinkingBudget": 0 }),
+            );
+        }
         if let Some(rs) = &options.response_schema {
             gen_config.insert(
                 "responseMimeType".to_string(),
