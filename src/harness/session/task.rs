@@ -1193,7 +1193,7 @@ impl SessionTask {
                 .iter()
                 .rev()
                 .find(|turn| turn.role == Role::Assistant)
-                .map(Turn::text_content)
+                .map(Turn::final_text)
                 .unwrap_or_default()
         } else {
             String::new()

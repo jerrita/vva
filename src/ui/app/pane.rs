@@ -259,7 +259,7 @@ impl<'t> ResponseGroup<'t> {
             .filter(|&index| turns[index].role == Role::Assistant)
             .collect();
         let last = assistant_turns.last().copied();
-        let final_reply = last.and_then(|index| final_reply_range(&turns[index]));
+        let final_reply = last.and_then(|index| turns[index].final_reply_range());
         let last_part_count = last.map_or(0, |index| {
             turns[index].messages.iter().flat_map(|m| &m.parts).count()
         });
@@ -435,23 +435,4 @@ fn turn_is_system_reminder(turn: &Turn) -> bool {
 /// 运行段边界：真实用户消息；机器注入 reminder（含后台任务通知）随行注入不算
 fn turn_is_user_boundary(turn: &Turn) -> bool {
     turn.role == Role::User && !turn_is_system_reminder(turn)
-}
-
-/// 助手轮次末尾连续文本段的部件区间 [start, end)
-fn final_reply_range(turn: &Turn) -> Option<(usize, usize)> {
-    let mut last_run = None;
-    let mut run_start = None;
-    let mut total = 0;
-    for (index, part) in turn.messages.iter().flat_map(|m| &m.parts).enumerate() {
-        total = index + 1;
-        match (matches!(part, ContentPart::Text { .. }), run_start) {
-            (true, None) => run_start = Some(index),
-            (false, Some(start)) => {
-                last_run = Some((start, index));
-                run_start = None;
-            }
-            _ => {}
-        }
-    }
-    run_start.map(|start| (start, total)).or(last_run)
 }
