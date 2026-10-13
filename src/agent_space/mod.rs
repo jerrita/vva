@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use self::binding::is_group_binding;
 use self::channel::Channel;
 use self::channel::qq::{QqChannel, QqOptions};
 use self::decisions::DecisionsRouteModel;
@@ -68,25 +69,26 @@ fn chat_binding(header: &SessionHeader) -> Option<String> {
     Some(origin.binding())
 }
 
-/// 会话运行期工具：SendFile 与 Schedule 都只挂在带 IM 来源的顶层会话
+/// 会话运行期工具：SendFile 挂在 IM 顶层会话，Schedule 限个人聊天。
 fn tool_factory(channel: Arc<dyn Channel>, schedule: Arc<ScheduleStore>) -> SessionToolFactory {
     Arc::new(move |header| {
         let Some(binding) = chat_binding(header) else {
             return Vec::new();
         };
-        vec![
-            send_file::tool(
-                channel.clone(),
-                binding.clone(),
-                header.workspace_root.clone(),
-            ),
-            schedule_tool::tool(
+        let mut tools = vec![send_file::tool(
+            channel.clone(),
+            binding.clone(),
+            header.workspace_root.clone(),
+        )];
+        if !is_group_binding(&binding) {
+            tools.push(schedule_tool::tool(
                 schedule.clone(),
                 channel.name().to_string(),
                 binding,
                 header.id.clone(),
-            ),
-        ]
+            ));
+        }
+        tools
     })
 }
 
@@ -282,6 +284,28 @@ mod tests {
         assert!(preamble(&header(SessionKind::Curator, false)).is_empty());
         assert!(preamble(&header(SessionKind::Topic, false)).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn group_sessions_do_not_mount_schedule_management() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = Arc::new(QqChannel::new(QqOptions {
+            app_id: "test".into(),
+            secret: "test".into(),
+            allowed_users: Vec::new(),
+        }));
+        let factory = tool_factory(channel, ScheduleStore::open(dir.path()).unwrap());
+        let mut session = header(SessionKind::Topic, true);
+        session.origin.as_mut().unwrap().chat_id = "c2c:sample".into();
+        assert!(
+            factory(&session)
+                .iter()
+                .any(|tool| tool.name() == "Schedule")
+        );
+        session.origin.as_mut().unwrap().chat_id = "group:sample".into();
+        let tools = factory(&session);
+        assert!(tools.iter().any(|tool| tool.name() == "SendFile"));
+        assert!(!tools.iter().any(|tool| tool.name() == "Schedule"));
     }
 
     #[test]

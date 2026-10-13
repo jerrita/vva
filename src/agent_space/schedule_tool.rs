@@ -41,7 +41,7 @@ impl ScheduleTool {
         };
         let bindings = match args.bindings {
             Some(list) => list,
-            // 在新会话执行时必须有聊天；在当前会话执行时回复默认回到该会话来源
+            // 新会话执行时需要来源聊天；通知目标统一由 home bindings 决定。
             None if session.is_none() => vec![self.binding.clone()],
             None => Vec::new(),
         };
@@ -88,7 +88,9 @@ impl Tool for ScheduleTool {
          what to report) and should say when to stay silent (the reply is then exactly \
          [SILENT]). Use target=session only for short-lived follow-ups in this very \
          conversation: sessions are cleaned up after being idle, which ends the task. \
-         `bindings` lists every chat that receives the result; it defaults to the current chat."
+         `bindings[0]` selects the source chat for a fresh execution session and defaults \
+         to the current chat. All results and background notifications go only to home \
+         chats configured with /sethome; remaining bindings do not select recipients."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -102,7 +104,7 @@ impl Tool for ScheduleTool {
                 "every": {"type": "string", "description": "Interval such as 30m, 2h, 1d"},
                 "prompt": {"type": "string", "description": "Self-contained instruction executed at each trigger"},
                 "target": {"type": "string", "enum": ["new", "session"], "description": "Where to run: a fresh session (default) or this conversation"},
-                "bindings": {"type": "array", "items": {"type": "string"}, "description": "Chats that receive the result, e.g. [\"qq:c2c:<openid>\"]; defaults to the current chat"}
+                "bindings": {"type": "array", "items": {"type": "string"}, "description": "First binding selects the source chat for a fresh session, e.g. [\"qq:c2c:<openid>\"]; defaults to the current chat. Notifications go only to configured home chats."}
             },
             "required": ["action"]
         })
@@ -177,10 +179,14 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            out.contains("morning") && out.contains("qq:group:g1"),
+            out.contains("morning") && out.contains("qq:c2c:u1") && out.contains("home"),
             "{out}"
         );
-        // 缺省发往当前聊天
+        assert_eq!(
+            store.get("morning").unwrap().0.bindings,
+            ["qq:c2c:u1", "qq:group:g1"]
+        );
+        // 新执行会话缺省使用当前聊天为来源。
         tool.execute(r#"{"action":"create","id":"w","every":"1h","prompt":"喝水"}"#)
             .await
             .unwrap();

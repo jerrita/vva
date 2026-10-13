@@ -8,14 +8,19 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::model::Origin;
+
 const BINDINGS_FILE: &str = "bindings.json";
 const MESSAGE_INDEX_FILE: &str = "message_index.jsonl";
 
 /// 单个 binding 的持久状态
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct BindingState {
     /// 默认续写的 session；无明确锚点时仅作为 router 的参考
     focus: Option<String>,
+    /// 当前聊天是否接收 agent space 后台通知。
+    #[serde(default)]
+    home: bool,
 }
 
 /// `<agent_dir>/bindings.json`：每次变更原子落盘（临时文件 + rename）
@@ -42,6 +47,38 @@ impl BindingStore {
         self.bindings.get(binding)?.focus.as_deref()
     }
 
+    pub fn is_home(&self, binding: &str) -> bool {
+        self.bindings.get(binding).is_some_and(|state| state.home)
+    }
+
+    pub fn homes(&self) -> Vec<String> {
+        self.bindings
+            .iter()
+            .filter(|(_, state)| state.home)
+            .map(|(binding, _)| binding.clone())
+            .collect()
+    }
+
+    pub fn set_home(&mut self, binding: &str, home: bool) -> Result<(), String> {
+        if self.is_home(binding) == home {
+            return Ok(());
+        }
+        let previous = self.bindings.get(binding).cloned();
+        self.bindings.entry(binding.to_string()).or_default().home = home;
+        if let Err(error) = self.save() {
+            match previous {
+                Some(state) => {
+                    self.bindings.insert(binding.to_string(), state);
+                }
+                None => {
+                    self.bindings.remove(binding);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub fn set_focus(&mut self, binding: &str, session_id: Option<String>) -> Result<(), String> {
         tracing::debug!("focus 变更: binding={binding} -> {session_id:?}");
         self.bindings.entry(binding.to_string()).or_default().focus = session_id;
@@ -65,6 +102,22 @@ impl BindingStore {
         std::fs::write(&tmp, json).map_err(|e| format!("写入 {} 失败: {e}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path)
             .map_err(|e| format!("替换 {} 失败: {e}", self.path.display()))
+    }
+}
+
+/// QQ 群聊 binding；渠道名独立于聊天类型，便于渠道桩复用。
+pub(super) fn is_group_binding(binding: &str) -> bool {
+    binding
+        .split_once(':')
+        .is_some_and(|(_, chat_id)| chat_id.starts_with("group:"))
+}
+
+/// 群聊只访问本群会话；个人聊天共享排除群聊来源的个人会话池。
+pub(super) fn in_chat_scope(binding: &str, origin: Option<&Origin>) -> bool {
+    if is_group_binding(binding) {
+        origin.is_some_and(|origin| origin.binding() == binding)
+    } else {
+        !origin.is_some_and(|origin| is_group_binding(&origin.binding()))
     }
 }
 
@@ -253,6 +306,30 @@ mod tests {
         assert_eq!(again.focus("qq:c2c:2"), Some("sess_c"));
         assert_eq!(again.focus("qq:c2c:3"), None);
         assert!(!dir.path().join("bindings.json.tmp").exists());
+    }
+
+    #[test]
+    fn homes_upgrade_legacy_state_and_survive_focus_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(BINDINGS_FILE),
+            r#"{"qq:c2c:owner":{"focus":"sess_old"}}"#,
+        )
+        .unwrap();
+        let mut store = BindingStore::load(dir.path()).unwrap();
+        assert!(store.homes().is_empty());
+        store.set_home("qq:c2c:owner", true).unwrap();
+        store.set_home("qq:c2c:owner", true).unwrap();
+        store.set_home("qq:group:service", true).unwrap();
+        store.replace_focus("sess_old", Some("sess_new")).unwrap();
+        let mut store = BindingStore::load(dir.path()).unwrap();
+        assert_eq!(store.homes(), ["qq:c2c:owner", "qq:group:service"]);
+        assert_eq!(store.focus("qq:c2c:owner"), Some("sess_new"));
+        store.set_home("qq:c2c:owner", false).unwrap();
+        store.set_home("qq:c2c:owner", false).unwrap();
+        let store = BindingStore::load(dir.path()).unwrap();
+        assert_eq!(store.homes(), ["qq:group:service"]);
+        assert_eq!(store.focus("qq:c2c:owner"), Some("sess_new"));
     }
 
     #[test]

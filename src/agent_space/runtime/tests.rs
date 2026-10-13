@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::mode_model::MODE_MODEL_FILE;
 use super::*;
 use crate::agent_space::channel::{self, FileSource, InboundFile};
+use crate::agent_space::command::Command;
 use crate::agent_space::curator::CuratorResult;
 use crate::agent_space::router::{ModelReply, RouteInput, RouteModel};
 use crate::agent_space::scheduler::Task;
@@ -18,6 +19,7 @@ use crate::storage::jsonl::JsonlSessionStore;
 #[derive(Default)]
 struct FakeChannel {
     sent: StdMutex<Vec<OutboundText>>,
+    fail_binding: StdMutex<Option<String>>,
 }
 
 #[async_trait::async_trait]
@@ -29,6 +31,9 @@ impl Channel for FakeChannel {
         let Outbound::Text(text) = msg else {
             panic!("本期只发文本");
         };
+        if self.fail_binding.lock().unwrap().as_deref() == Some(&text.binding) {
+            return Err(channel::ChannelError::Protocol("模拟发送失败".into()));
+        }
         let mut sent = self.sent.lock().unwrap();
         sent.push(text);
         Ok(vec![format!("out{}", sent.len())])
@@ -196,6 +201,20 @@ fn inbound(id: &str, text: &str) -> Inbound {
 }
 
 impl Fixture {
+    async fn topic(&self, binding: &str) -> Arc<ManagedSession> {
+        let handle = self
+            .runtime
+            .create(binding, SessionKind::Topic, "test")
+            .await
+            .unwrap();
+        self.manager
+            .store()
+            .save_header(&handle.snapshot().session)
+            .await
+            .unwrap();
+        handle
+    }
+
     async fn session_ids(&self) -> Vec<String> {
         let mut ids: Vec<_> = self
             .manager
@@ -412,8 +431,13 @@ fn task(json: &str) -> Task {
 }
 
 #[tokio::test]
-async fn scheduled_task_runs_once_in_oneshot_and_replies_to_every_binding() {
+async fn scheduled_task_runs_once_in_original_scope_and_notifies_only_homes() {
     let f = fixture().await;
+    {
+        let mut state = f.runtime.state.lock().await;
+        state.bindings.set_home("fake:c2c:home", true).unwrap();
+        state.bindings.set_home("fake:group:home", true).unwrap();
+    }
     f.runtime
         .fire(task(
             r#"{"id":"multi","every":"1h","prompt":"汇报","bindings":["fake:c2c:u1","fake:group:g2"]}"#,
@@ -422,7 +446,7 @@ async fn scheduled_task_runs_once_in_oneshot_and_replies_to_every_binding() {
     let sent = f.channel.wait(2).await;
     let mut bindings: Vec<_> = sent.iter().map(|m| m.binding.as_str()).collect();
     bindings.sort();
-    assert_eq!(bindings, ["fake:c2c:u1", "fake:group:g2"]);
+    assert_eq!(bindings, ["fake:c2c:home", "fake:group:home"]);
     assert!(sent.iter().all(|m| m.text == "pong"));
     // 只执行一次：只有一个 oneshot 会话，来源是第一个 binding
     let ids = f.session_ids().await;
@@ -450,12 +474,20 @@ async fn scheduled_task_runs_once_in_oneshot_and_replies_to_every_binding() {
 #[tokio::test]
 async fn scheduled_failure_notifies_and_disables_on_permanent_error() {
     let f = fixture().await;
+    f.runtime
+        .state
+        .lock()
+        .await
+        .bindings
+        .set_home("fake:c2c:home", true)
+        .unwrap();
     let t = task(
         r#"{"id":"gone","every":"1h","prompt":"p","session":"sess_none0","bindings":["fake:c2c:u1"]}"#,
     );
     f.schedule.add(t.clone()).unwrap();
     f.runtime.fire(t).await;
     let sent = f.channel.wait(1).await;
+    assert_eq!(sent[0].binding, "fake:c2c:home");
     assert!(sent[0].text.contains("已停用"), "{}", sent[0].text);
     assert!(sent[0].text.contains("sess_none0"), "{}", sent[0].text);
     assert!(!f.schedule.list()[0].1.enabled);
@@ -561,5 +593,223 @@ async fn memory_update_broadcast_notes_eligible_sessions_without_a_turn() {
             .iter()
             .all(|t| t.role != crate::model::Role::Assistant)
     );
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn group_scope_filters_lists_switches_and_clears_legacy_focus() {
+    let f = fixture().await;
+    let personal = f.topic(BINDING).await;
+    let second = f.topic("fake:c2c:u2").await;
+    let group = f.topic("fake:group:room").await;
+    let other_group = f.topic("fake:group:other").await;
+    let personal_candidates = f.runtime.candidates(BINDING).await.unwrap();
+    assert_eq!(personal_candidates.len(), 2);
+    assert!(personal_candidates.iter().any(|c| c.id == personal.id));
+    assert!(personal_candidates.iter().any(|c| c.id == second.id));
+    let group_candidates = f.runtime.candidates("fake:group:room").await.unwrap();
+    assert_eq!(group_candidates.len(), 1);
+    assert_eq!(group_candidates[0].id, group.id);
+
+    let mut msg = inbound("scope", "");
+    msg.binding = "fake:group:room".into();
+    f.runtime.command(&msg, Command::Sessions).await.unwrap();
+    let sent = f.channel.wait(1).await;
+    let list = &sent[0].text;
+    assert!(list.contains(&crate::agent_space::markdown::text(&group.id)));
+    for id in [&personal.id, &second.id, &other_group.id] {
+        assert!(!list.contains(&crate::agent_space::markdown::text(id)));
+        assert!(
+            f.runtime
+                .command(&msg, Command::Switch(id.clone()))
+                .await
+                .is_err()
+        );
+        assert!(
+            f.runtime
+                .command(&msg, Command::Clear(id.clone()))
+                .await
+                .is_err()
+        );
+    }
+    {
+        let mut state = f.runtime.state.lock().await;
+        state
+            .bindings
+            .set_focus(&msg.binding, Some(personal.id.clone()))
+            .unwrap();
+        state
+            .bindings
+            .set_focus(BINDING, Some(personal.id.clone()))
+            .unwrap();
+    }
+    f.runtime.command(&msg, Command::Status).await.unwrap();
+    assert_eq!(
+        f.runtime.state.lock().await.bindings.focus(&msg.binding),
+        None
+    );
+    assert_eq!(f.focus().await.as_deref(), Some(personal.id.as_str()));
+    assert!(f.runtime.command(&msg, Command::Stop).await.is_err());
+    assert!(
+        f.runtime
+            .command(&msg, Command::Clear(String::new()))
+            .await
+            .is_err()
+    );
+    for cmd in [
+        Command::Model(String::new()),
+        Command::Schedule(String::new()),
+        Command::Skills,
+        Command::Delete(String::new()),
+    ] {
+        assert!(
+            f.runtime
+                .command(&msg, cmd)
+                .await
+                .unwrap_err()
+                .contains("私聊")
+        );
+    }
+    f.runtime.command(&msg, Command::Help).await.unwrap();
+    let sent = f.channel.wait(3).await;
+    assert!(sent[2].text.contains("/sethome"));
+    assert!(!sent[2].text.contains("/schedule"));
+    assert!(
+        f.manager
+            .store()
+            .load_session(&personal.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn first_group_message_ignores_personal_candidates_and_rejects_foreign_reply() {
+    let f = fixture().await;
+    let personal = f.topic(BINDING).await;
+    f.topic("fake:group:other").await;
+    {
+        let mut state = f.runtime.state.lock().await;
+        state
+            .bindings
+            .set_focus(BINDING, Some(personal.id.clone()))
+            .unwrap();
+        state.index.record("fake:outside", &personal.id).unwrap();
+    }
+    let mut msg = inbound("group-first", "ping");
+    msg.binding = "fake:group:room".into();
+    f.runtime.handle(msg.clone()).await;
+    let sent = f.channel.wait(1).await;
+    assert_eq!(sent[0].text, "pong");
+    assert_eq!(sent[0].binding, msg.binding);
+    let candidates = f.runtime.candidates(&msg.binding).await.unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert!(candidates[0].focus);
+    assert_ne!(candidates[0].id, personal.id);
+    assert_eq!(f.focus().await.as_deref(), Some(personal.id.as_str()));
+    msg.message_id = "group-reply".into();
+    msg.reply_to = Some(channel::ReplyRef {
+        message_id: "outside".into(),
+        text: "sample".into(),
+    });
+    f.runtime.handle(msg).await;
+    let sent = f.channel.wait(2).await;
+    assert!(sent[1].text.contains("引用会话不属于当前聊天"));
+    assert_eq!(f.session_ids().await.len(), 3);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn home_commands_persist_and_notifications_follow_latest_set() {
+    let f = fixture().await;
+    let personal = inbound("home", "/sethome");
+    let mut group = inbound("group-home", "/sethome");
+    group.binding = "fake:group:home".into();
+    f.runtime.handle(personal.clone()).await;
+    f.runtime.handle(personal.clone()).await;
+    f.runtime.handle(group.clone()).await;
+    assert_eq!(
+        BindingStore::load(&f.dir).unwrap().homes(),
+        [BINDING, group.binding.as_str()]
+    );
+    assert!(
+        f.runtime
+            .command(&personal, Command::UnsetHome("extra".into()))
+            .await
+            .is_err()
+    );
+    f.channel.sent.lock().unwrap().clear();
+    *f.channel.fail_binding.lock().unwrap() = Some(BINDING.into());
+    // 一个 home 发送失败仍继续投递其他 home；来源与 focus 不决定目标。
+    f.runtime
+        .push_curator(CuratorReport {
+            session_id: "sess_sample".into(),
+            origin: Some(Origin {
+                channel: "fake".into(),
+                chat_id: "group:source".into(),
+            }),
+            result: CuratorResult {
+                status: CuratorStatus::Failed,
+                summary: "sample failure".into(),
+            },
+        })
+        .await;
+    let sent = f.channel.wait(1).await;
+    assert_eq!(sent[0].binding, group.binding);
+    assert!(sent[0].reply_to.is_none());
+    *f.channel.fail_binding.lock().unwrap() = None;
+    f.runtime.handle(inbound("unset-home", "/unsethome")).await;
+    f.channel.sent.lock().unwrap().clear();
+    f.runtime
+        .send_report(DeliveryTarget::Homes, "sample notice", None)
+        .await;
+    let sent = f.channel.wait(1).await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].binding, group.binding);
+    group.text = "/unsethome".into();
+    f.runtime.handle(group).await;
+    f.channel.sent.lock().unwrap().clear();
+    f.runtime
+        .send_report(DeliveryTarget::Homes, "sample notice", None)
+        .await;
+    assert!(f.channel.sent.lock().unwrap().is_empty());
+    assert!(BindingStore::load(&f.dir).unwrap().homes().is_empty());
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn scheduled_execution_without_home_still_completes_and_missed_notices_use_home() {
+    let f = fixture().await;
+    let t =
+        task(r#"{"id":"sample","every":"1h","prompt":"ping","bindings":["fake:group:source"]}"#);
+    f.schedule.add(t.clone()).unwrap();
+    assert!(f.runtime.fire(t.clone()).await);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while f.schedule.get("sample").unwrap().1.last_run.is_none() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(f.channel.sent.lock().unwrap().is_empty());
+    assert_eq!(f.session_ids().await.len(), 1);
+    f.runtime
+        .state
+        .lock()
+        .await
+        .bindings
+        .set_home(BINDING, true)
+        .unwrap();
+    f.runtime
+        .report_missed(vec![scheduler::Missed {
+            task: t,
+            last: scheduler::now_minute(),
+        }])
+        .await;
+    let sent = f.channel.wait(1).await;
+    assert_eq!(sent[0].binding, BINDING);
+    assert!(sent[0].text.contains("sample"));
     let _ = std::fs::remove_dir_all(&f.dir);
 }

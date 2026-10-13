@@ -6,7 +6,7 @@ use chrono::Utc;
 
 use super::Runtime;
 use crate::agent_space::agent_toggles;
-use crate::agent_space::binding::{AttachedFile, FileKind};
+use crate::agent_space::binding::{AttachedFile, FileKind, in_chat_scope};
 use crate::agent_space::channel::Inbound;
 use crate::agent_space::channel::files::{sanitize_filename, unique_dest};
 use crate::agent_space::command;
@@ -190,6 +190,28 @@ impl Runtime {
             files: files.to_vec(),
             candidates: self.candidates(&msg.binding).await?,
         };
+        let referenced = {
+            let state = self.state.lock().await;
+            input
+                .reply_to
+                .as_ref()
+                .and_then(|reply| state.index.get(&reply.message_id))
+                .map(str::to_string)
+        };
+        if let Some(id) = referenced {
+            let summaries = self
+                .manager
+                .store()
+                .list_sessions()
+                .await
+                .map_err(|e| e.to_string())?;
+            if summaries
+                .iter()
+                .any(|s| s.id == id && !in_chat_scope(&msg.binding, s.origin.as_ref()))
+            {
+                return Err("引用会话不属于当前聊天，请发送新消息或使用 /new <消息>".into());
+            }
+        }
         let state = self.state.lock().await;
         self.router
             .route(&input, &state.index)
@@ -198,14 +220,21 @@ impl Runtime {
     }
 
     /// router 候选：排除 oneshot / curator / 已 superseded 与非 agent space 会话；
-    /// 顺带清理已不存在的 focus
+    /// 按聊天范围过滤，并清理已不存在或范围外的 focus
     pub(super) async fn candidates(&self, binding: &str) -> Result<Vec<Candidate>, String> {
-        let summaries = self
+        let summaries: Vec<_> = self
             .manager
             .store()
             .list_sessions()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|s| {
+                self.is_active_space_session(s)
+                    && s.kind == SessionKind::Topic
+                    && in_chat_scope(binding, s.origin.as_ref())
+            })
+            .collect();
         let focus = {
             let mut state = self.state.lock().await;
             match state.bindings.focus(binding).map(str::to_string) {
@@ -217,10 +246,7 @@ impl Runtime {
             }
         };
         let mut candidates = Vec::new();
-        for s in summaries
-            .into_iter()
-            .filter(|s| self.is_active_space_session(s) && s.kind == SessionKind::Topic)
-        {
+        for s in summaries {
             let running = self
                 .manager
                 .live(&s.id)

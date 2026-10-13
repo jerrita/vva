@@ -1,10 +1,9 @@
 //! 定时任务执行：触发去重、执行目标解析、超时中止、结果回投与失败通知。
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{EMPTY_REPLY, Runtime};
+use super::{DeliveryTarget, EMPTY_REPLY, Runtime};
 use crate::agent_space::scheduler::{Failure, Missed, Task, Trigger, format_time};
 use crate::harness::ManagedSession;
 use crate::model::SessionKind;
@@ -37,18 +36,6 @@ impl Runtime {
         true
     }
 
-    /// 任务回复的发送目标：session 来源（若可用）+ bindings，去重保序
-    async fn task_targets(&self, task: &Task) -> Vec<String> {
-        let origin = match &task.session {
-            Some(id) => match self.manager.live_or_load(id).await {
-                Ok(handle) => session_binding(&handle).ok(),
-                Err(_) => None,
-            },
-            None => None,
-        };
-        merge_targets(origin, &task.bindings)
-    }
-
     async fn execute(self: &Arc<Self>, task: &Task) -> Result<(), Failure> {
         tracing::info!(
             "定时任务触发: id={} {} session={:?} bindings={:?}",
@@ -57,15 +44,16 @@ impl Runtime {
             task.session,
             task.bindings
         );
-        // 首个目标即执行会话的来源 binding（rollover 提示发往此处）
-        let (handle, targets) = match &task.session {
+        // 执行会话仍取 session 或 bindings[0]；通知单独投递到 home。
+        let handle = match &task.session {
             Some(id) => {
                 let handle =
                     self.manager.live_or_load(id).await.map_err(|e| {
                         Failure::Permanent(format!("目标 session {id} 不可用: {e}"))
                     })?;
                 let origin = session_binding(&handle).map_err(Failure::Permanent)?;
-                (handle, merge_targets(Some(origin), &task.bindings))
+                self.origin(&origin).map_err(Failure::Permanent)?;
+                handle
             }
             None => {
                 let binding = task
@@ -73,44 +61,43 @@ impl Runtime {
                     .first()
                     .ok_or_else(|| Failure::Permanent("任务没有执行目标".into()))?;
                 self.origin(binding).map_err(Failure::Permanent)?;
-                let handle = self
-                    .create(binding, SessionKind::Oneshot, "scheduled")
+                self.create(binding, SessionKind::Oneshot, "scheduled")
                     .await
-                    .map_err(Failure::Transient)?;
-                (handle, merge_targets(None, &task.bindings))
+                    .map_err(Failure::Transient)?
             }
         };
         let prompt = format_scheduled_reminder(&task.id, &task.trigger.describe(), &task.prompt);
         let limit = Duration::from_secs(self.config.task_timeout_secs);
-        let report =
-            match tokio::time::timeout(limit, self.deliver_reporting(&handle, &targets, &prompt))
-                .await
-            {
-                Ok(result) => result.map_err(Failure::Transient)?,
-                Err(_) => {
-                    if let Err(error) = handle.abort_current().await {
-                        tracing::warn!("定时任务 {} 超时中止失败: {error}", task.id);
-                    }
-                    return Err(Failure::Transient(format!(
-                        "执行超过 {}s，已中止",
-                        self.config.task_timeout_secs
-                    )));
+        let report = match tokio::time::timeout(
+            limit,
+            self.deliver_reporting(&handle, DeliveryTarget::Homes, &prompt),
+        )
+        .await
+        {
+            Ok(result) => result.map_err(Failure::Transient)?,
+            Err(_) => {
+                if let Err(error) = handle.abort_current().await {
+                    tracing::warn!("定时任务 {} 超时中止失败: {error}", task.id);
                 }
-            };
+                return Err(Failure::Transient(format!(
+                    "执行超过 {}s，已中止",
+                    self.config.task_timeout_secs
+                )));
+            }
+        };
         let text = report.text.trim();
         if text == SILENT {
             tracing::info!("定时任务 {} 回复 {SILENT}，不通知", task.id);
         } else {
             let text = if text.is_empty() { EMPTY_REPLY } else { text };
-            for target in &targets {
-                self.say_indexed(target, None, text, &handle.id).await;
-            }
+            self.send_report(DeliveryTarget::Homes, text, Some(&handle.id))
+                .await;
         }
-        self.after_turn(&handle, &targets[0]).await;
+        self.after_turn(&handle, DeliveryTarget::Homes).await;
         Ok(())
     }
 
-    /// 记录结果；失败时通知所有目标聊天
+    /// 记录结果；失败时通知 home bindings
     async fn settle(&self, task: &Task, outcome: Result<(), Failure>) {
         let max = self.config.task_max_failures;
         let Some(settled) = self.schedule.settle(&task.id, outcome.clone(), max) else {
@@ -131,14 +118,12 @@ impl Runtime {
                 task.id, settled.failures
             )
         };
-        for target in self.task_targets(task).await {
-            self.say(&target, None, text.clone()).await;
-        }
+        self.send_report(DeliveryTarget::Homes, &text, None).await;
     }
 
-    /// 停机期间错过的任务：按聊天汇总提示一次，不补跑
+    /// 停机期间错过的任务：汇总通知 home bindings，不补跑
     pub(super) async fn report_missed(&self, missed: Vec<Missed>) {
-        let mut by_binding: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut lines = Vec::new();
         for m in missed {
             let last = format_time(m.last);
             let line = match m.task.trigger {
@@ -148,26 +133,16 @@ impl Runtime {
                 ),
                 _ => format!("{}（最近应于 {last}，未补跑）", m.task.id),
             };
-            let targets = self.task_targets(&m.task).await;
-            if targets.is_empty() {
-                tracing::warn!("错过的定时任务 {} 无法通知: 没有可用目标", m.task.id);
-            }
-            for binding in targets {
-                by_binding.entry(binding).or_default().push(line.clone());
-            }
+            lines.push(line);
         }
-        for (binding, lines) in by_binding {
-            self.say(
-                &binding,
-                None,
-                format!("停机期间错过了以下定时任务: {}", lines.join("；")),
-            )
-            .await;
+        if !lines.is_empty() {
+            let text = format!("停机期间错过了以下定时任务: {}", lines.join("；"));
+            self.send_report(DeliveryTarget::Homes, &text, None).await;
         }
     }
 }
 
-/// 会话来源 binding；无来源的会话无法回复
+/// 会话来源 binding，用于校验既有执行会话的渠道。
 fn session_binding(handle: &ManagedSession) -> Result<String, String> {
     let snapshot = handle.snapshot();
     let origin = snapshot
@@ -175,17 +150,6 @@ fn session_binding(handle: &ManagedSession) -> Result<String, String> {
         .header
         .origin
         .as_ref()
-        .ok_or_else(|| format!("session {} 无 origin，无法回复", handle.id))?;
+        .ok_or_else(|| format!("session {} 无 origin，无法执行定时任务", handle.id))?;
     Ok(origin.binding())
-}
-
-/// 会话来源（若有）在前，随后 bindings，去重保序
-fn merge_targets(origin: Option<String>, bindings: &[String]) -> Vec<String> {
-    let mut targets: Vec<String> = origin.into_iter().collect();
-    for binding in bindings {
-        if !targets.contains(binding) {
-            targets.push(binding.clone());
-        }
-    }
-    targets
 }

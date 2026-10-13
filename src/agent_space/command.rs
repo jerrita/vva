@@ -10,6 +10,8 @@ pub enum Command {
     Sessions,
     Stop,
     Status,
+    SetHome(String),
+    UnsetHome(String),
     Rename(String),
     /// 空参数查看；`list` 列出；`<规格> [档位]` 切换默认会话模型
     Model(String),
@@ -33,6 +35,8 @@ impl Command {
             Command::Sessions => "/sessions",
             Command::Stop => "/stop",
             Command::Status => "/status",
+            Command::SetHome(_) => "/sethome",
+            Command::UnsetHome(_) => "/unsethome",
             Command::Rename(_) => "/rename",
             Command::Model(_) => "/model",
             Command::Skills => "/skills",
@@ -43,6 +47,23 @@ impl Command {
             Command::Unknown(_) => "/unknown",
         }
     }
+
+    pub fn allowed_in_group(&self) -> bool {
+        matches!(
+            self,
+            Self::New(_)
+                | Self::Switch(_)
+                | Self::Sessions
+                | Self::Stop
+                | Self::Status
+                | Self::Rename(_)
+                | Self::Clear(_)
+                | Self::SetHome(_)
+                | Self::UnsetHome(_)
+                | Self::Help
+                | Self::Unknown(_)
+        )
+    }
 }
 
 const HELP: &[(&str, &str)] = &[
@@ -51,6 +72,8 @@ const HELP: &[(&str, &str)] = &[
     ("/sessions", "列出会话"),
     ("/stop", "中止默认会话当前轮次"),
     ("/status", "默认会话状态（/stat）"),
+    ("/sethome", "将当前聊天加入后台通知接收集合"),
+    ("/unsethome", "将当前聊天移出后台通知接收集合"),
     ("/rename <标题>", "重命名默认会话"),
     ("/model", "查看当前模型与推理档位"),
     ("/model list", "列出可用模型与档位"),
@@ -74,16 +97,19 @@ const HELP: &[(&str, &str)] = &[
     ("/help", "显示本帮助"),
 ];
 
-pub fn help() -> String {
+pub fn help(group: bool) -> String {
     let mut out = markdown::table(
         "📖 命令帮助",
         ["命令", "说明"],
         HELP.iter()
+            .filter(|(usage, _)| !group || parse(usage).is_some_and(|cmd| cmd.allowed_in_group()))
             .map(|(usage, desc)| [usage.to_string(), desc.to_string()]),
     );
-    out.push_str(
-        "\n\n💡 会话与任务 ID 均可使用唯一前缀。`/delete`、`/clear` 省略前缀时操作默认会话。",
-    );
+    out.push_str(if group {
+        "\n\n💡 会话 ID 可使用唯一前缀。`/clear` 省略前缀时操作本群默认会话。"
+    } else {
+        "\n\n💡 会话与任务 ID 均可使用唯一前缀。`/delete`、`/clear` 省略前缀时操作默认会话。"
+    });
     out
 }
 
@@ -102,6 +128,8 @@ pub fn parse(text: &str) -> Option<Command> {
         "sessions" => Command::Sessions,
         "stop" => Command::Stop,
         "status" | "stat" => Command::Status,
+        "sethome" => Command::SetHome(arg.to_string()),
+        "unsethome" => Command::UnsetHome(arg.to_string()),
         "rename" => Command::Rename(arg.to_string()),
         "model" => Command::Model(arg.to_string()),
         "skills" => Command::Skills,

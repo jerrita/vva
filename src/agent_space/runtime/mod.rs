@@ -36,6 +36,13 @@ const EXPIRE_PERIOD: Duration = Duration::from_secs(30);
 /// 轮次没有文本输出时的回复
 const EMPTY_REPLY: &str = "（本轮没有文本输出）";
 
+/// 用户轮次回投发起聊天；后台执行在发送时查询 home 集合。
+#[derive(Clone, Copy)]
+enum DeliveryTarget<'a> {
+    Chat(&'a str),
+    Homes,
+}
+
 struct State {
     bindings: BindingStore,
     index: MessageIndex,
@@ -138,7 +145,7 @@ impl Runtime {
         let started = std::time::Instant::now();
         let turns_before = handle.snapshot().session.turns.len();
         let delivered = self
-            .deliver_reporting(&handle, std::slice::from_ref(&binding), &prompt)
+            .deliver_reporting(&handle, DeliveryTarget::Chat(&binding), &prompt)
             .await;
         let (prompt_tokens, completion_tokens, cached_tokens) =
             turn_usage(&handle.snapshot().session, turns_before);
@@ -159,15 +166,16 @@ impl Runtime {
         };
         self.say_indexed(&binding, Some(&reply_to), &text, &handle.id)
             .await;
-        self.after_turn(&handle, &binding).await;
+        self.after_turn(&handle, DeliveryTarget::Chat(&binding))
+            .await;
     }
 
-    /// 投递并等待一轮；轮次超过 `progress_interval_secs` 未结束时向 `targets` 推送进度摘要。
+    /// 投递并等待一轮；轮次超过 `progress_interval_secs` 未结束时向目标推送进度摘要。
     /// 同一会话同时只有一个汇报者（排队的后续投递不重复汇报）；汇报消息计入消息索引，可被 reply 直达该会话
     async fn deliver_reporting(
         &self,
         handle: &Arc<ManagedSession>,
-        targets: &[String],
+        target: DeliveryTarget<'_>,
         prompt: &str,
     ) -> Result<SubagentReport, String> {
         let interval = Duration::from_secs(self.config.progress_interval_secs);
@@ -190,15 +198,13 @@ impl Runtime {
             interval,
             || handle.snapshot().session.clone(),
             |text| async move {
-                for target in targets {
-                    self.say_indexed(target, None, &text, &handle.id).await;
-                }
+                self.send_report(target, &text, Some(&handle.id)).await;
             },
         )
         .await
     }
 
-    async fn after_turn(&self, handle: &Arc<ManagedSession>, binding: &str) {
+    async fn after_turn(&self, handle: &Arc<ManagedSession>, target: DeliveryTarget<'_>) {
         let text = match maybe_rollover(&self.manager, &self.config, handle).await {
             Ok(None) => return,
             Ok(Some(rolled)) => {
@@ -219,7 +225,7 @@ impl Runtime {
                 format!("上下文压缩失败，下个回合结束重试: {error}")
             }
         };
-        self.say(binding, None, text).await;
+        self.send_report(target, &text, None).await;
     }
 
     // ================== 出站与推送 ==================
@@ -255,7 +261,30 @@ impl Runtime {
         }
     }
 
-    /// Lifecycle 整理完成回调：有更新或失败时推送到来源 binding
+    /// 后台通知每次查询最新 home 集合；无 home 时只记日志，执行照常继续。
+    async fn send_report(&self, target: DeliveryTarget<'_>, text: &str, session: Option<&str>) {
+        let bindings = match target {
+            DeliveryTarget::Chat(binding) => vec![binding.to_string()],
+            DeliveryTarget::Homes => self.state.lock().await.bindings.homes(),
+        };
+        if bindings.is_empty() {
+            tracing::info!("后台通知未推送：尚未设置 home binding");
+        }
+        for binding in bindings {
+            if matches!(target, DeliveryTarget::Homes)
+                && !self.state.lock().await.bindings.is_home(&binding)
+            {
+                continue;
+            }
+            if let Some(session) = session {
+                self.say_indexed(&binding, None, text, session).await;
+            } else {
+                self.say(&binding, None, text).await;
+            }
+        }
+    }
+
+    /// Lifecycle 整理完成回调：有更新或失败时推送到 home bindings
     pub async fn push_curator(&self, report: CuratorReport) {
         let text = match report.result.status {
             CuratorStatus::Unchanged => return,
@@ -276,12 +305,7 @@ impl Runtime {
         if report.result.status == CuratorStatus::Updated {
             self.broadcast_memory_update(&report).await;
         }
-        match &report.origin {
-            Some(origin) => {
-                self.say(&origin.binding(), None, text).await;
-            }
-            None => tracing::warn!("curator 报告无 origin，未推送: {text}"),
-        }
+        self.send_report(DeliveryTarget::Homes, &text, None).await;
     }
 
     /// 记忆已更新：向现存 topic / oneshot 会话追加 `memory-updated` 提示（只追加，不起轮次）。

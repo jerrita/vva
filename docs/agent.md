@@ -35,11 +35,13 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 3. 概念
 
-- **session**：存在即为 router 候选；
+- **session**：当前聊天范围内未被接替的 Topic 会话为 router 候选；
 - **focus**：每个 binding 一个默认续写指针；
 - **running**：session 是否正在生成；
 - **binding**：`channel:chat_id`（QQ 为 `qq:<msg_type>:<chat_id>`）；
 - **待附件缓冲**：binding 级，收到无文字文件时暂存。
+- **会话范围**：QQ 群聊仅使用 `origin.binding()` 等于当前群 binding 的会话；个人聊天共享排除群来源的个人会话池。路由候选、`/sessions` 与会话命令统一使用该范围。范围外或已失效的 focus 在读取时清除，跨范围引用显式报错。
+- **home bindings**：后台通知的接收集合，与 focus、session 来源独立。`/sethome` 将当前聊天加入，`/unsethome` 将当前聊天移出，支持多个 home；命令无参数、幂等，沿用渠道白名单准入。`bindings.json` 每项增加 `home` 布尔字段，旧记录缺省为 `false`，重启后保留。
 
 ## 4. Router
 
@@ -62,6 +64,8 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 ### 4.3 reply 目标已被清理
 
 `message_index` 仅保存 `消息 id → session id`。目标 session 不存在时：warning 用户，新建 session，以 channel 入站自带的 `reply_to_text` 作为首条上下文，并处理当前消息。
+
+索引命中现存的范围外会话时，Runtime 显式拒绝续接，提示发送新消息或 `/new <消息>`；该校验也适用于 home 聊天收到其他来源会话的通知后进行引用。
 
 ### 4.4 oneshot
 
@@ -122,12 +126,15 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - **命令排版**：斜杠命令统一使用 Markdown；帮助、会话、模型、技能与状态以带标题的表格展示，定时任务逐项使用两列表格；操作反馈与错误使用少量 emoji，附必要的后续操作提示。动态文本压平空白并转义 Markdown 标记，描述预览截断时明确显示省略号。
 - 首发 QQ（gateway identify / resume / heartbeat 按官方规范，参考 `../agent` 的 `ref/qq` 已验证实现），其后 Telegram；
 - 白名单外用户静默丢弃并记日志；
+- 群内开放 `/new`、`/switch`、`/sessions`、`/stop`、`/status`、`/rename`、`/clear`、`/sethome`、`/unsethome`、`/help`；其余个人管理命令提示在私聊使用，帮助只列当前可用命令。群内不挂载 `Schedule` 工具。
+- **通知目标**：自动整理更新 / 失败、后台删除完成、定时任务结果 / 进度 / 失败 / 错过 / rollover 提示统一发送到全部 home bindings。每次发送查询最新集合，单个目标失败仍继续发送其他目标；无 home 时执行照常继续，跳过推送并记录日志。普通对话回答、命令反馈、对话进度与附件反馈仍发往发起聊天。`/status` 展示当前聊天是否为 home。
+- home 可配置为群：该群将接收全空间后台通知。home 标记不授予跨范围会话访问能力。长期记忆注入与文件 / 工具工作区仍共享，本次会话范围调整不建立记忆或文件访问隔离。
 - 文件：无文字 → 进入待附件缓冲，不触发模型，回复"已收到"；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本；多附件保持顺序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；
 - `SendFile` 工具已实现（`send_file.rs`）：渠道绑定、经 `SessionManager::with_tool_factory` 按会话 header 运行期注入（仅带 origin 的顶层会话，subagent 不挂载）；参数 `path`（工作区相对 / 绝对 / `~`）与可选 `caption`，文件缺失或非普通文件显式报错，渠道错误（如 QQ guild / dm 不支持上传）原样作为工具错误由模型转述；
 - AskUser 不挂载：agent space 会话（`SessionHeader::agent_managed()`）组装工具时不注册 `AskUserTool`，工具定义一并缺席；channel 级工具白名单未做；
 - 命令（`command.rs`，`/help` 列出）：`/new <消息>`（强制新建 topic，必须带文字）、`/switch <前缀>`（歧义列候选并拒绝，只设置 focus，后续消息仍经 router）、`/sessions`、`/stop`（中止 focus）、`/status`（`/stat`；会话、模型、上下文占比、cache 命中率、待附件数）、`/rename <标题>`（覆盖标题并取消尚未回写的自动标题）、`/model [list|[--global] <规格> [档位]]`（查看 / 列出 / 切换：有 focus 改 focus 会话，无 focus 改 **agent 模式模型**，`--global` 两者都改；agent 模式模型决定新会话的模型（curator 每次整理时取当前值），落盘于 `~/.vva/space/model.json` 并优先于配置文件，会话与模式切换都须目标模型声明 `limit.context`；agent 会话的切换不写 `state.json` 的「上次选用模型」；会话切换会使其缓存失效）、`/skills`（列出 agent space 可发现技能）、`/schedule [list|pause|resume|delete|run <id>]`（管理定时任务，创建走自然语言 → Schedule 工具）、`/delete [前缀]`（缺省 focus；**先 curator 整理再删除**，后台执行并回报，整理失败则保留会话）、`/clear [前缀]`（**直接删除，跳过整理**）；命令名大小写不敏感并容忍 `/cmd@bot`；**任何 `/` 开头的未知命令都显式回复帮助，不会交给模型**；
 - 出站只发最终文本（`deliver_wait` 的结果），不做流式增量；失败 / 中止显式回复错误文本；
-- 入站循环顺序完成路由与建会话，轮次在独立任务执行，故运行中的 session 仍可被 reply / guide 插话；oneshot 不抢占 focus；已不存在的 focus 在下次路由时清理；rollover 后 `replace_focus` + `MessageIndex::repoint` 并提示用户；
+- 入站循环顺序完成路由与建会话，轮次在独立任务执行，故运行中的 session 仍可被 reply / guide 插话；oneshot 不抢占 focus；已不存在或范围外的 focus 在下次读取时清理；rollover 后 `replace_focus` + `MessageIndex::repoint` 并提示用户，home 标记保留；
 - `message_index` 键带 channel 前缀（`qq:<id>`）。
 
 ## 10. Scheduler
@@ -147,11 +154,11 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
   ```
 - **触发**：`cron` 为 5 字段（本地时区，`*`、数字、列表、范围、步长；日与周都受限取并集；周日 0 或 7）；`at` 为一次性本地时刻（`YYYY-MM-DDTHH:MM`），执行后自动停用，已过时刻拒绝创建；`every` 为 `30m / 2h / 1d`（分钟精度），**从上次完成起算**，天然不重叠。cron 到点时同一任务仍在执行则跳过本次（debug 日志）。
 - **执行目标**：`session` 指定时在该会话内执行（保留上下文；会话被 TTL 清理后任务永久失败）；否则在 `bindings[0]` 新建 oneshot 会话执行（无历史，prompt 须自足）。周期任务应走后者。
-- **多聊天通知**：一次触发只执行一次，最终回复发往 `bindings` 全部聊天（含 session 来源，去重）；每条出站消息都登记 `message_index`，在任一聊天里 reply 都回到执行会话（已清理则按 §4.3 处理）。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道，跨渠道随 Telegram 接入再放开。
+- **通知**：一次触发只执行一次，最终回复与执行进度发往发送时配置的全部 home bindings，并登记 `message_index`。引用仍按当前聊天范围校验（已清理则按 §4.3 处理）。`bindings` 保留为执行来源配置，首项用于新建 oneshot，后续条目及 session 来源均不再决定通知目标。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道。
 - **静默**：触发 reminder 告知模型"无需通知用户时只回复 `[SILENT]`"，Runtime 对精确匹配的回复不发消息（会话历史照常保留）。
-- **失败**：单次失败通知所有目标聊天但任务继续；连续失败达 `task_max_failures`（默认 3）自动停用；永久性错误（目标会话不存在、binding 非法）与一次性任务失败立即停用，并提示 `/schedule resume`。成功清零计数。单次执行超过 `task_timeout_secs`（默认 600）中止并计为失败。
-- **错过的任务**：每分钟记录 `last_tick`；启动时对账（回溯上限 7 天）：cron 错过、interval 的 `next` 已过期、once 已过未执行，均 `tracing::warn` 并向任务目标聊天提示一次，**不补跑**（interval 重排到之后；once 提示可 `/schedule run <id>` 补跑）。
-- **管理**：`Schedule` 工具（`create / list / pause / resume / delete`，仅挂在带 IM 来源的顶层会话，参数当场校验，`list` 与创建失败附当前本地时间供模型换算 `at`）；`/schedule [list|pause|resume|delete|run <id 前缀>]`（`run` 立即执行一次，已停用的需先 resume）。创建只走自然语言 → 工具，不提供 `/schedule add`。
+- **失败**：单次失败通知 home 聊天但任务继续；连续失败达 `task_max_failures`（默认 3）自动停用；永久性错误（目标会话不存在、binding 非法）与一次性任务失败立即停用，并提示 `/schedule resume`。成功清零计数。单次执行超过 `task_timeout_secs`（默认 600）中止并计为失败。
+- **错过的任务**：每分钟记录 `last_tick`；启动时对账（回溯上限 7 天）：cron 错过、interval 的 `next` 已过期、once 已过未执行，均 `tracing::warn` 并汇总向 home 聊天提示一次，**不补跑**（interval 重排到之后；once 提示可 `/schedule run <id>` 补跑）。
+- **管理**：`Schedule` 工具（`create / list / pause / resume / delete`，仅挂在带个人 IM 来源的顶层会话，参数当场校验，`list` 与创建失败附当前本地时间供模型换算 `at`）；`/schedule [list|pause|resume|delete|run <id 前缀>]`（私聊使用；`run` 立即执行一次，已停用的需先 resume）。创建只走自然语言 → 工具，不提供 `/schedule add`。
 
 ## 11. 数据模型
 

@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use super::Runtime;
 use super::mode_model::check_mode_model;
+use super::{DeliveryTarget, Runtime};
+use crate::agent_space::binding::is_group_binding;
 use crate::agent_space::channel::Inbound;
 use crate::agent_space::command::{self, Command};
 use crate::agent_space::curator::{CuratorReport, CuratorStatus};
@@ -29,7 +30,14 @@ impl Runtime {
         cmd: Command,
     ) -> Result<(), String> {
         let binding = &msg.binding;
+        let group = is_group_binding(binding);
         tracing::info!("处理命令: {} binding={binding}", cmd.name());
+        if group && !cmd.allowed_in_group() {
+            return Err(format!(
+                "{} 请在私聊中使用；/help 查看本群可用命令",
+                cmd.name()
+            ));
+        }
         let reply = match cmd {
             Command::New(text) if text.is_empty() => return Err("用法: /new <消息>".into()),
             Command::New(text) => {
@@ -43,6 +51,17 @@ impl Runtime {
                 "⏹️ 已请求中止当前轮次。".to_string()
             }
             Command::Status => self.status(binding).await?,
+            Command::SetHome(arg) | Command::UnsetHome(arg) if !arg.is_empty() => {
+                return Err("用法：/sethome 或 /unsethome，直接在目标聊天中执行，无需参数".into());
+            }
+            Command::SetHome(_) => {
+                self.state.lock().await.bindings.set_home(binding, true)?;
+                "✅ 当前聊天已设为 home，将接收全部后台通知。".to_string()
+            }
+            Command::UnsetHome(_) => {
+                self.state.lock().await.bindings.set_home(binding, false)?;
+                "✅ 当前聊天已移出 home，不再接收后台通知。".to_string()
+            }
             Command::Rename(title) => self.rename(binding, &title).await?,
             Command::Model(arg) => self.model_command(binding, &arg).await?,
             Command::Skills => self.skills(),
@@ -53,12 +72,12 @@ impl Runtime {
                 self.remove(&handle).await?;
                 format!("✅ 已删除会话 **{}**。", markdown::text(&handle.id))
             }
-            Command::Help => command::help(),
+            Command::Help => command::help(group),
             Command::Unknown(name) => {
                 format!(
                     "⚠️ 未知命令 /{}\n\n{}",
                     markdown::text(&name),
-                    command::help()
+                    command::help(group)
                 )
             }
         };
@@ -66,19 +85,19 @@ impl Runtime {
         Ok(())
     }
 
-    async fn focus_id(&self, binding: &str) -> Option<String> {
-        self.state
-            .lock()
-            .await
-            .bindings
-            .focus(binding)
-            .map(str::to_string)
+    async fn focus_id(&self, binding: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .candidates(binding)
+            .await?
+            .into_iter()
+            .find(|c| c.focus)
+            .map(|c| c.id))
     }
 
     async fn focus_handle(&self, binding: &str) -> Result<Arc<ManagedSession>, String> {
         let id = self
             .focus_id(binding)
-            .await
+            .await?
             .ok_or("当前没有默认会话，可直接发消息或 /new <消息> 新建")?;
         self.manager.live_or_load(&id).await
     }
@@ -156,7 +175,7 @@ impl Runtime {
             "⏳ 正在整理记忆，完成后删除会话 **{}**。",
             markdown::text(&handle.id)
         );
-        let (this, binding) = (self.clone(), binding.to_string());
+        let this = self.clone();
         tokio::spawn(async move {
             let id = &handle.id;
             let reply = match this.curate_then_remove(&handle).await {
@@ -167,7 +186,7 @@ impl Runtime {
                     markdown::text(&error)
                 ),
             };
-            this.say(&binding, None, reply).await;
+            this.send_report(DeliveryTarget::Homes, &reply, None).await;
         });
         Ok(reply)
     }
@@ -222,7 +241,7 @@ impl Runtime {
                 _ => words.push(w),
             }
         }
-        let focus = match self.focus_id(binding).await {
+        let focus = match self.focus_id(binding).await? {
             Some(id) => Some(self.manager.live_or_load(&id).await?),
             None => None,
         };
@@ -456,17 +475,24 @@ impl Runtime {
     }
 
     async fn status(&self, binding: &str) -> Result<String, String> {
-        let (pending, focus) = {
+        let focus = self.focus_id(binding).await?;
+        let (pending, home) = {
             let state = self.state.lock().await;
             (
                 state.pending.count(binding),
-                state.bindings.focus(binding).map(str::to_string),
+                if state.bindings.is_home(binding) {
+                    "是"
+                } else {
+                    "否"
+                }
+                .to_string(),
             )
         };
         let Some(id) = focus else {
             return Ok(status_table(&[
                 ("默认会话", "无".into()),
                 ("待附件", pending.to_string()),
+                ("当前聊天为 home", home),
             ]));
         };
         let handle = self.manager.live_or_load(&id).await?;
@@ -525,6 +551,7 @@ impl Runtime {
             ),
             ("预估费用", format!("${:.4}", stats.estimated_cost_usd)),
             ("待附件", pending.to_string()),
+            ("当前聊天为 home", home),
         ];
         Ok(status_table(&rows))
     }
@@ -568,12 +595,15 @@ fn schedule_table(task: &Task, state: &TaskState) -> String {
         (false, _) => "停用",
     };
     let mut targets: Vec<String> = task.session.iter().map(|id| format!("会话 {id}")).collect();
-    targets.extend(task.bindings.iter().cloned());
+    if task.session.is_none() {
+        targets.extend(task.bindings.first().cloned());
+    }
     let mut rows = vec![
         ["任务 ID".into(), task.id.clone()],
         ["状态".into(), status.into()],
         ["触发规则".into(), task.trigger.describe()],
         ["执行目标".into(), targets.join(" / ")],
+        ["通知目标".into(), "已设为 home 的聊天".into()],
         [
             "下次执行".into(),
             ScheduleStore::next_fire(task, state, now_minute()).map_or("—".into(), format_time),

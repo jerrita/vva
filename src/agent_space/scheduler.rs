@@ -195,8 +195,8 @@ pub(super) struct RawTask {
     pub bindings: Vec<String>,
 }
 
-/// 一项任务。`session` 指定时在该会话内执行、回复发往其来源聊天；否则在 `bindings[0]`
-/// 新建 oneshot 会话执行。回复发往 `bindings` 全部聊天（去重，含 session 来源）
+/// 一项任务。`session` 指定时在该会话内执行，否则在 `bindings[0]`
+/// 新建 oneshot 会话执行。通知目标由 Runtime 的 home bindings 决定。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawTask", into = "RawTask")]
 pub struct Task {
@@ -729,7 +729,9 @@ pub fn describe_task(task: &Task, state: &TaskState) -> String {
         .iter()
         .map(|s| format!("session {s}"))
         .collect();
-    targets.extend(task.bindings.iter().cloned());
+    if task.session.is_none() {
+        targets.extend(task.bindings.first().cloned());
+    }
     let status = match (state.enabled, &task.trigger) {
         (true, _) => "启用",
         (false, Trigger::Once(_)) if state.last_run.is_some() => "已完成",
@@ -737,7 +739,7 @@ pub fn describe_task(task: &Task, state: &TaskState) -> String {
     };
     let next = ScheduleStore::next_fire(task, state, now_minute()).map_or("-".into(), format_time);
     let mut line = format!(
-        "{} [{status}] {} -> {} | 下次 {next}",
+        "{} [{status}] {} -> {} | 通知 home 聊天 | 下次 {next}",
         task.id,
         task.trigger.describe(),
         targets.join(", ")
