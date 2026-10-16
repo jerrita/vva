@@ -1,4 +1,4 @@
-//! OpenRouter Decisions API（alpha）路由后端：把候选表映射为 choice / noul 题目，
+//! OpenRouter Decisions / OpenCode System One 路由后端：把候选表映射为 choice / noul 题目，
 //! 答案回填为 `RouteDecision`，其后的校验与日志与小模型后端共用。
 
 use async_trait::async_trait;
@@ -40,7 +40,7 @@ impl RouteModel for DecisionsRouteModel {
             header_value(&format!("Bearer {}", self.api_key)).map_err(|e| e.to_string())?;
         headers.insert(AUTHORIZATION, bearer);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        let response = post_json(&self.config.endpoint, headers, &body)
+        let response = post_json(self.config.endpoint(), headers, &body)
             .await
             .map_err(|e| e.to_string())?;
         parse_response(response, self.config.min_confidence)
@@ -282,6 +282,40 @@ mod tests {
         assert_eq!(
             (n.session_id, n.running_intent),
             (None, RunningIntent::None)
+        );
+    }
+
+    /// OpenCode 直通 System One 响应，无 OpenRouter 的 id / provider / cost 外层字段。
+    /// 协议参考：https://docs.typesafe.ai/introduction/quickstart#call-it-the-api
+    #[test]
+    fn system_one_response_maps_answers_and_usage() {
+        let r = parse_response(
+            json!({
+                "model": "jev-1.13.0",
+                "answers": {
+                    "action": {"type": "choice", "choice": "existing", "confidence": 1.0,
+                        "probabilities": {"oneshot": 0.0, "existing": 1.0, "new": 0.0}},
+                    "session": {"type": "choice", "choice": "sess_b", "confidence": 1.0,
+                        "probabilities": {"sess_a": 0.0, "sess_b": 1.0}},
+                    "guide": {"type": "noul", "noul": 0.99}
+                },
+                "usage": {"input_tokens": 428, "output_tokens": 73}
+            }),
+            0.6,
+        )
+        .unwrap();
+        let d = r.decision.unwrap();
+        assert_eq!(d.action, Action::Existing);
+        assert_eq!(d.session_id.as_deref(), Some("sess_b"));
+        assert_eq!(d.running_intent, RunningIntent::GuideExisting);
+        let usage = r.usage.unwrap();
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens
+            ),
+            (428, 73, 501)
         );
     }
 

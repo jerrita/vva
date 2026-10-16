@@ -50,7 +50,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | 层级 | 触发 | 成本 |
 |---|---|---|
 | L0 | reply 命中 `message_index`；`/switch`；零 session 时直接创建 | 0 token |
-| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions API（`decisions.rs`：`action` / `session` choice 题 + `guide` noul 题，回填为同一 `RouteDecision`；关键题置信度低于 `min_confidence` 时续接当前 focus） |
+| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions / OpenCode System One API（`decisions.rs`：`action` / `session` choice 题 + `guide` noul 题，回填为同一 `RouteDecision`；关键题置信度低于 `min_confidence` 时续接当前 focus） |
 | L2 | 小模型失败 / 非法输出 | 显式报错，附引用回复或 `/new <消息>` 指引 |
 
 ### 4.2 L1 输入输出

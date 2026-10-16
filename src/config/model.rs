@@ -242,34 +242,65 @@ impl AgentSpaceConfig {
     }
 }
 
-/// L1 路由后端选择：声明 `decisions` 时走 OpenRouter Decisions API，否则走 `settings.small_model`
+/// L1 路由后端选择：声明 `decisions` 时走决策 API，否则走 `settings.small_model`
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RouterConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decisions: Option<DecisionsRouterConfig>,
 }
 
-/// OpenRouter Decisions API（alpha）路由后端；密钥取自 `providers.<provider>.api_key`
+/// 决策 API 后端；密钥取自 `providers.<provider>.api_key`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionsRouterConfig {
+    /// 决策服务类型；省略时按 provider 同名预设解析，其余节点沿用 OpenRouter
+    #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<DecisionsProviderType>,
     /// 提供 api_key 的 provider 节点名（如 `openrouter`）
     pub provider: String,
-    /// Decisions 模型，如 `typesafe/jev-1.13`
+    /// 服务原生模型 id：OpenRouter 如 `typesafe/jev-1.13`，OpenCode 如 `jev-1.13`
     pub model: String,
     /// 最低置信度（0–1）：关键题低于此值续接 focus；无 focus 时显式提示用户
     #[serde(default = "default_min_confidence")]
     pub min_confidence: f64,
-    /// 端点覆写；缺省 OpenRouter alpha 端点
-    #[serde(default = "default_decisions_endpoint")]
-    pub endpoint: String,
+    /// 端点覆写；省略时使用服务类型对应的官方端点
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
+impl DecisionsRouterConfig {
+    pub fn effective_type(&self) -> DecisionsProviderType {
+        self.provider_type.unwrap_or(match self.provider.as_str() {
+            "opencode" => DecisionsProviderType::OpenCode,
+            _ => DecisionsProviderType::OpenRouter,
+        })
+    }
+
+    pub fn endpoint(&self) -> &str {
+        self.endpoint
+            .as_deref()
+            .unwrap_or_else(|| self.effective_type().endpoint())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionsProviderType {
+    #[default]
+    OpenRouter,
+    OpenCode,
+}
+
+impl DecisionsProviderType {
+    fn endpoint(self) -> &'static str {
+        match self {
+            Self::OpenRouter => "https://openrouter.ai/api/alpha/decisions",
+            Self::OpenCode => "https://opencode.ai/inference/systemone/v1/systemone",
+        }
+    }
 }
 
 fn default_min_confidence() -> f64 {
     0.6
-}
-
-fn default_decisions_endpoint() -> String {
-    "https://openrouter.ai/api/alpha/decisions".into()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

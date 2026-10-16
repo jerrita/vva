@@ -115,7 +115,7 @@
 }
 ```
 
-整段省略字段取默认值；项目配置声明 `agent` 时整段替换全局。时长为整数秒，预留为整数 token。router 缺省复用 `settings.small_model`；声明 `router.decisions` 时改走 OpenRouter Decisions API（alpha）。
+整段省略字段取默认值；项目配置声明 `agent` 时整段替换全局。时长为整数秒，预留为整数 token。router 缺省复用 `settings.small_model`；声明 `router.decisions` 时使用决策 API，可选 OpenRouter Decisions（alpha）或 OpenCode System One。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -127,9 +127,32 @@
 | `task_timeout_secs` | `600` | 定时任务单次执行超时，超时中止并计为失败 |
 | `progress_interval_secs` | `180`（3min） | 轮次（含定时任务）未结束时每隔此时长向聊天推送进度摘要：改动文件、命令意图、文字消息、读取/检索次数；`0` 关闭 |
 | `task_max_failures` | `3` | 定时任务连续失败多少次后自动停用 |
-| `router.decisions` | 无 | 声明则 L1 路由走 Decisions API：`provider`（取其 `api_key`，如 `openrouter`）、`model`（如 `typesafe/jev-1.13`）、`min_confidence`（默认 `0.6`，`action` / `session` 题低于此值显式报错）、`endpoint`（默认 `https://openrouter.ai/api/alpha/decisions`）；声明后不再要求 `small_model` |
+| `router.decisions` | 无 | L1 决策 API：`type`（可选，`openrouter` / `opencode`；省略时按 `provider` 同名预设选择，其余节点沿用 `openrouter`）、`provider`（取 `providers.<provider>.api_key`）、`model`（服务原生模型 ID）、`min_confidence`（默认 `0.6`，`action` / `session` 题低于此值续接 focus；无 focus 时显式报错）、`endpoint`（可选覆盖服务默认端点）；声明后不再要求 `small_model` |
 | `channels.qq.app_id` / `secret` | 无 | QQ 机器人凭据；已声明 qq 而二者为空（如 `${VAR}` 未设置）时启动报错 |
 | `channels.qq.allowed_users` | `[]` | 用户白名单；白名单外静默丢弃；空表示拒绝所有人，含 `"*"` 表示允许任何用户 |
+
+OpenCode System One 配置示例（与已有主模型及渠道配置合并）：
+
+```jsonc
+{
+  "providers": {
+    "opencode": { "api_key": "${OPENCODE_API_KEY}" }
+  },
+  "settings": {
+    "agent": {
+      "router": {
+        "decisions": {
+          "provider": "opencode",
+          "model": "jev-1.13",
+          "min_confidence": 0.6
+        }
+      }
+    }
+  }
+}
+```
+
+`provider` 引用密钥节点；使用 `opencode` 或 `openrouter` 同名节点时可省略 `type`。自定义节点名时可通过 `type` 指定服务；显式 `type` 优先于节点名，其他省略 `type` 的节点沿用 OpenRouter。OpenCode 默认端点为 `https://opencode.ai/inference/systemone/v1/systemone`，支持 `jev-1.13` 与 `jev-1.13-free`；OpenRouter 默认端点保持 `https://openrouter.ai/api/alpha/decisions`，模型如 `typesafe/jev-1.13`。两者共用 `state` + `questions` 请求与 `answers` + `usage` 响应转换，均使用 Bearer 鉴权。参见 [OpenCode 模型端点与 Jev 文档](https://opencode.ai/v2/docs/console/models/#endpoints)。
 
 ---
 

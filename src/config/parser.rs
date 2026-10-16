@@ -138,6 +138,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decisions_backends_resolve_endpoints_and_preserve_overrides() {
+        use crate::config::DecisionsProviderType;
+
+        for (provider, backend, expected_type) in [
+            ("decision-key", None, DecisionsProviderType::OpenRouter),
+            ("openrouter", None, DecisionsProviderType::OpenRouter),
+            ("opencode", None, DecisionsProviderType::OpenCode),
+            (
+                "decision-key",
+                Some("opencode"),
+                DecisionsProviderType::OpenCode,
+            ),
+            (
+                "openrouter",
+                Some("opencode"),
+                DecisionsProviderType::OpenCode,
+            ),
+            (
+                "opencode",
+                Some("openrouter"),
+                DecisionsProviderType::OpenRouter,
+            ),
+        ] {
+            let expected_endpoint = match expected_type {
+                DecisionsProviderType::OpenRouter => "https://openrouter.ai/api/alpha/decisions",
+                DecisionsProviderType::OpenCode => {
+                    "https://opencode.ai/inference/systemone/v1/systemone"
+                }
+            };
+            for endpoint in [None, Some("https://gateway.example/v1/systemone")] {
+                let mut decisions = serde_json::json!({
+                    "provider": provider,
+                    "model": if expected_type == DecisionsProviderType::OpenCode { "jev-1.13-free" } else { "typesafe/jev-1.13" }
+                });
+                if let Some(backend) = backend {
+                    decisions["type"] = serde_json::json!(backend);
+                }
+                if let Some(endpoint) = endpoint {
+                    decisions["endpoint"] = serde_json::json!(endpoint);
+                }
+                let config = serde_json::json!({
+                    "settings": {"agent": {"router": {"decisions": decisions}}},
+                    "providers": {(provider): {"api_key": "test-key"}}
+                });
+                let config = parse_config_str(&config.to_string()).unwrap();
+                let agent = config.settings.agent.unwrap();
+                agent.validate().unwrap();
+                let decisions = agent.router.decisions.unwrap();
+                assert_eq!(decisions.effective_type(), expected_type);
+                assert_eq!(decisions.endpoint(), endpoint.unwrap_or(expected_endpoint));
+                assert_eq!(decisions.provider, provider);
+                assert_eq!(decisions.min_confidence, 0.6);
+            }
+        }
+    }
+
+    #[test]
+    fn decisions_reject_unknown_backend() {
+        assert!(
+            parse_config_str(
+                r#"{"settings":{"agent":{"router":{"decisions":{
+                "type":"unknown", "provider":"decision-key", "model":"jev-1.13"
+            }}}}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn test_strip_jsonc_comments() {
         let jsonc = r#"{
             // line comment
