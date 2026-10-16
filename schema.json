@@ -70,6 +70,7 @@
           "description": "agent space（常驻 IM agent）；vva agent 要求声明。router 复用 small_model",
           "properties": {
             "model": { "type": "string", "description": "oneshot 与 topic session 的模型规格，缺省沿用 settings.default" },
+            "curator_model": { "type": "string", "description": "curator 独立模型规格；省略时跟随当前 agent 模式模型，配置后不受 /model 切换影响" },
             "ttl_secs": { "type": "integer", "minimum": 0, "default": 18000, "description": "普通 session 空闲清理时长（秒）" },
             "oneshot_ttl_secs": { "type": "integer", "minimum": 0, "default": 0, "description": "oneshot 回复后清理等待时长（秒），0 为回复完即可清理" },
             "rollover_reserve_tokens": { "type": "integer", "minimum": 0, "default": 32000, "description": "上下文达到 limit.context - 预留 时触发 rollover" },

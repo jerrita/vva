@@ -115,6 +115,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 8. Curator（知识沉淀）
 
+- 模型可通过 `settings.agent.curator_model` 独立配置，启动时校验；省略时每次整理取当前 agent 模式模型。独立配置后不受 `/model` 切换影响；
 - 由系统在删除会话前触发的后台 session（空闲 TTL 到期的周期扫描，或 `/delete`；`/clear` 与 rollover 本身不触发，被接替的旧会话按 TTL 照常整理）（`kind=curator`），非聊天模型派生的 subagent，与 `team=false` 无冲突；
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
 - 产出写入 `~/.vva/space/memory/`（三层：`MEMORY.md` 只列领域 → `<领域>/INDEX.md` 列主题 → `<领域>/<topic>.md` 内容；纳入 git，每次整理一个 commit，提交信息含来源 session 与范围）；反复出现的工作流晋升为 skill 写入工作区 `.vva/skills`（`~/.vva/space/.vva/skills`，仅 agent space 会话可发现，不污染全局技能）；
@@ -132,7 +133,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - 文件：无文字 → 进入待附件缓冲，不触发模型，回复"已收到"；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本；多附件保持顺序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；
 - `SendFile` 工具已实现（`send_file.rs`）：渠道绑定、经 `SessionManager::with_tool_factory` 按会话 header 运行期注入（仅带 origin 的顶层会话，subagent 不挂载）；参数 `path`（工作区相对 / 绝对 / `~`）与可选 `caption`，文件缺失或非普通文件显式报错，渠道错误（如 QQ guild / dm 不支持上传）原样作为工具错误由模型转述；
 - AskUser 不挂载：agent space 会话（`SessionHeader::agent_managed()`）组装工具时不注册 `AskUserTool`，工具定义一并缺席；channel 级工具白名单未做；
-- 命令（`command.rs`，`/help` 列出）：`/new <消息>`（强制新建 topic，必须带文字）、`/switch <前缀>`（歧义列候选并拒绝，只设置 focus，后续消息仍经 router）、`/sessions`、`/stop`（中止 focus）、`/status`（`/stat`；会话、模型、上下文占比、cache 命中率、待附件数）、`/rename <标题>`（覆盖标题并取消尚未回写的自动标题）、`/model [list|[--global] <规格> [档位]]`（查看 / 列出 / 切换：有 focus 改 focus 会话，无 focus 改 **agent 模式模型**，`--global` 两者都改；agent 模式模型决定新会话的模型（curator 每次整理时取当前值），落盘于 `~/.vva/space/model.json` 并优先于配置文件，会话与模式切换都须目标模型声明 `limit.context`；agent 会话的切换不写 `state.json` 的「上次选用模型」；会话切换会使其缓存失效）、`/skills`（列出 agent space 可发现技能）、`/schedule [list|pause|resume|delete|run <id>]`（管理定时任务，创建走自然语言 → Schedule 工具）、`/delete [前缀]`（缺省 focus；**先 curator 整理再删除**，后台执行并回报，整理失败则保留会话）、`/clear [前缀]`（**直接删除，跳过整理**）；命令名大小写不敏感并容忍 `/cmd@bot`；**任何 `/` 开头的未知命令都显式回复帮助，不会交给模型**；
+- 命令（`command.rs`，`/help` 列出）：`/new <消息>`（强制新建 topic，必须带文字）、`/switch <前缀>`（歧义列候选并拒绝，只设置 focus，后续消息仍经 router）、`/sessions`、`/stop`（中止 focus）、`/status`（`/stat`；会话、模型、上下文占比、cache 命中率、待附件数）、`/rename <标题>`（覆盖标题并取消尚未回写的自动标题）、`/model [list|[--global] <规格> [档位]]`（查看 / 列出 / 切换：有 focus 改 focus 会话，无 focus 改 **agent 模式模型**，`--global` 两者都改；agent 模式模型决定新会话的模型（curator 未配置独立模型时，每次整理取当前值），落盘于 `~/.vva/space/model.json` 并优先于配置文件，会话与模式切换都须目标模型声明 `limit.context`；agent 会话的切换不写 `state.json` 的「上次选用模型」；会话切换会使其缓存失效）、`/skills`（列出 agent space 可发现技能）、`/schedule [list|pause|resume|delete|run <id>]`（管理定时任务，创建走自然语言 → Schedule 工具）、`/delete [前缀]`（缺省 focus；**先 curator 整理再删除**，后台执行并回报，整理失败则保留会话）、`/clear [前缀]`（**直接删除，跳过整理**）；命令名大小写不敏感并容忍 `/cmd@bot`；**任何 `/` 开头的未知命令都显式回复帮助，不会交给模型**；
 - 出站只发最终文本（`deliver_wait` 的结果），不做流式增量；失败 / 中止显式回复错误文本；
 - 入站循环顺序完成路由与建会话，轮次在独立任务执行，故运行中的 session 仍可被 reply / guide 插话；oneshot 不抢占 focus；已不存在或范围外的 focus 在下次读取时清理；rollover 后 `replace_focus` + `MessageIndex::repoint` 并提示用户，home 标记保留；
 - `message_index` 键带 channel 前缀（`qq:<id>`）。

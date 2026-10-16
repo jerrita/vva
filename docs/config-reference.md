@@ -106,6 +106,7 @@
 ```jsonc
 "agent": {
   "model": "a/gpt-5.6-terra",
+  "curator_model": "a/gpt-5.6-luna", // 可选：记忆整理独立使用的模型
   "ttl_secs": 18000,
   "channels": {
     "qq": { "app_id": "123456", "secret": "${QQ_BOT_SECRET}", "allowed_users": ["<openid>"] }
@@ -120,6 +121,7 @@
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `model` | `settings.default` | oneshot 与 topic session 使用的模型规格 |
+| `curator_model` | 当前 Agent 模式模型 | curator 使用的独立模型规格；启动时校验，配置后不受 `/model` 切换影响；省略时跟随 Agent 模式模型（含 `model.json` 与运行期切换） |
 | `ttl_secs` | `18000`（5h） | 普通 session 空闲清理 |
 | `oneshot_ttl_secs` | `0` | oneshot 回复完即可清理，不做记忆沉淀 |
 | `rollover_reserve_tokens` | `32000` | 上下文达到 `limit.context - 预留` 时回合结束触发 rollover |

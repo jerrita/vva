@@ -125,7 +125,7 @@ fn curator_title(label: &str) -> String {
     format!("[curator] {label}")
 }
 
-/// 每次创建 curator 会话时取当前模型（agent 模式模型可在运行期切换）
+/// 每次创建 curator 会话时取模型：独立配置，或跟随可在运行期切换的 agent 模式模型
 pub type ModelSource = Arc<dyn Fn() -> String + Send + Sync>;
 
 /// 在 agent 工作区创建 curator 会话并等待其完成

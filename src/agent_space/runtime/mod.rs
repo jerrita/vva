@@ -80,9 +80,19 @@ impl Runtime {
             pending: PendingFiles::default(),
         };
         let mode_model = Arc::new(std::sync::Mutex::new(load_mode_model(&config, &manager)?));
-        let source: ModelSource = {
-            let mode_model = mode_model.clone();
-            Arc::new(move || mode_model.lock().expect("mode_model").model.clone())
+        let source: ModelSource = match &config.curator_model {
+            Some(model) => {
+                let app = manager.app_config();
+                let model = app
+                    .resolve_model(model, None)
+                    .map_err(|e| format!("settings.agent.curator_model: {e}"))?
+                    .full_spec;
+                Arc::new(move || model.clone())
+            }
+            None => {
+                let mode_model = mode_model.clone();
+                Arc::new(move || mode_model.lock().expect("mode_model").model.clone())
+            }
         };
         let curator = Arc::new(Curator::for_manager(&manager, source));
         Ok(Arc::new(Self {

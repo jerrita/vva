@@ -138,6 +138,10 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
+    fixture_with_config(AgentSpaceConfig::default()).await
+}
+
+async fn fixture_with_config(config: AgentSpaceConfig) -> Fixture {
     let dir = std::env::temp_dir().join(format!("vva-runtime-{}", uuid::Uuid::new_v4()));
     let mut app = crate::config::AppConfig::default();
     app.settings.default = "p/m".into();
@@ -147,18 +151,22 @@ async fn fixture() -> Fixture {
             api_key: "k".into(),
             base_url: mock_anthropic().await,
             provider_type: Some(ProviderType::Anthropic),
-            models: [(
-                "m".to_string(),
-                ModelConfig {
-                    name: "M".into(),
-                    limit: Some(ModelLimitConfig {
-                        context: 1_000_000,
-                        output: 1000,
-                    }),
-                    ..Default::default()
-                },
-            )]
-            .into(),
+            models: ["m", "other"]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id.to_string(),
+                        ModelConfig {
+                            name: "M".into(),
+                            limit: Some(ModelLimitConfig {
+                                context: 1_000_000,
+                                output: 1000,
+                            }),
+                            ..Default::default()
+                        },
+                    )
+                })
+                .collect(),
         },
     );
     let manager = Arc::new(SessionManager::new(
@@ -172,7 +180,7 @@ async fn fixture() -> Fixture {
     let schedule = ScheduleStore::open(&dir).unwrap();
     let runtime = Runtime::new(
         manager.clone(),
-        AgentSpaceConfig::default(),
+        config,
         channel.clone(),
         router,
         schedule.clone(),
@@ -423,6 +431,68 @@ async fn model_switch_targets_focus_session_or_mode() {
         .await;
     let sent = f.channel.wait(7).await;
     assert!(sent[6].text.contains("p/m (high)"), "{}", sent[6].text);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn curator_model_selection_across_mode_changes() {
+    for configured in [false, true] {
+        let config = serde_json::from_value(if configured {
+            serde_json::json!({"curator_model": "m"})
+        } else {
+            serde_json::json!({})
+        })
+        .unwrap();
+        let f = fixture_with_config(config).await;
+        let source = f.topic(BINDING).await;
+        let mut seen = HashSet::new();
+        for mode in ["p/m", "p/other"] {
+            let next = super::mode_model::check_mode_model(&f.manager, mode, None).unwrap();
+            f.runtime.save_mode_model(next).unwrap();
+            f.manager
+                .store()
+                .append_turn(
+                    &source.id,
+                    &crate::model::Turn::user_turn(crate::model::Message::text("示例偏好")),
+                )
+                .await
+                .unwrap();
+            let result = f.runtime.curator.curate(&source.id).await;
+            assert_ne!(result.status, CuratorStatus::Failed, "{}", result.summary);
+            let sessions = f.manager.store().list_sessions().await.unwrap();
+            let created: Vec<_> = sessions
+                .iter()
+                .filter(|s| s.kind == SessionKind::Curator && !seen.contains(&s.id))
+                .collect();
+            assert_eq!(created.len(), 1);
+            assert_eq!(
+                created[0].current_model,
+                if configured { "p/m" } else { mode }
+            );
+            seen.insert(created[0].id.clone());
+        }
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+}
+
+#[tokio::test]
+async fn invalid_curator_model_rejects_runtime_startup() {
+    let f = fixture().await;
+    for model in ["", "missing/model", "p/missing"] {
+        let config = AgentSpaceConfig {
+            curator_model: Some(model.into()),
+            ..Default::default()
+        };
+        let result = Runtime::new(
+            f.manager.clone(),
+            config,
+            f.channel.clone(),
+            Router::new(Box::new(NoModel), f.dir.join("router.jsonl")),
+            f.schedule.clone(),
+        );
+        let error = result.err().expect("无效 curator 模型须在启动时拒绝");
+        assert!(error.contains("settings.agent.curator_model"), "{error}");
+    }
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 

@@ -180,6 +180,9 @@ pub struct AgentSpaceConfig {
     /// oneshot 与 topic session 使用的模型规格；缺省沿用 `settings.default`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// curator 使用的模型规格；缺省跟随当前 agent 模式模型
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub curator_model: Option<String>,
     /// 普通 session 空闲清理时长（秒）
     pub ttl_secs: u64,
     /// oneshot session 回复后的清理等待时长（秒）；0 表示回复完即可清理
@@ -203,6 +206,7 @@ impl Default for AgentSpaceConfig {
     fn default() -> Self {
         Self {
             model: None,
+            curator_model: None,
             ttl_secs: 18_000,
             oneshot_ttl_secs: 0,
             rollover_reserve_tokens: 32_000,
