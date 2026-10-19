@@ -256,3 +256,6 @@ frontend/                    # Web 前端源码 (React + Vite + TypeScript)；bu
 3. **测试覆盖与规范约束**：
    - 修改核心模型、解析器、适配器或 UI 状态后，运行 `cargo test` 确保全量测试通过，并保持 `cargo clippy -- -D warnings` 零告警；
    - **单测 Mock 规范**：单测数据按照官方最新规范格式构造，不在生产适配器中增加未定义的兜底逻辑。
+4. **发布 tag**：
+   - 推送 `v*` tag 触发 `.github/workflows/release.yml` 编译并发布 release；
+   - 打 tag 前先将 `Cargo.toml` 的 `version` 同步为 tag 版本（含 `Cargo.lock`），提交后再打 tag。
