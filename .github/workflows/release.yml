@@ -27,6 +27,10 @@ jobs:
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
           - name: windows-x64
             os: windows-2022
             target: x86_64-pc-windows-msvc
@@ -35,9 +39,9 @@ jobs:
       # 覆盖 .cargo/config.toml 中的 mold 配置
       RUSTFLAGS: "-C target-cpu=generic"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -61,6 +65,14 @@ jobs:
           # 缓存按 ref 隔离，tag 只能读取 master 上的缓存
           save-if: ${{ github.ref == 'refs/heads/master' }}
 
+      - name: Use native toolchain on arm64
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        # 覆盖 .cargo/config.toml 中的交叉编译工具链
+        run: |
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc" >> "$GITHUB_ENV"
+          echo "CC_aarch64_unknown_linux_gnu=gcc" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_gnu=ar" >> "$GITHUB_ENV"
+
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -81,7 +93,7 @@ jobs:
             echo "ASSET=$name.tar.gz" >> "$GITHUB_ENV"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: startsWith(github.ref, 'refs/tags/')
         with:
           name: ${{ matrix.name }}
@@ -93,7 +105,7 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
