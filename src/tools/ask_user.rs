@@ -81,7 +81,7 @@ impl crate::tools::Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user one or more questions and wait for their answers."
+        "Ask the user one or more questions and wait for the answers. Each question offers options with labels and descriptions."
     }
 
     fn parameters(&self) -> serde_json::Value {

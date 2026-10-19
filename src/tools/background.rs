@@ -306,7 +306,7 @@ impl Tool for TaskOutputTool {
     }
 
     fn description(&self) -> &str {
-        "Check the status and captured output of a background task started with Shell run_in_background. Returns the status, the total bytes captured, and the most recent output; the byte count shows whether new output arrived since the last check. Poll periodically to watch progress."
+        "Check the status and captured output of a background task started with Shell run_in_background. Returns the status, total bytes captured, and the most recent output; a changed byte count means new output arrived since the last check."
     }
 
     fn parameters(&self) -> serde_json::Value {

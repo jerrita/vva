@@ -95,7 +95,7 @@
 
 | 字段 | 说明 |
 |---|---|
-| `provider` | 外置 provider 声明：`brave`（Brave LLM Context，仅 search）、`tavily`（Tavily，search + fetch）、`google`（`model` 指向已配置的 gemini 协议模型；search 单次请求仅挂载原生 `google_search`，来源取自 grounding、片段为被引用文本段；fetch 挂载 `url_context` 并同挂 `google_search`，正文为模型据页面给出的 Markdown 转述而非逐字原文）；`local` 为内置 fetch provider（HTTP 抓取 + Readability 式正文提取），不在此声明 |
+| `provider` | 外置 provider 声明：`brave`（Brave LLM Context，仅 search）、`tavily`（Tavily，search + fetch）、`google`（`model` 指向已配置的 gemini 协议模型；search 单次请求仅挂载原生 `google_search`，来源取自 grounding、片段为被引用文本段；fetch 挂载 `url_context` 并同挂 `google_search`，正文为模型据页面给出的 Markdown 转述）；`local` 为内置 fetch provider（HTTP 抓取 + Readability 式正文提取），不在此声明 |
 | `search` | provider 名选择：`brave` / `tavily` / `google` |
 | `fetch` | provider 名选择：`local` / `tavily` / `google` |
 

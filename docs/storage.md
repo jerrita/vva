@@ -20,10 +20,10 @@ vva 默认采用 **JSONL (JSON Lines) 追加写存储引擎**（[`JsonlSessionSt
 - **根存储目录**：`~/.vva/sessions/`（或测试指定的独立目录）
 - **项目目录**：`~/.vva/sessions/{project_key}/`，`project_key` 由工作空间绝对路径编码（路径分隔符替换为 `-`）
 - **会话文件**：`~/.vva/sessions/{project_key}/{session_id}.jsonl`，`session_id` 为 `sess_` + 5 位小写十六进制
-- **Scratch Pad**：`~/.vva/sessions/{project_key}/scratch/`，每个项目一份；System Prompt 的 Environment Context 写入该目录的绝对路径。读写须使用该绝对路径。相对路径（含 `scratch/...`）解析到工作空间根目录而非 Scratch Pad；不提供 `scratch` 别名（工作空间内可以合法存在名为 scratch 的目录）。
+- **Scratch Pad**：`~/.vva/sessions/{project_key}/scratch/`，每个项目一份；System Prompt 的 Environment Context 写入该目录的绝对路径。读写使用该绝对路径。相对路径（含 `scratch/...`）解析到工作空间根目录，工作空间内可以存在名为 scratch 的目录。
 
 ### 2.2 行级记录布局 (Line Layout)
-每个 `.jsonl` 文件严格遵循以下两段式结构：
+每个 `.jsonl` 文件遵循以下两段式结构：
 
 ```
 Line 1:      {"type":"header","id":"sess_a1b2c","title":"Refactor","workspace_root":"/path","created_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true}

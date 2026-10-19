@@ -12,9 +12,8 @@ pub fn build_system_prompt(workspace: &Path, scratch: &Path) -> String {
          - Workspace Root: {}\n\
          - Scratch Pad: {}\n\n\
          The Scratch Pad is the absolute directory shown in Environment Context. \
-         Use that absolute path for durable notes and working artifacts. \
-         Relative paths including scratch/... resolve under the workspace root, \
-         not the Scratch Pad; there is no scratch alias.\n",
+         Store durable notes and working artifacts under that absolute path. \
+         Relative paths, including scratch/..., resolve under the workspace root.\n",
         chrono::Local::now().format("%Y-%m-%d"),
         get_os_info(),
         std::env::consts::ARCH,

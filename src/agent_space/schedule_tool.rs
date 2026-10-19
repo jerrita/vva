@@ -79,7 +79,7 @@ impl Tool for ScheduleTool {
     }
 
     fn description(&self) -> &str {
-        "Manage scheduled tasks that run on a timer and notify chats. Use only when the user \
+        "Manage scheduled tasks that run on a timer and notify chats. Use when the user \
          asks to create, view, pause, resume or delete a scheduled task or reminder. \
          Exactly one trigger: `cron` (5 fields: min hour day month weekday, local time), \
          `at` (one-shot local time, e.g. 2026-10-11T09:00) or `every` (30m / 2h / 1d, counted \

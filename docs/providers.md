@@ -13,7 +13,7 @@
    - 单元测试 Mock 报文对照厂商官方文档规范构造，不在生产适配器代码中为错误测试数据添加容错分支。
 
 ### 1.1 接口边界
-[`Provider`](../src/provider/mod.rs) trait 对外只暴露调用方真正需要的能力：
+[`Provider`](../src/provider/mod.rs) trait 对外暴露调用方需要的能力：
 
 ```rust
 #[async_trait]
@@ -87,7 +87,7 @@ pub trait Provider: Send + Sync {
 - **统一投影**：web_search 调用对投影为 `WebSearchCall`（Search 动作，携带来源列表，错误结果按 Failed 上报）；web_fetch 调用对投影为 `WebSearchCall`（OpenPage 动作）；文本块中的 `web_search_result_location` 引用投影为 `Annotation::WebSearchResultLocation`（无字符偏移，以 `cited_text` 摘录定位）。
 - **原生块链保真回传**：assistant 全部原生内容块（强类型 `AnthropicContentBlock`，含 `encrypted_content` / `encrypted_index` 等服务端加密字段与 `redacted_thinking`）存入 `AnthropicTurnMeta.content_blocks`，多轮请求逐块原样回传，缺失或改动即 400；同 Responses `output_items` 原生条目链策略。
 - **流式事件**：`server_tool_use` 的输入经 `input_json_delta` 增量下发；结果块在 `content_block_start` 整块到达；引用经 `citations_delta` 逐条追加至当前 text 块。
-- **端点能力诊断**：模型误以客户端 `tool_use` 调用服务端工具时（端点未实现 server tools 的典型症状），工具结果返回显式诊断（端点不支持原生服务端工具），而非误导性的 `Tool not found`。
+- **端点能力诊断**：模型误以客户端 `tool_use` 调用服务端工具时（端点未实现 server tools 的典型症状），工具结果返回显式诊断（端点不支持原生服务端工具）。
 
 ---
 

@@ -39,10 +39,9 @@ impl Tool for SendMessageTool {
     }
 
     fn description(&self) -> &str {
-        "Deliver a message to another session (identified by its sess_ id, e.g. a subagent \
-         you launched). If that session is idle the message triggers a new turn; if it is \
-         running the message is queued and processed when the current turn ends. Use \
-         WaitSession afterwards to receive its reply."
+        "Deliver a message to another session by its sess_ id (e.g. a subagent you launched). \
+         An idle session starts a new turn; a running session queues the message until its \
+         current turn ends. Call WaitSession afterwards to receive the reply."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -96,8 +95,7 @@ impl Tool for WaitSessionTool {
 
     fn description(&self) -> &str {
         "Wait for another session's current turn (or its next turn if idle) to finish and \
-         return that turn's final assistant message. Combine with SendMessage: deliver a \
-         message, then wait for the reply."
+         return that turn's final assistant message. Pair with SendMessage: deliver, then wait."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -110,7 +108,7 @@ impl Tool for WaitSessionTool {
                 },
                 "timeout_s": {
                     "type": "integer",
-                    "description": "Maximum seconds to wait (default 600)."
+                    "description": "Maximum seconds to wait; defaults to 600."
                 }
             },
             "required": ["session_id"]

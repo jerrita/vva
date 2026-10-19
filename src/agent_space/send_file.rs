@@ -28,7 +28,7 @@ impl Tool for SendFileTool {
     }
 
     fn description(&self) -> &str {
-        "Send a local file to the user through the current chat channel. Accepts workspace-relative, absolute, and ~ paths. Use this when the user should receive the file itself instead of its content."
+        "Send a local file to the user through the current chat channel. Accepts workspace-relative, absolute, and ~ paths. Use it when the user should receive the file itself."
     }
 
     fn parameters(&self) -> serde_json::Value {

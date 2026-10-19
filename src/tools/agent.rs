@@ -136,12 +136,12 @@ impl Tool for AgentTool {
 
     fn description(&self) -> &str {
         "Launch a subagent that runs in its own session and returns its final message as the \
-         result. Do not use subagents by default: handle tasks yourself with your own tools, and \
-         launch one only when the user explicitly asks for subagents or delegation. Subagents work in the same workspace; they do not see this session's history, \
-         so the prompt must be self-contained (goal, constraints, relevant paths). Multiple \
-         Agent calls in one turn run concurrently. Set run_in_background to detach the \
-         subagent: it keeps running, its final message is injected here as a system reminder \
-         when it finishes, and you continue working in the meantime."
+         result. Handle tasks with your own tools by default; launch a subagent when the user \
+         explicitly asks for subagents or delegation. Subagents share the workspace and start \
+         with an empty history, so the prompt is self-contained (goal, constraints, relevant \
+         paths). Multiple Agent calls in one turn run concurrently. Set run_in_background to \
+         detach the subagent: its final message arrives here as a system reminder when it \
+         finishes, and you continue working meanwhile."
     }
 
     fn parameters(&self) -> serde_json::Value {
