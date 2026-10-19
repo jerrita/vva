@@ -1,12 +1,13 @@
-<p align="center">
-  <img src="frontend/public/favicon.png" width="112" alt="vva">
-</p>
+> 此项目为个人玩具，目前你不应该期望能将其用于稳定的生产
 
-<h1 align="center">vva</h1>
-
-<p align="center">Vendor-Versatile Agent Harness —— 用满每家模型原生能力的 AI 编程助手</p>
-
----
+<div align="center">
+  <h1 align="center">
+    <img src="frontend/public/favicon.png" width="200">
+    <br/>
+    Vendor-Versatile Agent
+  </h1>
+  <p align="center">用满每家模型原生能力的 AI 编程助手</p>
+</div>
 
 vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，模型在你的项目里读写文件、执行命令、联网查资料，直到完成。
 
