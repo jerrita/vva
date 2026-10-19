@@ -77,6 +77,20 @@ vva run --model anthropic/claude-sonnet-4-5  # 以 供应商/模型 指定
 
 自定义供应商、推理档位、费率、联网搜索等配置见 [配置参考](docs/config-reference.md)；配置文件声明 `"$schema"` 指向 [schema.json](schema.json) 可获得编辑器补全。
 
+也可以把下面的 prompt 交给其他 coding agent，由它辅助完成配置：
+
+```text
+帮我配置 vva（https://github.com/jerrita/vva）。
+先阅读配置参考与 schema：
+- https://raw.githubusercontent.com/jerrita/vva/master/docs/config-reference.md
+- https://raw.githubusercontent.com/jerrita/vva/master/schema.json
+
+然后询问我要使用的供应商、端点、模型与是否需要联网搜索，据此生成 ~/.vva/config.jsonc：
+- 文件开头声明 "$schema" 指向上面的 schema.json；
+- API Key 以 "${ENV_VAR}" 引用，密钥写入 ~/.vva/env（KEY=VALUE 格式），不写进配置文件；
+- 写入后运行 `vva run "hello"` 验证，报错时按配置参考修正。
+```
+
 ## 使用
 
 ```bash
