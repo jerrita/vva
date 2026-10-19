@@ -30,7 +30,19 @@ vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，
 
 ## 安装
 
-需要 Rust 1.85+；构建期需要 Node.js 与 npm（Web 前端打包进二进制，运行时无需 Node）。
+一键安装或更新到最新 release：
+
+```bash
+# Linux x86_64
+curl -fsSL https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.sh | bash
+```
+
+```powershell
+# Windows x64
+irm https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.ps1 | iex
+```
+
+从源码构建需要 Rust 1.85+；构建期需要 Node.js 与 npm（Web 前端打包进二进制，运行时无需 Node）。
 
 ```bash
 cargo install --git https://github.com/jerrita/vva
