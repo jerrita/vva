@@ -5,16 +5,18 @@ set -euo pipefail
 repo="jerrita/vva"
 dir="${VVA_INSTALL_DIR:-$HOME/.local/bin}"
 
-[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || {
-  echo "仅支持 Linux x86_64" >&2
-  exit 1
-}
+[ "$(uname -s)" = Linux ] || { echo "仅支持 Linux" >&2; exit 1; }
+case "$(uname -m)" in
+  x86_64) arch=x64 ;;
+  aarch64 | arm64) arch=arm64 ;;
+  *) echo "不支持的架构: $(uname -m)" >&2; exit 1 ;;
+esac
 
 tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" |
   sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
 [ -n "$tag" ] || { echo "无法获取最新版本" >&2; exit 1; }
 
-name="vva-$tag-linux-x64"
+name="vva-$tag-linux-$arch"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
