@@ -433,8 +433,6 @@ pub struct CreateSessionRequest {
     pub model: Option<String>,
     pub variant: Option<String>,
     pub search: Option<bool>,
-    /// team（subagent 编排）开关；缺省开启
-    pub team: Option<bool>,
     /// 工作空间目录；缺省为服务器启动目录
     pub workspace: Option<String>,
 }
@@ -448,7 +446,6 @@ pub async fn create_session(
         .unwrap_or_else(|| state.manager.app_config().settings.default.clone());
     let toggles = crate::model::ToggleOverrides {
         web_search: request.search,
-        team: request.team,
     }
     .apply(crate::model::SessionToggles::default());
     let handle = match request.workspace.as_deref().map(str::trim) {
@@ -889,7 +886,6 @@ pub struct ConfigureSessionRequest {
     #[serde(default, deserialize_with = "double_option::deserialize")]
     pub variant: Option<Option<String>>,
     pub search: Option<bool>,
-    pub team: Option<bool>,
 }
 
 pub async fn configure_session(
@@ -903,7 +899,6 @@ pub async fn configure_session(
             request.variant,
             crate::model::ToggleOverrides {
                 web_search: request.search,
-                team: request.team,
             },
         )
         .await

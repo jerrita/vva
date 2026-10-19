@@ -5,7 +5,6 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use super::Runtime;
-use crate::agent_space::agent_toggles;
 use crate::agent_space::binding::{AttachedFile, FileKind, in_chat_scope};
 use crate::agent_space::channel::Inbound;
 use crate::agent_space::channel::files::{sanitize_filename, unique_dest};
@@ -13,7 +12,7 @@ use crate::agent_space::command;
 use crate::agent_space::markdown;
 use crate::agent_space::router::{Candidate, ReplyRef, Route, RouteInput, Routed};
 use crate::harness::ManagedSession;
-use crate::model::SessionKind;
+use crate::model::{SessionKind, SessionToggles};
 
 impl Runtime {
     /// 处理一条入站消息；失败原样回复用户
@@ -278,7 +277,7 @@ impl Runtime {
                 mode.model.clone(),
                 mode.variant,
                 None,
-                agent_toggles(),
+                SessionToggles::default(),
                 |header| {
                     header.kind = kind;
                     header.origin = Some(origin);

@@ -61,10 +61,7 @@ pub(crate) async fn create_test_app(
             model.into(),
             variant.map(str::to_string),
             None,
-            crate::model::SessionToggles {
-                web_search,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search },
         )
         .await
         .unwrap();

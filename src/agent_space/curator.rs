@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::agents::AgentDef;
 use crate::harness::SessionManager;
-use crate::model::{ContentPart, Origin, Role, SessionKind, Turn};
+use crate::model::{ContentPart, Origin, Role, SessionKind, SessionToggles, Turn};
 use crate::storage::SessionStore;
 
 /// 内置 curator agent 名
@@ -144,7 +144,7 @@ impl CuratorRunner for SessionRunner {
                 (self.model)(),
                 None,
                 Some(curator_title(label)),
-                super::agent_toggles(),
+                SessionToggles::default(),
                 |header| {
                     header.kind = SessionKind::Curator;
                     header.agent = Some(CURATOR_AGENT.into());

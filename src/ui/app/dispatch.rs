@@ -58,31 +58,9 @@ impl App {
     /// 设置或切换原生网络搜索（/search 命令与 Config 弹窗共用）
     pub async fn set_web_search(&mut self, target: Option<bool>) {
         let enabled = target.unwrap_or(!self.view.session.header.web_search);
-        self.apply_toggle(
-            ConfigItemKind::WebSearch,
-            ToggleOverrides {
-                web_search: Some(enabled),
-                ..Default::default()
-            },
-        )
-        .await;
-    }
-
-    /// 设置或切换 team 模式（/team 命令、状态栏与 Config 弹窗共用）
-    pub async fn set_team(&mut self, target: Option<bool>) {
-        let enabled = target.unwrap_or(!self.view.session.header.team);
-        self.apply_toggle(
-            ConfigItemKind::Team,
-            ToggleOverrides {
-                team: Some(enabled),
-                ..Default::default()
-            },
-        )
-        .await;
-    }
-
-    /// 更新会话开关、持久化 Header 并同步弹窗显示
-    async fn apply_toggle(&mut self, kind: ConfigItemKind, overrides: ToggleOverrides) {
+        let overrides = ToggleOverrides {
+            web_search: Some(enabled),
+        };
         if let Err(error) = self.active_session.configure(None, None, overrides).await {
             self.feedback.push(error);
             return;
@@ -90,13 +68,9 @@ impl App {
         self.refresh_view();
 
         if let ActiveModal::Config(cm) = &mut self.modal {
-            let header = &self.view.session.header;
-            let enabled = match kind {
-                ConfigItemKind::Team => header.team,
-                _ => header.web_search,
-            };
+            let enabled = self.view.session.header.web_search;
             cm.update_item_value(
-                kind,
+                ConfigItemKind::WebSearch,
                 if enabled { "Enabled" } else { "Disabled" }.to_string(),
             );
         }
@@ -156,9 +130,6 @@ impl App {
             }
             "/search" | "/web" => {
                 self.set_web_search(on_off(&arg)).await;
-            }
-            "/team" => {
-                self.set_team(on_off(&arg)).await;
             }
             "/thinking" | "/think" | "/th" => {
                 self.toggle_thinking_display();

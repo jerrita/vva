@@ -89,7 +89,6 @@ export default function App() {
   const [draftModel, setDraftModel] = useState<string | null>(null)
   const [draftVariant, setDraftVariant] = useState<string | null>(null)
   const [draftSearch, setDraftSearch] = useState(true)
-  const [draftTeam, setDraftTeam] = useState(true)
   const [draftProject, setDraftProject] = useState('')
 
   const running = snap !== null && snap.state !== ''
@@ -373,7 +372,6 @@ export default function App() {
             model: draftModel ?? undefined,
             variant: draftVariant,
             search: draftSearch,
-            team: draftTeam,
             workspace: draftProject || undefined,
           })
           id = created.session.id
@@ -387,7 +385,7 @@ export default function App() {
         )
       })
     },
-    [activeId, draftModel, draftVariant, draftSearch, draftTeam, draftProject, attempt],
+    [activeId, draftModel, draftVariant, draftSearch, draftProject, attempt],
   )
 
   const abort = useCallback(async () => {
@@ -483,7 +481,6 @@ export default function App() {
   const currentModel = active?.current_model ?? draftModel ?? models?.default ?? ''
   const currentVariant = active ? active.current_variant : draftVariant
   const currentSearch = active?.web_search ?? draftSearch
-  const currentTeam = active?.team ?? draftTeam
   const modelEntry = models?.models.find(entry => entry.spec === currentModel)
 
   const changeModel = (spec: string) => {
@@ -510,14 +507,6 @@ export default function App() {
       return
     }
     setDraftSearch(search)
-  }
-
-  const changeTeam = (team: boolean) => {
-    if (activeId) {
-      configure({ team })
-      return
-    }
-    setDraftTeam(team)
   }
 
   const modelOptions =
@@ -573,15 +562,6 @@ export default function App() {
         />
         <span className="toggle-dot" />
         搜索
-      </label>
-      <label className="chip-toggle" title="Team：subagent 派生与跨会话消息">
-        <input
-          type="checkbox"
-          checked={currentTeam}
-          onChange={event => changeTeam(event.target.checked)}
-        />
-        <span className="toggle-dot" />
-        团队
       </label>
     </>
   )

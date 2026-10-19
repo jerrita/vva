@@ -26,7 +26,7 @@ vva 默认采用 **JSONL (JSON Lines) 追加写存储引擎**（[`JsonlSessionSt
 每个 `.jsonl` 文件严格遵循以下两段式结构：
 
 ```
-Line 1:      {"type":"header","id":"sess_a1b2c","title":"Refactor","workspace_root":"/path","created_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true,"team":true}
+Line 1:      {"type":"header","id":"sess_a1b2c","title":"Refactor","workspace_root":"/path","created_at":"...","current_model":"openai/gpt-5-terra","current_variant":"high","web_search":true}
 Line 2:      {"type":"turn","id":"turn_001","role":"user","messages":[{"parts":[...]}],"meta":{}}
 Line 3:      {"type":"turn","id":"turn_002","role":"assistant","messages":[{"parts":[...]}],"usage":{...},"meta":{"response":{"response_id":"resp_123",...}}}
 Line 4..N:   {"type":"turn",...}
@@ -34,7 +34,7 @@ Line 4..N:   {"type":"turn",...}
 
 - **第 1 行 (`JsonlRecord::Header`)**：
   - 存储全局会话头信息 [`SessionHeader`](../src/model/session.rs)；
-  - 绑定当前会话的 `current_model`、`current_variant`、`web_search`、`team`（缺省 `true`；关闭时不挂载 `Agent` / `SendMessage` / `WaitSession` 工具，`TaskStop` 不再接受 `sess_` id）、`editor` 与 `workspace_root`（新会话取模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；JSONL 省略该字段时按早期 `replace` 读取）；
+  - 绑定当前会话的 `current_model`、`current_variant`、`web_search`、`editor` 与 `workspace_root`（新会话取模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；JSONL 省略该字段时按早期 `replace` 读取）；
   - agent space 可选字段：`kind`（`topic` 缺省不写出 / `oneshot` / `curator`）、`origin`（`{channel, chat_id}`）、`routed_by`、`continued_from`（rollover 接替会话所承接的旧会话）、`superseded_by`、`last_activity`；缺省时全部省略，旧文件无需迁移；
   - 会话创建或发生模型/标题/网络搜索配置变更时调用 `save_header`，按“首行 Header + 全部已有轮次”写入同目录临时文件，`fsync` 后 `rename` 原子替换；重写中途失败时原文件与历史保持完整。其余时间文件只被追加。
 - **第 2..N 行 (`JsonlRecord::Turn`)**：

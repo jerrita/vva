@@ -270,7 +270,6 @@ async fn first_message_creates_session_replies_and_reply_anchor_skips_router() {
         .clone();
     assert_eq!(header.origin.unwrap().chat_id, "c2c:u1");
     assert_eq!(header.routed_by.as_deref(), Some("first"));
-    assert!(!header.team);
 
     // 回复 bot 出站消息：L0 直达同一 session（NoModel 保证未调用小模型）
     let mut follow = inbound("m2", "继续");

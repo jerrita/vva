@@ -127,10 +127,7 @@ async fn test_slash_command_variant_execution() {
             "prov/model-without-vars".into(),
             None,
             None,
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         )
         .await
         .unwrap();
@@ -170,10 +167,7 @@ async fn test_cycle_variant_wraps_through_declared_order() {
             "prov/model-without-vars".into(),
             None,
             None,
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         )
         .await
         .unwrap();
@@ -582,10 +576,7 @@ async fn test_session_resume_preserves_web_search_state() {
             "model_2".into(),
             None,
             Some("Session 2".into()),
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         )
         .await
         .unwrap();
@@ -678,10 +669,7 @@ async fn test_user_message_hits_and_revert_fills_input() {
         Some("Origin".into()),
         "openai/test_model",
         None,
-        crate::model::SessionToggles {
-            web_search: false,
-            ..Default::default()
-        },
+        crate::model::SessionToggles { web_search: false },
     );
     session.append_turn(crate::model::Turn::new(
         crate::model::Role::System,

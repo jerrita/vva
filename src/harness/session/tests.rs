@@ -788,51 +788,6 @@ async fn new_session_uses_last_selected_model() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[tokio::test]
-async fn team_toggle_configures_and_persists_independently() {
-    let dir = tmp("team-toggle");
-    let mgr = manager_for(&dir, openai_config());
-    let handle = mgr
-        .create_session(
-            "openai/first".into(),
-            None,
-            None,
-            crate::model::SessionToggles {
-                web_search: false,
-                team: true,
-            },
-        )
-        .await
-        .unwrap();
-    handle
-        .configure(
-            None,
-            None,
-            crate::model::ToggleOverrides {
-                team: Some(false),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-    let header = handle.snapshot().session.header.clone();
-    assert!(!header.team);
-    assert!(!header.web_search, "team 覆写不应改动 web 开关");
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn legacy_header_defaults_team_enabled() {
-    let header: crate::model::SessionHeader = serde_json::from_value(serde_json::json!({
-        "id": "sess_legacy",
-        "workspace_root": "/tmp",
-        "created_at": "2026-01-01T00:00:00Z"
-    }))
-    .unwrap();
-    assert!(header.team);
-}
-
 async fn seeded_session(dir: &Path) -> (Arc<SessionManager>, Arc<ManagedSession>, String) {
     let mut session = Session::with_model(
         dir,
@@ -975,10 +930,7 @@ async fn new_session_loads_project_agents_md() {
         None,
         "openai/test_model",
         None,
-        crate::model::SessionToggles {
-            web_search: false,
-            ..Default::default()
-        },
+        crate::model::SessionToggles { web_search: false },
     );
     let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
     let (mut task, _rx) = task_with(session, store);
@@ -1021,10 +973,7 @@ async fn skill_changes_are_announced_before_the_next_user_message() {
         None,
         "openai/test_model",
         None,
-        crate::model::SessionToggles {
-            web_search: false,
-            ..Default::default()
-        },
+        crate::model::SessionToggles { web_search: false },
     );
     let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
     let (mut task, _rx) = task_with(session, store);
@@ -1072,10 +1021,7 @@ async fn submit_expands_at_mentions_into_user_parts() {
         None,
         "openai/test_model",
         None,
-        crate::model::SessionToggles {
-            web_search: false,
-            ..Default::default()
-        },
+        crate::model::SessionToggles { web_search: false },
     );
     let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
     let (mut task, _rx) = task_with(session, store);
@@ -1431,10 +1377,7 @@ async fn new_session_appends_preamble_reminders_before_user_prompt() {
         None,
         "openai/test_model",
         None,
-        crate::model::SessionToggles {
-            web_search: false,
-            ..Default::default()
-        },
+        crate::model::SessionToggles { web_search: false },
     );
     let store = Arc::new(JsonlSessionStore::new(&dir).unwrap());
     let (mut task, _rx) = task_with(session, store);

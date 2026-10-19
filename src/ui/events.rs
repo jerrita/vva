@@ -522,7 +522,6 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
             app.open_variants_modal().await;
         }
         ModalAction::ToggleWebSearch => app.set_web_search(None).await,
-        ModalAction::ToggleTeam => app.set_team(None).await,
         ModalAction::ToggleThinkingDisplay => app.toggle_thinking_display(),
         ModalAction::RevertTurn { turn_index, prompt } => {
             app.revert_user_turn(turn_index, prompt).await;
@@ -636,10 +635,6 @@ async fn handle_mouse_left_down(app: &mut App, mouse: MouseEvent) {
     }
     if rect_hit(app.web_toggle_area, column, row) {
         app.set_web_search(None).await;
-        return;
-    }
-    if rect_hit(app.team_toggle_area, column, row) {
-        app.set_team(None).await;
         return;
     }
     if rect_hit(app.thinking_toggle_area, column, row) {

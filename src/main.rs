@@ -48,10 +48,6 @@ enum Commands {
         #[arg(long, num_args = 0..=1, default_missing_value = "true")]
         web_search: Option<bool>,
 
-        /// 开启 team 模式 (subagent 派生与跨会话消息；默认开启)
-        #[arg(long, num_args = 0..=1, default_missing_value = "true")]
-        team: Option<bool>,
-
         /// 恢复指定 Session ID (省略则自动新建)
         #[arg(short, long)]
         session_id: Option<String>,
@@ -342,7 +338,6 @@ async fn run(vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         model: None,
         variant: None,
         web_search: None,
-        team: None,
         session_id: None,
         workspace: None,
         prompt: None,
@@ -385,13 +380,12 @@ async fn run(vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             model,
             variant,
             web_search,
-            team,
             session_id,
             workspace,
             prompt,
         } => {
             let workspace = resolve_workspace(workspace);
-            let toggles = vva::model::ToggleOverrides { web_search, team };
+            let toggles = vva::model::ToggleOverrides { web_search };
 
             // 未提供 prompt 时启动 TUI 交互
             let prompt = match prompt {

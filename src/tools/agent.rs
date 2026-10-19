@@ -136,7 +136,8 @@ impl Tool for AgentTool {
 
     fn description(&self) -> &str {
         "Launch a subagent that runs in its own session and returns its final message as the \
-         result. Subagents work in the same workspace; they do not see this session's history, \
+         result. Do not use subagents by default: handle tasks yourself with your own tools, and \
+         launch one only when the user explicitly asks for subagents or delegation. Subagents work in the same workspace; they do not see this session's history, \
          so the prompt must be self-contained (goal, constraints, relevant paths). Multiple \
          Agent calls in one turn run concurrently. Set run_in_background to detach the \
          subagent: it keeps running, its final message is injected here as a system reminder \

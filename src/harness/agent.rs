@@ -211,11 +211,8 @@ impl AgentEngine {
             },
         );
         let broker = deps.broker;
-        let team = session.header.team;
-        let mut task_stop = crate::tools::background::TaskStopTool::new(deps.background.clone());
-        if team {
-            task_stop = task_stop.with_broker(broker.clone());
-        }
+        let task_stop = crate::tools::background::TaskStopTool::new(deps.background.clone())
+            .with_broker(broker.clone());
         let mut extra: Vec<Arc<dyn crate::tools::Tool>> = vec![
             Arc::new(crate::tools::background::TaskOutputTool::new(
                 deps.background,
@@ -233,28 +230,25 @@ impl AgentEngine {
         for tool in extra {
             tools.register(tool);
         }
-        // team 关闭时不挂载子代理编排工具（工具定义即提示词，一并缺席）
-        if team {
-            let team_tools: [Arc<dyn crate::tools::Tool>; 3] = [
-                Arc::new(crate::tools::agent::AgentTool::new(
-                    broker.clone(),
-                    // curator 由 agent space 系统创建，不可由模型派生
-                    Arc::new(
-                        deps.agents
-                            .into_iter()
-                            .filter(|def| def.name != crate::agent_space::curator::CURATOR_AGENT)
-                            .collect(),
-                    ),
-                    crate::tools::agent::SubagentContext::from_session(session),
-                )),
-                Arc::new(crate::tools::session_ipc::SendMessageTool::new(
-                    broker.clone(),
-                )),
-                Arc::new(crate::tools::session_ipc::WaitSessionTool::new(broker)),
-            ];
-            for tool in team_tools {
-                tools.register(tool);
-            }
+        let subagent_tools: [Arc<dyn crate::tools::Tool>; 3] = [
+            Arc::new(crate::tools::agent::AgentTool::new(
+                broker.clone(),
+                // curator 由 agent space 系统创建，不可由模型派生
+                Arc::new(
+                    deps.agents
+                        .into_iter()
+                        .filter(|def| def.name != crate::agent_space::curator::CURATOR_AGENT)
+                        .collect(),
+                ),
+                crate::tools::agent::SubagentContext::from_session(session),
+            )),
+            Arc::new(crate::tools::session_ipc::SendMessageTool::new(
+                broker.clone(),
+            )),
+            Arc::new(crate::tools::session_ipc::WaitSessionTool::new(broker)),
+        ];
+        for tool in subagent_tools {
+            tools.register(tool);
         }
         tools
     }
@@ -573,28 +567,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_omits_subagent_tools_when_team_disabled() {
-        let config = web_config(None);
-        let mut session = session_for("p/nos", false);
-        session.header.team = false;
-        let engine = build_engine(&config, &session).unwrap();
-
-        for name in ["Agent", "SendMessage", "WaitSession"] {
-            assert!(engine.tools.get(name).is_none(), "{name} should be absent");
-        }
-        // TaskStop 保留后台 Shell 能力，但不再宣称可中止 sess_ 会话
-        let task_stop = engine.tools.get("TaskStop").unwrap();
-        assert!(!task_stop.description().contains("sess_"));
-        assert!(!task_stop.parameters().to_string().contains("sess_"));
-        assert!(
-            task_stop
-                .execute(r#"{"task_id":"sess_abc"}"#)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
     async fn subagent_session_registry_is_pruned_to_def_allowlist() {
         let config = web_config(None);
         let mut session = session_for("p/nos", false);
@@ -725,10 +697,7 @@ mod tests {
     fn session_for(model: &str, web_search: bool) -> Session {
         let mut session = Session::new(".", None);
         session.set_model(model.to_string(), None);
-        session.set_toggles(crate::model::SessionToggles {
-            web_search,
-            ..Default::default()
-        });
+        session.set_toggles(crate::model::SessionToggles { web_search });
         session
     }
 

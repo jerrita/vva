@@ -157,7 +157,6 @@ pub(crate) enum ModalAction {
     OpenModels,
     OpenVariants,
     ToggleWebSearch,
-    ToggleTeam,
     ToggleThinkingDisplay,
     RevertTurn {
         turn_index: usize,
@@ -214,7 +213,6 @@ impl ActiveModal {
                 Some(ConfigItemKind::Model) => ModalAction::OpenModels,
                 Some(ConfigItemKind::Variant) => ModalAction::OpenVariants,
                 Some(ConfigItemKind::WebSearch) => ModalAction::ToggleWebSearch,
-                Some(ConfigItemKind::Team) => ModalAction::ToggleTeam,
                 Some(ConfigItemKind::ThinkingDisplay) => ModalAction::ToggleThinkingDisplay,
                 None => ModalAction::None,
             },

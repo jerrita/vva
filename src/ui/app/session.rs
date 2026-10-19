@@ -222,7 +222,6 @@ impl App {
             session.header.current_model.clone(),
             session.header.current_variant.clone(),
             session.header.web_search,
-            session.header.team,
             self.thinking_concise,
         ));
     }

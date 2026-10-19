@@ -10,23 +10,15 @@ fn default_web_search() -> bool {
     true
 }
 
-fn default_team() -> bool {
-    true
-}
-
-/// 会话功能开关：web 搜索与 team（subagent 派生 / 跨会话消息）
+/// 会话功能开关：web 搜索
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionToggles {
     pub web_search: bool,
-    pub team: bool,
 }
 
 impl Default for SessionToggles {
     fn default() -> Self {
-        Self {
-            web_search: true,
-            team: true,
-        }
+        Self { web_search: true }
     }
 }
 
@@ -34,19 +26,17 @@ impl Default for SessionToggles {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ToggleOverrides {
     pub web_search: Option<bool>,
-    pub team: Option<bool>,
 }
 
 impl ToggleOverrides {
     pub fn is_empty(&self) -> bool {
-        self.web_search.is_none() && self.team.is_none()
+        self.web_search.is_none()
     }
 
     /// 在既有开关上叠加覆写
     pub fn apply(self, base: SessionToggles) -> SessionToggles {
         SessionToggles {
             web_search: self.web_search.unwrap_or(base.web_search),
-            team: self.team.unwrap_or(base.team),
         }
     }
 }
@@ -133,7 +123,6 @@ impl Session {
                 current_model: current_model.into(),
                 current_variant,
                 web_search: toggles.web_search,
-                team: toggles.team,
                 editor: EditorKind::default(),
                 parent: None,
                 agent: None,
@@ -171,13 +160,11 @@ impl Session {
     pub fn toggles(&self) -> SessionToggles {
         SessionToggles {
             web_search: self.header.web_search,
-            team: self.header.team,
         }
     }
 
     pub fn set_toggles(&mut self, toggles: SessionToggles) {
         self.header.web_search = toggles.web_search;
-        self.header.team = toggles.team;
         self.updated_at = Utc::now();
     }
 
@@ -228,9 +215,6 @@ pub struct SessionHeader {
     pub current_variant: Option<String>,
     #[serde(default = "default_web_search")]
     pub web_search: bool,
-    /// team 开关：关闭时不挂载 Agent / SendMessage / WaitSession 工具
-    #[serde(default = "default_team")]
-    pub team: bool,
     #[serde(
         default = "missing_editor",
         skip_serializing_if = "EditorKind::is_replace"

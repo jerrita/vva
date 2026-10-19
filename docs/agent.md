@@ -31,7 +31,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
   Scheduler：cron → Deliver
 ```
 
-新增 `src/agent_space/`（`channel/`、`binding.rs`、`router.rs`、`curator.rs`、`rollover.rs`、`scheduler.rs`），入口 `vva agent`。复用 `SessionManager`、`Deliver`、skills、JSONL，不改动其语义。所有 session 位于固定工作区 `~/.vva/space/`，`team=false`（不挂 `Agent` / `SendMessage` / `WaitSession`，不做 subagent 编排）。
+新增 `src/agent_space/`（`channel/`、`binding.rs`、`router.rs`、`curator.rs`、`rollover.rs`、`scheduler.rs`），入口 `vva agent`。复用 `SessionManager`、`Deliver`、skills、JSONL，不改动其语义。所有 session 位于固定工作区 `~/.vva/space/`。
 
 ## 3. 概念
 
@@ -116,7 +116,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 ## 8. Curator（知识沉淀）
 
 - 模型可通过 `settings.agent.curator_model` 独立配置，启动时校验；省略时每次整理取当前 agent 模式模型。独立配置后不受 `/model` 切换影响；
-- 由系统在删除会话前触发的后台 session（空闲 TTL 到期的周期扫描，或 `/delete`；`/clear` 与 rollover 本身不触发，被接替的旧会话按 TTL 照常整理）（`kind=curator`），非聊天模型派生的 subagent，与 `team=false` 无冲突；
+- 由系统在删除会话前触发的后台 session（空闲 TTL 到期的周期扫描，或 `/delete`；`/clear` 与 rollover 本身不触发，被接替的旧会话按 TTL 照常整理）（`kind=curator`），非聊天模型派生的 subagent；
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
 - 产出写入 `~/.vva/space/memory/`（三层：`MEMORY.md` 只列领域 → `<领域>/INDEX.md` 列主题 → `<领域>/<topic>.md` 内容；纳入 git，每次整理一个 commit，提交信息含来源 session 与范围）；反复出现的工作流晋升为 skill 写入工作区 `.vva/skills`（`~/.vva/space/.vva/skills`，仅 agent space 会话可发现，不污染全局技能）；
 - 完成后向用户推送摘要；git 冲突时不覆盖，告警并跳过；

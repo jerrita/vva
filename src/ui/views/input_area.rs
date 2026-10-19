@@ -130,11 +130,6 @@ pub fn render_input_area(
     } else {
         "web off".to_string()
     };
-    let team = if app.view.session.header.team {
-        "team"
-    } else {
-        "team off"
-    };
     let think = "think (show)";
     let footer = chunks[1];
     let mut x = footer.x.saturating_add(1);
@@ -146,8 +141,6 @@ pub fn render_input_area(
     x = x.saturating_add(workspace.width() as u16 + 3);
     app.web_toggle_area = selector_area(footer, x, web.width());
     x = x.saturating_add(web.width() as u16 + 3);
-    app.team_toggle_area = selector_area(footer, x, team.width());
-    x = x.saturating_add(team.width() as u16 + 3);
     app.thinking_toggle_area = selector_area(footer, x, think.width());
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -160,15 +153,6 @@ pub fn render_input_area(
             Span::styled(
                 web,
                 Style::default().fg(if app.view.session.header.web_search {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                }),
-            ),
-            Span::styled(" • ", fg(Color::DarkGray)),
-            Span::styled(
-                team,
-                Style::default().fg(if app.view.session.header.team {
                     Color::Green
                 } else {
                     Color::DarkGray

@@ -68,9 +68,9 @@ pub fn render_config_modal(state: &ConfigModalState, frame: &mut Frame, area: Re
             let action_str = match item.kind {
                 ConfigItemKind::Model => "Enter to select model",
                 ConfigItemKind::Variant => "Enter to select variant",
-                ConfigItemKind::WebSearch
-                | ConfigItemKind::Team
-                | ConfigItemKind::ThinkingDisplay => "Enter/Space to toggle",
+                ConfigItemKind::WebSearch | ConfigItemKind::ThinkingDisplay => {
+                    "Enter/Space to toggle"
+                }
             };
 
             Line::from(vec![

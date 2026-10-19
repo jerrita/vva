@@ -466,7 +466,6 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             parent.current_variant.clone(),
             SessionToggles {
                 web_search: parent.web_search,
-                team: true,
             },
         );
         session.header.editor =

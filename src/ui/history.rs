@@ -155,10 +155,7 @@ mod tests {
             None,
             "p/m",
             None,
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         );
         let mut turn = Turn::assistant_turn(vec![]);
         turn.usage = Some(TokenUsage {
@@ -192,10 +189,7 @@ mod tests {
             None,
             "model_a",
             None,
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         );
         let mut turn = Turn::assistant_turn(vec![]);
         turn.usage = Some(TokenUsage {
@@ -224,10 +218,7 @@ mod tests {
             None,
             "model_a",
             None,
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         );
         for total_tokens in [150, 300] {
             let mut turn = Turn::assistant_turn(vec![]);
@@ -253,10 +244,7 @@ mod tests {
             None,
             "model_a",
             None,
-            crate::model::SessionToggles {
-                web_search: false,
-                ..Default::default()
-            },
+            crate::model::SessionToggles { web_search: false },
         );
         for (completion_tokens, elapsed_ms) in [(50, 500), (150, 1_500)] {
             let mut turn = Turn::assistant_turn(vec![]);

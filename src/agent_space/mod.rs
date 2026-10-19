@@ -30,21 +30,13 @@ use self::runtime::Runtime;
 use self::scheduler::ScheduleStore;
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
 use crate::harness::{SessionManager, SessionPreamble, SessionToolFactory};
-use crate::model::{SessionHeader, SessionKind, SessionToggles};
+use crate::model::{SessionHeader, SessionKind};
 use crate::storage::SessionStore;
 
 /// agent space 固定工作区
 const WORKSPACE: &str = "~/.vva/space";
 /// 工作区下启动期创建的子目录：记忆库、curator 输入、项目级 skills / agents
 const WORKSPACE_DIRS: [&str; 4] = ["memory", "curator-input", ".vva/skills", ".vva/agents"];
-
-/// agent space 会话的功能开关：web_search 保持默认，team 关闭（不做 subagent 编排）
-pub fn agent_toggles() -> SessionToggles {
-    SessionToggles {
-        team: false,
-        ..SessionToggles::default()
-    }
-}
 
 /// agent space 会话（排除 curator）首次落盘时注入记忆索引快照；无 `MEMORY.md` 不注入，
 /// 读取失败告警后跳过（记忆缺席不应阻断会话）
