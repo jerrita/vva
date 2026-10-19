@@ -38,6 +38,9 @@ tokio-tungstenite = { version = "0.29", default-features = false, features = ["c
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = "3.4"
 
+[profile.dev]
+debug = 1
+
 [profile.release]
 strip = true
 
