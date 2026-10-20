@@ -1,10 +1,10 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::ResponseProvider;
-
 use crate::config::ProviderType;
 use crate::model::{
-    ContentPart, MediaKind, MediaSource, Role, Session, ToolDefinition, WebSearchAction,
+    ContentPart, MediaKind, MediaSource, Role, Session, ToolCall, ToolCallKind, ToolDefinition,
+    ToolInput, WebSearchAction,
 };
 use crate::provider::common::{WebCallSurface, header_value, web_call_surface};
 use crate::provider::{CompletionOptions, Provider, ProviderError};
@@ -51,12 +51,27 @@ impl ResponseProvider {
         }
 
         for tool in tools {
-            api_tools.push(serde_json::json!({
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            }));
+            api_tools.push(match &tool.input {
+                ToolInput::Json(schema) => serde_json::json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": schema,
+                }),
+                ToolInput::Freeform { grammar } => serde_json::json!({
+                    "type": "custom",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "format": match grammar {
+                        Some(definition) => serde_json::json!({
+                            "type": "grammar",
+                            "syntax": "lark",
+                            "definition": definition,
+                        }),
+                        None => serde_json::json!({ "type": "text" }),
+                    },
+                }),
+            });
         }
 
         let mut input_items: Vec<serde_json::Value> = Vec::new();
@@ -164,12 +179,7 @@ impl ResponseProvider {
                                     }));
                                 }
                                 ContentPart::ToolCall(call) => {
-                                    input_items.push(serde_json::json!({
-                                        "type": "function_call",
-                                        "call_id": call.id,
-                                        "name": call.name,
-                                        "arguments": call.arguments,
-                                    }));
+                                    input_items.push(tool_call_item(call));
                                 }
                                 ContentPart::WebSearchCall(call) => {
                                     // 跨亲和组重建：搜索调用按当前工具面投影——
@@ -223,24 +233,26 @@ impl ResponseProvider {
                         // 确保所有待提交 output 的 function_call 均在 input_items 中声明（例如当 Assistant 轮次被 previous_response_id 截断时补齐）
                         for part in &msg.parts {
                             if let ContentPart::ToolResult(res) = part
+                                && let Some(call) = session.find_tool_call(&res.tool_call_id)
                                 && !input_items.iter().any(|it| {
-                                    it["type"] == "function_call"
+                                    it["type"] == tool_call_item(call)["type"]
                                         && it["call_id"] == res.tool_call_id
                                 })
-                                && let Some(call) = session.find_tool_call(&res.tool_call_id)
                             {
-                                input_items.push(serde_json::json!({
-                                    "type": "function_call",
-                                    "call_id": call.id,
-                                    "name": call.name,
-                                    "arguments": call.arguments,
-                                }));
+                                input_items.push(tool_call_item(call));
                             }
                         }
                         for part in &msg.parts {
                             if let ContentPart::ToolResult(res) = part {
+                                let output_type = match session
+                                    .find_tool_call(&res.tool_call_id)
+                                    .map(|call| call.kind)
+                                {
+                                    Some(ToolCallKind::Custom) => "custom_tool_call_output",
+                                    _ => "function_call_output",
+                                };
                                 input_items.push(serde_json::json!({
-                                    "type": "function_call_output",
+                                    "type": output_type,
                                     "call_id": res.tool_call_id,
                                     "output": tool_output(res)?,
                                 }));
@@ -315,6 +327,24 @@ impl ResponseProvider {
         }
 
         Ok(body)
+    }
+}
+
+/// 领域工具调用 → Responses input 条目：Function 为 function_call，Custom 为 custom_tool_call
+fn tool_call_item(call: &ToolCall) -> serde_json::Value {
+    match call.kind {
+        ToolCallKind::Function => serde_json::json!({
+            "type": "function_call",
+            "call_id": call.id,
+            "name": call.name,
+            "arguments": call.arguments,
+        }),
+        ToolCallKind::Custom => serde_json::json!({
+            "type": "custom_tool_call",
+            "call_id": call.id,
+            "name": call.name,
+            "input": call.arguments,
+        }),
     }
 }
 

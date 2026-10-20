@@ -99,7 +99,7 @@ async fn read_binary_is_gated_and_persists_bytes() {
     let registry = crate::tools::ToolRegistry::with_workspace_tools(
         &root,
         Some(root.join("outputs")),
-        crate::model::EditorKind::Hashline,
+        crate::model::EditorKind::Replace,
         crate::tools::WorkspaceToolDeps {
             inputs: InputCapabilities {
                 model: "test/vision".into(),

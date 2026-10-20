@@ -1,7 +1,8 @@
 /**
- * 文件修改类工具调用（Edit 的三种模式 + Write）的参数 → 结构化 diff。
- * 纯函数、无 React 依赖；识别不了的参数形状一律返回 []。
+ * 文件修改类工具调用（Edit / Write 的 JSON 入参，apply_patch / hashline_edit 的补丁原文）→ 结构化 diff。
+ * 纯函数、无 React 依赖；按工具名精确分支，入参可能流式不完整，解析容忍截断；识别不了时返回 []。
  */
+import { APPLY_PATCH, EDIT, HASHLINE_EDIT, WRITE } from '../toolNames'
 
 export type DiffLine = { kind: 'add' | 'del' | 'ctx' | 'hunk'; text: string }
 
@@ -11,6 +12,8 @@ export interface FileDiff {
   plus: number
   minus: number
   op?: 'add' | 'update' | 'delete' | 'move'
+  /** op 为 move 时的目标路径 */
+  to?: string
 }
 
 /** 单个文件最多输出的 diff 行数，超出部分折叠为一条 hunk 提示。 */
@@ -125,16 +128,27 @@ function patchDiffs(input: string): FileDiff[] {
   }
   if (rows[0] !== '*** Begin Patch') return []
 
-  type Cur = { path: string; op: NonNullable<FileDiff['op']>; lines: DiffLine[]; chunk: boolean }
+  type Cur = {
+    path: string
+    op: NonNullable<FileDiff['op']>
+    lines: DiffLine[]
+    chunk: boolean
+    to?: string
+  }
   const files: FileDiff[] = []
   let cur: Cur | null = null
   const flush = () => {
-    if (cur) files.push(build(cur.path, cur.lines, cur.op))
+    if (cur) {
+      const diff = build(cur.path, cur.lines, cur.op)
+      if (cur.to) diff.to = cur.to
+      files.push(diff)
+    }
     cur = null
   }
   const start = (path: string, op: Cur['op']) => {
     flush()
     cur = { path: cleanPath(path), op, lines: [], chunk: false }
+    if (op === 'delete') cur.lines.push({ kind: 'hunk', text: '删除整个文件' })
   }
 
   for (const row of rows.slice(1)) {
@@ -166,7 +180,7 @@ function patchDiffs(input: string): FileDiff[] {
           if (c.chunk) c.lines.push({ kind: 'ctx', text: row.slice(1) })
         } else if (trimmed.startsWith('*** Move to: ') && !c.chunk) {
           c.op = 'move'
-          c.lines.push({ kind: 'hunk', text: `→ ${cleanPath(trimmed.slice(13))}` })
+          c.to = cleanPath(trimmed.slice(13))
         }
       }
     }
@@ -177,7 +191,8 @@ function patchDiffs(input: string): FileDiff[] {
 
 // ---------------------------------------------------------------- hashline
 
-const HEADER_RE = /^\[(.+)#([0-9A-Fa-f]{4})\]$/
+/** `[PATH#TAG]` 编辑既有文件；`[PATH]`（无 TAG）配合 ADD 新建 */
+const HEADER_RE = /^\[(.+?)(?:#([0-9A-Za-z]+))?\]$/
 
 /**
  * 从 PUT/CUT 定位符估算被删除行数（未知返回 0）：
@@ -192,24 +207,29 @@ function rangeSize(locator: string): number {
 
 /**
  * 对应后端 hashline/parse.rs：
- *   [PATH#TAG]        开启新文件段（FileDiff，默认 op 'update'）
+ *   [PATH#TAG]        开启新文件段（FileDiff，默认 op 'update'）；[PATH] 配合 ADD
+ *   ADD               新建文件：op 'add'，后续 + 行为新增正文
  *   PUT N.=M:         hunk 行原样；+ 行 → add；minus += M-N+1（替换区间）
  *   PUT N*: / <N: / >N: / >$: / >N*:
  *                     hunk 行原样；+ 行 → add；块替换边界未知不计 minus，插入无删除
  *   PUT ... @reg      寄存器粘贴：hunk 行原样；无正文；N.=M 粘贴同样替换区间 → minus += M-N+1
  *   CUT N / N.=M      hunk 行原样；minus += 区间行数（单行为 1）
  *   CUT N*            hunk 行原样；块边界未知，不计 minus
- *   REM               整文件删除：op 'delete'，hunk 行 REM
- *   MV dest           整文件移动：op 'move'（若已是 delete 则保持），hunk 行原样
+ *   REM               整文件删除：op 'delete'，一行 hunk 说明
+ *   MV dest           整文件移动：op 'move'（若已是 delete 则保持），目标记入 to
  *   Begin/End Patch   可选外壳，忽略；空行、无法识别的行忽略
  */
 function hashlineDiffs(input: string): FileDiff[] {
   const rows = input.split('\n').map((r) => r.replace(/\r$/, ''))
   const files: FileDiff[] = []
-  let cur: { path: string; lines: DiffLine[]; op: FileDiff['op']; minus: number } | null = null
+  let cur: { path: string; lines: DiffLine[]; op: FileDiff['op']; minus: number; to?: string } | null = null
   let inBody = false
   const flush = () => {
-    if (cur) files.push(build(cur.path, cur.lines, cur.op, { minus: cur.minus }))
+    if (cur) {
+      const diff = build(cur.path, cur.lines, cur.op, { minus: cur.minus })
+      if (cur.to) diff.to = cur.to
+      files.push(diff)
+    }
     cur = null
     inBody = false
   }
@@ -229,13 +249,16 @@ function hashlineDiffs(input: string): FileDiff[] {
     const s = t.trim()
     if (s === '') continue
     let m: RegExpExecArray | null
-    if (/^REM$/.test(s)) {
+    if (/^ADD:?$/.test(s)) {
+      cur.op = 'add'
+      inBody = true
+    } else if (/^REM$/.test(s)) {
       cur.op = 'delete'
-      cur.lines.push({ kind: 'hunk', text: s })
+      cur.lines.push({ kind: 'hunk', text: '删除整个文件' })
       inBody = false
-    } else if (/^MV\s+\S/.test(s)) {
+    } else if ((m = /^MV\s+(\S.*)$/.exec(s))) {
       if (cur.op !== 'delete') cur.op = 'move'
-      cur.lines.push({ kind: 'hunk', text: s })
+      cur.to = cleanPath(m[1])
       inBody = false
     } else if ((m = /^(PUT|CUT)\s*(\S+?)\s*(@[\w-]+)?\s*(:)?$/.exec(s))) {
       const [, kw, locator, reg, colon] = m
@@ -259,26 +282,85 @@ function writeDiff(args: Record<string, unknown>): FileDiff[] {
   return [build(cleanPath(args.path), lines, 'add')]
 }
 
-/** returns [] when args aren't a recognized edit shape */
-export function editDiffs(toolName: string, rawArgs: string): FileDiff[] {
-  let args: unknown
+// ---------------------------------------------------------------- hashline 结果
+
+/**
+ * 解析 hashline_edit 的执行结果：每段为 `[PATH#TAG]` 头 + 统一 diff（`@@ -a,b +c,d @@` 带行号）+
+ * 可选的 "Current snapshot preview" 预览（忽略）；删除段为 `Deleted file PATH`。
+ */
+function hashlineResultDiffs(content: string): Map<string, FileDiff> {
+  const out = new Map<string, FileDiff>()
+  let cur: { path: string; lines: DiffLine[] } | null = null
+  let inHunk = false
+  const flush = () => {
+    if (cur) out.set(cur.path, build(cur.path, cur.lines, 'update'))
+    cur = null
+    inHunk = false
+  }
+  for (const row of content.replace(/\r\n/g, '\n').split('\n')) {
+    const header = HEADER_RE.exec(row.trimEnd())
+    if (header && header[2] !== undefined) {
+      flush()
+      cur = { path: cleanPath(header[1]), lines: [] }
+      continue
+    }
+    if (!cur) continue
+    if (row.startsWith('Current snapshot preview')) {
+      flush()
+      continue
+    }
+    if (row.startsWith('@@')) {
+      inHunk = true
+      cur.lines.push({ kind: 'hunk', text: row.trimEnd() })
+    } else if (!inHunk) {
+      continue // `--- path` / `+++ path` 文件头
+    } else if (row.startsWith('+')) cur.lines.push({ kind: 'add', text: row.slice(1) })
+    else if (row.startsWith('-')) cur.lines.push({ kind: 'del', text: row.slice(1) })
+    else if (row.startsWith(' ')) cur.lines.push({ kind: 'ctx', text: row.slice(1) })
+  }
+  flush()
+  return out
+}
+
+/** 成功结果中的真实 diff 取代按输入推算的行；ADD / REM 等无结果 diff 的段保持输入形态。 */
+function mergeHashlineResult(inputs: FileDiff[], content: string): FileDiff[] {
+  const real = hashlineResultDiffs(content)
+  return inputs.map((d) => {
+    const hit = d.op === 'update' || d.op === 'move' ? real.get(d.path) : undefined
+    return hit ? { ...d, lines: hit.lines, plus: hit.plus, minus: hit.minus } : d
+  })
+}
+
+function parseJson(raw: string): Record<string, unknown> | null {
   try {
-    args = JSON.parse(rawArgs)
+    const v: unknown = JSON.parse(raw)
+    return isRecord(v) ? v : null
   } catch {
-    return []
+    return null
   }
-  if (!isRecord(args)) return []
-  const name = toolName.toLowerCase()
-  if (name === 'write') return writeDiff(args)
-  if (name === 'apply_patch') {
-    return typeof args.input === 'string' ? patchDiffs(args.input) : []
+}
+
+/**
+ * 按工具名解析编辑 diff；识别不了返回 []。
+ * `result` 为 hashline_edit 成功时的结果原文，用其真实 diff 替换推算行。
+ */
+export function editDiffs(toolName: string, rawArgs: string, result?: string): FileDiff[] {
+  switch (toolName) {
+    case WRITE: {
+      const args = parseJson(rawArgs)
+      return args ? writeDiff(args) : []
+    }
+    case EDIT: {
+      const args = parseJson(rawArgs)
+      return args ? replaceDiff(args) : []
+    }
+    case APPLY_PATCH:
+      return patchDiffs(rawArgs)
+    case HASHLINE_EDIT: {
+      const inputs = hashlineDiffs(rawArgs)
+      return result ? mergeHashlineResult(inputs, result) : inputs
+    }
+    default:
+      return []
   }
-  if (name !== 'edit') return []
-  if (typeof args.input === 'string') {
-    // patch 模式含 *** Update/Add/Delete File；否则视为 hashline（其外壳同为 Begin/End Patch）
-    return /^\*\*\* (Update|Add|Delete) File: /m.test(args.input)
-      ? patchDiffs(args.input)
-      : hashlineDiffs(args.input)
-  }
-  return replaceDiff(args)
 }

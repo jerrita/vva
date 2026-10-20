@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use super::markdown;
 use crate::model::{ContentPart, Role, Session};
+use crate::tools::names;
 
 /// 每类条目在单条汇报中的展示上限，超出时单独列出剩余数量与总数
 const MAX_FILES: usize = 8;
@@ -25,7 +26,7 @@ struct Digest {
     edited: BTreeSet<String>,
     commands: Vec<String>,
     texts: Vec<String>,
-    /// Read / Glob / Grep / web 检索等只读调用次数
+    /// Read / Glob / Grep（含 hashline 同类）/ web 检索等只读调用次数
     lookups: usize,
     /// 其余工具（技能、定时任务、SendFile 等）的调用次数
     others: usize,
@@ -69,44 +70,74 @@ fn relative(root: &Path, path: &str) -> String {
         .map_or_else(|_| path.to_string(), |p| p.display().to_string())
 }
 
-/// Hashline `[PATH#TAG]` 段头与 V4A `*** Update File:` 行中的路径
-fn patch_paths(input: &str) -> Vec<String> {
+/// V4A 补丁涉及的文件：(路径, 是否新建)；`*** Move to:` 目标计为修改
+fn patch_files(input: &str) -> Vec<(String, bool)> {
     input
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            for prefix in ["*** Update File: ", "*** Add File: ", "*** Delete File: "] {
-                if let Some(path) = line.strip_prefix(prefix) {
-                    return Some(path.trim().to_string());
-                }
-            }
-            let body = line.strip_prefix('[')?.strip_suffix(']')?;
-            let (path, tag) = body.rsplit_once('#')?;
-            (!path.is_empty() && tag.len() == 4 && tag.bytes().all(|b| b.is_ascii_hexdigit()))
-                .then(|| path.to_string())
+            [
+                ("*** Add File: ", true),
+                ("*** Update File: ", false),
+                ("*** Delete File: ", false),
+                ("*** Move to: ", false),
+            ]
+            .into_iter()
+            .find_map(|(prefix, created)| {
+                line.strip_prefix(prefix)
+                    .map(|path| (path.trim().to_string(), created))
+            })
         })
         .collect()
 }
 
+/// hashline 补丁涉及的文件：(路径, 是否新建)；`[PATH#TAG]` 为修改，`[PATH]` 为新建，
+/// `MV DEST` 的目标计为修改（裸文件名在源文件所在目录内重命名）
+fn hashline_files(input: &str) -> Vec<(String, bool)> {
+    let mut files = Vec::new();
+    let mut current: Option<String> = None;
+    for line in input.lines() {
+        let line = line.trim();
+        if let Some(body) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            let (path, created) = match body.rsplit_once('#') {
+                Some((path, _)) => (path, false),
+                None => (body, true),
+            };
+            current = Some(path.to_string());
+            files.push((path.to_string(), created));
+        } else if let Some(dest) = line.strip_prefix("MV ") {
+            let dest = dest.trim().trim_matches(['"', '\'']);
+            let Some(source) = &current else { continue };
+            let dest = if dest.contains('/') {
+                dest.to_string()
+            } else {
+                Path::new(source).with_file_name(dest).display().to_string()
+            };
+            files.push((dest, false));
+        }
+    }
+    files
+}
+
 impl Digest {
     fn call(&mut self, root: &Path, name: &str, arguments: &str) {
+        // freeform 工具的参数是原文而非 JSON
         let args: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
         let str_arg = |key: &str| args.get(key).and_then(Value::as_str);
         match name {
-            "Write" => {
+            names::WRITE => {
                 if let Some(path) = str_arg("path") {
                     self.created.insert(relative(root, path));
                 }
             }
-            "Edit" => {
-                let paths = match str_arg("input") {
-                    Some(input) => patch_paths(input),
-                    None => str_arg("path").map(str::to_string).into_iter().collect(),
-                };
-                self.edited
-                    .extend(paths.iter().map(|path| relative(root, path)));
+            names::EDIT => {
+                if let Some(path) = str_arg("path") {
+                    self.edited.insert(relative(root, path));
+                }
             }
-            "Shell" => {
+            names::APPLY_PATCH => self.record_files(root, patch_files(arguments)),
+            names::HASHLINE_EDIT => self.record_files(root, hashline_files(arguments)),
+            names::SHELL => {
                 let intent = str_arg("intent").unwrap_or("(未说明意图)");
                 let background = args
                     .get("run_in_background")
@@ -118,10 +149,27 @@ impl Digest {
                     intent.to_string()
                 });
             }
-            "Read" | "Glob" | "Grep" | "web_search" | "web_fetch" => {
+            names::READ
+            | names::HASHLINE_READ
+            | names::GLOB
+            | names::GREP
+            | names::HASHLINE_GREP
+            | "web_search"
+            | "web_fetch" => {
                 self.lookups += 1;
             }
             _ => self.others += 1,
+        }
+    }
+
+    fn record_files(&mut self, root: &Path, files: Vec<(String, bool)>) {
+        for (path, created) in files {
+            let path = relative(root, &path);
+            if created {
+                self.created.insert(path);
+            } else {
+                self.edited.insert(path);
+            }
         }
     }
 
@@ -244,19 +292,22 @@ mod tests {
         let mut s = session("/w");
         s.append_turn(assistant(vec![
             text("开始整理"),
-            call("Write", r#"{"path":"/w/memory/a.md","content":"x"}"#),
-            call("Edit", r#"{"input":"[src/b.rs#AB12]\nPUT 1 x"}"#),
+            call(names::WRITE, r#"{"path":"/w/memory/a.md","content":"x"}"#),
+            call(names::HASHLINE_EDIT, "[src/b.rs#AB12]\nPUT 1 x"),
             call(
-                "Edit",
+                names::EDIT,
                 r#"{"path":"/w/c.rs","old_string":"a","new_string":"b"}"#,
             ),
-            call("Shell", r#"{"intent":"运行测试","command":"cargo test"}"#),
             call(
-                "Shell",
+                names::SHELL,
+                r#"{"intent":"运行测试","command":"cargo test"}"#,
+            ),
+            call(
+                names::SHELL,
                 r#"{"intent":"启动服务","command":"x","run_in_background":true}"#,
             ),
-            call("Read", r#"{"path":"/w/z"}"#),
-            call("Grep", r#"{"pattern":"p"}"#),
+            call(names::READ, r#"{"path":"/w/z"}"#),
+            call(names::GREP, r#"{"pattern":"p"}"#),
         ]));
         let out = digest(&s, 0).unwrap();
         assert!(out.contains("| 新建文件 | memory/a.md |"), "{out}");
@@ -270,13 +321,46 @@ mod tests {
     }
 
     #[test]
+    fn digest_parses_multi_file_patches() {
+        let mut s = session("/w");
+        s.append_turn(assistant(vec![
+            call(
+                names::APPLY_PATCH,
+                "*** Begin Patch\n*** Add File: /w/n.rs\n+x\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-1\n+2\n*** Delete File: c.rs\n*** End Patch",
+            ),
+            call(
+                names::HASHLINE_EDIT,
+                "[/w/new.rs]\n+hi\n[sub/o.rs#AB12]\nMV r.rs\n[x.rs#CD34]\nMV d/y.rs\n",
+            ),
+        ]));
+        let out = digest(&s, 0).unwrap();
+        for row in [
+            "| 新建文件 | n.rs |",
+            "| 新建文件 | new.rs |",
+            "| 修改文件 | a.rs |",
+            "| 修改文件 | b.rs |",
+            "| 修改文件 | c.rs |",
+            "| 修改文件 | sub/o.rs |",
+            "| 修改文件 | sub/r.rs |",
+            "| 修改文件 | d/y.rs |",
+        ] {
+            assert!(out.contains(row), "{row}\n{out}");
+        }
+    }
+
+    #[test]
     fn digest_respects_cursor_and_limits() {
         let mut s = session("/w");
         s.append_turn(assistant(vec![text("旧消息")]));
         let from = s.turns.len();
         assert_eq!(digest(&s, from), None);
         let many: Vec<_> = (0..10)
-            .map(|i| call("Write", &format!(r#"{{"path":"f{i}.txt","content":""}}"#)))
+            .map(|i| {
+                call(
+                    names::WRITE,
+                    &format!(r#"{{"path":"f{i}.txt","content":""}}"#),
+                )
+            })
             .collect();
         s.append_turn(assistant(many));
         s.append_turn(assistant(vec![text(&"长".repeat(300))]));

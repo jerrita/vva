@@ -17,12 +17,13 @@ pub mod ask_user;
 pub mod background;
 pub mod filesystem;
 pub mod hashline;
+pub mod names;
 pub mod session_ipc;
 pub mod shell;
 pub mod skill;
 pub mod web;
 
-use crate::model::{EditorKind, ToolCall, ToolDefinition, ToolResult};
+use crate::model::{EditorKind, ToolCall, ToolCallKind, ToolDefinition, ToolInput, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -78,7 +79,11 @@ pub const INLINE_OUTPUT_BUDGET: usize = MAX_INLINE_OUTPUT_BYTES - 256;
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn parameters(&self) -> serde_json::Value;
+    fn input(&self) -> crate::model::ToolInput;
+    /// 超出内联上限的输出是否落盘；分页读取类工具自行截断，返回 false
+    fn spills_output(&self) -> bool {
+        true
+    }
     async fn execute(&self, arguments: &str) -> Result<String, String>;
 
     async fn execute_call(&self, call: &ToolCall) -> Result<String, String> {
@@ -96,7 +101,7 @@ pub trait Tool: Send + Sync {
         ToolDefinition {
             name: self.name().to_string(),
             description: self.description().to_string(),
-            parameters: self.parameters(),
+            input: self.input(),
         }
     }
 }
@@ -119,7 +124,7 @@ impl ToolRegistry {
         }
     }
 
-    /// 按会话绑定的编辑协议注册 Read / Write 与对应编辑工具。
+    /// 按会话绑定的编辑协议注册 Read / Glob / Grep 与对应编辑工具。
     pub fn with_editor(
         workspace: &Path,
         tool_outputs: Option<PathBuf>,
@@ -145,9 +150,27 @@ impl ToolRegistry {
             .with_editor(editor)
             .with_inputs(deps.inputs);
         let mut grep = crate::tools::filesystem::GrepTool::new(workspace).with_editor(editor);
-        let mut write = crate::tools::filesystem::WriteTool::new(workspace);
+        let file_tools: &[&str] = match editor {
+            EditorKind::Replace => &[
+                names::READ,
+                names::WRITE,
+                names::EDIT,
+                names::GLOB,
+                names::GREP,
+            ],
+            EditorKind::Patch => &[names::READ, names::APPLY_PATCH, names::GLOB, names::GREP],
+            EditorKind::Hashline => &[
+                names::HASHLINE_READ,
+                names::HASHLINE_EDIT,
+                names::GLOB,
+                names::HASHLINE_GREP,
+            ],
+        };
         match editor {
             EditorKind::Replace => {
+                registry.register(Arc::new(crate::tools::filesystem::WriteTool::new(
+                    workspace,
+                )));
                 registry.register(Arc::new(crate::tools::filesystem::EditTool::new(workspace)));
             }
             EditorKind::Patch => {
@@ -158,17 +181,15 @@ impl ToolRegistry {
             EditorKind::Hashline => {
                 read = read.with_hashline(deps.hashline.clone());
                 grep = grep.with_hashline(deps.hashline.clone());
-                write = write.with_hashline(deps.hashline.clone());
                 let edit = crate::tools::hashline::HashlineEditTool::new(workspace)
                     .with_session(deps.hashline);
                 registry.register(Arc::new(edit));
             }
         }
         registry.register(Arc::new(read));
-        registry.register(Arc::new(write));
         registry.register(Arc::new(crate::tools::filesystem::GlobTool::new(workspace)));
         registry.register(Arc::new(grep));
-        let mut shell = crate::tools::shell::ShellTool::new(workspace);
+        let mut shell = crate::tools::shell::ShellTool::new(workspace).with_file_tools(file_tools);
         if let Some(background) = deps.background {
             shell = shell.with_background(background);
         }
@@ -209,7 +230,7 @@ impl ToolRegistry {
         let tool = self
             .get(&call.name)
             .ok_or_else(|| format!("Tool not found: {}", call.name))?;
-        validate_arguments(&call.arguments, &tool.parameters())
+        validate_input(call, &tool.input())
     }
 
     pub async fn execute_call(&self, call: &ToolCall) -> ToolResult {
@@ -227,12 +248,12 @@ impl ToolRegistry {
             }
             return ToolResult::error(&call.id, format!("Tool not found: {}", call.name));
         };
-        if let Err(err) = validate_arguments(&call.arguments, &tool.parameters()) {
+        if let Err(err) = validate_input(call, &tool.input()) {
             return ToolResult::error(&call.id, err);
         }
 
         let mut result = tool.execute_result(call).await;
-        if tool.name() != "Read" || result.is_error {
+        if tool.spills_output() || result.is_error {
             result.content = match inline_or_spill(
                 self.tool_outputs.as_deref(),
                 tool.name(),
@@ -270,11 +291,11 @@ fn inline_or_spill(
         .map_err(|error| format!("Failed to save tool output {}: {error}", path.display()))?;
     let kind = if is_error { "Error output" } else { "Output" };
     let notice = format!(
-        "{kind} too large ({} bytes; limit {MAX_INLINE_OUTPUT_BYTES}). Full output saved to {}. Use Read or Grep on that path.",
+        "{kind} too large ({} bytes; limit {MAX_INLINE_OUTPUT_BYTES}). Full output saved to {}. Use the file-reading tools on that path.",
         content.len(),
         path.display()
     );
-    if tool == "Shell" {
+    if tool == names::SHELL {
         let head = truncate_utf8(
             content.as_bytes(),
             MAX_INLINE_OUTPUT_BYTES,
@@ -312,6 +333,24 @@ pub(crate) fn truncate_utf8(data: &[u8], limit: usize, side: TruncateSide) -> St
             }
             String::from_utf8_lossy(&data[start..]).into_owned()
         }
+    }
+}
+
+/// 调用形态须与工具定义一致；JSON 参数按 schema 校验，Freeform 输入由工具自行解析。
+fn validate_input(call: &ToolCall, input: &ToolInput) -> Result<(), String> {
+    match (input, call.kind) {
+        (ToolInput::Json(schema), ToolCallKind::Function) => {
+            validate_arguments(&call.arguments, schema)
+        }
+        (ToolInput::Freeform { .. }, ToolCallKind::Custom) => Ok(()),
+        (ToolInput::Json(_), ToolCallKind::Custom) => Err(format!(
+            "{} takes JSON arguments; received a custom tool call",
+            call.name
+        )),
+        (ToolInput::Freeform { .. }, ToolCallKind::Function) => Err(format!(
+            "{} takes freeform input; received a function call",
+            call.name
+        )),
     }
 }
 
@@ -414,8 +453,10 @@ mod tests {
         fn description(&self) -> &str {
             "test tool"
         }
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
+        fn input(&self) -> crate::model::ToolInput {
+            crate::model::ToolInput::Json({
+                serde_json::json!({"type": "object", "properties": {}})
+            })
         }
         async fn execute(&self, _arguments: &str) -> Result<String, String> {
             Ok(String::new())
@@ -425,9 +466,9 @@ mod tests {
     #[test]
     fn definitions_have_stable_name_order() {
         let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(NamedTool("Shell")));
-        registry.register(Arc::new(NamedTool("Read")));
-        registry.register(Arc::new(NamedTool("Edit")));
+        registry.register(Arc::new(NamedTool(names::SHELL)));
+        registry.register(Arc::new(NamedTool(names::READ)));
+        registry.register(Arc::new(NamedTool(names::EDIT)));
 
         let names: Vec<_> = registry
             .definitions()
@@ -439,39 +480,97 @@ mod tests {
     }
 
     #[test]
-    fn with_editor_registers_matching_edit_tool() {
+    fn with_editor_registers_editor_specific_tools() {
         let dir = std::path::Path::new("/tmp");
-        let names = |editor| {
-            ToolRegistry::with_editor(dir, None, editor)
+        let registered = |editor| {
+            let registry = ToolRegistry::with_editor(dir, None, editor);
+            let mut tools: Vec<_> = registry
                 .definitions()
                 .into_iter()
                 .map(|definition| definition.name)
-                .collect::<Vec<_>>()
+                .collect();
+            tools.sort();
+            (registry, tools)
         };
-        for editor in [EditorKind::Replace, EditorKind::Patch, EditorKind::Hashline] {
-            assert!(names(editor).contains(&"Edit".into()), "{editor:?}");
-        }
-        let keys = |editor| {
-            ToolRegistry::with_editor(dir, None, editor)
-                .get("Edit")
-                .unwrap()
-                .parameters()["properties"]
+        let sorted = |expected: &[&str]| {
+            let mut expected: Vec<String> = expected.iter().map(|n| n.to_string()).collect();
+            expected.sort();
+            expected
+        };
+        let (registry, tools) = registered(EditorKind::Replace);
+        assert_eq!(
+            tools,
+            sorted(&[
+                names::READ,
+                names::WRITE,
+                names::EDIT,
+                names::GLOB,
+                names::GREP,
+                names::SHELL
+            ])
+        );
+        assert!(
+            registry.get(names::EDIT).unwrap().input().expect_json()["properties"]
                 .as_object()
                 .unwrap()
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>()
+                .contains_key("old_string")
+        );
+        let (registry, tools) = registered(EditorKind::Patch);
+        assert_eq!(
+            tools,
+            sorted(&[
+                names::READ,
+                names::APPLY_PATCH,
+                names::GLOB,
+                names::GREP,
+                names::SHELL
+            ])
+        );
+        assert!(matches!(
+            registry.get(names::APPLY_PATCH).unwrap().input(),
+            ToolInput::Freeform { grammar: Some(_) }
+        ));
+        let (_, tools) = registered(EditorKind::Hashline);
+        assert_eq!(
+            tools,
+            sorted(&[
+                names::HASHLINE_READ,
+                names::HASHLINE_EDIT,
+                names::GLOB,
+                names::HASHLINE_GREP,
+                names::SHELL
+            ])
+        );
+    }
+
+    #[test]
+    fn shell_description_follows_editor_tools() {
+        let dir = std::path::Path::new("/tmp");
+        let description = |editor| {
+            ToolRegistry::with_editor(dir, None, editor)
+                .get(names::SHELL)
+                .unwrap()
+                .description()
+                .to_string()
         };
-        assert!(keys(EditorKind::Replace).contains(&"old_string".into()));
-        assert!(keys(EditorKind::Patch).contains(&"input".into()));
-        assert!(keys(EditorKind::Hashline).contains(&"input".into()));
+        let replace = description(EditorKind::Replace);
+        assert!(replace.contains("Use Read, Write, Edit, Glob, and Grep for file operations."));
+        assert!(replace.contains("you can Read or Grep the full output"));
+        let patch = description(EditorKind::Patch);
+        assert!(patch.contains("Use Read, apply_patch, Glob, and Grep for file operations."));
+        assert!(!patch.contains("Write"));
+        let hashline = description(EditorKind::Hashline);
+        assert!(hashline.contains(
+            "Use hashline_read, hashline_edit, Glob, and hashline_grep for file operations."
+        ));
+        assert!(hashline.contains("you can hashline_read or hashline_grep the full output"));
     }
 
     #[tokio::test]
     async fn execute_call_rejects_invalid_parameters_before_execution() {
         let mut registry = ToolRegistry::new();
-        registry.register(Arc::new(NamedTool("Read")));
-        let call = ToolCall::new("call_1", "Read", r#"{"path":"file.rs","extra":true}"#);
+        registry.register(Arc::new(NamedTool(names::READ)));
+        let call = ToolCall::new("call_1", names::READ, r#"{"path":"file.rs","extra":true}"#);
 
         let result = registry.execute_call(&call).await;
 
@@ -502,7 +601,7 @@ mod tests {
             "unexpected error: {}",
             result.content
         );
-        assert!(!registry.is_server_tool("Read"));
+        assert!(!registry.is_server_tool(names::READ));
 
         // 未预留服务端工具名时维持原语义
         let result = registry
@@ -517,7 +616,7 @@ mod tests {
             ToolRegistry::with_editor(std::path::Path::new("/tmp"), None, EditorKind::Replace);
         let call = ToolCall::new(
             "call_1",
-            "Edit",
+            names::EDIT,
             r#"{"path":"src/ui/views/chat.rs}]}to=functions.Edit","old_string":"old","new_string":"new"}"#,
         );
 
@@ -539,8 +638,10 @@ mod tests {
         fn description(&self) -> &str {
             "test tool"
         }
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
+        fn input(&self) -> crate::model::ToolInput {
+            crate::model::ToolInput::Json({
+                serde_json::json!({"type": "object", "properties": {}})
+            })
         }
         async fn execute(&self, _arguments: &str) -> Result<String, String> {
             let blob = "x".repeat(MAX_INLINE_OUTPUT_BYTES + 1);
@@ -563,7 +664,11 @@ mod tests {
 
             assert_eq!(result.is_error, error);
             assert!(result.content.contains(&dir.display().to_string()));
-            assert!(result.content.contains("Use Read or Grep on that path."));
+            assert!(
+                result
+                    .content
+                    .contains("Use the file-reading tools on that path.")
+            );
             let kind = if error { "Error output" } else { "Output" };
             assert!(result.content.starts_with(kind));
             let saved = std::fs::read_dir(&dir)

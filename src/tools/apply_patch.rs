@@ -1,9 +1,10 @@
+use super::Tool;
 use super::filesystem::{
     EditPlan, commit_text_edit, format_edit_result, resolve_path, with_edit_locks, write_new_file,
 };
-use super::{Tool, parse_args};
+use super::names;
+use crate::model::ToolInput;
 use async_trait::async_trait;
-use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -14,9 +15,11 @@ const DELETE_FILE: &str = "*** Delete File: ";
 const UPDATE_FILE: &str = "*** Update File: ";
 const MOVE_TO: &str = "*** Move to: ";
 const END_OF_FILE: &str = "*** End of File";
-const ENVIRONMENT_ID: &str = "*** Environment ID: ";
 const ATAT: &str = "@@";
 const ATAT_CONTEXT: &str = "@@ ";
+
+/// Codex 上游 V4A Lark 文法（codex-rs/core/assets/tools/apply_patch.lark）
+const V4A_LARK: &str = include_str!("apply_patch.lark");
 
 pub struct ApplyPatchTool {
     working_dir: PathBuf,
@@ -28,12 +31,6 @@ impl ApplyPatchTool {
             working_dir: working_dir.into(),
         }
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ApplyPatchArgs {
-    input: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -71,7 +68,6 @@ impl UpdateChunk {
 
 fn parse_apply_patch(input: &str) -> Result<Vec<FileHunk>, String> {
     let lines: Vec<&str> = input.trim().lines().collect();
-    let lines = strip_optional_heredoc(&lines);
     if lines.first().copied() != Some(BEGIN_PATCH) {
         return Err(
             "invalid_arguments: patch must start with *** Begin Patch and end with *** End Patch"
@@ -84,24 +80,8 @@ fn parse_apply_patch(input: &str) -> Result<Vec<FileHunk>, String> {
     parse_hunks(&lines)
 }
 
-fn strip_optional_heredoc<'a>(lines: &[&'a str]) -> Vec<&'a str> {
-    if lines.len() >= 4
-        && is_heredoc_start(lines[0])
-        && lines.last().is_some_and(|line| line.ends_with("EOF"))
-    {
-        lines[1..lines.len() - 1].to_vec()
-    } else {
-        lines.to_vec()
-    }
-}
-
-fn is_heredoc_start(line: &str) -> bool {
-    matches!(line.trim(), "<<EOF" | "<<'EOF'" | "<<\"EOF\"")
-}
-
 fn parse_hunks(lines: &[&str]) -> Result<Vec<FileHunk>, String> {
     let mut hunks: Vec<FileHunk> = Vec::new();
-    let mut saw_env = false;
     let mut ended = false;
     for line in lines.iter().copied().skip(1) {
         if ended {
@@ -142,19 +122,6 @@ fn parse_hunks(lines: &[&str]) -> Result<Vec<FileHunk>, String> {
                 Some(FileHunk::Update {
                     move_to, chunks, ..
                 }) => parse_update_line(line, move_to, chunks)?,
-                None if line.starts_with(ENVIRONMENT_ID) => {
-                    if saw_env {
-                        return Err(
-                            "invalid_arguments: duplicate *** Environment ID: preamble".into()
-                        );
-                    }
-                    if line.len() == ENVIRONMENT_ID.len() {
-                        return Err(
-                            "invalid_arguments: apply_patch environment_id cannot be empty".into(),
-                        );
-                    }
-                    saw_env = true;
-                }
                 _ => {
                     return Err(format!(
                         "invalid_arguments: expected a file operation or *** End Patch, got: {line}"
@@ -163,11 +130,13 @@ fn parse_hunks(lines: &[&str]) -> Result<Vec<FileHunk>, String> {
             }
         }
     }
-    if ended {
-        Ok(hunks)
-    } else {
-        Err("invalid_arguments: missing *** End Patch".into())
+    if !ended {
+        return Err("invalid_arguments: missing *** End Patch".into());
     }
+    if hunks.is_empty() {
+        return Err("invalid_arguments: patch contains no file operations".into());
+    }
+    Ok(hunks)
 }
 
 /// 上一个 Update hunk 必须带有块或 Move（在下一个 hunk 开始或补丁结束时校验）。
@@ -204,8 +173,6 @@ fn parse_update_line(
     } else if trimmed == END_OF_FILE {
         // 语法保留：标记本身不再携带语义。上游 V4A 用它锚定 EOF 匹配；
         // vva 匹配本就搜索全文，未命中按 not_found 显式报错，不再静默追加文件尾。
-    } else if trimmed.is_empty() {
-        push(Some(""), Some(""));
     } else if let Some(rest) = line.strip_prefix('+') {
         push(None, Some(rest));
     } else if let Some(rest) = line.strip_prefix('-') {
@@ -356,9 +323,6 @@ fn normalize_unicode_punctuation(s: &str) -> String {
 }
 
 fn apply_parsed(working_dir: &Path, hunks: Vec<FileHunk>) -> Result<String, String> {
-    if hunks.is_empty() {
-        return Ok("No file operations in patch".into());
-    }
     let mut reports = Vec::new();
     for hunk in hunks {
         match hunk {
@@ -460,52 +424,56 @@ fn update_file(
 #[async_trait]
 impl Tool for ApplyPatchTool {
     fn name(&self) -> &str {
-        "Edit"
+        names::APPLY_PATCH
     }
 
     fn description(&self) -> &str {
-        r#"Edit files with a V4A patch. The input MUST start with *** Begin Patch and end with *** End Patch. One call may include several file operations. An optional *** Environment ID: line may follow Begin Patch.
+        r#"Edit files with a patch. The patch language is a stripped-down, file-oriented diff format, wrapped in an envelope:
 
-*** Add File: path
-+line
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
 
-*** Delete File: path
+Each file section starts with one of three headers:
 
-*** Update File: path
-@@
- context
--removed
-+added
+*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
+*** Delete File: <path> - remove an existing file. Nothing follows.
+*** Update File: <path> - patch an existing file in place (optionally with a rename).
 
-*** Update File: old_path
-*** Move to: new_path
-@@
- context
+An Update section may start with `*** Move to: <new_path>` to rename the file, followed by one or more hunks. A hunk starts with `@@` or `@@ <context>` (a line such as a function or class header that locates the hunk). Each hunk line starts with a space (unchanged context), `-` (removed) or `+` (added). `*** End of File` after the last hunk marks a change at the end of the file.
 
-Hunks start with @@ or @@ <context>. Context lines begin with a space, removals with -, additions with +. *** End of File marks an insertion at EOF. Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"input":"*** Begin Patch\n*** Update File: src/main.rs\n@@\n fn main() {\n-    println!(\"hi\");\n+    println!(\"hello\");\n*** End Patch"}."#
+Example:
+
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+
+Remember:
+- Every section needs an Add/Delete/Update header.
+- Prefix new lines with `+` even when creating a new file.
+- Paths are absolute or workspace-relative; shell variables and ~ are not expanded.
+- One call may include several file sections."#
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string",
-                    "description": "Complete V4A patch beginning with *** Begin Patch and ending with *** End Patch."
-                }
-            },
-            "required": ["input"],
-            "additionalProperties": false
-        })
+    fn input(&self) -> ToolInput {
+        ToolInput::Freeform {
+            grammar: Some(V4A_LARK.to_string()),
+        }
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: ApplyPatchArgs = parse_args(arguments, "Edit")?;
-        let hunks = parse_apply_patch(&args.input)?;
+        let hunks = parse_apply_patch(arguments)?;
         let working_dir = self.working_dir.clone();
         tokio::task::spawn_blocking(move || apply_parsed(&working_dir, hunks))
             .await
-            .map_err(|e| format!("Edit task failed: {e}"))?
+            .map_err(|e| format!("apply_patch task failed: {e}"))?
     }
 }
 
@@ -515,7 +483,7 @@ mod tests {
     use crate::tools::Tool;
 
     fn patch_input(body: &str) -> String {
-        serde_json::json!({"input": format!("*** Begin Patch\n{body}*** End Patch")}).to_string()
+        format!("*** Begin Patch\n{body}*** End Patch")
     }
 
     #[test]
@@ -547,25 +515,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_environment_id_and_heredoc() {
-        let hunks = parse_apply_patch(
-            "*** Begin Patch\n*** Environment ID: remote\n*** Add File: hello.txt\n+hello\n*** End Patch",
-        )
-        .unwrap();
-        match &hunks[0] {
-            FileHunk::Add { path, contents } => {
-                assert_eq!(path, "hello.txt");
-                assert_eq!(contents, "hello\n");
+    fn parse_rejects_environment_id_and_heredoc() {
+        assert!(
+            parse_apply_patch(
+                "*** Begin Patch\n*** Environment ID: remote\n*** Add File: a\n+x\n*** End Patch"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_apply_patch("<<EOF\n*** Begin Patch\n*** Delete File: a\n*** End Patch\nEOF")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn definition_is_freeform_with_grammar() {
+        let tool = ApplyPatchTool::new(".");
+        assert_eq!(tool.name(), names::APPLY_PATCH);
+        match tool.input() {
+            ToolInput::Freeform { grammar } => {
+                assert!(grammar.unwrap().starts_with("start: begin_patch hunk+"))
             }
-            _ => panic!("expected add"),
-        }
-        let hunks = parse_apply_patch(
-            "<<EOF\n*** Begin Patch\n*** Delete File: gone.rs\n*** End Patch\nEOF",
-        )
-        .unwrap();
-        match &hunks[0] {
-            FileHunk::Delete { path } => assert_eq!(path, "gone.rs"),
-            _ => panic!("expected delete"),
+            ToolInput::Json(_) => panic!("expected freeform"),
         }
     }
 

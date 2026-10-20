@@ -84,37 +84,39 @@ impl crate::tools::Tool for AskUserTool {
         "Ask the user one or more questions and wait for the answers. Each question offers options with labels and descriptions."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "questions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "header": {"type": "string"},
-                            "question": {"type": "string"},
-                            "options": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "label": {"type": "string"},
-                                        "description": {"type": "string"}
-                                    },
-                                    "required": ["label", "description"]
-                                }
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "questions": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "header": {"type": "string"},
+                                "question": {"type": "string"},
+                                "options": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "label": {"type": "string"},
+                                            "description": {"type": "string"}
+                                        },
+                                        "required": ["label", "description"]
+                                    }
+                                },
+                                "multi_select": {"type": "boolean"}
                             },
-                            "multi_select": {"type": "boolean"}
-                        },
-                        "required": ["question", "options"]
+                            "required": ["question", "options"]
+                        }
                     }
-                }
-            },
-            "required": ["questions"]
+                },
+                "required": ["questions"]
+            })
         })
     }
 

@@ -8,7 +8,10 @@ use tokio::sync::mpsc;
 
 use super::{CompletionOptions, ProviderError};
 use crate::event::AgentEvent;
-use crate::model::{Annotation, ImageGenerationCall, ToolDefinition, WebSearchCall};
+use crate::model::{
+    Annotation, ImageGenerationCall, ToolCall, ToolCallKind, ToolDefinition, ToolInput,
+    WebSearchCall,
+};
 
 /// 增量事件转发器：统一封装 `Option<Sender>` 的转发样板。
 /// 全部走 `send().await` 以保留背压语义（通道满时等待而非丢弃事件）。
@@ -232,4 +235,60 @@ pub(crate) fn media_tool_session() -> crate::model::Session {
     ])]));
     session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(result)]));
     session
+}
+
+/// Freeform 工具投影为 function 时的单字段入参描述
+pub(crate) const FREEFORM_INPUT_DESCRIPTION: &str =
+    "Raw tool input text, exactly as the tool description specifies.";
+
+/// 该名称在本次请求的工具中是否为 Freeform 工具
+pub(crate) fn is_freeform_tool(tools: &[ToolDefinition], name: &str) -> bool {
+    tools
+        .iter()
+        .any(|t| t.name == name && matches!(t.input, ToolInput::Freeform { .. }))
+}
+
+/// 从 function 调用参数中取回 Freeform 工具的原始输入：必须恰为仅含字符串 `input` 的对象
+pub(crate) fn freeform_call_input(
+    name: &str,
+    args: &serde_json::Value,
+) -> Result<String, ProviderError> {
+    args.as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get("input"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            ProviderError::Protocol(format!(
+                "Freeform tool call '{name}' arguments must be an object with a single string 'input'"
+            ))
+        })
+}
+
+/// 历史调用回放为协议参数对象：Custom 调用重新包装为 `{"input": 原文}`，Function 调用解析 JSON 文本
+pub(crate) fn replay_call_args(call: &ToolCall) -> Result<serde_json::Value, ProviderError> {
+    match call.kind {
+        ToolCallKind::Custom => Ok(serde_json::json!({"input": call.arguments})),
+        ToolCallKind::Function => serde_json::from_str(&call.arguments).map_err(|e| {
+            ProviderError::Protocol(format!(
+                "Invalid tool call '{}' arguments JSON: {e}",
+                call.name
+            ))
+        }),
+    }
+}
+
+/// 工具定义的 function 参数 schema：Freeform 工具在不支持 custom tool 的协议上投影为单字段 `input`
+pub(crate) fn function_parameters(input: &ToolInput) -> serde_json::Value {
+    match input {
+        ToolInput::Json(schema) => schema.clone(),
+        ToolInput::Freeform { .. } => serde_json::json!({
+            "type": "object",
+            "properties": {
+                "input": {"type": "string", "description": FREEFORM_INPUT_DESCRIPTION}
+            },
+            "required": ["input"],
+            "additionalProperties": false
+        }),
+    }
 }

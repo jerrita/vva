@@ -50,7 +50,7 @@ pub fn format_skill_content(skill: &Skill) -> String {
     format!(
         "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>\n\n\
          Files referenced by this skill (scripts/, references/, assets/) are relative to the \
-         skill root directory above. Load them with Read or Shell only when needed.",
+         skill root directory above. Load them with the file-reading tools or Shell only when needed.",
         skill.name,
         skill.path.display(),
         skill.body
@@ -431,6 +431,8 @@ mod tests {
         let content = format_skill_content(&skill);
         assert!(content.starts_with("<skill name=\"pdf-tools\" path=\"/tmp/skills/pdf-tools\">"));
         assert!(content.contains("body"));
-        assert!(content.ends_with("Load them with Read or Shell only when needed."));
+        assert!(
+            content.ends_with("Load them with the file-reading tools or Shell only when needed.")
+        );
     }
 }

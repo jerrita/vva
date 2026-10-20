@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::tools::names::{self, FILE_READ_TOOLS, FILE_TOOLS};
+
 /// subagent 嵌套深度上限（顶层会话 depth = 0）
 pub const MAX_SUBAGENT_DEPTH: u8 = 3;
 
@@ -36,23 +38,21 @@ fn tool_names(names: &[&str]) -> Vec<String> {
 fn builtin_general() -> AgentDef {
     AgentDef {
         name: "general".into(),
-        description: "General-purpose agent for complex, multi-step tasks.".into(),
+        description: "General-purpose agent for generic, multi-step tasks.".into(),
         model: None,
-        tools: tool_names(&[
-            "Read",
-            "Write",
-            "Edit",
-            "Glob",
-            "Grep",
-            "Shell",
-            "Skill",
-            "TaskOutput",
-            "TaskStop",
-            "SendMessage",
-            "WaitSession",
-            "WebSearch",
-            "WebFetch",
-        ]),
+        tools: tool_names(FILE_TOOLS)
+            .into_iter()
+            .chain(tool_names(&[
+                names::SHELL,
+                "Skill",
+                "TaskOutput",
+                "TaskStop",
+                "SendMessage",
+                "WaitSession",
+                "WebSearch",
+                "WebFetch",
+            ]))
+            .collect(),
         system_prompt: Some(
             "You are a general-purpose subagent. Your prompt is self-contained: the parent \
              session does not see your intermediate steps, so your final message must carry \
@@ -68,7 +68,7 @@ fn builtin_explore() -> AgentDef {
         name: "explore".into(),
         description: "Read-only search agent for locating code and answering questions.".into(),
         model: None,
-        tools: tool_names(&["Read", "Glob", "Grep"]),
+        tools: tool_names(FILE_READ_TOOLS),
         system_prompt: Some(
             "You are a read-only exploration subagent. Search broadly, read excerpts rather \
              than whole files, and report conclusions with file paths and line references."
@@ -304,6 +304,11 @@ mod tests {
         assert!(!general.tools.contains(&"Agent".to_string()));
         assert!(!general.tools.contains(&"AskUser".to_string()));
         let explore = defs.iter().find(|def| def.name == "explore").unwrap();
-        assert_eq!(explore.tools, ["Read", "Glob", "Grep"]);
+        assert_eq!(explore.tools, FILE_READ_TOOLS);
+        assert!(
+            FILE_TOOLS
+                .iter()
+                .all(|tool| general.tools.iter().any(|t| t == tool))
+        );
     }
 }

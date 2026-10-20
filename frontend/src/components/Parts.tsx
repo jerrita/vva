@@ -10,6 +10,7 @@ import type {
   WebSearchCall,
 } from '../types'
 import { editDiffs } from '../utils/editDiff'
+import { GLOB, GREP, HASHLINE_GREP, HASHLINE_READ, READ, isChangeTool, isReadTool } from '../toolNames'
 import type { FileDiff } from '../utils/editDiff'
 import { IconChevronRight, IconFile } from './icons'
 import { useLightbox } from './Lightbox'
@@ -48,7 +49,7 @@ type Block =
   | { kind: 'text'; part: Extract<ContentPart, { type: 'text' }> }
   | { kind: 'image'; source: MediaSource }
 
-const BATCHABLE = new Set(['Read', 'Grep', 'Glob'])
+const BATCHABLE = new Set([READ, HASHLINE_READ, GREP, HASHLINE_GREP, GLOB])
 const BATCH_MIN = 3
 
 function toSteps(parts: ContentPart[]): (Step | Exclude<Block, { kind: 'trace' }>)[] {
@@ -160,7 +161,7 @@ export function tallyParts(parts: ContentPart[]): Tally {
   for (const node of toSteps(parts)) {
     if (node.kind === 'tool') {
       const web = externalWebCall(node.call, node.result)
-      bump(web ? '搜索' : describeTool(node.call, node.result, undefined, () => null).tally)
+      bump(web ? '搜索' : describeTool(node.call, node.result, undefined, []).tally)
       if (node.result?.is_error) failed++
     } else if (node.kind === 'search') {
       bump('搜索')
@@ -286,7 +287,10 @@ function DiffView({
       {diffs.map((diff, index) => (
         <div key={index} className="diff-file">
           <div className="diff-head">
-            <span className="diff-path">{relativePath(diff.path, workspace)}</span>
+            <span className="diff-path">
+              {relativePath(diff.path, workspace)}
+              {diff.op === 'move' && diff.to ? ` → ${relativePath(diff.to, workspace)}` : ''}
+            </span>
             {diff.op && diff.op !== 'update' && (
               <span className="diff-op">{{ add: '新建', delete: '删除', move: '移动' }[diff.op]}</span>
             )}
@@ -343,15 +347,10 @@ function ToolRow({
   const web = externalWebCall(call, result)
   if (web) return <SearchRow call={web} />
 
-  const diffs = call.name === 'Edit' || call.name === 'Write' ? editDiffs(call.name, call.arguments) : []
-  const view = describeTool(call, result, workspace, () =>
-    diffs.length > 0
-      ? {
-          plus: diffs.reduce((sum, diff) => sum + diff.plus, 0),
-          minus: diffs.reduce((sum, diff) => sum + diff.minus, 0),
-        }
-      : null,
-  )
+  const diffs = isChangeTool(call.name)
+    ? editDiffs(call.name, call.arguments, result && !result.is_error ? result.content : undefined)
+    : []
+  const view = describeTool(call, result, workspace, diffs)
   const error = result?.is_error ?? false
   const line: LineProps = {
     glyph: toolGlyph(view, result, live),
@@ -394,14 +393,14 @@ function BatchRow({
   workspace?: string
   onPreviewFile?: PreviewFile
 }) {
-  const views = steps.map(step => describeTool(step.call, step.result, workspace, () => null))
+  const views = steps.map(step => describeTool(step.call, step.result, workspace, []))
   const names = views.map(view => (view.filePath ? baseName(view.filePath) : view.target))
-  const unit = name === 'Read' ? '个文件' : '次'
+  const unit = isReadTool(name) ? '个文件' : '次'
   return (
     <StepRow
       line={{
         glyph: 'observe',
-        verb: name,
+        verb: views[0].verb,
         target: `${steps.length} ${unit}`,
         secondary: names.join('  '),
       }}

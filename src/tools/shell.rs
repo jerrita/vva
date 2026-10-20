@@ -4,10 +4,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use super::Tool;
+use super::names;
 use super::parse_args;
 
 /// 单条命令的执行超时
@@ -16,6 +16,7 @@ const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct ShellTool {
     working_dir: PathBuf,
     background: Option<Arc<super::background::BackgroundTasks>>,
+    description: String,
 }
 
 impl ShellTool {
@@ -23,7 +24,20 @@ impl ShellTool {
         Self {
             working_dir: working_dir.into(),
             background: None,
+            description: shell_description(&[
+                names::READ,
+                names::WRITE,
+                names::EDIT,
+                names::GLOB,
+                names::GREP,
+            ]),
         }
+    }
+
+    /// 按当前编辑器实际注册的文件工具名生成描述
+    pub fn with_file_tools(mut self, file_tools: &[&str]) -> Self {
+        self.description = shell_description(file_tools);
+        self
     }
 
     /// 绑定会话级后台任务注册表，启用 run_in_background
@@ -44,22 +58,24 @@ struct ShellArgs {
 #[async_trait]
 impl Tool for ShellTool {
     fn name(&self) -> &str {
-        "Shell"
+        names::SHELL
     }
 
     fn description(&self) -> &str {
-        shell_description()
+        &self.description
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "intent": { "type": "string", "description": "Brief, nonempty explanation of what the command accomplishes, shown in the UI." },
-                "command": { "type": "string", "description": shell_command_hint() },
-                "run_in_background": { "type": "boolean", "description": "Run detached with no timeout: returns a task id immediately while the command keeps running. Check status and output with TaskOutput, stop with TaskStop. You are notified when the task exits. Tasks die when the session ends; in one-shot CLI runs that is process exit." }
-            },
-            "required": ["intent", "command"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "intent": { "type": "string", "description": "Brief, nonempty explanation of what the command accomplishes, shown in the UI." },
+                    "command": { "type": "string", "description": shell_command_hint() },
+                    "run_in_background": { "type": "boolean", "description": "Run detached with no timeout: returns a task id immediately while the command keeps running. Check status and output with TaskOutput, stop with TaskStop. You are notified when the task exits. Tasks die when the session ends; in one-shot CLI runs that is process exit." }
+                },
+                "required": ["intent", "command"]
+            })
         })
     }
 
@@ -74,7 +90,7 @@ impl Tool for ShellTool {
 
 impl ShellTool {
     async fn run(&self, arguments: &str) -> Result<(String, Option<String>), String> {
-        let args: ShellArgs = parse_args(arguments, "Shell")?;
+        let args: ShellArgs = parse_args(arguments, names::SHELL)?;
         if args.intent.trim().is_empty() {
             return Err("intent must not be empty".to_string());
         }
@@ -146,18 +162,38 @@ const SHELL_INVOCATION: &str = "non-interactive PowerShell (-NoProfile -NonInter
 #[cfg(not(windows))]
 const SHELL_INVOCATION: &str = "bash -c";
 
-fn shell_description() -> &'static str {
-    static SHELL_DESCRIPTION: LazyLock<String> = LazyLock::new(|| {
-        [
-            "Run a command for builds, tests, version control, or other terminal operations. Use Read, Write, Edit, Glob, and Grep for file operations. Executes with ",
-            SHELL_INVOCATION,
-            ", starting at the workspace root each time; shell state does not persist between calls.\nProvide a nonempty intent describing the purpose. Use ",
-            SHELL_NOUN,
-            " syntax and shell-quote paths containing spaces within command. Commands run non-interactively with a 120-second timeout. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can Read or Grep the full output.\nFor long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.\nExample arguments: {\"intent\":\"Check working tree changes\",\"command\":\"git status --short\"}.",
-        ]
-        .concat()
-    });
-    SHELL_DESCRIPTION.as_str()
+fn shell_description(file_tools: &[&str]) -> String {
+    let (init, last) = file_tools.split_at(file_tools.len().saturating_sub(1));
+    let listed = match (init, last) {
+        ([], [only]) => (*only).to_string(),
+        (init, [last]) => format!("{}, and {last}", init.join(", ")),
+        _ => String::new(),
+    };
+    let browse: Vec<&str> = file_tools
+        .iter()
+        .copied()
+        .filter(|name| {
+            [
+                names::READ,
+                names::GREP,
+                names::HASHLINE_READ,
+                names::HASHLINE_GREP,
+            ]
+            .contains(name)
+        })
+        .collect();
+    [
+        "Run a command for builds, tests, version control, or other terminal operations. Use ",
+        &listed,
+        " for file operations. Executes with ",
+        SHELL_INVOCATION,
+        ", starting at the workspace root each time; shell state does not persist between calls.\nProvide a nonempty intent describing the purpose. Use ",
+        SHELL_NOUN,
+        " syntax and shell-quote paths containing spaces within command. Commands run non-interactively with a 120-second timeout. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can ",
+        &browse.join(" or "),
+        " the full output.\nFor long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.\nExample arguments: {\"intent\":\"Check working tree changes\",\"command\":\"git status --short\"}.",
+    ]
+    .concat()
 }
 
 fn shell_command_hint() -> String {
@@ -263,7 +299,7 @@ mod tests {
         let result = registry
             .execute_call(&crate::model::ToolCall::new(
                 "call-background",
-                "Shell",
+                names::SHELL,
                 serde_json::json!({
                     "intent": "watch build", "command": command, "run_in_background": true
                 })
@@ -296,7 +332,7 @@ mod tests {
 
     #[test]
     fn parameters_declare_optional_run_in_background() {
-        let schema = ShellTool::new(std::env::temp_dir()).parameters();
+        let schema = ShellTool::new(std::env::temp_dir()).input().expect_json();
         let property = &schema["properties"]["run_in_background"];
         assert_eq!(property["type"], "boolean");
         let required = schema["required"].as_array().unwrap();

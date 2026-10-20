@@ -5,7 +5,7 @@ use super::{
     sort_by_mtime,
 };
 use crate::model::EditorKind;
-use crate::tools::parse_args;
+use crate::tools::{names, parse_args};
 use async_trait::async_trait;
 use regex::Regex;
 use serde::Deserialize;
@@ -51,7 +51,10 @@ pub(super) struct GrepArgs {
 #[async_trait]
 impl Tool for GrepTool {
     fn name(&self) -> &str {
-        "Grep"
+        match self.editor {
+            EditorKind::Hashline => names::HASHLINE_GREP,
+            EditorKind::Patch | EditorKind::Replace => names::GREP,
+        }
     }
 
     fn description(&self) -> &str {
@@ -59,7 +62,7 @@ impl Tool for GrepTool {
             EditorKind::Hashline => {
                 r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
 Optionally restrict files with include, a glob relative to the search root. Glob syntax supports *, ?, character classes, recursive **, and brace expansion such as **/*.{rs,md,toml}. Extglobs are unsupported. Hidden and gitignored files are included; directory symlinks are not traversed during recursion.
-Returns [PATH#TAG] then N:text for each match (same header as Read). Copy the header and line numbers into Edit. Sorted by file modification time (newest first), capped at 100 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
+Returns [PATH#TAG] then N:text for each match (same header as hashline_read). Copy the header and line numbers into hashline_edit. Sorted by file modification time (newest first), capped at 100 matching lines with a truncation marker. Empty output means no matches. Example arguments: {"pattern":"fn\\s+main|struct","path":"src","include":"**/*.{rs,toml}"}. JSON-escape regex backslashes. Path values do not expand shell variables or ~."#
             }
             EditorKind::Patch | EditorKind::Replace => {
                 r#"Search UTF-8 file contents line by line with a Rust regular expression; use Glob to find files by name. Matching is case-sensitive by default; use (?i) for case-insensitive search. Supports alternation such as foo|bar, but not lookaround or backreferences. Matches cannot span lines. Non-UTF-8 and unreadable files are skipped.
@@ -69,20 +72,22 @@ Returns path:line: text with 1-indexed line numbers, sorted by file modification
         }
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": { "type": "string", "description": "Rust regex applied to each line. Use foo|bar for alternatives and (?i) for case-insensitivity. JSON-escape backslashes; lookaround and backreferences are unsupported." },
-                "path": { "type": "string", "format": "path", "description": "Search root: a directory or a single file, absolute or workspace-relative. Omit for the workspace root. Shell variables and ~ are not expanded." },
-                "include": { "type": "string", "description": "Optional case-sensitive glob relative to path, e.g. **/*.rs or **/*.{rs,md}. Omit to search all files. Supports *, ?, [...], recursive **, and {a,b} expansion. Extglobs are unsupported." }
-            },
-            "required": ["pattern"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Rust regex applied to each line. Use foo|bar for alternatives and (?i) for case-insensitivity. JSON-escape backslashes; lookaround and backreferences are unsupported." },
+                    "path": { "type": "string", "format": "path", "description": "Search root: a directory or a single file, absolute or workspace-relative. Omit for the workspace root. Shell variables and ~ are not expanded." },
+                    "include": { "type": "string", "description": "Optional case-sensitive glob relative to path, e.g. **/*.rs or **/*.{rs,md}. Omit to search all files. Supports *, ?, [...], recursive **, and {a,b} expansion. Extglobs are unsupported." }
+                },
+                "required": ["pattern"]
+            })
         })
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: GrepArgs = parse_args(arguments, "Grep")?;
+        let args: GrepArgs = parse_args(arguments, self.name())?;
         let root = resolve_path(&self.working_dir, args.path.as_deref().unwrap_or("."));
         let regex = Regex::new(&args.pattern)
             .map_err(|error| format!("Invalid regular expression: {error}"))?;

@@ -226,6 +226,7 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
             workspace: &workspace,
             model,
             variant,
+            editor: header.editor,
         };
         render_sidebar(app, frame, sidebar_rect, &info);
     } else {

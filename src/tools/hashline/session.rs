@@ -82,7 +82,7 @@ impl HashlineSession {
             .cloned()
             .ok_or_else(|| {
                 format!(
-                    "not_found: snapshot [{}#{}] is not registered in this active session (including after session reload); this does not indicate a disk change. Read or Grep the file and copy the header",
+                    "not_found: snapshot [{}#{}] is not registered in this active session (including after session reload); this does not indicate a disk change. hashline_read or hashline_grep the file and copy the header",
                     canonical.display(),
                     tag
                 )

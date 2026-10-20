@@ -5,6 +5,7 @@ use crate::model::{
 };
 use crate::provider::Provider;
 use crate::provider::common::{RoleBlockMerger, WebCallSurface, web_call_surface};
+use crate::provider::common::{function_parameters, replay_call_args};
 use crate::provider::{CompletionOptions, ProviderError};
 
 /// web_search / web_fetch 服务端工具的默认版本后缀（模型级 `annotation.web_tool_version` 可覆写）
@@ -40,7 +41,7 @@ impl AnthropicProvider {
             }));
         }
         api_tools.extend(tools.iter().map(|tool| {
-            serde_json::json!({"name": tool.name, "description": tool.description, "input_schema": tool.parameters})
+            serde_json::json!({"name": tool.name, "description": tool.description, "input_schema": function_parameters(&tool.input)})
         }));
 
         let mut system_text = String::new();
@@ -161,14 +162,7 @@ impl AnthropicProvider {
                                 }));
                             }
                             ContentPart::ToolCall(call) => {
-                                let args_val =
-                                    serde_json::from_str::<serde_json::Value>(&call.arguments)
-                                        .map_err(|e| {
-                                            ProviderError::Protocol(format!(
-                                                "Invalid tool call '{}' arguments JSON: {e}",
-                                                call.name
-                                            ))
-                                        })?;
+                                let args_val = replay_call_args(call)?;
                                 content_blocks.push(serde_json::json!({
                                     "type": "tool_use",
                                     "id": call.id,

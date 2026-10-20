@@ -144,29 +144,31 @@ impl Tool for AgentTool {
          finishes, and you continue working meanwhile."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "agent": {
-                    "type": "string",
-                    "enum": self.agent_enum(),
-                    "description": "Agent type (toolset and system prompt) to launch."
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "enum": self.agent_enum(),
+                        "description": "Agent type (toolset and system prompt) to launch."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "3-5 word summary of what this subagent will do."
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Complete, self-contained task for the subagent."
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "Detach the subagent instead of blocking for its result."
+                    }
                 },
-                "description": {
-                    "type": "string",
-                    "description": "3-5 word summary of what this subagent will do."
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Complete, self-contained task for the subagent."
-                },
-                "run_in_background": {
-                    "type": "boolean",
-                    "description": "Detach the subagent instead of blocking for its result."
-                }
-            },
-            "required": ["agent", "description", "prompt"]
+                "required": ["agent", "description", "prompt"]
+            })
         })
     }
 

@@ -90,12 +90,9 @@ fn test_response_provider_previous_id_with_tool_call_output_pair() {
     session.append_turn(Turn::user_turn(Message::text("run dir")));
 
     // 2. Assistant 返回 ToolCall，并生成 response_id
-    let mut asst_turn =
-        Turn::assistant_turn(vec![Message::new(vec![ContentPart::ToolCall(ToolCall {
-            id: "call_abc123".into(),
-            name: "powershell".into(),
-            arguments: r#"{"command":"dir"}"#.into(),
-        })])]);
+    let mut asst_turn = Turn::assistant_turn(vec![Message::new(vec![ContentPart::ToolCall(
+        ToolCall::new("call_abc123", "powershell", r#"{"command":"dir"}"#),
+    )])]);
     asst_turn.meta.response = Some(ResponseTurnMeta::new("resp_asst_1"));
     session.append_turn(asst_turn);
 
@@ -298,11 +295,7 @@ fn test_response_provider_cold_start_history_and_temperature_guard() {
     // Assistant 回复且包含 ToolCall（来自其他 provider 或无 previous_response_id）
     let asst_msg = Message::new(vec![
         ContentPart::text("Calling tool"),
-        ContentPart::ToolCall(ToolCall {
-            id: "c1".into(),
-            name: "bash".into(),
-            arguments: r#"{"command":"pwd"}"#.into(),
-        }),
+        ContentPart::ToolCall(ToolCall::new("c1", "bash", r#"{"command":"pwd"}"#)),
     ]);
     session.append_turn(Turn::assistant_turn(vec![asst_msg]));
     // Tool 返回
@@ -1208,7 +1201,7 @@ fn test_response_provider_web_search_call_replays_per_tool_surface() {
     let tools = vec![crate::model::ToolDefinition {
         name: "web_search".into(),
         description: "d".into(),
-        parameters: serde_json::json!({ "type": "object" }),
+        input: crate::model::ToolInput::Json(serde_json::json!({ "type": "object" })),
     }];
 
     // 仅外置客户端函数在位 → 合成 function 调用与结果对
@@ -1497,4 +1490,167 @@ fn test_web_search_api_source_roundtrips_without_citation() {
     );
     let call = super::search::project_web_search_call("ws", "completed", Some(&action)).unwrap();
     assert_eq!(call.sources.len(), 1);
+}
+
+fn custom_tool_response() -> serde_json::Value {
+    serde_json::json!({
+        "id": "resp_ctc", "status": "completed", "store": true,
+        "output": [
+            {"id": "rs_1", "type": "reasoning", "summary": []},
+            {
+                "id": "ctc_1", "type": "custom_tool_call", "status": "completed",
+                "call_id": "call_ctc1", "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch"
+            }
+        ],
+        "usage": {
+            "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": 0}
+        }
+    })
+}
+
+#[test]
+fn test_custom_tool_declaration_with_and_without_grammar() {
+    let provider = ResponseProvider::new("k");
+    let session = Session::new(PathBuf::from("/tmp"), None);
+    let tools = vec![
+        ToolDefinition {
+            name: "apply_patch".into(),
+            description: "d".into(),
+            input: ToolInput::Freeform {
+                grammar: Some("start: \"x\"".into()),
+            },
+        },
+        ToolDefinition {
+            name: "hashline_edit".into(),
+            description: "e".into(),
+            input: ToolInput::Freeform { grammar: None },
+        },
+    ];
+    let body = provider
+        .build_request_body(
+            &session,
+            &tools,
+            &CompletionOptions {
+                enable_web_search: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        body["tools"][0],
+        serde_json::json!({
+            "type": "custom", "name": "apply_patch", "description": "d",
+            "format": {"type": "grammar", "syntax": "lark", "definition": "start: \"x\""}
+        })
+    );
+    assert_eq!(
+        body["tools"][1],
+        serde_json::json!({
+            "type": "custom", "name": "hashline_edit", "description": "e",
+            "format": {"type": "text"}
+        })
+    );
+}
+
+#[test]
+fn test_custom_tool_call_parses_and_replays() {
+    let provider = ResponseProvider::new("k");
+    let parsed = provider.parse_response(custom_tool_response()).unwrap();
+    let call = match &parsed.messages[0].parts[..] {
+        [ContentPart::ToolCall(call)] => call.clone(),
+        other => panic!("unexpected parts: {other:?}"),
+    };
+    assert_eq!(
+        call,
+        ToolCall::custom("call_ctc1", "apply_patch", "*** Begin Patch\n*** End Patch")
+    );
+
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("patch it")));
+    let mut asst = Turn::assistant_turn(parsed.messages);
+    asst.meta = parsed.meta;
+    session.append_turn(asst);
+    session.append_turn(Turn::new(
+        Role::Tool,
+        vec![Message::tool_result(ToolResult::success("call_ctc1", "ok"))],
+    ));
+
+    // 增量路径：previous_response_id 之后只补齐 custom_tool_call 声明与结果
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .unwrap();
+    assert_eq!(body["previous_response_id"], "resp_ctc");
+    let inputs = body["input"].as_array().unwrap();
+    assert_eq!(inputs.len(), 2);
+    assert_eq!(
+        inputs[0],
+        serde_json::json!({
+            "type": "custom_tool_call", "call_id": "call_ctc1", "name": "apply_patch",
+            "input": "*** Begin Patch\n*** End Patch"
+        })
+    );
+    assert_eq!(
+        inputs[1],
+        serde_json::json!({"type": "custom_tool_call_output", "call_id": "call_ctc1", "output": "ok"})
+    );
+
+    // 全量路径：原生条目链原样回传（含 id/status），结果为 custom_tool_call_output
+    session.turns[1].meta.response.as_mut().unwrap().response_id = None;
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .unwrap();
+    assert!(body.get("previous_response_id").is_none());
+    let inputs = body["input"].as_array().unwrap();
+    let native = inputs
+        .iter()
+        .find(|it| it["type"] == "custom_tool_call")
+        .unwrap();
+    assert_eq!(native["id"], "ctc_1");
+    assert_eq!(native["status"], "completed");
+    assert_eq!(inputs.last().unwrap()["type"], "custom_tool_call_output");
+
+    // 冷启动（无原生条目）：领域调用按 kind 重建
+    session.turns[1].meta.response = None;
+    let body = provider
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .unwrap();
+    let inputs = body["input"].as_array().unwrap();
+    assert_eq!(inputs[1]["type"], "custom_tool_call");
+    assert_eq!(inputs[1]["input"], "*** Begin Patch\n*** End Patch");
+    assert_eq!(inputs[2]["type"], "custom_tool_call_output");
+}
+
+#[tokio::test]
+async fn test_stream_completed_projects_custom_tool_call() {
+    let provider = ResponseProvider::new("k");
+    let mut handler = ResponseStreamHandler::new(&provider, None);
+    for ev in [
+        serde_json::json!({
+            "type": "response.output_item.added", "output_index": 1, "sequence_number": 1,
+            "item": {"id": "ctc_1", "type": "custom_tool_call", "status": "in_progress",
+                     "call_id": "call_ctc1", "name": "apply_patch", "input": ""}
+        }),
+        serde_json::json!({
+            "type": "response.custom_tool_call_input.delta", "item_id": "ctc_1",
+            "output_index": 1, "sequence_number": 2, "delta": "*** Begin Patch\n"
+        }),
+        serde_json::json!({
+            "type": "response.custom_tool_call_input.done", "item_id": "ctc_1",
+            "output_index": 1, "sequence_number": 3, "input": "*** Begin Patch\n*** End Patch"
+        }),
+        serde_json::json!({
+            "type": "response.completed", "sequence_number": 4,
+            "response": custom_tool_response()
+        }),
+    ] {
+        handler.on_event(ev).await.unwrap();
+    }
+    let parsed = handler.completed.unwrap();
+    assert!(matches!(
+        &parsed.messages[0].parts[..],
+        [ContentPart::ToolCall(call)]
+            if call.kind == ToolCallKind::Custom && call.arguments == "*** Begin Patch\n*** End Patch"
+    ));
 }

@@ -19,12 +19,12 @@ pub use meta::{
     ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource, TurnMeta,
 };
 pub use session::{
-    EditorKind, JsonlRecord, Origin, Session, SessionHeader, SessionKind, SessionSummary,
-    SessionToggles, ToggleOverrides, generate_session_id, provisional_title,
+    EditorKind, JsonlRecord, Origin, SESSION_VERSION, Session, SessionHeader, SessionKind,
+    SessionSummary, SessionToggles, ToggleOverrides, generate_session_id, provisional_title,
 };
 pub use tool::{
-    MediaContent, MediaKind, ToolCall, ToolDefinition, ToolResult, UserAnswer, UserQuestion,
-    UserQuestionOption, UserQuestionRequest,
+    MediaContent, MediaKind, ToolCall, ToolCallKind, ToolDefinition, ToolInput, ToolResult,
+    UserAnswer, UserQuestion, UserQuestionOption, UserQuestionRequest,
 };
 pub use turn::{TokenUsage, Turn};
 

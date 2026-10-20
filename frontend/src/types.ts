@@ -80,7 +80,9 @@ export interface ImageGenerationCall {
 export interface ToolCall {
   id: string
   name: string
+  /** Function 调用为 JSON 文本；kind 为 custom 时是 freeform 原文（补丁） */
   arguments: string
+  kind?: 'custom'
 }
 
 export interface ToolResult {

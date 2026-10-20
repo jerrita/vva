@@ -51,16 +51,7 @@ pub enum EditorKind {
     Hashline,
 }
 
-fn missing_editor() -> EditorKind {
-    // JSONL 缺省字段是早期 replace 会话；新会话默认 hashline，会显式写入。
-    EditorKind::Replace
-}
-
 impl EditorKind {
-    pub fn is_replace(&self) -> bool {
-        matches!(self, Self::Replace)
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Replace => "replace",
@@ -116,6 +107,7 @@ impl Session {
         let now = Utc::now();
         Self {
             header: SessionHeader {
+                version: SESSION_VERSION,
                 id: generate_session_id(),
                 title,
                 workspace_root: workspace_root.into(),
@@ -201,9 +193,13 @@ impl Session {
     }
 }
 
+/// 当前会话格式版本；其余版本的会话不解析（工具协议随版本整体变化，不做兼容转换）
+pub const SESSION_VERSION: u32 = 2;
+
 /// JSONL 持久化格式：首行 Header
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SessionHeader {
+    pub version: u32,
     pub id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -215,10 +211,6 @@ pub struct SessionHeader {
     pub current_variant: Option<String>,
     #[serde(default = "default_web_search")]
     pub web_search: bool,
-    #[serde(
-        default = "missing_editor",
-        skip_serializing_if = "EditorKind::is_replace"
-    )]
     pub editor: EditorKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
@@ -367,8 +359,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_header_loads_with_topic_defaults() {
-        let line = r#"{"type":"header","id":"sess_a1b2c","workspace_root":"/w","created_at":"2026-01-01T00:00:00Z","current_model":"a/m"}"#;
+    fn minimal_header_loads_with_topic_defaults() {
+        let line = r#"{"type":"header","version":2,"id":"sess_a1b2c","workspace_root":"/w","created_at":"2026-01-01T00:00:00Z","current_model":"a/m","editor":"hashline"}"#;
         let JsonlRecord::Header(header) = serde_json::from_str(line).unwrap() else {
             panic!("expected header");
         };
@@ -376,7 +368,7 @@ mod tests {
         assert!(header.origin.is_none());
         assert!(header.routed_by.is_none() && header.superseded_by.is_none());
         assert!(header.last_activity.is_none());
-        // 缺省字段不被序列化，旧格式保持稳定
+        // 缺省字段不被序列化
         let out = serde_json::to_string(&JsonlRecord::Header(header)).unwrap();
         for key in [
             "kind",

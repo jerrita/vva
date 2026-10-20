@@ -53,7 +53,8 @@ classDiagram
     - `current_model: String`（如 `"openai/gpt-5-terra"` 或 `"anthropic/claude-3-7-sonnet"`）；
     - `current_variant: Option<String>`（如 `Some("high")` 或 `None`）；
     - `web_search: bool`（保持工具/函数挂载与 prompt cache 一致）；
-    - `editor: EditorKind`（`hashline` / `replace` / `patch`，创建时取当时模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；会话内换模不改写，以保证 Read/Edit 协议与历史工具结果一致。`hashline` 为 `[PATH#TAG]` 快照与行号补丁）；
+    - `version: u32`（会话格式版本，当前 `SESSION_VERSION = 2`；版本不符的会话不解析）；
+    - `editor: EditorKind`（`hashline` / `replace` / `patch`，创建时取当时模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；会话内换模不改写，以保证文件工具协议与历史工具结果一致）。各协议注册的文件工具名互不重叠：`replace` 为 `Read` / `Write` / `Edit` / `Glob` / `Grep`；`patch` 为 `Read` / `apply_patch`（Codex V4A，freeform）/ `Glob` / `Grep`；`hashline` 为 `hashline_read` / `hashline_grep` / `hashline_edit`（`[PATH#TAG]` 快照与行号补丁，freeform，`[PATH]` + `ADD` 新建文件）/ `Glob`；工具名常量见 [`src/tools/names.rs`](../src/tools/names.rs)；
   - **agent space 字段**（均可缺省，旧 JSONL 照常加载；详见 [agent.md](agent.md)）：`kind: SessionKind`（`Topic` 缺省不序列化 / `Oneshot` / `Curator`）、`origin: Option<Origin{channel, chat_id}>`、`routed_by`、`continued_from`（rollover 接替会话承接的旧会话，不借用 subagent 的 `parent`）、`superseded_by`（rollover 后的接替会话）、`last_activity`（TTL 清理依据）；`SessionSummary` 仅带出 `kind` / `origin` / `superseded_by`；
   - 恢复或切换会话时，继承历史记录中保存的模型、推理强度、网络搜索状态与编辑协议；
   - 新建会话未显式指定模型时，沿用 `~/.vva/state.json` 中上次选用的模型与推理档位，无法解析时回落到 `settings.default`；
@@ -88,7 +89,7 @@ classDiagram
 | `Image` | `source: MediaSource`, `mime_type: Option<String>` | 多模态图像（URL / Base64） |
 | `File` | `source: MediaSource`, `mime_type: String`, `filename: String` | 文件模态（当前原生支持 PDF；Base64 直传 Anthropic `document` / Gemini `inlineData` / Responses `input_file`） |
 | `FileRef` | `path: String`, `content: String`, `truncated: bool` | 用户 `@path` 引用的本地文本文件内容（harness 提交时展开，提示词原文保留；二进制/超限/模型不支持的媒体降级为文本注记，由模型自行用工具处理；三家适配器经 `format_file_ref` 统一投影为文本块） |
-| `ToolCall` | `ToolCall` (`id`, `name`, `arguments`) | Agent 工具调用请求封装 |
+| `ToolCall` | `ToolCall` (`id`, `name`, `arguments`, `kind`) | Agent 工具调用请求封装；`kind` 为 `Function`（arguments 为 JSON 文本，缺省不序列化）或 `Custom`（freeform 工具，arguments 为原始输入文本） |
 | `ToolResult` | `ToolResult` (`tool_call_id`, `content`, `is_error`) | Agent 工具执行结果与错误封装 |
 | `WebSearchCall` | `WebSearchCall` (`id`, `query`, `status`, `sources`) | 结构化记录网络检索意图、状态与引文数据源 |
 

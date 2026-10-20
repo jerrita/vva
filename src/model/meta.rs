@@ -80,6 +80,16 @@ pub enum ResponseOutputItem {
         arguments: String,
         status: String,
     },
+    /// custom（freeform）工具调用：input 为原始文本而非 JSON 参数
+    CustomToolCall {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        call_id: String,
+        name: String,
+        input: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+    },
     WebSearchCall {
         id: String,
         status: String,

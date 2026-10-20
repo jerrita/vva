@@ -4,6 +4,7 @@ use super::{
     MAX_RESULTS, Tool, collect_files, matches_any, parse_glob_patterns, relative_to, resolve_path,
     sort_by_mtime,
 };
+use crate::tools::names;
 use crate::tools::parse_args;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -30,7 +31,7 @@ pub(super) struct GlobArgs {
 #[async_trait]
 impl Tool for GlobTool {
     fn name(&self) -> &str {
-        "Glob"
+        names::GLOB
     }
 
     fn description(&self) -> &str {
@@ -38,19 +39,21 @@ impl Tool for GlobTool {
 Returns file paths sorted by modification time (newest first), at most 100, with a truncation marker when more match. Empty output means no matches. Hidden and gitignored files are included; directory symlinks are not traversed during recursion. Example arguments: {"pattern":"**/*.{rs,md}","path":"src"}. Shell variables and ~ are not expanded."#
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "pattern": { "type": "string", "description": "Case-sensitive glob relative to path, e.g. **/*.rs, **/*.{rs,md,toml}, or Cargo.toml. Supports *, ?, [...], recursive **, and {a,b} expansion. Extglobs are unsupported." },
-                "path": { "type": "string", "format": "path", "description": "Search root: a directory or a single file, absolute or workspace-relative. Omit for the workspace root. Shell variables and ~ are not expanded." }
-            },
-            "required": ["pattern"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Case-sensitive glob relative to path, e.g. **/*.rs, **/*.{rs,md,toml}, or Cargo.toml. Supports *, ?, [...], recursive **, and {a,b} expansion. Extglobs are unsupported." },
+                    "path": { "type": "string", "format": "path", "description": "Search root: a directory or a single file, absolute or workspace-relative. Omit for the workspace root. Shell variables and ~ are not expanded." }
+                },
+                "required": ["pattern"]
+            })
         })
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: GlobArgs = parse_args(arguments, "Glob")?;
+        let args: GlobArgs = parse_args(arguments, names::GLOB)?;
         let root = resolve_path(&self.working_dir, args.path.as_deref().unwrap_or("."));
         let patterns = parse_glob_patterns(&args.pattern)
             .map_err(|error| format!("Invalid glob pattern: {error}"))?;

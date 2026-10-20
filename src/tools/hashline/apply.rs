@@ -165,7 +165,7 @@ fn preflight_file_op(working_dir: &Path, prepared: &Prepared) -> Result<(), Stri
 
 struct Group {
     label: String,
-    tag: String,
+    tag: Option<String>,
     canonical: PathBuf,
     ops: Vec<Op>,
     file_op: Option<FileOp>,
@@ -179,10 +179,16 @@ fn group_sections(working_dir: &Path, sections: Vec<Section>) -> Result<Vec<Grou
         let canonical = fs::canonicalize(&resolved).unwrap_or(resolved);
         if let Some(&index) = map.get(&canonical) {
             let existing = &mut order[index];
+            if existing.tag.is_none() && section.tag.is_none() {
+                return Err(format!(
+                    "invalid_arguments: {} appears in more than one [PATH] ADD section; keep one",
+                    section.path
+                ));
+            }
             if existing.tag != section.tag {
                 return Err(format!(
-                    "invalid_arguments: {} has mixed snapshot tags {} and {}; re-Read and copy one [{}#TAG] header",
-                    section.path, existing.tag, section.tag, section.path
+                    "invalid_arguments: {} mixes [PATH] ADD with [PATH#TAG] sections; ADD creates a new file, tagged sections edit an existing one",
+                    section.path
                 ));
             }
             existing.ops.extend(section.ops);
@@ -219,11 +225,35 @@ fn prepare_group(
     batch_named: &mut HashMap<String, Vec<String>>,
     anonymous: &mut Option<Vec<String>>,
 ) -> Result<Prepared, String> {
+    if let Some(FileOp::Add { lines }) = &group.file_op {
+        if group.canonical.exists() {
+            return Err(format!(
+                "Failed to ADD {}: file already exists; hashline_read it and edit with [PATH#TAG]",
+                group.label
+            ));
+        }
+        let mut updated = lines.join("\n");
+        updated.push('\n');
+        return Ok(Prepared {
+            label: group.label,
+            canonical: group.canonical,
+            original: String::new(),
+            updated,
+            changes: Vec::new(),
+            file_op: group.file_op,
+            base_seen: HashSet::new(),
+        });
+    }
+    // 非 ADD 的 section 必带 tag（解析层保证）
+    let tag = group
+        .tag
+        .clone()
+        .ok_or("invalid_arguments: missing snapshot tag")?;
     let original = if group.canonical.exists() {
         let raw = fs::read_to_string(&group.canonical)
             .map_err(|e| format!("Failed to read {}: {e}", group.canonical.display()))?;
         if raw.contains('\0') {
-            return Err("Unsupported binary file; use Write".into());
+            return Err("Unsupported binary file".into());
         }
         raw
     } else {
@@ -232,14 +262,14 @@ fn prepare_group(
             group.canonical.display()
         ));
     };
-    let snap = session.lookup(&group.canonical, &group.tag)?;
+    let snap = session.lookup(&group.canonical, &tag)?;
     if snap.text != original {
         // 报错中给出的新 tag 先注册（seen 为空），照抄可过校验，
         // 后续按 unseen 提示 Read，而不是 not registered 空转一轮。
         let fresh_tag = session.record(group.canonical.clone(), &original, std::iter::empty())?;
         return Err(format!(
-            "stale: [{}#{}] no longer matches disk (now [{}#{fresh_tag}]); Read and retry",
-            group.label, group.tag, group.label,
+            "stale: [{}#{}] no longer matches disk (now [{}#{fresh_tag}]); hashline_read and retry",
+            group.label, tag, group.label,
         ));
     }
     let file = LineFile::parse(&original);
@@ -262,14 +292,7 @@ fn prepare_group(
                 },
                 op_index,
             )
-            .map_err(|error| {
-                format!(
-                    "[{}#{}] op {}: {error}",
-                    group.label,
-                    group.tag,
-                    op_index + 1
-                )
-            })?,
+            .map_err(|error| format!("[{}#{}] op {}: {error}", group.label, tag, op_index + 1))?,
         );
     }
     spans.sort_by_key(|span| (span.start, span.end));
@@ -474,7 +497,7 @@ fn require_range(seen: &HashSet<u32>, start: u32, end: u32) -> Result<(), String
         Ok(())
     } else {
         Err(format!(
-            "unseen: missing displayed lines {}; Read these ranges first",
+            "unseen: missing displayed lines {}; hashline_read these ranges first",
             missing.join(", ")
         ))
     }
@@ -543,6 +566,17 @@ fn commit_group(
                 .map_err(|e| format!("Failed to delete {}: {e}", canonical.display()))?;
             Ok(format!("Deleted file {label}"))
         }),
+        Some(FileOp::Add { lines }) => {
+            if let Some(parent) = canonical.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!("Failed to create directory {}: {error}", parent.display())
+                })?;
+            }
+            with_edit_locks(&[&canonical], || write_new_file(&canonical, &updated))?;
+            let canonical = fs::canonicalize(&canonical).unwrap_or(canonical);
+            let tag = session.record(canonical, &updated, 1..=lines.len() as u32)?;
+            Ok(format!("Created file {label}\n[{label}#{tag}]"))
+        }
         Some(FileOp::Move { dest }) => {
             let dest_path = move_dest(working_dir, &canonical, &dest)?;
             with_edit_locks(&[&canonical, &dest_path], || {

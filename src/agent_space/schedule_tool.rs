@@ -93,20 +93,22 @@ impl Tool for ScheduleTool {
          chats configured with /sethome; remaining bindings do not select recipients."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "enum": ["create", "list", "pause", "resume", "delete"]},
-                "id": {"type": "string", "description": "Task id (prefix allowed) for pause/resume/delete; optional custom id for create"},
-                "cron": {"type": "string", "description": "5-field cron expression"},
-                "at": {"type": "string", "description": "One-shot local time, YYYY-MM-DDTHH:MM"},
-                "every": {"type": "string", "description": "Interval such as 30m, 2h, 1d"},
-                "prompt": {"type": "string", "description": "Self-contained instruction executed at each trigger"},
-                "target": {"type": "string", "enum": ["new", "session"], "description": "Where to run: a fresh session (default) or this conversation"},
-                "bindings": {"type": "array", "items": {"type": "string"}, "description": "First binding selects the source chat for a fresh session, e.g. [\"qq:c2c:<openid>\"]; defaults to the current chat. Notifications go only to configured home chats."}
-            },
-            "required": ["action"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["create", "list", "pause", "resume", "delete"]},
+                    "id": {"type": "string", "description": "Task id (prefix allowed) for pause/resume/delete; optional custom id for create"},
+                    "cron": {"type": "string", "description": "5-field cron expression"},
+                    "at": {"type": "string", "description": "One-shot local time, YYYY-MM-DDTHH:MM"},
+                    "every": {"type": "string", "description": "Interval such as 30m, 2h, 1d"},
+                    "prompt": {"type": "string", "description": "Self-contained instruction executed at each trigger"},
+                    "target": {"type": "string", "enum": ["new", "session"], "description": "Where to run: a fresh session (default) or this conversation"},
+                    "bindings": {"type": "array", "items": {"type": "string"}, "description": "First binding selects the source chat for a fresh session, e.g. [\"qq:c2c:<openid>\"]; defaults to the current chat. Notifications go only to configured home chats."}
+                },
+                "required": ["action"]
+            })
         })
     }
 

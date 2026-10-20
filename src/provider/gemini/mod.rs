@@ -94,7 +94,7 @@ impl Provider for GeminiProvider {
             &body,
         )
         .await?;
-        GeminiAccumulator::parse_response(&response)
+        GeminiAccumulator::parse_response(&response, tools)
     }
 
     async fn complete_stream(
@@ -106,7 +106,7 @@ impl Provider for GeminiProvider {
     ) -> Result<ProviderResponse, ProviderError> {
         let body = self.build_request_body(session, tools, options)?;
 
-        let mut handler = GeminiAccumulator::new(event_sender);
+        let mut handler = GeminiAccumulator::new(event_sender, tools);
         let _ = post_sse(
             &self.endpoint_url(&options.model, true),
             self.auth_headers()?,

@@ -1,4 +1,17 @@
 import type { ToolCall, ToolResult, WebSearchCall, WebSearchSource } from '../../types'
+import type { FileDiff } from '../../utils/editDiff'
+import {
+  APPLY_PATCH,
+  EDIT,
+  GLOB,
+  HASHLINE_EDIT,
+  HASHLINE_GREP,
+  HASHLINE_READ,
+  GREP,
+  READ,
+  SHELL,
+  WRITE,
+} from '../../toolNames'
 
 /**
  * 轨迹行的动作类别：决定轨道上的字形形状。
@@ -73,20 +86,32 @@ function nonEmptyLines(text: string): number {
   return text.split('\n').filter(line => line.trim() !== '' && line !== '[results truncated]').length
 }
 
-/** Edit 三种编辑器入参中的首个目标文件：replace 的 path、patch 的文件头、hashline 的 [path#TAG] */
-function editTarget(args: Record<string, unknown>): string | null {
-  const path = str(args.path)
-  if (path) return path
-  const input = str(args.input)
-  if (!input) return null
-  for (const line of input.split('\n')) {
-    for (const prefix of ['*** Update File: ', '*** Add File: ', '*** Delete File: ']) {
-      if (line.startsWith(prefix)) return line.slice(prefix.length).trim()
-    }
-    const hashline = /^\[(.+)#[0-9A-Za-z]+\]\s*$/.exec(line)
-    if (hashline) return hashline[1]
+function diffStat(diffs: FileDiff[]): { plus: number; minus: number } | undefined {
+  if (diffs.length === 0) return undefined
+  return {
+    plus: diffs.reduce((sum, diff) => sum + diff.plus, 0),
+    minus: diffs.reduce((sum, diff) => sum + diff.minus, 0),
   }
-  return null
+}
+
+/** 补丁类编辑的目标与补充：单文件显示路径（新建 / 删除 / `old → new` 作补充），多文件显示文件数 */
+function describePatch(
+  diffs: FileDiff[],
+  rel: (path: string) => string,
+): Pick<ToolView, 'target' | 'secondary' | 'filePath'> {
+  if (diffs.length === 0) return { target: '（解析中…）' }
+  if (diffs.length > 1) {
+    const first = diffs.find(diff => diff.op !== 'delete') ?? diffs[0]
+    return { target: `${diffs.length} files`, filePath: first.op === 'delete' ? undefined : first.path }
+  }
+  const [diff] = diffs
+  const note =
+    diff.op === 'add' ? '新建' : diff.op === 'delete' ? '删除' : diff.op === 'move' && diff.to ? `→ ${rel(diff.to)}` : undefined
+  return {
+    target: rel(diff.path),
+    secondary: note,
+    filePath: diff.op === 'delete' ? undefined : diff.to ?? diff.path,
+  }
 }
 
 function host(url: string): string {
@@ -108,13 +133,13 @@ function questionSummary(args: Record<string, unknown>): string {
 }
 
 /**
- * 按工具类型生成行模型；`diffStat` 由调用方注入（编辑差异解析在独立模块）。
+ * 按工具名生成行模型；`diffs` 由调用方注入（编辑差异解析在独立模块，仅编辑类工具需要）。
  */
 export function describeTool(
   call: ToolCall,
   result: ToolResult | null,
   workspace: string | undefined,
-  diffStat: (call: ToolCall) => { plus: number; minus: number } | null,
+  diffs: FileDiff[],
 ): ToolView {
   const args = parseArgs(call.arguments) ?? {}
   const rel = (path: string) => relativePath(cleanPath(path), workspace)
@@ -129,7 +154,8 @@ export function describeTool(
   }
 
   switch (call.name) {
-    case 'Read': {
+    case READ:
+    case HASHLINE_READ: {
       const path = str(args.path)
       if (!path) return { ...fallback, cls: 'observe', tally: '查看' }
       const offset = typeof args.offset === 'number' ? args.offset : null
@@ -155,7 +181,7 @@ export function describeTool(
         body: null,
       }
     }
-    case 'Write': {
+    case WRITE: {
       const path = str(args.path)
       const content = str(args.content)
       if (!path) return { ...fallback, cls: 'change', tally: '修改' }
@@ -170,9 +196,8 @@ export function describeTool(
         body: 'diff',
       }
     }
-    case 'Edit': {
-      const path = editTarget(args)
-      const stat = diffStat(call)
+    case EDIT: {
+      const path = str(args.path)
       return {
         verb: 'Edit',
         cls: 'change',
@@ -180,11 +205,22 @@ export function describeTool(
         target: path ? rel(path) : '（未识别的编辑）',
         mono: true,
         filePath: path ? cleanPath(path) : undefined,
-        outcome: stat ?? undefined,
+        outcome: diffStat(diffs),
         body: 'diff',
       }
     }
-    case 'Glob': {
+    case APPLY_PATCH:
+    case HASHLINE_EDIT:
+      return {
+        ...describePatch(diffs, rel),
+        verb: call.name === APPLY_PATCH ? 'Patch' : 'Edit',
+        cls: 'change',
+        tally: '修改',
+        mono: true,
+        outcome: diffStat(diffs),
+        body: 'diff',
+      }
+    case GLOB: {
       const pattern = str(args.pattern) ?? call.arguments
       const path = str(args.path)
       const scope = path ? rel(path) : null
@@ -199,7 +235,8 @@ export function describeTool(
         body: 'output',
       }
     }
-    case 'Grep': {
+    case GREP:
+    case HASHLINE_GREP: {
       const pattern = str(args.pattern) ?? call.arguments
       const include = str(args.include)
       const path = str(args.path)
@@ -216,7 +253,7 @@ export function describeTool(
         body: 'output',
       }
     }
-    case 'Shell': {
+    case SHELL: {
       const command = str(args.command) ?? ''
       const intent = str(args.intent)
       const background = args.run_in_background === true

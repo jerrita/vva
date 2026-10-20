@@ -184,8 +184,10 @@ impl crate::tools::Tool for TestTool {
     fn description(&self) -> &str {
         "test tool"
     }
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type": "object", "properties": {"label": {"type": "string"}}})
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({"type": "object", "properties": {"label": {"type": "string"}}})
+        })
     }
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         match &self.blocking {
@@ -1182,7 +1184,7 @@ fn agent_def(name: &str) -> crate::agents::AgentDef {
         name: name.into(),
         description: "test".into(),
         model: None,
-        tools: vec!["Read".into()],
+        tools: vec![crate::tools::names::READ.into()],
         system_prompt: None,
     }
 }

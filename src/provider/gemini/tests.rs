@@ -78,7 +78,8 @@ fn test_gemini_grounding_metadata_projection() {
         }
     });
 
-    let parsed = GeminiAccumulator::parse_response(&mock_gemini_response).expect("parse response");
+    let parsed =
+        GeminiAccumulator::parse_response(&mock_gemini_response, &[]).expect("parse response");
     let msg = &parsed.messages[0];
 
     // 验证结构体解析：包含了 WebSearchCall, Reasoning, Text (with Annotation)
@@ -149,11 +150,11 @@ fn test_gemini_system_instruction_and_tool_call_response_mapping() {
     session.append_turn(Turn::user_turn(Message::text("List files")));
 
     // Assistant 调用 bash 工具
-    let asst_msg = Message::new(vec![ContentPart::ToolCall(ToolCall {
-        id: "call_abc123".into(),
-        name: "bash".into(),
-        arguments: r#"{"command":"ls"}"#.into(),
-    })]);
+    let asst_msg = Message::new(vec![ContentPart::ToolCall(ToolCall::new(
+        "call_abc123",
+        "bash",
+        r#"{"command":"ls"}"#,
+    ))]);
     session.append_turn(Turn::assistant_turn(vec![asst_msg]));
 
     // Tool 返回执行结果
@@ -246,7 +247,7 @@ fn test_gemini_streaming_accumulator_matches_non_streaming_parse() {
         }
     });
 
-    let mut streaming = GeminiAccumulator::new(None);
+    let mut streaming = GeminiAccumulator::new(None, &[]);
     streaming.merge_response(&chunk1).expect("merge chunk1");
     streaming.merge_response(&chunk2).expect("merge chunk2");
     let streamed = streaming.finish();
@@ -286,7 +287,7 @@ fn test_gemini_streaming_accumulator_matches_non_streaming_parse() {
             "totalTokenCount": 125
         }
     });
-    let parsed = GeminiAccumulator::parse_response(&full).expect("parse full");
+    let parsed = GeminiAccumulator::parse_response(&full, &[]).expect("parse full");
     let (full_parts, full_meta, full_usage) = {
         let msg = &parsed.messages[0];
         let meta = parsed.meta.clone();
@@ -332,7 +333,7 @@ fn test_gemini_streaming_grounding_chunks_merge_not_overwrite() {
         }]
     });
 
-    let mut acc = GeminiAccumulator::new(None);
+    let mut acc = GeminiAccumulator::new(None, &[]);
     acc.merge_response(&chunk1).expect("merge chunk1");
     acc.merge_response(&chunk2).expect("merge chunk2");
     let parts = acc.finish().messages.remove(0).parts;
@@ -397,4 +398,79 @@ fn test_response_schema_maps_to_generation_config() {
         "application/json"
     );
     assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
+}
+
+fn freeform_tools() -> Vec<ToolDefinition> {
+    vec![ToolDefinition {
+        name: "apply_patch".into(),
+        description: "apply a patch".into(),
+        input: ToolInput::Freeform { grammar: None },
+    }]
+}
+
+#[test]
+fn test_gemini_freeform_tool_projection() {
+    let provider = GeminiProvider::new("test");
+    let tools = freeform_tools();
+
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("go")));
+    session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::ToolCall(ToolCall::custom(
+            "call_1",
+            "apply_patch",
+            "*** Begin Patch\n*** End Patch",
+        )),
+    ])]));
+    let body = provider
+        .build_request_body(&session, &tools, &CompletionOptions::default())
+        .expect("build body");
+
+    // 声明：单字段 input 的 parameters
+    let decls = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|t| t.get("functionDeclarations"))
+        .expect("functionDeclarations");
+    assert_eq!(
+        decls[0]["parameters"]["properties"]["input"]["type"],
+        "string"
+    );
+    assert_eq!(
+        decls[0]["parameters"]["required"],
+        serde_json::json!(["input"])
+    );
+
+    // 回放：Custom 调用包装为 {"input": 原文}
+    assert_eq!(
+        body["contents"][1]["parts"][0]["functionCall"]["args"],
+        serde_json::json!({"input": "*** Begin Patch\n*** End Patch"})
+    );
+
+    // 解析：还原为 Custom 调用原文
+    let resp = |args: serde_json::Value| {
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [
+                    {"functionCall": {"name": "apply_patch", "args": args}}
+                ]},
+                "finishReason": "STOP"
+            }]
+        })
+    };
+    let parsed =
+        GeminiAccumulator::parse_response(&resp(serde_json::json!({"input": "raw text"})), &tools)
+            .expect("parse");
+    let ContentPart::ToolCall(call) = &parsed.messages[0].parts[0] else {
+        panic!("expected tool call");
+    };
+    assert_eq!(call.kind, ToolCallKind::Custom);
+    assert_eq!(call.name, "apply_patch");
+    assert_eq!(call.arguments, "raw text");
+
+    // 缺 input 显式报错
+    let err = GeminiAccumulator::parse_response(&resp(serde_json::json!({"patch": "x"})), &tools)
+        .expect_err("error");
+    assert!(matches!(err, ProviderError::Protocol(_)));
 }

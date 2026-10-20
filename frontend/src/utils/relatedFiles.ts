@@ -1,6 +1,7 @@
 import type { ContentPart, RelatedFile, Session } from '../types'
 import { cleanPath, parseArgs, relativePath } from '../components/trace/describe'
 import { editDiffs, type FileDiff } from './editDiff'
+import { WRITE, isChangeTool, isReadTool } from '../toolNames'
 
 type Action = RelatedFile['actions'][number]
 
@@ -42,7 +43,7 @@ function normalize(path: string, workspace: string): string {
   return relativePath(cleanPath(path), workspace)
 }
 
-/** 本会话中所有成功的 Edit / Write diff，按调用顺序，仅保留规范化相对路径等于 rel 的。 */
+/** 本会话中所有成功的编辑类 diff（含移动目标），按调用顺序，仅保留规范化相对路径等于 rel 的。 */
 export function sessionDiffsFor(
   session: Session,
   draft: ContentPart[] | undefined,
@@ -50,9 +51,10 @@ export function sessionDiffsFor(
 ): FileDiff[] {
   const out: FileDiff[] = []
   for (const t of collectTouches(session, draft)) {
-    if (t.kind !== 'call' || (t.name !== 'Edit' && t.name !== 'Write')) continue
+    if (t.kind !== 'call' || !isChangeTool(t.name)) continue
     for (const d of editDiffs(t.name, t.arguments)) {
-      if (normalize(d.path, session.workspace_root) === rel) out.push(d)
+      const hit = [d.path, d.to].some(p => p && normalize(p, session.workspace_root) === rel)
+      if (hit) out.push(d)
     }
   }
   return out
@@ -108,7 +110,7 @@ export function extractRelatedFiles(
   for (const t of collectTouches(session, draft)) {
     if (t.kind === 'file') {
       touch(t.filename, 'attachment', t.turnIndex)
-    } else if (t.name === 'Read') {
+    } else if (isReadTool(t.name)) {
       const args = parseArgs(t.arguments)
       if (!args || typeof args.path !== 'string') continue
       const f = touch(args.path, 'read', t.turnIndex)
@@ -118,15 +120,20 @@ export function extractRelatedFiles(
         const start = positiveInt(args.offset) ?? 1
         f.readRanges.push({ start, end: start + limit - 1 })
       }
-    } else if (t.name === 'Edit' || t.name === 'Write') {
-      const action: Action = t.name === 'Edit' ? 'edit' : 'write'
+    } else if (isChangeTool(t.name)) {
       for (const d of editDiffs(t.name, t.arguments)) {
-        const f = touch(d.path, action, t.turnIndex)
+        const f = touch(d.path, t.name === WRITE || d.op === 'add' ? 'write' : 'edit', t.turnIndex)
         if (!f) continue
         f.plus += d.plus
         f.minus += d.minus
         if (d.op === 'delete') f.deleted = true
         else if (d.op === 'add') f.deleted = false
+        if (d.op === 'move' && d.to) {
+          // 源文件移走视为删除，目标文件作为新建
+          f.deleted = true
+          const dest = touch(d.to, 'write', t.turnIndex)
+          if (dest) dest.deleted = false
+        }
       }
     }
   }

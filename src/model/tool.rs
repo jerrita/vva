@@ -4,7 +4,25 @@ use serde::{Deserialize, Serialize};
 pub struct ToolCall {
     pub id: String,
     pub name: String,
+    /// Function 调用为 JSON 文本；Custom 调用为工具原始输入文本
     pub arguments: String,
+    #[serde(default, skip_serializing_if = "ToolCallKind::is_function")]
+    pub kind: ToolCallKind,
+}
+
+/// 调用形态：与工具定义的 ToolInput 一一对应
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallKind {
+    #[default]
+    Function,
+    Custom,
+}
+
+impl ToolCallKind {
+    pub fn is_function(&self) -> bool {
+        matches!(self, Self::Function)
+    }
 }
 
 impl ToolCall {
@@ -17,6 +35,19 @@ impl ToolCall {
             id: id.into(),
             name: name.into(),
             arguments: arguments.into(),
+            kind: ToolCallKind::Function,
+        }
+    }
+
+    /// Freeform 工具调用：arguments 为原始输入文本
+    pub fn custom(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        input: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: ToolCallKind::Custom,
+            ..Self::new(id, name, input)
         }
     }
 }
@@ -60,7 +91,27 @@ impl ToolResult {
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
-    pub parameters: serde_json::Value,
+    pub input: ToolInput,
+}
+
+/// 工具入参形态
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolInput {
+    /// JSON Schema 描述的对象参数
+    Json(serde_json::Value),
+    /// 原始文本输入；grammar 为可选的 Lark 文法约束
+    Freeform { grammar: Option<String> },
+}
+
+#[cfg(test)]
+impl ToolInput {
+    pub fn expect_json(self) -> serde_json::Value {
+        match self {
+            Self::Json(schema) => schema,
+            Self::Freeform { .. } => panic!("expected JSON tool input"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

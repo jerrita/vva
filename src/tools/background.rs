@@ -309,13 +309,15 @@ impl Tool for TaskOutputTool {
         "Check the status and captured output of a background task started with Shell run_in_background. Returns the status, total bytes captured, and the most recent output; a changed byte count means new output arrived since the last check."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "task_id": { "type": "string", "description": "Task id returned by the background Shell call." }
-            },
-            "required": ["task_id"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "description": "Task id returned by the background Shell call." }
+                },
+                "required": ["task_id"]
+            })
         })
     }
 
@@ -384,18 +386,20 @@ impl Tool for TaskStopTool {
         }
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        let task_id = if self.broker.is_some() {
-            "Task id returned by the background Shell call, or a sess_ session id."
-        } else {
-            "Task id returned by the background Shell call."
-        };
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "task_id": {"type": "string", "description": task_id}
-            },
-            "required": ["task_id"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            let task_id = if self.broker.is_some() {
+                "Task id returned by the background Shell call, or a sess_ session id."
+            } else {
+                "Task id returned by the background Shell call."
+            };
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": task_id}
+                },
+                "required": ["task_id"]
+            })
         })
     }
 

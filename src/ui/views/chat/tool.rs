@@ -1,7 +1,8 @@
 //! 工具调用头部行：逐工具摘要与展开状态判定。
 
 use super::*;
-use super::{pipeline::push_source_row, state::*, tool_block::*};
+use super::{patch::*, pipeline::push_source_row, state::*, tool_block::*};
+use crate::tools::names;
 use crate::ui::text::truncate;
 use crate::ui::views::{bold, fg};
 
@@ -34,49 +35,6 @@ pub(super) fn line_count(text: &str) -> usize {
     } else {
         text.lines().count()
     }
-}
-
-pub(super) fn mutation_counts(
-    name: &str,
-    args: &serde_json::Value,
-) -> Option<(String, usize, usize)> {
-    if name != "Edit" {
-        return None;
-    }
-    if let Some(input) = json_str(args, "input") {
-        let (added, removed) = patch_counts(input);
-        return Some((patch_file_path(input)?.to_string(), added, removed));
-    }
-    let (added, removed) = edit_counts(args)?;
-    Some((json_str(args, "path")?.to_string(), added, removed))
-}
-
-pub(super) fn patch_file_path(input: &str) -> Option<&str> {
-    for line in input.lines() {
-        for prefix in ["*** Update File: ", "*** Add File: ", "*** Delete File: "] {
-            if let Some(path) = line.strip_prefix(prefix) {
-                return Some(path.trim());
-            }
-        }
-    }
-    None
-}
-
-pub(super) fn patch_counts(input: &str) -> (usize, usize) {
-    let mut added = 0;
-    let mut removed = 0;
-    for line in input.lines() {
-        let trimmed = line.trim_end();
-        if trimmed.starts_with("***") || trimmed.starts_with("@@") {
-            continue;
-        }
-        if trimmed.starts_with('+') {
-            added += 1;
-        } else if trimmed.starts_with('-') {
-            removed += 1;
-        }
-    }
-    (added, removed)
 }
 
 pub(super) fn glob_match_count(result: &ToolResult) -> Option<usize> {
@@ -149,7 +107,45 @@ fn with_count(label: String, count: usize, singular: &str, plural: &str) -> Stri
     format!("{label} ({count} {noun})")
 }
 
+/// 头部显示标签：按具体工具名映射编辑协议动词，其余沿用工具名
+pub(super) fn tool_label(name: &str) -> &str {
+    match name {
+        names::READ | names::HASHLINE_READ => "Read",
+        names::GREP | names::HASHLINE_GREP => "Grep",
+        names::EDIT | names::HASHLINE_EDIT => "Edit",
+        names::APPLY_PATCH => "Patch",
+        names::WRITE => "Write",
+        _ => name,
+    }
+}
+
+/// freeform 工具的 `arguments` 是补丁原文而非 JSON
+pub(super) fn is_freeform_edit(name: &str) -> bool {
+    matches!(name, names::APPLY_PATCH | names::HASHLINE_EDIT)
+}
+
+/// 变更类工具的头部摘要：目标 + 计数尾注
+pub(super) fn change_summary(name: &str, arguments: &str, complete: bool) -> Option<Summary> {
+    match name {
+        names::APPLY_PATCH => summarize(&parse_apply_patch(arguments, complete)),
+        names::HASHLINE_EDIT => summarize(&parse_hashline_input(arguments, complete)),
+        names::EDIT => {
+            let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+            let target = json_str(&args, "path")?.to_string();
+            let tail = edit_counts(&args)
+                .map_or(Tail::None, |(added, removed)| Tail::Counts(added, removed));
+            Some(Summary { target, tail })
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&ToolResult>) -> String {
+    if is_freeform_edit(name) {
+        return change_summary(name, arguments, result.is_some())
+            .map(|summary| summary.text())
+            .unwrap_or_default();
+    }
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return arguments.to_string();
     };
@@ -165,7 +161,7 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
             }
         }
         "web_fetch" => str_or_raw(&args, "url", arguments),
-        "Read" => {
+        names::READ | names::HASHLINE_READ => {
             let path = str_or_raw(&args, "path", arguments);
             let number = |key: &str| args.get(key).and_then(serde_json::Value::as_u64);
             let offset = number("offset").unwrap_or(1);
@@ -175,27 +171,17 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
                 .unwrap_or_default();
             format!("{path} [offset={offset}, limit={limit}{byte_offset}]")
         }
-        "Write" => str_or_raw(&args, "path", arguments),
-        "Edit" => {
-            let counted = if let Some(input) = json_str(&args, "input") {
-                patch_file_path(input).map(|path| (path, Some(patch_counts(input))))
-            } else {
-                json_str(&args, "path").map(|path| (path, edit_counts(&args)))
-            };
-            match counted {
-                Some((path, Some((added, removed)))) => format!("{path} (+{added}, -{removed})"),
-                Some((path, None)) => path.to_string(),
-                None => arguments.to_string(),
-            }
-        }
-        "Glob" => {
+        names::WRITE => str_or_raw(&args, "path", arguments),
+        names::EDIT => change_summary(name, arguments, true)
+            .map_or_else(|| arguments.to_string(), |summary| summary.text()),
+        names::GLOB => {
             let pattern = quoted_or_raw(&args, "pattern", arguments);
             match result.and_then(glob_match_count) {
                 Some(count) => with_count(pattern, count, "match", "matches"),
                 None => pattern,
             }
         }
-        "Grep" => {
+        names::GREP | names::HASHLINE_GREP => {
             let Some(pattern) = json_str(&args, "pattern") else {
                 return arguments.to_string();
             };
@@ -204,7 +190,7 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
                 _ => pattern.to_string(),
             }
         }
-        "Shell" => {
+        names::SHELL => {
             let intent = str_or_raw(&args, "intent", arguments);
             // 后台启动标注任务态，与前台执行区分
             if is_background(&args) {
@@ -265,37 +251,40 @@ pub(super) fn ask_user_detail(args: &serde_json::Value) -> String {
 }
 
 pub(super) fn tool_block_command(name: &str, arguments: &str) -> String {
+    // freeform 工具的 arguments 是补丁原文，不经 JSON 解析
+    if is_freeform_edit(name) {
+        return arguments.to_string();
+    }
     let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
         return arguments.to_string();
     };
     match name {
         "AskUser" => ask_user_detail(&args),
-        "Shell" => json_str(&args, "command")
+        names::SHELL => json_str(&args, "command")
             .map_or_else(|| arguments.to_string(), |command| format!("$ {command}")),
-        "Read" | "Write" | "Edit" => json_str(&args, "input")
-            .and_then(patch_file_path)
-            .or_else(|| json_str(&args, "path"))
-            .map_or_else(|| arguments.to_string(), ToOwned::to_owned),
-        "Glob" => quoted_or_raw(&args, "pattern", arguments),
-        "Grep" => str_or_raw(&args, "pattern", arguments),
+        names::READ | names::HASHLINE_READ | names::WRITE | names::EDIT => {
+            str_or_raw(&args, "path", arguments)
+        }
+        names::GLOB => quoted_or_raw(&args, "pattern", arguments),
+        names::GREP | names::HASHLINE_GREP => str_or_raw(&args, "pattern", arguments),
         "TaskOutput" | "TaskStop" => str_or_raw(&args, "task_id", arguments),
         _ => arguments.to_string(),
     }
 }
 
 pub(super) fn is_mutation_tool(name: &str) -> bool {
-    matches!(name, "Edit" | "Write")
-}
-
-pub(super) fn edit_uses_patch_body(arguments: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(arguments)
-        .is_ok_and(|args| args.get("input").is_some() || args.get("ops").is_some())
+    matches!(
+        name,
+        names::EDIT | names::WRITE | names::APPLY_PATCH | names::HASHLINE_EDIT
+    )
 }
 
 pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
     match name {
-        "Edit" | "Write" => Some(ToolExpand::Full),
-        "Shell" => Some(ToolExpand::Preview),
+        names::EDIT | names::WRITE | names::APPLY_PATCH | names::HASHLINE_EDIT => {
+            Some(ToolExpand::Full)
+        }
+        names::SHELL => Some(ToolExpand::Preview),
         // 后台任务工具：预览任务输出/停止结果，点击展开全文
         "TaskOutput" | "TaskStop" => Some(ToolExpand::Preview),
         // 子代理工具：预览最终消息 / 投递回执，点击展开全文
@@ -336,23 +325,12 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let detail_style = fg(Color::Rgb(150, 150, 150));
     let mut spans = vec![
         Span::styled(arrow, fg(Color::Rgb(160, 160, 160))),
-        Span::styled(call.name.clone(), name_style),
+        Span::styled(tool_label(&call.name).to_string(), name_style),
         Span::raw(" "),
     ];
-    let edit_detail = serde_json::from_str::<serde_json::Value>(&call.arguments)
-        .ok()
-        .and_then(|args| mutation_counts(&call.name, &args));
-    if let Some((path, inserted, deleted)) = edit_detail {
-        spans.extend([
-            Span::styled(path, detail_style),
-            Span::styled(" (", detail_style),
-            Span::styled(format!("+{inserted}"), EDIT_INSERT),
-            Span::styled(", ", detail_style),
-            Span::styled(format!("-{deleted}"), EDIT_DELETE),
-            Span::styled(")", detail_style),
-        ]);
-    } else {
-        spans.push(Span::styled(detail, detail_style));
+    match change_summary(&call.name, &call.arguments, result.is_some()) {
+        Some(summary) => spans.extend(summary.spans(detail_style)),
+        None => spans.push(Span::styled(detail, detail_style)),
     }
     if let Some(task_id) = result.and_then(|result| result.background_task_id.as_deref())
         && let Some(notice) = render.notices.iter().find(|notice| {

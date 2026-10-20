@@ -59,7 +59,10 @@ pub fn format_read(
         let remaining = budget.saturating_sub(output.len());
         if prefix.len() + text.len() + 1 > remaining {
             if shown > 0 {
-                output.push_str(&format!("[Continue with Read offset={}.]", index + 1));
+                output.push_str(&format!(
+                    "[Continue with hashline_read offset={}.]",
+                    index + 1
+                ));
                 record_read(session, canonical, content, seen, Vec::new())?;
                 return Ok(output);
             }
@@ -70,7 +73,7 @@ pub fn format_read(
             output.push_str(&prefix);
             output.push_str(&text[..cut]);
             output.push_str(&format!(
-                "\n[Partial line; continue with Read offset={}, byte_offset={}, limit=1.]",
+                "\n[Partial line; continue with hashline_read offset={}, byte_offset={}, limit=1.]",
                 index + 1,
                 skip + cut
             ));
@@ -95,7 +98,10 @@ pub fn format_read(
         index += 1;
     }
     if index < file.lines.len() {
-        output.push_str(&format!("[Continue with Read offset={}.]", index + 1));
+        output.push_str(&format!(
+            "[Continue with hashline_read offset={}.]",
+            index + 1
+        ));
     } else {
         output.push_str("[End of file]");
     }
@@ -145,14 +151,14 @@ pub fn format_grep_file(
             output.push_str(&line[..cut]);
             if cut > 0 {
                 output.push_str(&format!(
-                    "\n[Partial line; continue with Read offset={}, byte_offset={}, limit=1.]",
+                    "\n[Partial line; continue with hashline_read offset={}, byte_offset={}, limit=1.]",
                     index + 1,
                     cut
                 ));
                 partials.push(((*index + 1) as u32, cut));
             } else {
                 output.push_str(&format!(
-                    "\n[Line too long to display; Read offset={}, limit=1.]",
+                    "\n[Line too long to display; hashline_read offset={}, limit=1.]",
                     index + 1
                 ));
             }
@@ -252,9 +258,9 @@ pub(super) fn report_update(
 /// 从未展示的行才要求先 Read。
 fn gap_marker(first: u32, last: u32, carried: &HashSet<u32>) -> String {
     if (first..=last).all(|line| carried.contains(&line)) {
-        format!("[Lines {first}-{last} unchanged; shown earlier, editable without Read]\n")
+        format!("[Lines {first}-{last} unchanged; shown earlier, editable without hashline_read]\n")
     } else {
-        format!("[Lines {first}-{last} not displayed this session; Read before editing]\n")
+        format!("[Lines {first}-{last} not displayed this session; hashline_read before editing]\n")
     }
 }
 

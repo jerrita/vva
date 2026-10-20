@@ -1,7 +1,8 @@
 //! 工具调用展开块：边框、填充与结果/差异正文。
 
 use super::*;
-use super::{diff::*, tool::*};
+use super::{diff::*, patch::*, tool::*};
+use crate::tools::names;
 use crate::ui::views::fg;
 
 pub(super) const EDIT_DELETE: Style = Style::new().fg(Color::Rgb(220, 100, 100));
@@ -99,7 +100,9 @@ pub(super) fn push_tool_block(
     let hint_style = fg(Color::Rgb(110, 110, 110));
     lines.push(tool_block_frame("╭", "╮", max_width));
     push_filled_blank(lines, max_width);
-    if !is_mutation_tool(&call.name) {
+    let failed = result.is_some_and(|result| result.is_error);
+    // 变更类工具头部已含路径；freeform 工具失败时回显补丁原文以便对照错误
+    if !is_mutation_tool(&call.name) || (is_freeform_edit(&call.name) && failed) {
         push_filled_text(
             lines,
             &tool_block_command(&call.name, &call.arguments),
@@ -110,10 +113,10 @@ pub(super) fn push_tool_block(
     }
 
     let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };
-    if is_mutation_tool(&call.name) && !result.is_some_and(|result| result.is_error) {
+    if is_mutation_tool(&call.name) && !failed {
         let mut body = Vec::new();
         let inner_width = max_width.saturating_sub(TOOL_BLOCK_CHROME);
-        if call.name == "Write" {
+        if call.name == names::WRITE {
             if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments)
                 && let Some(content) = json_str(&args, "content")
             {
@@ -125,14 +128,17 @@ pub(super) fn push_tool_block(
                     );
                 }
             }
-        } else if edit_uses_patch_body(&call.arguments) {
-            push_patch_detail(
-                &mut body,
-                &call.arguments,
-                result.map(|result| result.content.as_str()),
-                inner_width,
-                usize::MAX,
-            );
+        } else if call.name == names::APPLY_PATCH {
+            let changes = parse_apply_patch(&call.arguments, result.is_some());
+            push_changes(&mut body, &changes, inner_width);
+        } else if call.name == names::HASHLINE_EDIT {
+            let changes = parse_hashline_input(&call.arguments, result.is_some());
+            let rendered = result.is_some_and(|result| {
+                push_hashline_result(&mut body, &result.content, &changes, inner_width)
+            });
+            if !rendered {
+                push_changes(&mut body, &changes, inner_width);
+            }
         } else {
             push_edit_detail(
                 &mut body,

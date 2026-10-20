@@ -44,20 +44,22 @@ impl Tool for SendMessageTool {
          current turn ends. Call WaitSession afterwards to receive the reply."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "Target session id (starts with sess_)."
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Target session id (starts with sess_)."
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Message body to deliver."
+                    }
                 },
-                "text": {
-                    "type": "string",
-                    "description": "Message body to deliver."
-                }
-            },
-            "required": ["session_id", "text"]
+                "required": ["session_id", "text"]
+            })
         })
     }
 
@@ -98,20 +100,22 @@ impl Tool for WaitSessionTool {
          return that turn's final assistant message. Pair with SendMessage: deliver, then wait."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "string",
-                    "description": "Target session id (starts with sess_)."
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Target session id (starts with sess_)."
+                    },
+                    "timeout_s": {
+                        "type": "integer",
+                        "description": "Maximum seconds to wait; defaults to 600."
+                    }
                 },
-                "timeout_s": {
-                    "type": "integer",
-                    "description": "Maximum seconds to wait; defaults to 600."
-                }
-            },
-            "required": ["session_id"]
+                "required": ["session_id"]
+            })
         })
     }
 

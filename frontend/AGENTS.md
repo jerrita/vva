@@ -55,7 +55,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **新建项目目录点选**：新建模式为多级目录点选（`GET /api/fs/dirs` 列一级子目录，含上一级按钮），路径文本保持原始大小写（父级 uppercase 需显式覆盖）。
 - **气泡**：用户消息反色（`--bubble-user` 底 + `--bubble-user-text`），圆角 `14px 14px 4px 14px`；支持在输入框粘贴图片附件（Base64 随消息提交），气泡内以缩略图展示；悬停气泡显示操作行（复制原文、回退=丢弃此轮及之后并放回输入框、分叉=保留之前历史创建新会话并切换），运行中禁用，触屏常显。
 - **空态**：无会话时为 `.empty-stage` 居中版式（品牌大字 + 项目行 + 输入框），项目行（`.empty-project`：文件夹图标 + 项目名下拉 + 完整路径）位于输入框上方，输入框样式与会话内一致；发首条消息即按所选项目创建会话。
-- **工作轨迹（trace）**：运行段内连续的思考 / 工具 / 搜索步骤串在一条细轨道上（`.trace::before`），正文文本打断轨道成段。实现：`components/Parts.tsx`（节点分段、配对、批次合并、行组件）+ `components/trace/describe.ts`（按工具生成行模型）+ `utils/editDiff.ts`（replace / patch / hashline 编辑器与 Write 入参 → 结构化差异）；样式在 `src/styles/trace.css`。
+- **工作轨迹（trace）**：运行段内连续的思考 / 工具 / 搜索步骤串在一条细轨道上（`.trace::before`），正文文本打断轨道成段。实现：`components/Parts.tsx`（节点分段、配对、批次合并、行组件）+ `components/trace/describe.ts`（按工具生成行模型）+ `utils/editDiff.ts`（Edit / Write / apply_patch / hashline_edit → 结构化差异；工具名常量集中于 `src/toolNames.ts`，按具体名字精确分支，apply_patch 与 hashline_edit 的 arguments 为补丁原文，hashline_edit 成功时以结果中的真实 diff 取代推算行）；样式在 `src/styles/trace.css`。
   - **行网格**：字形 | 动词（mono，`--trace-verb` 列宽）| 目标 + 弱化补充（Shell 命令、Grep 范围）| 结果（右对齐 mono：`L260–299`、`+3 −4`、`36 处`、`后台`、`失败`）| 操作提示列（可展开=箭头、预览=文件图标，悬停浮现，触屏常显）。
   - **字形编码**：形状表达动作类别，颜色只表达状态——○ 查看（Read/Grep/Glob/web/Skill）、● 修改（Edit/Write，`--accent` 实心）、▪ 执行（Shell/Task）、◇ 思考、◯ 委派（Agent/SendMessage/Wait/AskUser，`--accent` 描边）、✕ 失败（`--danger`）、运行中为 `--rose` 脉冲。
   - **交互**：Read 行点击在侧栏预览；Edit/Write 行展开为内联差异（`--diff-add` / `--diff-del` 着色，文件头带「在侧栏打开」）；Shell 展开为 `$ 命令` + 输出；Glob/Grep 展开为匹配列表；出错行展开为 `--danger-soft` 底错误原文；思考行收起时显示首行预览，流式中显示最新一行（跑马灯），展开为 Markdown 全文。

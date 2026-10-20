@@ -15,6 +15,7 @@ pub struct SidebarInfo<'a> {
     pub workspace: &'a str,
     pub model: &'a str,
     pub variant: Option<&'a str>,
+    pub editor: crate::model::EditorKind,
 }
 
 /// 标签值行：左侧留白后显示 `Label: value`（标签固定 DarkGray，值样式由调用方给定）
@@ -95,7 +96,7 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         "$0.0000".to_string()
     };
 
-    let mut lines = vec![Line::from(""); 20];
+    let mut lines = vec![Line::from(""); 21];
     lines[0] = label_value("Session", short_id, fg(Color::Cyan));
     lines[1] = label_value("Workspace", ws_display.to_string(), fg(Color::White));
     lines[2] = label_value(
@@ -110,7 +111,12 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         info.variant.unwrap_or("none").to_string(),
         fg(Color::Magenta),
     );
-    lines[8] = label_value(
+    lines[7] = label_value(
+        "Editor",
+        info.editor.as_str().to_string(),
+        fg(Color::Yellow),
+    );
+    lines[9] = label_value(
         "Context",
         format!(
             "{} / {}",
@@ -119,7 +125,7 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         ),
         fg(Color::White),
     );
-    lines[9] = label_value(
+    lines[10] = label_value(
         "In/Out",
         format!(
             "{} / {}",
@@ -129,23 +135,23 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         fg(Color::Rgb(170, 170, 170)),
     );
     if let Some(tps) = app.stats.tps {
-        lines[11] = label_value("TPS", format!("{tps:.1}"), fg(Color::White));
+        lines[12] = label_value("TPS", format!("{tps:.1}"), fg(Color::White));
     }
-    lines[13] = label_value(
+    lines[14] = label_value(
         "Cache Read",
         format_number(app.stats.cache_read_tokens),
         fg(Color::Cyan),
     );
-    lines[14] = label_value(
+    lines[15] = label_value(
         "Cache Write",
         format_number(app.stats.cache_write_tokens),
         fg(Color::LightBlue),
     );
-    lines[17] = label_value("Est. Cost", cost_str, bold(Color::Green));
+    lines[18] = label_value("Est. Cost", cost_str, bold(Color::Green));
     lines
 }
 
-/// 右侧边栏：展示 Session ID、Workspace、缓存、上下文窗口、Token 消耗与 Cost 估算
+/// 右侧边栏：展示 Session ID、Workspace、模型与编辑协议、缓存、上下文窗口、Token 消耗与 Cost 估算
 pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &SidebarInfo) {
     let block = super::panel_block().title(Span::styled(" Details ", bold(Color::DarkGray)));
 
@@ -167,7 +173,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(4),
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(5),
             Constraint::Length(4),
             Constraint::Length(3),
@@ -193,7 +199,7 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new(lines[4..7].to_vec()).block(separator()),
+        Paragraph::new(lines[4..8].to_vec()).block(separator()),
         chunks[1],
     );
 
@@ -205,18 +211,18 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
             Constraint::Min(0),
         ])
         .split(chunks[2]);
-    frame.render_widget(Paragraph::new(lines[8..10].to_vec()), token_chunks[0]);
+    frame.render_widget(Paragraph::new(lines[9..11].to_vec()), token_chunks[0]);
     frame.render_widget(
         Paragraph::new(context_gauge_line(token_chunks[1].width, ratio, percent)),
         token_chunks[1],
     );
-    frame.render_widget(Paragraph::new(lines[11..13].to_vec()), token_chunks[2]);
+    frame.render_widget(Paragraph::new(lines[12..14].to_vec()), token_chunks[2]);
 
     frame.render_widget(
-        Paragraph::new(lines[13..16].to_vec()).block(separator()),
+        Paragraph::new(lines[14..17].to_vec()).block(separator()),
         chunks[3],
     );
-    frame.render_widget(Paragraph::new(lines[17..20].to_vec()), chunks[4]);
+    frame.render_widget(Paragraph::new(lines[18..21].to_vec()), chunks[4]);
 }
 
 #[cfg(test)]
@@ -248,6 +254,7 @@ mod tests {
             workspace: "C:/workspace",
             model: "test-model",
             variant: None,
+            editor: crate::model::EditorKind::Hashline,
         };
         let backend = TestBackend::new(30, 25);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

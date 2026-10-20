@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use super::{SessionStore, StoreError};
-use crate::model::{JsonlRecord, Session, SessionHeader, SessionSummary, Turn};
+use crate::model::{JsonlRecord, SESSION_VERSION, Session, SessionHeader, SessionSummary, Turn};
 
 pub const SCRATCH_DIR: &str = "scratch";
 pub const TOOL_OUTPUTS_DIR: &str = "tool_outputs";
@@ -164,6 +164,12 @@ fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session
             ));
         }
     };
+    if header.version != SESSION_VERSION {
+        return Err(StoreError::InvalidFormat(format!(
+            "unsupported session version {} (expected {SESSION_VERSION})",
+            header.version
+        )));
+    }
 
     let mut turns = Vec::new();
     for line in lines {
@@ -217,10 +223,12 @@ fn collect_summaries(dir: &Path, summaries: &mut Vec<SessionSummary>) -> Result<
         let mut first_line = String::new();
         let parsed_header = reader.read_line(&mut first_line).ok().and_then(|_| {
             match serde_json::from_str::<JsonlRecord>(&first_line) {
-                Ok(JsonlRecord::Header(header)) => Some(*header),
+                Ok(JsonlRecord::Header(header)) if header.version == SESSION_VERSION => {
+                    Some(*header)
+                }
                 _ => {
                     eprintln!(
-                        "warning: corrupt session header, skipped: {}",
+                        "warning: unsupported or corrupt session header, skipped: {}",
                         path.display()
                     );
                     None

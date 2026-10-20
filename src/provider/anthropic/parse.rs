@@ -4,15 +4,17 @@ use super::AnthropicProvider;
 use crate::model::{
     Annotation, AnthropicCitation, AnthropicContentBlock, AnthropicFetchResultContent,
     AnthropicSearchResult, AnthropicSearchResultContent, AnthropicTurnMeta, ContentPart, Message,
-    SearchStatus, TokenUsage, ToolCall, TurnMeta, WebSearchAction, WebSearchCall, WebSearchSource,
+    SearchStatus, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchAction, WebSearchCall,
+    WebSearchSource,
 };
-use crate::provider::common::require_str;
+use crate::provider::common::{freeform_call_input, is_freeform_tool, require_str};
 use crate::provider::{ProviderError, ProviderResponse};
 
 impl AnthropicProvider {
     pub(super) fn parse_response(
         &self,
         json: serde_json::Value,
+        tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, ProviderError> {
         let dto: AnthropicResponseDto = serde_json::from_value(json).map_err(|e| {
             ProviderError::Protocol(format!("Invalid Anthropic Messages API response: {e}"))
@@ -33,7 +35,7 @@ impl AnthropicProvider {
             },
         };
 
-        assemble_response(dto.content, usage)
+        assemble_response(dto.content, usage, tools)
     }
 }
 
@@ -61,6 +63,7 @@ struct AnthropicUsageDto {
 /// 引用注脚注入对应文本块；加密协议字段仅保留在 TurnMeta 原生块链中
 pub(super) fn project_parts(
     blocks: &[AnthropicContentBlock],
+    tools: &[ToolDefinition],
 ) -> Result<Vec<ContentPart>, ProviderError> {
     let mut parts = Vec::new();
     // 待配对的服务端调用：id -> (name, input)，结果块按 tool_use_id 取回
@@ -83,10 +86,10 @@ pub(super) fn project_parts(
                 }
             }
             AnthropicContentBlock::ToolUse { id, name, input } => {
-                parts.push(ContentPart::ToolCall(ToolCall {
-                    id: id.clone(),
-                    name: name.clone(),
-                    arguments: input.to_string(),
+                parts.push(ContentPart::ToolCall(if is_freeform_tool(tools, name) {
+                    ToolCall::custom(id, name, freeform_call_input(name, input)?)
+                } else {
+                    ToolCall::new(id, name, input.to_string())
                 }));
             }
             AnthropicContentBlock::ServerToolUse { id, name, input } => {
@@ -223,8 +226,9 @@ pub(super) struct AnthropicUsageSnapshot {
 pub(super) fn assemble_response(
     blocks: Vec<AnthropicContentBlock>,
     usage: AnthropicUsageSnapshot,
+    tools: &[ToolDefinition],
 ) -> Result<ProviderResponse, ProviderError> {
-    let parts = project_parts(&blocks)?;
+    let parts = project_parts(&blocks, tools)?;
     let AnthropicUsageSnapshot {
         seen,
         input_tokens,

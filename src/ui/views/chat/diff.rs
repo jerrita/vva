@@ -97,7 +97,18 @@ impl<'a> EditCell<'a> {
         }
     }
 
-    fn with_background(mut self, background: Color) -> Self {
+    /// 无行号的单元格（apply_patch 等不携带行号的补丁行）
+    pub(super) fn plain(marker: &'static str, text: &'a str, style: Style) -> Self {
+        Self {
+            line_number: None,
+            marker,
+            text,
+            style,
+            background: None,
+        }
+    }
+
+    pub(super) fn with_background(mut self, background: Color) -> Self {
         self.background = Some(background);
         self
     }
@@ -325,22 +336,6 @@ pub(super) fn push_patch_lines(
     if text.lines().count() > cap {
         push_filled_text(lines, "...", fg(Color::DarkGray), max_width);
     }
-}
-
-pub(super) fn push_patch_detail(
-    lines: &mut Vec<Line<'static>>,
-    arguments: &str,
-    result: Option<&str>,
-    max_width: usize,
-    cap: usize,
-) {
-    let parsed = serde_json::from_str::<serde_json::Value>(arguments).ok();
-    let fallback = parsed
-        .as_ref()
-        .and_then(|args| json_str(args, "input"))
-        .unwrap_or(arguments);
-    let text = result.unwrap_or(fallback);
-    push_patch_lines(lines, text, cap, max_width);
 }
 
 pub(super) fn push_edit_detail(

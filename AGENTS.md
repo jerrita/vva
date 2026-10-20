@@ -84,7 +84,7 @@ src/
 │   ├── message.rs          # Role 与 Message (内容分组值对象，仅持有 parts)
 │   ├── turn.rs             # Turn 与 TokenUsage
 │   ├── session.rs          # Session 与 JSONL 记录定义 (SessionHeader / JsonlRecord / subagent parent·agent·depth 标记)
-│   └── tool.rs             # ToolCall, ToolResult, ToolDefinition
+│   └── tool.rs             # ToolCall (kind: Function/Custom), ToolResult, ToolDefinition, ToolInput (Json schema / Freeform + Lark 文法)
 ├── storage/                # 存储抽象与实现
 │   ├── mod.rs              # SessionStore Trait
 │   └── jsonl.rs            # JsonlSessionStore 按项目目录存储 (sessions/{project_key}/{sess_xxxxx}.jsonl + scratch/)
@@ -134,19 +134,20 @@ src/
 ├── skills/                 # Agent Skills (agentskills.io 规范：SKILL.md 技能包解析与发现)
 │   └── mod.rs              # SkillFrontmatter 强类型解析与校验、discover_skills (全局 ~/.vva/skills、~/.agents/skills + 项目 .vva/skills、.agents/skills，优先级 项目 .vva > 项目 .agents > 全局 .vva > 全局 .agents，同名后者覆盖前者)
 ├── tools/                  # Coding 工具集
-│   ├── mod.rs              # Tool Trait 与 ToolRegistry (register/retain 白名单裁剪)
+│   ├── mod.rs              # Tool Trait (input/spills_output) 与 ToolRegistry (按编辑协议组装文件工具集、register/retain 白名单裁剪)
+│   ├── names.rs            # 工具名常量 (每个名字只对应一种协议) 与内置白名单用的文件工具全集
 │   ├── agent.rs            # Agent 工具与 SessionBroker trait：派生 subagent 会话 (前台阻塞/后台回投) + SubagentReport/完成通知格式化
 │   ├── session_ipc.rs      # SendMessage / WaitSession 跨会话消息工具 (空闲触发轮次、忙时入队)
 │   ├── shell.rs            # Shell 执行 (前台超时/输出上限/退出码检查 + run_in_background 后台执行)
 │   ├── background.rs       # 后台任务注册表 (TaskOutput / TaskStop 工具，TaskStop 兼停 sess_ 子会话，内存态、随会话结束回收)
 │   ├── filesystem/         # Read、Write、Edit、Glob、Grep 与共享基建 (路径解析/目录遍历/brace 展开/unified diff)
 │   │   ├── mod.rs          # 共享辅助与 parse_args 解析、各工具 re-export
-│   │   ├── read.rs         # Read (分页/媒体嗅探/hashline 快照/内容版本号)
-│   │   ├── write.rs        # Write (独占创建)
+│   │   ├── read.rs         # Read / hashline_read (分页/媒体嗅探/hashline 快照/内容版本号)
+│   │   ├── write.rs        # Write (replace 协议独占创建)
 │   │   ├── edit.rs         # Edit 精确替换引擎 (CRLF 规范化/冲突检测/行尾保持/原子落盘) + edit_lock/EditPlan 共享基建
 │   │   ├── glob.rs         # Glob (mtime 排序/上限截断)
-│   │   └── grep.rs         # Grep (include 过滤/hashline 输出)
-│   ├── apply_patch.rs      # Edit（patch）：Codex V4A
+│   │   └── grep.rs         # Grep / hashline_grep (include 过滤/hashline 输出)
+│   ├── apply_patch.rs      # apply_patch（patch 协议）：Codex V4A，freeform + Lark 文法
 │   ├── skill.rs            # Skill 工具：按 name 加载 SKILL.md 全文指令 (渐进披露第二层)
 │   ├── web/                # 外置 web search / fetch provider 与同名客户端工具 (settings.web 配置驱动)
 │   │   ├── mod.rs          # WebSearch/WebFetchProvider Trait、ExternalWeb 解析 (能力校验与 api_key 校验)
@@ -155,7 +156,7 @@ src/
 │   │   ├── tavily.rs       # Tavily /search 与 /extract (search + fetch)
 │   │   ├── local.rs        # 内置 fetch：HTTP 抓取 + dom_smoothie 正文提取 + htmd 转 Markdown
 │   │   └── tool.rs         # web_search / web_fetch 工具 (原生能力缺位时注册)
-│   └── hashline/           # Edit（hashline）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁
+│   └── hashline/           # hashline_edit（hashline 协议）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁、[PATH] + ADD 新建文件，freeform
 │       ├── mod.rs          # HashlineEditTool (Tool Trait 实现) 与模块导出
 │       ├── session.rs      # HashlineSession (文件指纹 tag 与已展示行号集合登记)
 │       ├── snapshot.rs     # 快照渲染 (format_read/format_grep_file/编辑结果报告)
@@ -206,6 +207,7 @@ src/
         │   ├── tool.rs     # 工具调用头部行 (逐工具摘要)
         │   ├── tool_block.rs # 工具展开块 (边框/填充/结果正文)
         │   ├── diff.rs     # Edit 差异渲染 (LCS 统一/双栏)
+        │   ├── patch.rs    # apply_patch / hashline_edit 补丁原文解析、头部摘要与按文件分组渲染 (容忍流式截断)
         │   ├── thought.rs  # 思考内容渲染 (内联/折叠启发式)
         │   ├── citations.rs # 搜索引用注脚与 Sources 块
         │   ├── user_block.rs # 用户消息引用块与附件引用行 (push_user_attachment_row)
@@ -219,7 +221,7 @@ src/
         ├── modal_shell.rs  # 模态弹窗公共外壳 (render_modal_shell 渲染骨架/居中布局/过滤行/滚动窗口/空态/提示行)
         ├── models_modal.rs # 模型选择弹窗视图
         ├── sessions_modal.rs # 会话选择弹窗视图
-        ├── sidebar.rs      # 右侧统计看板
+        ├── sidebar.rs      # 右侧统计看板 (会话、模型与编辑协议、Token 与花费)
         └── variants_modal.rs # 推理档位弹窗视图
 └── web/                    # Web 界面 (Axum 服务器)
     ├── mod.rs              # 模块导出 (run_server)
@@ -231,6 +233,7 @@ frontend/                    # Web 前端源码 (React + Vite + TypeScript)；bu
 ├── src/api.ts               # 统一 request() 请求层 (错误提取/空响应处理)
 ├── src/types.ts             # 后端 serde 序列化镜像类型
 ├── src/sessionSync.ts       # SSE 会话订阅
+├── src/toolNames.ts         # 后端工具名常量 (按具体名字分支渲染)
 ├── src/hooks/               # usePersistentState (localStorage 持久化) / useResizable (面板拖拽) /
 │                            # useComposerVisibility (移动端输入框手势机) / useStatsPanel (用量弹层) /
 │                            # useFileTree (懒加载目录树) / useMediaQuery

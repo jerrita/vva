@@ -4,7 +4,7 @@ use super::{Tool, resolve_path};
 use crate::config::resolver::InputCapabilities;
 use crate::model::{EditorKind, MediaContent, MediaKind, ToolCall, ToolResult};
 use crate::tools::INLINE_OUTPUT_BUDGET;
-use crate::tools::parse_args;
+use crate::tools::{names, parse_args};
 use async_trait::async_trait;
 use base64::Engine;
 use serde::Deserialize;
@@ -47,7 +47,7 @@ impl ReadTool {
     }
 
     async fn read(&self, arguments: &str) -> Result<(String, Vec<MediaContent>), String> {
-        let args: ReadArgs = parse_args(arguments, "Read")?;
+        let args: ReadArgs = parse_args(arguments, self.name())?;
         let path = resolve_path(&self.working_dir, &args.path);
         let bytes = tokio::fs::read(&path)
             .await
@@ -242,17 +242,20 @@ pub(super) struct ReadArgs {
 #[async_trait]
 impl Tool for ReadTool {
     fn name(&self) -> &str {
-        "Read"
+        match self.editor {
+            EditorKind::Hashline => names::HASHLINE_READ,
+            EditorKind::Patch | EditorKind::Replace => names::READ,
+        }
     }
 
     fn description(&self) -> &str {
         match self.editor {
             EditorKind::Hashline => {
-                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text starts with [PATH#TAG] then N:line (1-indexed, no space after the colon). Copy the header into Edit; numbers are that snapshot. Grep uses the same headers. offset and limit are 1-indexed line counts. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Partial and elided lines are unseen to Edit. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
+                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text starts with [PATH#TAG] then N:line (1-indexed, no space after the colon). Copy the header into hashline_edit; numbers are that snapshot. hashline_grep uses the same headers. offset and limit are 1-indexed line counts. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Partial and elided lines are unseen to hashline_edit. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
 Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/main.rs","offset":1,"limit":200}."#
             }
             EditorKind::Patch => {
-                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text has 1-indexed line numbers. Use offset and limit for a range. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Copy code without line-number prefixes or notices into Edit hunks. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
+                r#"Read an existing file; use Glob to locate files and Grep to search contents. UTF-8 text has 1-indexed line numbers. Use offset and limit for a range. Output is capped at 32 KiB and stops at complete lines. An oversized line is marked Partial; continue it using the returned byte_offset with the same offset and limit=1. Byte offsets are 0-indexed UTF-8 byte positions within that line. Copy code without line-number prefixes or notices into apply_patch hunks. Binary images, PDFs, audio and video are returned as multimodal content when supported by the current model and protocol; text pagination arguments do not apply. Unsupported binary files and directories produce errors. Issue independent Read calls in parallel.
 Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/main.rs","offset":1,"limit":200}."#
             }
             EditorKind::Replace => {
@@ -262,16 +265,22 @@ Paths are absolute or workspace-relative; shell variables and ~ are not expanded
         }
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "format": "path", "description": "Existing file path, absolute or workspace-relative." },
-                "offset": { "type": "integer", "description": "First line to read, 1-indexed. Omit to start at line 1; use a positive integer." },
-                "limit": { "type": "integer", "description": "Maximum lines to return. Omit to read through EOF or the byte limit; 0 returns metadata only." },
-                "byte_offset": { "type": "integer", "description": "0-indexed UTF-8 byte position within the selected line; requires limit=1. Copy from a Partial line continuation notice." }
-            },
-            "required": ["path"]
+    fn spills_output(&self) -> bool {
+        false
+    }
+
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "format": "path", "description": "Existing file path, absolute or workspace-relative." },
+                    "offset": { "type": "integer", "description": "First line to read, 1-indexed. Omit to start at line 1; use a positive integer." },
+                    "limit": { "type": "integer", "description": "Maximum lines to return. Omit to read through EOF or the byte limit; 0 returns metadata only." },
+                    "byte_offset": { "type": "integer", "description": "0-indexed UTF-8 byte position within the selected line; requires limit=1. Copy from a Partial line continuation notice." }
+                },
+                "required": ["path"]
+            })
         })
     }
 

@@ -40,14 +40,16 @@ impl Tool for WebSearchTool {
 Example arguments: {"query":"rust tokio select macro example","max_results":5}."#
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": { "type": "string", "description": "The search query." },
-                "max_results": { "type": "integer", "description": "Maximum number of results to return, 1-20. Defaults to 5." }
-            },
-            "required": ["query"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "The search query." },
+                    "max_results": { "type": "integer", "description": "Maximum number of results to return, 1-20. Defaults to 5." }
+                },
+                "required": ["query"]
+            })
         })
     }
 
@@ -113,13 +115,15 @@ impl Tool for WebFetchTool {
 Example arguments: {"url":"https://docs.rs/serde/latest/serde/"}."#
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "url": { "type": "string", "description": "The absolute http(s) URL of the page to fetch." }
-            },
-            "required": ["url"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "The absolute http(s) URL of the page to fetch." }
+                },
+                "required": ["url"]
+            })
         })
     }
 

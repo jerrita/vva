@@ -281,7 +281,11 @@ mod tests {
         let mut call = Turn::assistant_turn(vec![Message::text("working")]);
         call.messages[0]
             .parts
-            .push(ContentPart::ToolCall(ToolCall::new(id, "Read", "{}")));
+            .push(ContentPart::ToolCall(ToolCall::new(
+                id,
+                crate::tools::names::READ,
+                "{}",
+            )));
         let result = Turn::new(
             Role::Tool,
             vec![Message::tool_result(ToolResult::success(id, "ok"))],

@@ -330,6 +330,7 @@ pub(super) async fn generate_title(
 mod tests {
     use super::*;
     use crate::provider::{ProviderError, ProviderResponse};
+    use crate::tools::names;
 
     #[tokio::test]
     async fn title_generation_disables_thinking_with_native_parameters() {
@@ -554,7 +555,7 @@ mod tests {
         assert!(engine.tools.get("WaitSession").is_some());
         // agent 参数 enum 来自发现结果（含内置定义）
         let agent = engine.tools.get("Agent").unwrap();
-        let parameters = agent.parameters();
+        let parameters = agent.input().expect_json();
         let names: Vec<_> = parameters["properties"]["agent"]["enum"]
             .as_array()
             .unwrap()
@@ -575,13 +576,13 @@ mod tests {
         session.header.depth = 1;
         let engine = build_engine(&config, &session).unwrap();
 
-        assert!(engine.tools.get("Read").is_some());
-        assert!(engine.tools.get("Glob").is_some());
-        assert!(engine.tools.get("Grep").is_some());
+        // 缺省 hashline 编辑协议：只读白名单保留该协议的读取与检索工具
+        assert!(engine.tools.get(names::HASHLINE_READ).is_some());
+        assert!(engine.tools.get(names::GLOB).is_some());
+        assert!(engine.tools.get(names::HASHLINE_GREP).is_some());
         for pruned in [
-            "Shell",
-            "Write",
-            "Edit",
+            names::SHELL,
+            names::HASHLINE_EDIT,
             "Agent",
             "SendMessage",
             "WaitSession",
@@ -621,7 +622,7 @@ mod tests {
                     config.providers.get_mut("p").unwrap().provider_type = Some(provider_type);
                     let mut session = session_for("p/nos", true);
                     session.header.agent = Some("restricted".into());
-                    let mut allowed = vec!["Read".to_string()];
+                    let mut allowed = vec![names::READ.to_string()];
                     if search {
                         allowed.push("WebSearch".into());
                     }

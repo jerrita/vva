@@ -73,7 +73,7 @@ impl Provider for AnthropicProvider {
             &body,
         )
         .await?;
-        let mut parsed = self.parse_response(response)?;
+        let mut parsed = self.parse_response(response, tools)?;
         parsed.stamp_scope(options.affinity.as_deref());
         Ok(parsed)
     }
@@ -98,7 +98,7 @@ impl Provider for AnthropicProvider {
         .await?;
         let (blocks, usage) = handler.finish()?;
 
-        let mut response = assemble_response(blocks, usage)?;
+        let mut response = assemble_response(blocks, usage, tools)?;
         response.stamp_scope(options.affinity.as_deref());
         Ok(response)
     }

@@ -13,6 +13,7 @@ use super::read::content_version;
 use super::resolve_path;
 use super::unified_diff;
 use crate::tools::INLINE_OUTPUT_BUDGET;
+use crate::tools::names;
 use crate::tools::parse_args;
 
 pub struct EditTool {
@@ -396,7 +397,7 @@ pub(crate) fn persist_edit(path: &Path, original: &str, updated: &str) -> Result
 #[async_trait]
 impl Tool for EditTool {
     fn name(&self) -> &str {
-        "Edit"
+        names::EDIT
     }
 
     fn description(&self) -> &str {
@@ -404,26 +405,28 @@ impl Tool for EditTool {
 Use either edits[] or top-level old_string/new_string/replace_all/expected_matches. Paths are absolute or workspace-relative; shell variables and ~ are not expanded. Example: {"path":"src/example.rs","edits":[{"old_string":"let count = 1;","new_string":"let count = 2;"}]}."#
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        let replacement = serde_json::json!({
-            "old_string": { "type": "string", "description": "Exact original text, unique unless replace_all is true. A single empty string replaces the whole file and requires expected_version." },
-            "new_string": { "type": "string", "description": "Replacement text; empty deletes the match." },
-            "replace_all": { "type": "boolean", "description": "Replace every exact occurrence; defaults to false." },
-            "expected_matches": { "type": "integer", "description": "Expected number of occurrences; mismatch rejects the edit." }
-        });
-        let mut properties = replacement.as_object().unwrap().clone();
-        properties.insert("path".into(), serde_json::json!({"type":"string", "format":"path", "description":"Existing UTF-8 file path."}));
-        properties.insert("expected_version".into(), serde_json::json!({"type":"string", "description":"Content version from Read or Edit; rejects changes since that version. Required for full-file replacement."}));
-        properties.insert("edits".into(), serde_json::json!({
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            let replacement = serde_json::json!({
+                "old_string": { "type": "string", "description": "Exact original text, unique unless replace_all is true. A single empty string replaces the whole file and requires expected_version." },
+                "new_string": { "type": "string", "description": "Replacement text; empty deletes the match." },
+                "replace_all": { "type": "boolean", "description": "Replace every exact occurrence; defaults to false." },
+                "expected_matches": { "type": "integer", "description": "Expected number of occurrences; mismatch rejects the edit." }
+            });
+            let mut properties = replacement.as_object().unwrap().clone();
+            properties.insert("path".into(), serde_json::json!({"type":"string", "format":"path", "description":"Existing UTF-8 file path."}));
+            properties.insert("expected_version".into(), serde_json::json!({"type":"string", "description":"Content version from Read or Edit; rejects changes since that version. Required for full-file replacement."}));
+            properties.insert("edits".into(), serde_json::json!({
             "type":"array", "minItems":1,
             "description":"Disjoint replacements against the original file. Use instead of top-level replacement fields.",
             "items":{"type":"object", "properties":replacement, "required":["old_string","new_string"], "additionalProperties":false}
         }));
-        serde_json::json!({"type":"object", "properties":properties, "required":["path"], "additionalProperties":false})
+            serde_json::json!({"type":"object", "properties":properties, "required":["path"], "additionalProperties":false})
+        })
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: EditArgs = parse_args(arguments, "Edit")?;
+        let args: EditArgs = parse_args(arguments, names::EDIT)?;
         let path = resolve_path(&self.working_dir, &args.path);
         let expected_version = args.expected_version.clone();
         let edits = args.replacements()?;

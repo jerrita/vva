@@ -1,4 +1,5 @@
 use super::*;
+use crate::tools::names;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TurnOutcome {
@@ -112,7 +113,7 @@ fn validate_attachments(engine: &AgentEngine, parts: &[ContentPart]) -> Result<(
         .map_or(Ok(()), Err)
 }
 
-/// Read 工具命中工作空间内子目录 AGENTS.md 时返回待注入的 (路径, 正文)；
+/// Read / hashline_read 命中工作空间内子目录 AGENTS.md 时返回待注入的 (路径, 正文)；
 /// 会话已载入同路径或本轮已排队的文件跳过。
 fn collect_on_demand_agents(
     session: &Session,
@@ -120,7 +121,7 @@ fn collect_on_demand_agents(
     result: &crate::model::ToolResult,
     pending: &[(PathBuf, String)],
 ) -> Option<(PathBuf, String)> {
-    if call.name != "Read" || result.is_error {
+    if !matches!(call.name.as_str(), names::READ | names::HASHLINE_READ) || result.is_error {
         return None;
     }
     let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;

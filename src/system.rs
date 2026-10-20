@@ -65,7 +65,7 @@ pub fn format_skills_reminder(skills: &[Skill]) -> String {
         &format!("type=\"skills\" index=\"{}\"", skills_index(skills)),
         &format!(
             "The following skills provide specialized workflows and knowledge for this \
-             environment. When a task matches a skill's purpose, load its full instructions \
+             environment. When a task matches a skill's purpose, load its instructions \
              with the Skill tool before proceeding.\n\n{}",
             lines.join("\n")
         ),
@@ -205,13 +205,13 @@ pub fn format_rollover_summary_reminder(from: &str, summary: &str) -> String {
 }
 
 /// 格式化记忆索引快照为 <system-reminder> User Message 文本（agent space 会话创建时快照，
-/// `dir` 为记忆库绝对路径，主题文件按需 Read）
+/// `dir` 为记忆库绝对路径，主题文件按需阅读）
 pub fn format_memory_reminder(dir: &Path, index: &str) -> String {
     reminder(
         "type=\"memory\"",
         &format!(
             "Long-term memory index (snapshot at session creation). Topic files live in \
-             {}; Read them when you need the details.\n\n{}",
+             {}; open them when you need the details.\n\n{}",
             slash(dir),
             index.trim()
         ),
@@ -223,7 +223,7 @@ pub fn format_memory_updated_reminder(dir: &Path, summary: &str) -> String {
     reminder(
         "type=\"memory-updated\"",
         &format!(
-            "Long-term memory was updated after this session started: {}\n\nRead {}/MEMORY.md \
+            "Long-term memory was updated after this session started: {}\n\nOpen {}/MEMORY.md \
              for the latest index if relevant.",
             summary.trim(),
             slash(dir)

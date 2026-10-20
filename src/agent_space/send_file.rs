@@ -31,14 +31,16 @@ impl Tool for SendFileTool {
         "Send a local file to the user through the current chat channel. Accepts workspace-relative, absolute, and ~ paths. Use it when the user should receive the file itself."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Path of the file to send"},
-                "caption": {"type": "string", "description": "Optional short text accompanying the file"}
-            },
-            "required": ["path"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path of the file to send"},
+                    "caption": {"type": "string", "description": "Optional short text accompanying the file"}
+                },
+                "required": ["path"]
+            })
         })
     }
 

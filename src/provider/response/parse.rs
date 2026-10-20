@@ -113,7 +113,20 @@ impl ResponseProvider {
                         id: call_id.clone(),
                         name: name.clone(),
                         arguments: arguments.clone(),
+                        kind: crate::model::ToolCallKind::Function,
                     }));
+                }
+                ResponseOutputItem::CustomToolCall {
+                    call_id,
+                    name,
+                    input,
+                    ..
+                } => {
+                    parts.push(ContentPart::ToolCall(ToolCall::custom(
+                        call_id.clone(),
+                        name.clone(),
+                        input.clone(),
+                    )));
                 }
                 ResponseOutputItem::ImageGenerationCall {
                     id,

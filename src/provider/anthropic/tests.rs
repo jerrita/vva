@@ -66,7 +66,9 @@ fn test_anthropic_thinking_signature_and_caching_roundtrip() {
         }
     });
 
-    let parsed = provider.parse_response(mock_resp).expect("parse response");
+    let parsed = provider
+        .parse_response(mock_resp, &[])
+        .expect("parse response");
     let anthropic_meta = parsed.meta.anthropic.as_ref().unwrap();
     assert_eq!(anthropic_meta.cache_creation_input_tokens, Some(1000));
     assert_eq!(anthropic_meta.stop_reason.as_deref(), Some("end_turn"));
@@ -112,16 +114,8 @@ fn test_anthropic_tool_results_merged_into_single_user_turn() {
     session.append_turn(Turn::user_turn(Message::text("List files and run command")));
 
     let asst_msg = Message::new(vec![
-        ContentPart::ToolCall(ToolCall {
-            id: "call_1".into(),
-            name: "file_view".into(),
-            arguments: "{}".into(),
-        }),
-        ContentPart::ToolCall(ToolCall {
-            id: "call_2".into(),
-            name: "bash".into(),
-            arguments: "{}".into(),
-        }),
+        ContentPart::ToolCall(ToolCall::new("call_1", "file_view", "{}")),
+        ContentPart::ToolCall(ToolCall::new("call_2", "bash", "{}")),
     ]);
     session.append_turn(Turn::assistant_turn(vec![asst_msg]));
 
@@ -183,7 +177,9 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
         }
     });
 
-    let parsed = provider.parse_response(full.clone()).expect("parse full");
+    let parsed = provider
+        .parse_response(full.clone(), &[])
+        .expect("parse full");
 
     // 用等价的流式事件序列驱动同一个组装路径
     let mut handler = AnthropicStreamHandler::new(None);
@@ -240,7 +236,7 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
         handler.on_event(ev).await.expect("handle stream event");
     }
     let (blocks, usage) = handler.finish().expect("finish");
-    let streamed = assemble_response(blocks, usage).expect("assemble");
+    let streamed = assemble_response(blocks, usage, &[]).expect("assemble");
 
     assert_eq!(streamed.messages[0].parts, parsed.messages[0].parts);
     assert_eq!(streamed.usage, parsed.usage);
@@ -327,7 +323,9 @@ fn test_anthropic_web_search_parse_and_native_echo() {
         "usage": { "input_tokens": 100, "output_tokens": 40 }
     });
 
-    let parsed = provider.parse_response(mock_resp).expect("parse response");
+    let parsed = provider
+        .parse_response(mock_resp, &[])
+        .expect("parse response");
     let parts = &parsed.messages[0].parts;
     assert_eq!(parts.len(), 3);
 
@@ -477,7 +475,7 @@ fn test_anthropic_web_fetch_parse_and_native_echo() {
     });
 
     let parsed = provider
-        .parse_response(mock_resp.clone())
+        .parse_response(mock_resp.clone(), &[])
         .expect("parse response");
     let parts = &parsed.messages[0].parts;
     assert_eq!(parts.len(), 3);
@@ -545,7 +543,9 @@ fn test_anthropic_search_error_result_marks_failed() {
         "stop_reason": "end_turn",
         "usage": { "input_tokens": 30, "output_tokens": 10 }
     });
-    let parsed = provider.parse_response(mock_resp).expect("parse response");
+    let parsed = provider
+        .parse_response(mock_resp, &[])
+        .expect("parse response");
     match &parsed.messages[0].parts[0] {
         ContentPart::WebSearchCall(call) => {
             assert_eq!(call.query, "blocked query");
@@ -695,49 +695,52 @@ async fn test_anthropic_web_search_streaming_matches_parse() {
     }
 
     // 流式组装与非流式解析同源：领域投影与原生块链完全一致
-    let streamed = assemble_response(blocks, usage).expect("assemble");
+    let streamed = assemble_response(blocks, usage, &[]).expect("assemble");
     let parsed = provider
-        .parse_response(serde_json::json!({
-            "id": "msg_stream_ws",
-            "type": "message",
-            "role": "assistant",
-            "content": [
-                { "type": "text", "text": "Searching." },
-                {
-                    "type": "server_tool_use",
-                    "id": "srvtoolu_1",
-                    "name": "web_search",
-                    "input": { "query": "rust edition" }
-                },
-                {
-                    "type": "web_search_tool_result",
-                    "tool_use_id": "srvtoolu_1",
-                    "content": [
-                        {
-                            "type": "web_search_result",
-                            "url": "https://blog.rust-lang.org",
-                            "title": "Rust Blog",
-                            "encrypted_content": "Enc1"
-                        }
-                    ]
-                },
-                {
-                    "type": "text",
-                    "text": "Rust 2024 is out.",
-                    "citations": [
-                        {
-                            "type": "web_search_result_location",
-                            "url": "https://blog.rust-lang.org",
-                            "title": "Rust Blog",
-                            "cited_text": "Rust 2024 is out",
-                            "encrypted_index": "Idx1"
-                        }
-                    ]
-                }
-            ],
-            "stop_reason": "end_turn",
-            "usage": { "input_tokens": 60, "output_tokens": 30 }
-        }))
+        .parse_response(
+            serde_json::json!({
+                "id": "msg_stream_ws",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    { "type": "text", "text": "Searching." },
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": { "query": "rust edition" }
+                    },
+                    {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu_1",
+                        "content": [
+                            {
+                                "type": "web_search_result",
+                                "url": "https://blog.rust-lang.org",
+                                "title": "Rust Blog",
+                                "encrypted_content": "Enc1"
+                            }
+                        ]
+                    },
+                    {
+                        "type": "text",
+                        "text": "Rust 2024 is out.",
+                        "citations": [
+                            {
+                                "type": "web_search_result_location",
+                                "url": "https://blog.rust-lang.org",
+                                "title": "Rust Blog",
+                                "cited_text": "Rust 2024 is out",
+                                "encrypted_index": "Idx1"
+                            }
+                        ]
+                    }
+                ],
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 60, "output_tokens": 30 }
+            }),
+            &[],
+        )
         .expect("parse full");
     assert_eq!(streamed.messages[0].parts, parsed.messages[0].parts);
     assert_eq!(streamed.meta, parsed.meta);
@@ -762,7 +765,7 @@ fn test_anthropic_scope_mismatch_rebuilds_and_projects_web_call() {
     let tools = vec![ToolDefinition {
         name: "web_search".into(),
         description: "d".into(),
-        parameters: serde_json::json!({ "type": "object" }),
+        input: crate::model::ToolInput::Json(serde_json::json!({ "type": "object" })),
     }];
 
     // 仅外置客户端函数在位 → tool_use + 紧随 user 消息上的 tool_result
@@ -821,7 +824,9 @@ fn test_anthropic_native_blocks_skipped_on_affinity_mismatch() {
         "stop_reason": "end_turn",
         "usage": { "input_tokens": 1, "output_tokens": 1 }
     });
-    let parsed = provider.parse_response(mock_resp).expect("parse response");
+    let parsed = provider
+        .parse_response(mock_resp, &[])
+        .expect("parse response");
     let mut asst_turn = Turn::assistant_turn(parsed.messages);
     asst_turn.meta = parsed.meta;
     asst_turn.meta.anthropic.as_mut().unwrap().scope = Some("homo/claude".into());
@@ -944,4 +949,70 @@ fn test_anthropic_web_tool_version_override() {
     let tools = body["tools"].as_array().unwrap();
     assert_eq!(tools[0]["type"], "web_search_20260209");
     assert_eq!(tools[1]["type"], "web_fetch_20260209");
+}
+
+fn freeform_tools() -> Vec<ToolDefinition> {
+    vec![ToolDefinition {
+        name: "apply_patch".into(),
+        description: "apply a patch".into(),
+        input: ToolInput::Freeform { grammar: None },
+    }]
+}
+
+#[test]
+fn test_anthropic_freeform_tool_projection() {
+    let provider = AnthropicProvider::new("test");
+    let tools = freeform_tools();
+
+    // 声明：单字段 input 的 input_schema
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("go")));
+    session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::ToolCall(ToolCall::custom(
+            "toolu_1",
+            "apply_patch",
+            "*** Begin Patch\n*** End Patch",
+        )),
+    ])]));
+    let body = provider
+        .build_request_body(&session, &tools, &CompletionOptions::default())
+        .expect("build body");
+    let schema = &body["tools"][body["tools"].as_array().unwrap().len() - 1]["input_schema"];
+    assert_eq!(schema["properties"]["input"]["type"], "string");
+    assert_eq!(schema["required"], serde_json::json!(["input"]));
+
+    // 回放：Custom 调用包装为 {"input": 原文}
+    let replay = &body["messages"][1]["content"][0];
+    assert_eq!(replay["type"], "tool_use");
+    assert_eq!(
+        replay["input"],
+        serde_json::json!({"input": "*** Begin Patch\n*** End Patch"})
+    );
+
+    // 解析：还原为 Custom 调用原文
+    let resp = |input: serde_json::Value| {
+        serde_json::json!({
+            "id": "msg_1", "type": "message", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "toolu_1", "name": "apply_patch", "input": input}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 1, "output_tokens": 1}
+        })
+    };
+    let parsed = provider
+        .parse_response(resp(serde_json::json!({"input": "raw text"})), &tools)
+        .expect("parse");
+    assert_eq!(
+        parsed.messages[0].parts,
+        vec![ContentPart::ToolCall(ToolCall::custom(
+            "toolu_1",
+            "apply_patch",
+            "raw text"
+        ))]
+    );
+
+    // 缺 input 显式报错
+    let err = provider
+        .parse_response(resp(serde_json::json!({"patch": "x"})), &tools)
+        .unwrap_err();
+    assert!(matches!(err, ProviderError::Protocol(_)));
 }

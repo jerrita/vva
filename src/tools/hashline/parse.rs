@@ -4,7 +4,8 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
     pub path: String,
-    pub tag: String,
+    /// `[PATH#TAG]` 的快照 tag；`[PATH]`（仅配 ADD）为 None
+    pub tag: Option<String>,
     pub ops: Vec<Op>,
     pub file_op: Option<FileOp>,
 }
@@ -12,7 +13,13 @@ pub struct Section {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileOp {
     Rem,
-    Move { dest: String },
+    Move {
+        dest: String,
+    },
+    /// 新建文件：`+` 正文行（不含换行符）
+    Add {
+        lines: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +64,7 @@ const BEGIN: &str = "*** Begin Patch";
 const END: &str = "*** End Patch";
 const MAX_RANGE: u32 = 100_000;
 const NO_SECTIONS: &str = "invalid_arguments: no hashline sections found in input; copy a \
-    [PATH#TAG] header from the latest Read";
+    [PATH#TAG] header from the latest hashline_read";
 
 pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
     let mut rows: Vec<(u32, String)> = input
@@ -121,7 +128,7 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
             }
             continue;
         }
-        if let Some((path, tag)) = parse_header(trimmed) {
+        if let Some((path, tag)) = parse_header(trimmed).or_else(|| parse_add_header(trimmed)) {
             if let Some(section) = current.take() {
                 sections.push(section.finish(*line_num)?);
             }
@@ -148,13 +155,13 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
             };
             return Err(format!(
                 "invalid_arguments: line {line_num}: malformed [PATH#TAG] header ({reason}); \
-                 copy the header from the latest Read or Edit output"
+                 copy the header from the latest hashline_read or hashline_edit output"
             ));
         }
         let Some(section) = current.as_mut() else {
             return Err(format!(
                 "invalid_arguments: line {line_num}: payload has no [PATH#TAG] header; start \
-                 the section with the header copied from the latest Read"
+                 the section with the header copied from the latest hashline_read"
             ));
         };
         if let Some(header) = parse_hunk(trimmed, *line_num)? {
@@ -193,8 +200,8 @@ pub fn parse_patch(input: &str) -> Result<Vec<Section>, String> {
             continue;
         }
         return Err(format!(
-            "invalid_arguments: line {line_num}: expected [PATH#TAG], PUT/CUT/REM/MV, or a `+` \
-             body row; drop unchanged lines, got {trimmed:?}"
+            "invalid_arguments: line {line_num}: expected [PATH#TAG], [PATH], PUT/CUT/REM/MV/ADD, or a \
+             `+` body row; drop unchanged lines, got {trimmed:?}"
         ));
     }
     if let Some(section) = current.take() {
@@ -217,7 +224,7 @@ pub(super) fn op_line(op: &Op) -> String {
 
 struct OpenSection {
     path: String,
-    tag: String,
+    tag: Option<String>,
     ops: Vec<Op>,
     file_op: Option<FileOp>,
     body: Option<Vec<String>>,
@@ -228,6 +235,15 @@ impl OpenSection {
         let Some(body) = self.body.take() else {
             return Ok(());
         };
+        if let Some(FileOp::Add { lines }) = self.file_op.as_mut() {
+            if body.is_empty() {
+                return Err(format!(
+                    "invalid_arguments: line {line_num}: ADD requires one or more `+` body rows"
+                ));
+            }
+            *lines = body;
+            return Ok(());
+        }
         if body.is_empty() {
             let locator = self
                 .ops
@@ -253,7 +269,32 @@ impl OpenSection {
     }
 
     fn push_hunk(&mut self, header: Hunk, line_num: u32) -> Result<(), String> {
+        match (&header, self.tag.is_some()) {
+            (Hunk::Add, true) => {
+                return Err(format!(
+                    "invalid_arguments: line {line_num}: ADD creates a new file and belongs under \
+                     an untagged [PATH] header, not [PATH#TAG]"
+                ));
+            }
+            (Hunk::Add, false) => {}
+            (_, false) => {
+                return Err(format!(
+                    "invalid_arguments: line {line_num}: a [PATH] section accepts only ADD; \
+                     editing an existing file needs the [PATH#TAG] header from hashline_read"
+                ));
+            }
+            _ => {}
+        }
         match header {
+            Hunk::Add => {
+                if self.file_op.is_some() {
+                    return Err(format!(
+                        "invalid_arguments: line {line_num}: multiple ADD in one section; keep one ADD"
+                    ));
+                }
+                self.file_op = Some(FileOp::Add { lines: Vec::new() });
+                self.body = Some(Vec::new());
+            }
             Hunk::File(op) => {
                 if self.file_op.is_some() {
                     return Err(format!(
@@ -275,10 +316,13 @@ impl OpenSection {
     fn finish(mut self, line_num: u32) -> Result<Section, String> {
         self.flush_body(line_num)?;
         if self.ops.is_empty() && self.file_op.is_none() {
+            let header = match &self.tag {
+                Some(tag) => format!("[{}#{tag}]", self.path),
+                None => format!("[{}]", self.path),
+            };
             return Err(format!(
-                "invalid_arguments: [{}#{}] has no operations; add at least one PUT/CUT/REM/MV \
-                 row after the header",
-                self.path, self.tag
+                "invalid_arguments: {header} has no operations; add at least one \
+                 PUT/CUT/REM/MV (or ADD under [PATH]) row after the header"
             ));
         }
         Ok(Section {
@@ -291,11 +335,12 @@ impl OpenSection {
 }
 
 enum Hunk {
+    Add,
     Op { op: Op, wants_body: bool },
     File(FileOp),
 }
 
-fn parse_header(line: &str) -> Option<(String, String)> {
+fn parse_header(line: &str) -> Option<(String, Option<String>)> {
     let body = line.strip_prefix('[')?.strip_suffix(']')?;
     let (path, tag) = body.rsplit_once('#')?;
     if path.is_empty()
@@ -305,7 +350,16 @@ fn parse_header(line: &str) -> Option<(String, String)> {
     {
         return None;
     }
-    Some((path.to_string(), tag.to_ascii_uppercase()))
+    Some((path.to_string(), Some(tag.to_ascii_uppercase())))
+}
+
+/// 不带 TAG 的 `[PATH]` 头（仅配 ADD）；含 `#` 的写法归 `[PATH#TAG]` 校验。
+fn parse_add_header(line: &str) -> Option<(String, Option<String>)> {
+    let path = line.strip_prefix('[')?.strip_suffix(']')?;
+    if path.is_empty() || path.contains('#') {
+        return None;
+    }
+    Some((path.to_string(), None))
 }
 
 fn parse_hunk(line: &str, line_num: u32) -> Result<Option<Hunk>, String> {
@@ -317,6 +371,15 @@ fn parse_hunk(line: &str, line_num: u32) -> Result<Option<Hunk>, String> {
             ));
         }
         return Ok(Some(Hunk::File(FileOp::Rem)));
+    }
+    if let Some(rest) = keyword_tail(line, "ADD") {
+        if !rest.trim().is_empty() {
+            return Err(format!(
+                "invalid_arguments: line {line_num}: ADD takes no arguments; put the file text in \
+                 `+` rows below it"
+            ));
+        }
+        return Ok(Some(Hunk::Add));
     }
     if let Some(rest) = keyword_tail(line, "MV") {
         let dest = unquote_path(rest.trim()).ok_or_else(|| {

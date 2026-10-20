@@ -2,6 +2,7 @@
 
 mod citations;
 mod diff;
+mod patch;
 mod pipeline;
 mod selection;
 mod state;

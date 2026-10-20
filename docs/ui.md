@@ -39,7 +39,7 @@ src/ui/
     ├── header.rs           # 顶部标题栏
     ├── chat.rs             # 中间对话流（已完成轮次与流式草稿同源渲染、思考折叠、工具调用卡片、Markdown 渲染）
     ├── modal_shell.rs      # 模态弹窗公共外壳（居中布局、过滤行、滚动窗口、空态与提示行）
-    ├── sidebar.rs          # 右侧详情边栏（宽屏自适应，Token与花费看板）
+    ├── sidebar.rs          # 右侧详情边栏（宽屏自适应，模型与编辑协议、Token与花费看板）
     ├── input_area.rs       # 复合输入区（状态条、命令/文件建议浮层、多行输入框）
     ├── sessions_modal.rs   # /sessions 弹窗视图
     ├── models_modal.rs     # /model 弹窗视图

@@ -1,4 +1,4 @@
-//! omp hashline: file snapshot tags, original line numbers, PUT/CUT/REM/MV.
+//! omp hashline: file snapshot tags, original line numbers, PUT/CUT/REM/MV/ADD.
 
 mod apply;
 mod block;
@@ -9,10 +9,9 @@ mod snapshot;
 mod tests;
 
 use super::Tool;
-use super::parse_args;
+use super::names;
 use async_trait::async_trait;
 use parse::parse_patch;
-use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,56 +38,46 @@ impl HashlineEditTool {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HashlineArgs {
-    input: String,
-}
-
 #[async_trait]
 impl Tool for HashlineEditTool {
     fn name(&self) -> &str {
-        "Edit"
+        names::HASHLINE_EDIT
     }
 
     fn description(&self) -> &str {
-        r#"Line-anchored patch. Copy [PATH#TAG] from Read, Grep, Write, or the latest Edit preview; numbers are original snapshot lines, not shifted by earlier hunks. New files use Write.
+        r#"Line-anchored patch, sent as raw patch text (not JSON). Copy [PATH#TAG] from hashline_read, hashline_grep, or the latest hashline_edit preview; numbers are original snapshot lines, not shifted by earlier hunks.
 
-{"input":"[src/example.rs#1A2B]\nPUT 4.=4:\n+const value = 2;\n"}
+[src/example.rs#1A2B]
+PUT 4.=4:
++const value = 2;
 
 PUT N.=M: replace inclusive N–M with + body; every line in the range is removed, so include any retained lines in the body. Prefer <N or >N for insertion.
 PUT N*: replace a heuristically detected block (bracket counting that skips quoted strings and comments, indentation, or Markdown heading; no language parser). Use explicit ranges when unusual literals or JSX affect boundaries.
 PUT <N: insert before N (`PUT <1:` = file head). PUT >N: after N. PUT >$: append. PUT >N*: after block N.
 CUT N / CUT N.=M / CUT N* deletes and optionally captures @name; CUT N is a single-line cut, equivalent to CUT N.=N. PUT <N @name / PUT >N @name / PUT N.=M @name pastes (range/block paste needs a named register; gap paste may be anonymous). Named registers persist across calls in the session; insertions at the same gap keep input order.
 REM deletes the section file. MV <new-path> moves/renames the whole file after prior edits in that section; a bare name renames in place (same directory), a path with a directory component is workspace-relative.
+ADD creates a new file under an untagged [PATH] header (never [PATH#TAG]); the + rows are the complete file text. Missing parent directories are created; fails if the target exists. [PATH] accepts only ADD, and ADD appears only under [PATH]:
+
+[src/new.rs]
+ADD
++pub fn example() {}
+
 Body rows start with +; + alone writes a blank line. Literal leading - or +: +-text / ++text. Never send -old or context rows.
-After Edit, use its new [PATH#TAG]; displayed lines outside changed ranges carry over with shifted numbers, so only genuinely unseen ranges need a Read. All hunks in one request use the original snapshot's numbers. Read/Grep, Write, and numbered Edit previews accumulate displayed lines for the same TAG. Elided and partial lines are unseen. Active-session snapshots survive submissions; after session reload, Read/Grep again."#
+After hashline_edit, use its new [PATH#TAG]; displayed lines outside changed ranges carry over with shifted numbers, so only genuinely unseen ranges need a read. A file created by ADD returns its [PATH#TAG] with every line registered as displayed. All hunks in one request use the original snapshot's numbers. hashline_read/hashline_grep, ADD, and numbered hashline_edit previews accumulate displayed lines for the same TAG. Elided and partial lines are unseen. Active-session snapshots survive submissions; after session reload, hashline_read/hashline_grep again."#
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "input": {
-                    "type": "string",
-                    "description": "One or more [PATH#TAG] sections of PUT/CUT/REM/MV. Optional *** Begin Patch / *** End Patch wrapper."
-                }
-            },
-            "required": ["input"],
-            "additionalProperties": false
-        })
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Freeform { grammar: None }
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: HashlineArgs = parse_args(arguments, "Edit")?;
-        let sections = parse_patch(&args.input)?;
+        let sections = parse_patch(arguments)?;
         let working_dir = self.working_dir.clone();
-        let session = self
-            .session
-            .clone()
-            .ok_or_else(|| "hashline session is missing; Read the file before Edit".to_string())?;
+        let session = self.session.clone().ok_or_else(|| {
+            "hashline session is missing; hashline_read the file before hashline_edit".to_string()
+        })?;
         tokio::task::spawn_blocking(move || apply_sections(&working_dir, &session, sections))
             .await
-            .map_err(|e| format!("Edit task failed: {e}"))?
+            .map_err(|e| format!("hashline_edit task failed: {e}"))?
     }
 }

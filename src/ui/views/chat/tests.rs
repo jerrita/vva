@@ -7,6 +7,7 @@ use super::user_block::*;
 use super::view::*;
 use super::*;
 use crate::model::{ToolCall, ToolResult, WebSearchSource};
+use crate::tools::names;
 use crate::ui::app::{TextCoord, ToolExpand};
 use crate::ui::test_support::TestApp;
 use std::collections::HashMap;
@@ -1695,4 +1696,227 @@ async fn turn_outcome_and_task_completion_render_at_their_owners() {
     let text = joined(&app.chat.lines);
     assert!(text.contains("Build failed"));
     assert!(!text.contains("Build completed"));
+}
+
+fn custom_call(name: &str, input: &str) -> ToolCall {
+    ToolCall::custom("p1", name, input)
+}
+
+fn header_line(text: &str) -> &str {
+    text.lines().next().unwrap_or_default()
+}
+
+#[test]
+fn header_labels_map_by_tool_name() {
+    for (name, arguments, label) in [
+        (names::HASHLINE_READ, r#"{"path":"a.rs"}"#, "Read"),
+        (names::HASHLINE_GREP, r#"{"pattern":"foo"}"#, "Grep"),
+        (names::READ, r#"{"path":"a.rs"}"#, "Read"),
+    ] {
+        let call = ToolCall::new("c1", name, arguments);
+        let (text, _) = render_call(&call, None, &[]);
+        assert!(
+            header_line(&text).contains(&format!("* {label} ")),
+            "{text}"
+        );
+    }
+    let (text, _) = render_call(&custom_call(names::APPLY_PATCH, ""), None, &[]);
+    assert!(header_line(&text).contains("Patch"), "{text}");
+    let (text, _) = render_call(&custom_call(names::HASHLINE_EDIT, ""), None, &[]);
+    assert!(header_line(&text).contains("Edit"), "{text}");
+}
+
+const PATCH_UPDATE: &str = "*** Begin Patch\n*** Update File: src/a.rs\n@@ fn main() {\n-    old();\n+    new();\n+    more();\n     keep();\n*** End Patch";
+
+#[test]
+fn apply_patch_update_summary_and_diff() {
+    let call = custom_call(names::APPLY_PATCH, PATCH_UPDATE);
+    let result = ToolResult::success("p1", "Success");
+    let (text, hits) = render_call(&call, Some(&result), &[]);
+    assert!(
+        header_line(&text).contains("Patch src/a.rs (+2, -1)"),
+        "{text}"
+    );
+    assert!(text.contains("Update  src/a.rs"));
+    assert!(text.contains("@@ fn main() {"));
+    assert!(text.contains("- ") && text.contains("old();"));
+    assert!(text.contains("+ ") && text.contains("more();"));
+    assert!(text.contains("keep();"));
+    assert!(!text.contains("*** Update File"));
+    assert!(hits[0].full_only && !hits[0].truncated);
+}
+
+#[test]
+fn apply_patch_diff_styles_rows() {
+    let call = custom_call(names::APPLY_PATCH, PATCH_UPDATE);
+    let results = HashMap::new();
+    let (lines, _) = render_tools(
+        &[ContentPart::ToolCall(call)],
+        &results,
+        &HashMap::new(),
+        80,
+    );
+    let styled = |needle: &str, bg: Color| {
+        lines.iter().any(|line| {
+            line.to_string().contains(needle)
+                && line.spans.iter().any(|span| span.style.bg == Some(bg))
+        })
+    };
+    assert!(styled("old();", EDIT_DELETE_BG));
+    assert!(styled("new();", EDIT_INSERT_BG));
+}
+
+#[test]
+fn apply_patch_add_delete_move_and_multi_file() {
+    let add = "*** Begin Patch\n*** Add File: src/b.rs\n+one\n+two\n*** End Patch";
+    let (text, _) = render_call(&custom_call(names::APPLY_PATCH, add), None, &[]);
+    assert!(header_line(&text).contains("src/b.rs (new, +2)"), "{text}");
+    assert!(text.contains("Add  src/b.rs"));
+    assert!(
+        text.contains("   1 + one") || text.contains("1 + one"),
+        "{text}"
+    );
+
+    let delete = "*** Begin Patch\n*** Delete File: src/c.rs\n*** End Patch";
+    let (text, _) = render_call(&custom_call(names::APPLY_PATCH, delete), None, &[]);
+    assert!(header_line(&text).contains("src/c.rs (deleted)"), "{text}");
+    assert!(text.contains("Delete  src/c.rs"));
+    assert!(text.contains("file deleted"));
+
+    let moved =
+        "*** Begin Patch\n*** Update File: a.rs\n*** Move to: b.rs\n@@\n-x\n+y\n*** End Patch";
+    let (text, _) = render_call(&custom_call(names::APPLY_PATCH, moved), None, &[]);
+    assert!(
+        header_line(&text).contains("a.rs → b.rs (+1, -1)"),
+        "{text}"
+    );
+    assert!(text.contains("Move  a.rs → b.rs"));
+
+    let multi = format!("{PATCH_UPDATE}\n{add}\n{delete}");
+    let (text, _) = render_call(&custom_call(names::APPLY_PATCH, &multi), None, &[]);
+    assert!(header_line(&text).contains("3 files (+4, -1)"), "{text}");
+    for title in ["Update  src/a.rs", "Add  src/b.rs", "Delete  src/c.rs"] {
+        assert!(text.contains(title), "{title}\n{text}");
+    }
+}
+
+#[test]
+fn freeform_render_tolerates_truncated_input() {
+    let full = format!("{PATCH_UPDATE}\n*** Add File: x.rs\n+partial");
+    for end in 0..=full.len() {
+        if !full.is_char_boundary(end) {
+            continue;
+        }
+        let call = custom_call(names::APPLY_PATCH, &full[..end]);
+        render_call(&call, None, &[]);
+    }
+    // 无结果时丢弃未换行的末行，计数只含完整行
+    let call = custom_call(names::APPLY_PATCH, "*** Update File: a.rs\n+one\n+tw");
+    let (text, _) = render_call(&call, None, &[]);
+    assert!(header_line(&text).contains("a.rs (+1, -0)"), "{text}");
+}
+
+#[test]
+fn freeform_failure_shows_patch_and_error() {
+    let call = custom_call(names::APPLY_PATCH, PATCH_UPDATE);
+    let result = ToolResult::error("p1", "context not found");
+    let (text, _) = render_call(&call, Some(&result), &[]);
+    assert!(text.contains("*** Update File: src/a.rs"));
+    assert!(text.contains("context not found"));
+}
+
+const HASHLINE_INPUT: &str =
+    "[src/a.rs#1A2B]\nPUT 4.=6:\n+let x = 1;\n+let y = 2;\nCUT 10\nPUT >$:\n+tail\n";
+
+#[test]
+fn hashline_edit_summary_and_input_rendering() {
+    let call = custom_call(names::HASHLINE_EDIT, HASHLINE_INPUT);
+    let (text, _) = render_call(&call, None, &[]);
+    // PUT 4.=6 移除 3 行并写入 2 行；CUT 10 移除 1 行；PUT >$ 写入 1 行
+    assert!(
+        header_line(&text).contains("Edit src/a.rs (+3, -4)"),
+        "{text}"
+    );
+    assert!(text.contains("Update  src/a.rs"));
+    for note in ["PUT 4.=6", "CUT 10", "PUT >$"] {
+        assert!(text.contains(note), "{note}\n{text}");
+    }
+    assert!(text.contains("let x = 1;") && text.contains("tail"));
+    assert!(!text.contains("#1A2B"));
+}
+
+#[test]
+fn hashline_edit_add_rem_mv() {
+    let add = "[src/new.rs]\nADD\n+fn a() {}\n+fn b() {}\n";
+    let (text, _) = render_call(&custom_call(names::HASHLINE_EDIT, add), None, &[]);
+    assert!(
+        header_line(&text).contains("src/new.rs (new, +2)"),
+        "{text}"
+    );
+    assert!(text.contains("Add  src/new.rs"));
+    assert!(text.contains("1 + fn a() {}"), "{text}");
+
+    let rem = "[old.rs#0A0A]\nREM\n";
+    let (text, _) = render_call(&custom_call(names::HASHLINE_EDIT, rem), None, &[]);
+    assert!(header_line(&text).contains("old.rs (deleted)"), "{text}");
+
+    let mv = "[old.rs#0A0A]\nMV new.rs\n";
+    let (text, _) = render_call(&custom_call(names::HASHLINE_EDIT, mv), None, &[]);
+    assert!(header_line(&text).contains("old.rs → new.rs"), "{text}");
+    assert!(text.contains("Move  old.rs → new.rs"));
+
+    // 块/寄存器操作拿不到行数时只显示路径
+    let block = "[a.rs#0A0A]\nPUT 3*:\n+x\n";
+    let (text, _) = render_call(&custom_call(names::HASHLINE_EDIT, block), None, &[]);
+    assert!(
+        header_line(&text).trim_end().ends_with("Edit a.rs"),
+        "{text}"
+    );
+
+    let multi = format!("{HASHLINE_INPUT}{add}");
+    let (text, _) = render_call(&custom_call(names::HASHLINE_EDIT, &multi), None, &[]);
+    assert!(header_line(&text).contains("2 files (+5, -4)"), "{text}");
+}
+
+#[test]
+fn hashline_edit_result_renders_numbered_diff() {
+    let call = custom_call(names::HASHLINE_EDIT, HASHLINE_INPUT);
+    let result = ToolResult::success(
+        "p1",
+        "[src/a.rs#3C4D]\n--- /w/src/a.rs\n+++ /w/src/a.rs\n@@ -2,7 +2,6 @@\n ctx a\n ctx b\n-gone\n+kept\n+added\n ctx c\n\nCurrent snapshot preview (only numbered lines are registered):\n2:ctx a",
+    );
+    let (text, _) = render_call(&call, Some(&result), &[]);
+    assert!(text.contains("Update  src/a.rs"), "{text}");
+    assert!(text.contains("   2   ctx a"), "{text}");
+    assert!(text.contains("   4 - gone"), "{text}");
+    assert!(text.contains("   4 + kept"), "{text}");
+    assert!(text.contains("   5 + added"), "{text}");
+    assert!(!text.contains("--- /w"));
+    assert!(!text.contains("Current snapshot preview"));
+    assert!(!text.contains("PUT 4.=6"));
+}
+
+#[test]
+fn hashline_edit_result_covers_created_and_deleted() {
+    let call = custom_call(
+        names::HASHLINE_EDIT,
+        "[n.rs]\nADD\n+hello\n[old.rs#0A0A]\nREM\n",
+    );
+    let result = ToolResult::success(
+        "p1",
+        "Created file n.rs\n[n.rs#9F9F]\n\nDeleted file old.rs",
+    );
+    let (text, _) = render_call(&call, Some(&result), &[]);
+    assert!(text.contains("Add  n.rs"), "{text}");
+    assert!(text.contains("1 + hello"), "{text}");
+    assert!(text.contains("Delete  old.rs"), "{text}");
+}
+
+#[test]
+fn hashline_edit_failure_shows_patch_and_error() {
+    let call = custom_call(names::HASHLINE_EDIT, HASHLINE_INPUT);
+    let result = ToolResult::error("p1", "stale_tag");
+    let (text, _) = render_call(&call, Some(&result), &[]);
+    assert!(text.contains("[src/a.rs#1A2B]"), "{text}");
+    assert!(text.contains("stale_tag"));
 }

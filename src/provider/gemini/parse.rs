@@ -1,12 +1,14 @@
+use std::collections::HashSet;
+
 use tokio::sync::mpsc;
 
 use crate::event::AgentEvent;
 use crate::model::{
     Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
-    Message, SearchStatus, TokenUsage, ToolCall, TurnMeta, WebSearchAction, WebSearchCall,
-    WebSearchSource,
+    Message, SearchStatus, TokenUsage, ToolCall, ToolDefinition, ToolInput, TurnMeta,
+    WebSearchAction, WebSearchCall, WebSearchSource,
 };
-use crate::provider::common::{EventForwarder, require_str, require_u64};
+use crate::provider::common::{EventForwarder, freeform_call_input, require_str, require_u64};
 use crate::provider::{ProviderError, ProviderResponse};
 
 /// Gemini GenerateContentResponse 的增量累积器。
@@ -21,6 +23,8 @@ pub(super) struct GeminiAccumulator {
     thought: String,
     text: String,
     tool_calls: Vec<ToolCall>,
+    /// 本次请求中的 Freeform 工具名：其 functionCall 参数还原为原始输入文本
+    freeform_tools: HashSet<String>,
     search_call: Option<WebSearchCall>,
     citations: Vec<Annotation>,
     finish_reason: Option<String>,
@@ -30,9 +34,14 @@ pub(super) struct GeminiAccumulator {
 }
 
 impl GeminiAccumulator {
-    pub(super) fn new(sender: Option<mpsc::Sender<AgentEvent>>) -> Self {
+    pub(super) fn new(sender: Option<mpsc::Sender<AgentEvent>>, tools: &[ToolDefinition]) -> Self {
         Self {
             forwarder: EventForwarder::new(sender),
+            freeform_tools: tools
+                .iter()
+                .filter(|t| matches!(t.input, ToolInput::Freeform { .. }))
+                .map(|t| t.name.clone())
+                .collect(),
             ..Default::default()
         }
     }
@@ -185,15 +194,15 @@ impl GeminiAccumulator {
                     delta: text.to_string(),
                 });
             } else if let Some(fc) = p.get("functionCall") {
-                self.tool_calls.push(ToolCall {
-                    id: format!("call_{}", uuid::Uuid::new_v4().simple()),
-                    name: require_str(fc, "name")?.to_string(),
-                    arguments: fc
-                        .get("args")
-                        .ok_or_else(|| {
-                            ProviderError::Protocol("Missing 'args' in functionCall".into())
-                        })?
-                        .to_string(),
+                let name = require_str(fc, "name")?;
+                let args = fc.get("args").ok_or_else(|| {
+                    ProviderError::Protocol("Missing 'args' in functionCall".into())
+                })?;
+                let id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                self.tool_calls.push(if self.freeform_tools.contains(name) {
+                    ToolCall::custom(id, name, freeform_call_input(name, args)?)
+                } else {
+                    ToolCall::new(id, name, args.to_string())
                 });
             }
         }
@@ -203,13 +212,14 @@ impl GeminiAccumulator {
     /// 解析非流式响应：groundingMetadata 映射为 Responses 风格的 WebSearchCall 与 Annotation
     pub(super) fn parse_response(
         json: &serde_json::Value,
+        tools: &[ToolDefinition],
     ) -> Result<ProviderResponse, ProviderError> {
         if json["candidates"].as_array().is_none_or(|c| c.is_empty()) {
             return Err(ProviderError::Protocol(
                 "Empty candidates in Gemini response".into(),
             ));
         }
-        let mut accumulator = Self::new(None);
+        let mut accumulator = Self::new(None, tools);
         accumulator.merge_response(json)?;
         Ok(accumulator.finish())
     }

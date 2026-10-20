@@ -35,23 +35,25 @@ Managing skills (installing, creating, removing): a skill is a directory `<name>
 Install and create skills in the project directory `<workspace>/.vva/skills` (the workspace is the session's working directory; for the resident agent it is `~/.vva/space`); use the global directories when the user explicitly asks for a global install. Run `npx skills add` from the workspace root without `-g`/`--global`: the default project install lands in `<workspace>/.agents/skills`, which is discovered. After installing, confirm the skill directory sits under one of the paths above; new sessions pick up new skills."
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        let mut name = serde_json::json!({
-            "type": "string",
-            "description": "Name of the skill to load"
-        });
-        let names: Vec<&str> = self
-            .skills
-            .iter()
-            .map(|skill| skill.name.as_str())
-            .collect();
-        if !names.is_empty() {
-            name["enum"] = serde_json::json!(names);
-        }
-        serde_json::json!({
-            "type": "object",
-            "properties": { "name": name },
-            "required": ["name"]
+    fn input(&self) -> crate::model::ToolInput {
+        crate::model::ToolInput::Json({
+            let mut name = serde_json::json!({
+                "type": "string",
+                "description": "Name of the skill to load"
+            });
+            let names: Vec<&str> = self
+                .skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect();
+            if !names.is_empty() {
+                name["enum"] = serde_json::json!(names);
+            }
+            serde_json::json!({
+                "type": "object",
+                "properties": { "name": name },
+                "required": ["name"]
+            })
         })
     }
 
@@ -113,7 +115,7 @@ mod tests {
             result.contains("<skill name=\"pdf-processing\" path=\"/tmp/skills/pdf-processing\">")
         );
         assert!(result.contains("1. Open it."));
-        assert!(result.contains("Load them with Read or Shell"));
+        assert!(result.contains("Load them with the file-reading tools or Shell"));
     }
 
     #[tokio::test]
@@ -133,7 +135,7 @@ mod tests {
     #[test]
     fn parameters_enum_lists_available_skills() {
         let tool = SkillTool::new(Arc::new(vec![skill("alpha", "a"), skill("beta", "b")]));
-        let parameters = tool.parameters();
+        let parameters = tool.input().expect_json();
         assert_eq!(
             parameters["properties"]["name"]["enum"],
             serde_json::json!(["alpha", "beta"])

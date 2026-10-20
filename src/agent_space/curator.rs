@@ -39,7 +39,7 @@ const CURATOR_PROMPT: &str = "\
   - `MEMORY.md`（L1）：只列**领域**，每行一个：`- [领域名](<领域>/INDEX.md): 一句话范围说明`。它会被整份注入每个新会话，因此只列领域，不列具体条目。
   - `<领域>/INDEX.md`（L2）：列出该领域下的主题，每行一条：`- [主题](topic.md): 一句话说明`。
   - `<领域>/<topic>.md`（L3）：具体内容。
-- 开始前先 Read `MEMORY.md`（可能尚不存在），再用 Glob / Grep 检索相关领域与主题。
+- 开始前先阅读 `MEMORY.md`（可能尚不存在），再检索相关领域与主题。
 - 归类：优先更新已有主题；新主题优先归入已有领域；没有合适领域才新建，新建前必须先检索现有领域，不要建内容重叠的领域。
 - 某个领域的 `INDEX.md` 变得冗长时，在其下再拆子领域，保持 `MEMORY.md` 精简。
 
@@ -55,11 +55,11 @@ const CURATOR_PROMPT: &str = "\
 对话或已有记忆表明某个工作流已重复出现至少两次且步骤稳定时，写成 skill：\
 `<skills 目录>/<name>/SKILL.md`，格式为\n\
 ---\nname: <与目录同名，仅小写字母、数字、连字符>\ndescription: <一句话，说明何时使用>\n---\n\
-正文写步骤与注意事项。同名 skill 已存在时用 Edit 做最小修改。\
+正文写步骤与注意事项。同名 skill 已存在时做最小修改。\
 晋升后在 `MEMORY.md` 追加一行“已晋升 skill: <name>”。
 
 ## 工作方式
-- 只写记忆库目录与 skills 目录。改动已有文件前先 Read，用 Edit 做最小变更，新文件用 Write。
+- 只写记忆库目录与 skills 目录。改动已有文件前先阅读并做最小变更，新文件直接新建。
 - 没有值得记录的内容时，不要修改任何文件。
 - 最后用中文输出不超过 10 行的摘要：新增 / 更新了哪些主题与 skill（各一句话）；未修改则写“无需更新”。";
 
@@ -69,9 +69,10 @@ pub fn curator_agent() -> AgentDef {
         name: CURATOR_AGENT.into(),
         description: "Distills conversation increments into long-term memory and skills.".into(),
         model: None,
-        tools: ["Read", "Write", "Edit", "Glob", "Grep"]
-            .map(String::from)
-            .to_vec(),
+        tools: crate::tools::names::FILE_TOOLS
+            .iter()
+            .map(|name| name.to_string())
+            .collect(),
         system_prompt: Some(CURATOR_PROMPT.into()),
     }
 }
@@ -298,7 +299,7 @@ impl Curator {
         write_input(&input, &transcript)?;
         let prompt = format!(
             "整理会话 {session_id} 第 [{start}, {end}) 轮的增量对话。\n\
-             - 增量对话记录（用 Read 阅读）：{}\n\
+             - 增量对话记录（用文件读取工具阅读）：{}\n\
              - 记忆库目录：{}\n\
              - skills 目录：{}",
             input.display(),
@@ -717,7 +718,7 @@ mod tests {
             .parts
             .push(ContentPart::ToolCall(crate::model::ToolCall::new(
                 "c1",
-                "Read",
+                crate::tools::names::READ,
                 "{\"path\":\"a\"}",
             )));
         let result = Turn::new(

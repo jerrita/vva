@@ -29,6 +29,13 @@ pub trait Provider: Send + Sync {
 
 跨供应商的通用辅助集中在 [`common.rs`](../src/provider/common.rs)：事件背压转发（`EventForwarder`）、同角色块合并（`RoleBlockMerger`）以及严格字段读取（`require_str` / `require_u64` / `require_bool` / `require_value` / `require_array`）——必填字段缺失或类型不符一律报协议错误，三家适配器使用同一套读取器与错误语义。
 
+### 1.2 Freeform 工具
+工具入参形态由 [`ToolInput`](../src/model/tool.rs) 声明：`Json(schema)` 或 `Freeform { grammar }`（grammar 为可选 Lark 文法）。领域层的 freeform 调用为 `ToolCall { kind: Custom, arguments: <原始输入文本> }`，协议差异只在适配器内处理：
+- **Responses**：原生 custom tool。声明为 `{"type":"custom", "format": text | grammar(lark)}`，输出条目 `custom_tool_call` 解析为 Custom 调用，结果以 `custom_tool_call_output` 回传；
+- **Anthropic / Gemini**：无 freeform 协议，声明时投影为单字段 `{"input": string}` 的 function（`common::function_parameters`），解析时取出 `input` 原文构造 Custom 调用，回放时重新包装；参数不是恰含字符串 `input` 的对象时报协议错误。
+
+当前 freeform 工具为 `apply_patch`（附 Codex V4A Lark 文法）与 `hashline_edit`。
+
 ---
 
 ## 2. OpenAI Responses API 适配器
@@ -82,7 +89,7 @@ pub trait Provider: Send + Sync {
 
 ### 3.3 原生 Web Search / Web Fetch 服务端工具
 - **工具声明**：`enable_web_search` 开启时在 `tools` 中声明 `web_search_20260318` 与 `web_fetch_20260318` 服务端工具。`_20260209` 起的版本默认经代码执行容器调用，vva 未声明 programmatic tool calling，故显式注入 `allowed_callers: ["direct"]` 直连，否则 API 返回 400。
-- **模型级工具注记**：未接线 `web_fetch` 的中转端点会在声明中带上它时整组丢弃工具（连带 web_search 失效）。模型配置 `"annotation": { "web_fetch": false }` 可关闭 web_fetch 声明，仅保留 web_search。`"annotation": { "editor": "hashline" | "patch" | "replace" }` 选择 `Edit` 的参数与说明（未声明时取 `settings.editor`，缺省 `hashline`），写入会话后固定。
+- **模型级工具注记**：未接线 `web_fetch` 的中转端点会在声明中带上它时整组丢弃工具（连带 web_search 失效）。模型配置 `"annotation": { "web_fetch": false }` 可关闭 web_fetch 声明，仅保留 web_search。`"annotation": { "editor": "hashline" | "patch" | "replace" }` 选择文件工具集（未声明时取 `settings.editor`，缺省 `hashline`），写入会话后固定。
 - **服务端代执行**：`server_tool_use` 与 `web_search_tool_result` / `web_fetch_tool_result` 块由服务端直接产出，无需回传 `tool_result`。
 - **统一投影**：web_search 调用对投影为 `WebSearchCall`（Search 动作，携带来源列表，错误结果按 Failed 上报）；web_fetch 调用对投影为 `WebSearchCall`（OpenPage 动作）；文本块中的 `web_search_result_location` 引用投影为 `Annotation::WebSearchResultLocation`（无字符偏移，以 `cited_text` 摘录定位）。
 - **原生块链保真回传**：assistant 全部原生内容块（强类型 `AnthropicContentBlock`，含 `encrypted_content` / `encrypted_index` 等服务端加密字段与 `redacted_thinking`）存入 `AnthropicTurnMeta.content_blocks`，多轮请求逐块原样回传，缺失或改动即 400；同 Responses `output_items` 原生条目链策略。

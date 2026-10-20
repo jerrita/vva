@@ -1,6 +1,7 @@
 use super::GeminiProvider;
 use crate::model::{ContentPart, MediaSource, Role, Session, ToolDefinition};
 use crate::provider::common::RoleBlockMerger;
+use crate::provider::common::{function_parameters, replay_call_args};
 use crate::provider::{CompletionOptions, ProviderError};
 
 impl GeminiProvider {
@@ -79,13 +80,7 @@ impl GeminiProvider {
                                     }));
                                 }
                                 ContentPart::ToolCall(call) => {
-                                    let args: serde_json::Value =
-                                        serde_json::from_str(&call.arguments).map_err(|e| {
-                                            ProviderError::Protocol(format!(
-                                                "Invalid tool call '{}' arguments JSON: {e}",
-                                                call.name
-                                            ))
-                                        })?;
+                                    let args = replay_call_args(call)?;
                                     parts_arr.push(serde_json::json!({
                                         "functionCall": {
                                             "name": call.name,
@@ -169,7 +164,7 @@ impl GeminiProvider {
         if !tools.is_empty() {
             let function_declarations: Vec<serde_json::Value> = tools
                 .iter()
-                .map(|t| serde_json::json!({"name": t.name, "description": t.description, "parameters": t.parameters}))
+                .map(|t| serde_json::json!({"name": t.name, "description": t.description, "parameters": function_parameters(&t.input)}))
                 .collect();
             tools_list.push(serde_json::json!({
                 "functionDeclarations": function_declarations
