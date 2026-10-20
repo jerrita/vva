@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.0] - 2026-10-20
+
+### 新增
+
+- 支持智谱搜索：可选 Web Search API（`search_std` / `search_pro` / `search_pro_sogou` / `search_pro_quark`）与 Coding Plan 联网搜索 MCP（`search_mcp`）。
+
 ## [1.3.1] - 2026-10-20
 
 ### 修复
