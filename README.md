@@ -34,7 +34,7 @@ vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，
 一键安装或更新到最新 release：
 
 ```bash
-# Linux x86_64 / arm64
+# Linux x86_64 / arm64、macOS Apple Silicon（arm64）
 curl -fsSL https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.sh | bash
 ```
 

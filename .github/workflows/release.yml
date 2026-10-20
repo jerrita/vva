@@ -27,21 +27,25 @@ jobs:
             os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+            rustflags: "-C target-cpu=generic"
           - name: linux-arm64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
+            rustflags: "-C target-cpu=generic"
           - name: macos-arm64
             os: macos-15
             target: aarch64-apple-darwin
             archive: tar.gz
+            rustflags: ""
           - name: windows-x64
             os: windows-2022
             target: x86_64-pc-windows-msvc
             archive: zip
+            rustflags: "-C target-cpu=generic"
     env:
-      # 覆盖 .cargo/config.toml 中的 mold 配置
-      RUSTFLAGS: "-C target-cpu=generic"
+      # 覆盖 .cargo/config.toml；macOS 保留默认 CPU 特性，满足 ring 的 Apple ARM64 断言
+      RUSTFLAGS: ${{ matrix.rustflags }}
     steps:
       - uses: actions/checkout@v7
 
