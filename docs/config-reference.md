@@ -84,6 +84,10 @@
 ```jsonc
 "web": {
   "provider": {
+    "zhipu": {
+      "api_key": "${ZHIPU_API_KEY}",
+      "search_engine": "search_std" // 可选；search_mcp 使用 Coding Plan Search MCP
+    },
     "deepseek": {
       "api_key": "${DEEPSEEK_API_KEY}",
       "api_base": "https://api.deepseek.com" // 可选，省略时使用此地址
@@ -99,11 +103,13 @@
 
 | 字段 | 说明 |
 |---|---|
-| `provider` | 外置 provider 声明：`deepseek`（DeepSeek Search / Fetch API，search + fetch；搜索返回面向模型的 summary，抓取返回 Markdown）、`brave`（Brave LLM Context，仅 search）、`tavily`（Tavily，search + fetch）、`google`（`model` 指向已配置的 gemini 协议模型；search 单次请求仅挂载原生 `google_search`，来源取自 grounding、片段为被引用文本段；fetch 挂载 `url_context` 并同挂 `google_search`，正文为模型据页面给出的 Markdown 转述）；`local` 为内置 fetch provider（HTTP 抓取 + Readability 式正文提取），不在此声明 |
-| `search` | provider 名选择：`brave` / `tavily` / `google` / `deepseek` |
+| `provider` | 外置 provider 声明：`deepseek`（DeepSeek Search / Fetch API，search + fetch；搜索返回面向模型的 summary，抓取返回 Markdown）、`brave`（Brave LLM Context，仅 search）、`zhipu`（智谱 Web Search API / Coding Plan Search MCP，仅 search）、`tavily`（Tavily，search + fetch）、`google`（`model` 指向已配置的 gemini 协议模型；search 单次请求仅挂载原生 `google_search`，来源取自 grounding、片段为被引用文本段；fetch 挂载 `url_context` 并同挂 `google_search`，正文为模型据页面给出的 Markdown 转述）；`local` 为内置 fetch provider（HTTP 抓取 + Readability 式正文提取），不在此声明 |
+| `search` | provider 名选择：`brave` / `tavily` / `google` / `deepseek` / `zhipu` |
 | `fetch` | provider 名选择：`local` / `tavily` / `google` / `deepseek` |
 
 `provider.deepseek.api_base` 为根地址，去掉末尾 `/` 后自动拼接 `/v1/tools/search` 或 `/v1/tools/fetch`。自定义地址中的路径前缀会保留，例如 `https://example.com/proxy/` 对应 `https://example.com/proxy/v1/tools/search`。
+
+智谱仅支持 search，设置 `search: "zhipu"` 启用。`provider.zhipu.search_engine` 默认为 `search_std`，可选 `search_pro`、`search_pro_sogou`、`search_pro_quark`、`search_mcp`。前四项调用 [Web Search API](https://docs.bigmodel.cn/api-reference/工具-api/网络搜索)，结果条数由工具参数 `max_results` 控制；搜狗按 10 的倍数请求，夸克由服务端决定条数，最终均按 `max_results` 截取。`search_mcp` 调用 [Coding Plan 联网搜索 MCP](https://docs.bigmodel.cn/cn/coding-plan/mcp/search-mcp-server)，需要有对应权限的 Coding Plan Key；使用服务端声明的搜索工具，返回结果在本地按 `max_results` 截取。搜索总超时 60 秒，MCP 出错直接报错。
 
 模型原生 web 能力缺位时（`annotation.web_search: false`、`annotation.web_fetch: false` 或协议本身未提供），会话 web 开关开启且对应位配置了外置 provider 的情况下，注册同名客户端工具 `web_search` / `web_fetch` 补全，并在状态栏标注接管后端（TUI 状态行 `web:<search>+<fetch>`，Web 输入区「搜索」chip 标题）；原生能力在位时优先使用原生，外置工具不注册。Responses 的原生 `web_search` 含 `open_page` / `find_in_page`，视为 fetch 在位。`settings.web` 未配置时行为与既往一致（搜索选项报"被忽略"通知）。选中的 provider 不具备对应能力、未声明或密钥缺失时，会话启动报错。
 

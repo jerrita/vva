@@ -156,6 +156,7 @@ src/
 │   │   ├── brave.rs        # Brave Search LLM Context (grounding.generic 按 url 聚合，仅 search)
 │   │   ├── google.rs       # Google：以已配置 Gemini 模型仅挂载原生 google_search / url_context (search + fetch)
 │   │   ├── tavily.rs       # Tavily /search 与 /extract (search + fetch)
+│   │   ├── zhipu/          # 智谱 Web Search API / Coding Plan Search MCP（仅 search，search_engine 选择）
 │   │   ├── local.rs        # 内置 fetch：HTTP 抓取 + dom_smoothie 正文提取 + htmd 转 Markdown
 │   │   └── tool.rs         # web_search / web_fetch 工具 (原生能力缺位时注册)
 │   └── hashline/           # hashline_edit（hashline 协议）：[PATH#TAG] 快照 + PUT/CUT/REM/MV 行号补丁、[PATH] + ADD 新建文件，freeform

@@ -331,7 +331,7 @@ pub struct QqChannelConfig {
 pub struct WebSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<WebProviders>,
-    /// web search 使用的 provider 名（`brave` / `tavily` / `google` / `deepseek`）
+    /// web search 使用的 provider 名（`brave` / `tavily` / `google` / `deepseek` / `zhipu`）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
     /// web fetch 使用的 provider 名（`local` / `tavily` / `google` / `deepseek`）
@@ -342,6 +342,8 @@ pub struct WebSettings {
 /// 外置 web provider 声明；`local` 为内置保留名，不在此声明
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebProviders {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zhipu: Option<WebZhipu>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deepseek: Option<WebDeepSeek>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -374,6 +376,25 @@ pub struct WebApiAuth {
     pub api_key: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebZhipu {
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub search_engine: ZhipuSearchEngine,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZhipuSearchEngine {
+    #[default]
+    SearchStd,
+    SearchPro,
+    SearchProSogou,
+    SearchProQuark,
+    SearchMcp,
+}
+
 impl WebSettings {
     /// 声明了哪些 provider 名（不含内置 `local`）
     pub fn declared_names(&self) -> Vec<&str> {
@@ -381,6 +402,9 @@ impl WebSettings {
             return Vec::new();
         };
         let mut names = Vec::new();
+        if provider.zhipu.is_some() {
+            names.push("zhipu");
+        }
         if provider.deepseek.is_some() {
             names.push("deepseek");
         }

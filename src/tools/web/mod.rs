@@ -1,5 +1,5 @@
 //! 外置 web search / fetch provider：为原生 server tool 能力缺位的模型提供客户端工具补全。
-//! 能力矩阵：`brave` 仅 search；`google` 二者皆支持（单模型原生 google_search / url_context）；`local` 仅 fetch（内置，无需声明）；`tavily` / `deepseek` 二者皆支持。
+//! 能力矩阵：`brave` / `zhipu` 仅 search；`google` 二者皆支持（单模型原生 google_search / url_context）；`local` 仅 fetch（内置，无需声明）；`tavily` / `deepseek` 二者皆支持。
 
 pub mod brave;
 pub mod deepseek;
@@ -7,6 +7,7 @@ pub mod google;
 pub mod local;
 pub mod tavily;
 pub mod tool;
+pub mod zhipu;
 
 use std::sync::Arc;
 
@@ -80,6 +81,19 @@ fn resolve_search(
     name: &str,
 ) -> Result<Arc<dyn WebSearchProvider>, String> {
     match name {
+        "zhipu" => {
+            let api_key = required_api_key(web, "zhipu")?;
+            let search_engine = web
+                .provider
+                .as_ref()
+                .and_then(|provider| provider.zhipu.as_ref())
+                .ok_or("settings.web.provider.zhipu is required")?
+                .search_engine;
+            Ok(Arc::new(zhipu::ZhipuSearchProvider::new(
+                api_key,
+                search_engine,
+            )))
+        }
         "deepseek" => Ok(Arc::new(deepseek::DeepSeekSearchProvider::new(
             required_api_key(web, "deepseek")?,
             deepseek_api_base(web),
@@ -122,9 +136,9 @@ fn resolve_fetch(
         "tavily" => Ok(Arc::new(tavily::TavilyFetchProvider::new(
             required_api_key(web, "tavily")?,
         ))),
-        "brave" => Err(
-            "settings.web.fetch = \"brave\": provider 'brave' only supports web search".to_string(),
-        ),
+        "brave" | "zhipu" => Err(format!(
+            "settings.web.fetch = {name:?}: provider '{name}' only supports web search"
+        )),
         other => Err(format!(
             "settings.web.fetch = {other:?}: unknown web provider (declared: {:?}; builtin: \"local\")",
             web.declared_names()
@@ -157,6 +171,11 @@ fn deepseek_api_base(web: &WebSettings) -> Option<&str> {
 
 fn required_api_key(web: &WebSettings, name: &str) -> Result<String, String> {
     let auth = match name {
+        "zhipu" => web
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.zhipu.as_ref())
+            .map(|auth| auth.api_key.as_str()),
         "deepseek" => web
             .provider
             .as_ref()
@@ -264,6 +283,50 @@ mod tests {
     }
 
     #[test]
+    fn resolve_zhipu_engines_and_validate_configuration() {
+        for engine in [
+            None,
+            Some("search_std"),
+            Some("search_pro"),
+            Some("search_pro_sogou"),
+            Some("search_pro_quark"),
+            Some("search_mcp"),
+        ] {
+            let mut value = serde_json::json!({
+                "provider":{"zhipu":{"api_key":"test-key"}}, "search":"zhipu"
+            });
+            if let Some(engine) = engine {
+                value["provider"]["zhipu"]["search_engine"] = engine.into();
+            }
+            let web: WebSettings = serde_json::from_value(value).unwrap();
+            assert_eq!(web.declared_names(), ["zhipu"]);
+            let external = ExternalWeb::resolve(&config_with(web)).unwrap();
+            assert_eq!(external.search.unwrap().name(), "zhipu");
+            assert!(external.fetch.is_none());
+        }
+        for declaration in ["{}", r#"{"zhipu":{"api_key":"   "}}"#] {
+            let web = settings(&format!(r#"{{"search":"zhipu","provider":{declaration}}}"#));
+            let error = ExternalWeb::resolve(&config_with(web)).err().unwrap();
+            assert!(error.contains("settings.web.provider.zhipu.api_key"));
+        }
+        let web = settings(r#"{"fetch":"zhipu"}"#);
+        assert!(
+            ExternalWeb::resolve(&config_with(web))
+                .err()
+                .unwrap()
+                .contains("only supports web search")
+        );
+        assert!(
+            serde_json::from_str::<WebSettings>(
+                r#"{
+            "provider":{"zhipu":{"api_key":"test-key","search_engine":"unknown"}}
+        }"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn resolve_rejects_capability_mismatch_and_unknown_names() {
         let mismatch = settings(r#"{"search":"local"}"#);
         assert!(ExternalWeb::resolve(&config_with(mismatch)).is_err());
@@ -304,6 +367,7 @@ mod tests {
         assert!(required_api_key(&undeclared, "tavily").is_err());
         let blank = WebSettings {
             provider: Some(WebProviders {
+                zhipu: None,
                 deepseek: None,
                 brave: None,
                 google: None,
