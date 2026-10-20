@@ -227,8 +227,8 @@ fn collect_summaries(dir: &Path, summaries: &mut Vec<SessionSummary>) -> Result<
                     Some(*header)
                 }
                 _ => {
-                    eprintln!(
-                        "warning: unsupported or corrupt session header, skipped: {}",
+                    tracing::warn!(
+                        "unsupported or corrupt session header, skipped: {}",
                         path.display()
                     );
                     None
