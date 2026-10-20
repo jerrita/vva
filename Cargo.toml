@@ -1,6 +1,6 @@
 [package]
 name = "vva"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/jerrita/vva"
@@ -35,10 +35,13 @@ tempfile = "3"
 dom_smoothie = "0.18"
 htmd = "0.5"
 ignore = "0.4.33"
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "native-tls"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 arboard = "3.4"
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "native-tls"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 
 [profile.dev]
 debug = 1

@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0] - 2026-10-20
+
+### 新增
+
+- 支持 Android arm64 / Termux，发布 `android-arm64` 安装包，安装脚本自动识别平台并默认安装到 `$PREFIX/bin`。
+
+### 改进
+
+- Android 主目录优先读取 `$HOME`，未设置时使用 `/data/data/com.termux/files/home`。
+- 适配 Termux 原生 LLVM 工具链，Android WebSocket 使用 Rustls，消除 OpenSSL 构建依赖。
+- 补充 Termux 安装与源码构建说明。
+
 ## [1.4.0] - 2026-10-20
 
 ### 新增

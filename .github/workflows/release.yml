@@ -33,6 +33,11 @@ jobs:
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             rustflags: "-C target-cpu=generic"
+          - name: android-arm64
+            os: ubuntu-24.04
+            target: aarch64-linux-android
+            archive: tar.gz
+            rustflags: "-C target-cpu=generic"
           - name: macos-arm64
             os: macos-15
             target: aarch64-apple-darwin
@@ -80,6 +85,15 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=gcc" >> "$GITHUB_ENV"
           echo "CC_aarch64_unknown_linux_gnu=gcc" >> "$GITHUB_ENV"
           echo "AR_aarch64_unknown_linux_gnu=ar" >> "$GITHUB_ENV"
+
+      - name: Configure Android NDK
+        if: matrix.target == 'aarch64-linux-android'
+        shell: bash
+        run: |
+          toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}

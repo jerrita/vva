@@ -1,18 +1,31 @@
 #!/usr/bin/env bash
-# 安装或更新 vva 到最新 release。环境变量 VVA_INSTALL_DIR 指定安装目录 (默认 ~/.local/bin)。
+# 安装或更新 vva 到最新 release。VVA_INSTALL_DIR 指定安装目录，默认 ~/.local/bin，Termux 使用 $PREFIX/bin。
 set -euo pipefail
 
 repo="jerrita/vva"
-dir="${VVA_INSTALL_DIR:-$HOME/.local/bin}"
-
 os=$(uname -s)
 arch=$(uname -m)
+if [ "$os" = Linux ] && {
+  [ -n "${TERMUX_VERSION:-}" ] ||
+    [ "${PREFIX:-}" = /data/data/com.termux/files/usr ] ||
+    [ "$(uname -o 2>/dev/null || true)" = Android ]
+}; then
+  os=Android
+fi
+
 case "$os/$arch" in
+  Android/aarch64 | Android/arm64) platform=android-arm64 ;;
   Linux/x86_64) platform=linux-x64 ;;
   Linux/aarch64 | Linux/arm64) platform=linux-arm64 ;;
   Darwin/arm64) platform=macos-arm64 ;;
   *) echo "不支持的平台: $os/$arch" >&2; exit 1 ;;
 esac
+
+if [ "$platform" = android-arm64 ]; then
+  dir="${VVA_INSTALL_DIR:-${PREFIX:-/data/data/com.termux/files/usr}/bin}"
+else
+  dir="${VVA_INSTALL_DIR:-$HOME/.local/bin}"
+fi
 
 tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" |
   sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)

@@ -50,11 +50,13 @@ impl AppConfig {
     }
 }
 
-/// 获取当前用户的主目录路径（跨平台支持 HOME 与 Windows USERPROFILE / HOMEDRIVE+HOMEPATH）
+/// 获取当前用户的主目录路径；Android 未设置 HOME 时使用 Termux 默认目录。
 pub fn home_dir() -> Option<PathBuf> {
     let var = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-    var("HOME")
-        .or_else(|| var("USERPROFILE"))
+    let home = var("HOME");
+    #[cfg(target_os = "android")]
+    let home = home.or_else(|| Some("/data/data/com.termux/files/home".into()));
+    home.or_else(|| var("USERPROFILE"))
         .or_else(|| Some(var("HOMEDRIVE")? + &var("HOMEPATH")?))
         .map(PathBuf::from)
 }

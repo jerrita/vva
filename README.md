@@ -34,7 +34,7 @@ vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，
 一键安装或更新到最新 release：
 
 ```bash
-# Linux x86_64 / arm64、macOS Apple Silicon（arm64）
+# Linux x86_64 / arm64、macOS Apple Silicon（arm64）、Android arm64（Termux）
 curl -fsSL https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.sh | bash
 ```
 
@@ -48,6 +48,18 @@ irm https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.ps1 | i
 ```bash
 cargo install --git https://github.com/jerrita/vva
 ```
+
+### Android / Termux
+
+在 Termux 中安装依赖后，运行上方的一键安装命令：
+
+```bash
+pkg install bash curl tar coreutils ca-certificates
+```
+
+安装脚本选择 `android-arm64` 产物，默认安装到 `$PREFIX/bin`，可通过 `VVA_INSTALL_DIR` 修改。主目录读取 `$HOME`，未设置时使用 `/data/data/com.termux/files/home`；全局配置位于该目录下的 `.vva/config.jsonc`，会话与技能等数据也保存在 `.vva` 下。
+
+在 Termux 中从源码构建时，先安装 `rust clang make nodejs-lts`，再执行上方的 `cargo install` 命令。
 
 ## 快速开始
 
