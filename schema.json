@@ -36,6 +36,15 @@
               "additionalProperties": false,
               "description": "外置 provider 声明，键为 provider 名",
               "properties": {
+                "deepseek": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "DeepSeek Search / Fetch API，search 与 fetch 均支持",
+                  "properties": {
+                    "api_key": { "type": "string", "description": "必填，推荐 \"${DEEPSEEK_API_KEY}\" 插值" },
+                    "api_base": { "type": "string", "default": "https://api.deepseek.com", "description": "可选根地址，去掉末尾 / 后自动拼接 /v1/tools/search 或 /v1/tools/fetch" }
+                  }
+                },
                 "brave": {
                   "type": "object",
                   "additionalProperties": false,
@@ -55,11 +64,11 @@
               }
             },
             "search": {
-              "enum": ["brave", "tavily"],
+              "enum": ["brave", "tavily", "deepseek"],
               "description": "web search 使用的 provider 名"
             },
             "fetch": {
-              "enum": ["brave", "local", "tavily"],
+              "enum": ["brave", "local", "tavily", "deepseek"],
               "description": "web fetch 使用的 provider 名；local 为内置网页正文提取（Readability 式），仅支持 fetch"
             }
           }

@@ -1,7 +1,8 @@
 //! 外置 web search / fetch provider：为原生 server tool 能力缺位的模型提供客户端工具补全。
-//! 能力矩阵：`brave` 仅 search；`google` 二者皆支持（单模型原生 google_search / url_context）；`local` 仅 fetch（内置，无需声明）；`tavily` 二者皆支持。
+//! 能力矩阵：`brave` 仅 search；`google` 二者皆支持（单模型原生 google_search / url_context）；`local` 仅 fetch（内置，无需声明）；`tavily` / `deepseek` 二者皆支持。
 
 pub mod brave;
+pub mod deepseek;
 pub mod google;
 pub mod local;
 pub mod tavily;
@@ -79,6 +80,10 @@ fn resolve_search(
     name: &str,
 ) -> Result<Arc<dyn WebSearchProvider>, String> {
     match name {
+        "deepseek" => Ok(Arc::new(deepseek::DeepSeekSearchProvider::new(
+            required_api_key(web, "deepseek")?,
+            deepseek_api_base(web),
+        ))),
         "google" => Ok(Arc::new(google::GoogleSearchProvider::new(
             config,
             google_model(web)?,
@@ -105,6 +110,10 @@ fn resolve_fetch(
     name: &str,
 ) -> Result<Arc<dyn WebFetchProvider>, String> {
     match name {
+        "deepseek" => Ok(Arc::new(deepseek::DeepSeekFetchProvider::new(
+            required_api_key(web, "deepseek")?,
+            deepseek_api_base(web),
+        ))),
         "google" => Ok(Arc::new(google::GoogleFetchProvider::new(
             config,
             google_model(web)?,
@@ -139,21 +148,33 @@ fn google_model(web: &WebSettings) -> Result<&str, String> {
     Ok(spec)
 }
 
+fn deepseek_api_base(web: &WebSettings) -> Option<&str> {
+    web.provider
+        .as_ref()
+        .and_then(|provider| provider.deepseek.as_ref())
+        .and_then(|deepseek| deepseek.api_base.as_deref())
+}
+
 fn required_api_key(web: &WebSettings, name: &str) -> Result<String, String> {
     let auth = match name {
+        "deepseek" => web
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.deepseek.as_ref())
+            .map(|auth| auth.api_key.as_str()),
         "brave" => web
             .provider
             .as_ref()
-            .and_then(|provider| provider.brave.as_ref()),
+            .and_then(|provider| provider.brave.as_ref())
+            .map(|auth| auth.api_key.as_str()),
         "tavily" => web
             .provider
             .as_ref()
-            .and_then(|provider| provider.tavily.as_ref()),
+            .and_then(|provider| provider.tavily.as_ref())
+            .map(|auth| auth.api_key.as_str()),
         _ => None,
     };
-    let api_key = auth
-        .map(|auth| auth.api_key.trim().to_string())
-        .unwrap_or_default();
+    let api_key = auth.map(|key| key.trim().to_string()).unwrap_or_default();
     if api_key.is_empty() {
         return Err(format!(
             "settings.web.provider.{name}.api_key is required when selecting provider '{name}'"
@@ -218,6 +239,31 @@ mod tests {
     }
 
     #[test]
+    fn resolve_deepseek_search_and_fetch() {
+        let web = settings(
+            r#"{
+                "provider": {"deepseek": {"api_key": "test-key"}},
+                "search": "deepseek",
+                "fetch": "deepseek"
+            }"#,
+        );
+        assert_eq!(web.declared_names(), ["deepseek"]);
+        let external = ExternalWeb::resolve(&config_with(web)).unwrap();
+        assert_eq!(external.search.unwrap().name(), "deepseek");
+        assert_eq!(external.fetch.unwrap().name(), "deepseek");
+
+        for kind in ["search", "fetch"] {
+            for declaration in ["{}", r#"{"deepseek":{"api_key":"   "}}"#] {
+                let web = settings(&format!(
+                    r#"{{"{kind}":"deepseek","provider":{declaration}}}"#
+                ));
+                let error = ExternalWeb::resolve(&config_with(web)).err().unwrap();
+                assert!(error.contains("settings.web.provider.deepseek.api_key"));
+            }
+        }
+    }
+
+    #[test]
     fn resolve_rejects_capability_mismatch_and_unknown_names() {
         let mismatch = settings(r#"{"search":"local"}"#);
         assert!(ExternalWeb::resolve(&config_with(mismatch)).is_err());
@@ -258,6 +304,7 @@ mod tests {
         assert!(required_api_key(&undeclared, "tavily").is_err());
         let blank = WebSettings {
             provider: Some(WebProviders {
+                deepseek: None,
                 brave: None,
                 google: None,
                 tavily: Some(WebApiAuth {

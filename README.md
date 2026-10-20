@@ -26,7 +26,7 @@ vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，
 - **用量透明**：实时显示 token、缓存命中与费用；
 - **多模态**：`@` 引用工作区文件，图片与 PDF 作为原生附件发送；
 - **可扩展**：支持 `AGENTS.md` 指令、[Agent Skills](https://agentskills.io)、自定义 subagent；
-- **联网兜底**：模型无原生搜索时可接入 Brave / Tavily / Gemini 搜索与网页抓取；
+- **联网兜底**：模型无原生搜索时可接入 Brave / Tavily / Gemini / DeepSeek 搜索与网页抓取；
 - **常驻 IM agent**：`vva agent` 接入 QQ，自动路由会话、沉淀长期记忆、执行定时任务。
 
 ## 安装

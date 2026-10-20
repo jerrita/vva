@@ -331,10 +331,10 @@ pub struct QqChannelConfig {
 pub struct WebSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<WebProviders>,
-    /// web search 使用的 provider 名（`brave` / `tavily` / `google`）
+    /// web search 使用的 provider 名（`brave` / `tavily` / `google` / `deepseek`）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
-    /// web fetch 使用的 provider 名（`local` / `tavily`）
+    /// web fetch 使用的 provider 名（`local` / `tavily` / `google` / `deepseek`）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fetch: Option<String>,
 }
@@ -342,6 +342,8 @@ pub struct WebSettings {
 /// 外置 web provider 声明；`local` 为内置保留名，不在此声明
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebProviders {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deepseek: Option<WebDeepSeek>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brave: Option<WebApiAuth>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -358,6 +360,15 @@ pub struct WebGoogle {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebDeepSeek {
+    #[serde(default)]
+    pub api_key: String,
+    /// 根地址；省略时使用官方地址，自动拼接 `/v1/tools/search` 或 `/v1/tools/fetch`。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_base: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WebApiAuth {
     #[serde(default)]
     pub api_key: String,
@@ -370,6 +381,9 @@ impl WebSettings {
             return Vec::new();
         };
         let mut names = Vec::new();
+        if provider.deepseek.is_some() {
+            names.push("deepseek");
+        }
         if provider.brave.is_some() {
             names.push("brave");
         }

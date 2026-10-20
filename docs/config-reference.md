@@ -84,6 +84,10 @@
 ```jsonc
 "web": {
   "provider": {
+    "deepseek": {
+      "api_key": "${DEEPSEEK_API_KEY}",
+      "api_base": "https://api.deepseek.com" // 可选，省略时使用此地址
+    }, // DeepSeek，search + fetch
     "brave":  { "api_key": "${BRAVE_API_KEY}" },   // Brave Search LLM Context，仅 search
     "tavily": { "api_key": "${TAVILY_API_KEY}" },  // Tavily，search + fetch
     "google": { "model": "homo/gemini-3.8-flash" } // 已配置的 Gemini 模型，仅挂载原生 google_search，仅 search
@@ -95,9 +99,11 @@
 
 | 字段 | 说明 |
 |---|---|
-| `provider` | 外置 provider 声明：`brave`（Brave LLM Context，仅 search）、`tavily`（Tavily，search + fetch）、`google`（`model` 指向已配置的 gemini 协议模型；search 单次请求仅挂载原生 `google_search`，来源取自 grounding、片段为被引用文本段；fetch 挂载 `url_context` 并同挂 `google_search`，正文为模型据页面给出的 Markdown 转述）；`local` 为内置 fetch provider（HTTP 抓取 + Readability 式正文提取），不在此声明 |
-| `search` | provider 名选择：`brave` / `tavily` / `google` |
-| `fetch` | provider 名选择：`local` / `tavily` / `google` |
+| `provider` | 外置 provider 声明：`deepseek`（DeepSeek Search / Fetch API，search + fetch；搜索返回面向模型的 summary，抓取返回 Markdown）、`brave`（Brave LLM Context，仅 search）、`tavily`（Tavily，search + fetch）、`google`（`model` 指向已配置的 gemini 协议模型；search 单次请求仅挂载原生 `google_search`，来源取自 grounding、片段为被引用文本段；fetch 挂载 `url_context` 并同挂 `google_search`，正文为模型据页面给出的 Markdown 转述）；`local` 为内置 fetch provider（HTTP 抓取 + Readability 式正文提取），不在此声明 |
+| `search` | provider 名选择：`brave` / `tavily` / `google` / `deepseek` |
+| `fetch` | provider 名选择：`local` / `tavily` / `google` / `deepseek` |
+
+`provider.deepseek.api_base` 为根地址，去掉末尾 `/` 后自动拼接 `/v1/tools/search` 或 `/v1/tools/fetch`。自定义地址中的路径前缀会保留，例如 `https://example.com/proxy/` 对应 `https://example.com/proxy/v1/tools/search`。
 
 模型原生 web 能力缺位时（`annotation.web_search: false`、`annotation.web_fetch: false` 或协议本身未提供），会话 web 开关开启且对应位配置了外置 provider 的情况下，注册同名客户端工具 `web_search` / `web_fetch` 补全，并在状态栏标注接管后端（TUI 状态行 `web:<search>+<fetch>`，Web 输入区「搜索」chip 标题）；原生能力在位时优先使用原生，外置工具不注册。Responses 的原生 `web_search` 含 `open_page` / `find_in_page`，视为 fetch 在位。`settings.web` 未配置时行为与既往一致（搜索选项报"被忽略"通知）。选中的 provider 不具备对应能力、未声明或密钥缺失时，会话启动报错。
 
