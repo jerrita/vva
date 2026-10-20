@@ -205,8 +205,13 @@ fn shell_description(file_tools: &[&str]) -> String {
 }
 
 fn shell_command_hint() -> String {
+    let escaping = if cfg!(windows) {
+        ""
+    } else {
+        " After JSON decoding, command is passed directly to bash without extra unescaping. In bash double quotes, literal \\n stays literal; use actual newlines or ANSI-C quoting ($'first\\nsecond') when an argument needs a newline."
+    };
     format!(
-        "Shell command executed from the workspace root. Use {SHELL_NOUN} syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string."
+        "Shell command executed from the workspace root. Use {SHELL_NOUN} syntax. Shell-quote paths with spaces and JSON-escape those quotes in this string.{escaping}"
     )
 }
 
