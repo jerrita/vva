@@ -29,6 +29,8 @@ struct Env<'r> {
     expand: HashMap<String, ToolExpand>,
     thought_expand: HashMap<String, bool>,
     citations_expand: HashMap<String, bool>,
+    tasks: std::collections::BTreeMap<String, crate::model::BackgroundTask>,
+    query_owners: HashMap<String, String>,
 }
 
 impl Default for Env<'_> {
@@ -40,6 +42,8 @@ impl Default for Env<'_> {
             expand: HashMap::new(),
             thought_expand: HashMap::new(),
             citations_expand: HashMap::new(),
+            tasks: Default::default(),
+            query_owners: Default::default(),
         }
     }
 }
@@ -59,6 +63,8 @@ impl Sink {
     fn render<'a>(&'a mut self, env: &'a Env<'_>) -> ChatRender<'a> {
         ChatRender {
             notices: &[],
+            tasks: &env.tasks,
+            query_owners: &env.query_owners,
             lines: &mut self.lines,
             links: &mut self.links,
             max_width: env.width,
@@ -449,6 +455,8 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         expand: app.tool_expand.clone(),
         thought_expand: app.thought_expand.clone(),
         citations_expand: app.citations_expand.clone(),
+        tasks: (*app.view.background_tasks).clone(),
+        query_owners: collect_query_owners(&app.view, &collect_tool_results(&app.view)),
     };
     let mut sink = Sink::default();
     let mut state = RenderState::default();
@@ -1664,21 +1672,21 @@ async fn turn_outcome_and_task_completion_render_at_their_owners() {
         crate::model::Turn::new(Role::Tool, vec![crate::model::Message::tool_result(result)]),
         crate::model::Turn::user_turn(crate::model::Message::text("Later request")),
     ];
-    view.notices = vec![
-        Notice::new(
-            "Execution stopped".into(),
-            NoticeKind::Turn {
-                turn_id: first_id,
-                aborted: true,
-            },
-        ),
-        Notice::new(
-            "Build completed".into(),
-            NoticeKind::Task {
-                task_id: "task-build".into(),
-            },
-        ),
-    ];
+    view.notices = vec![Notice::new(
+        "Execution stopped".into(),
+        NoticeKind::Turn {
+            turn_id: first_id,
+            aborted: true,
+        },
+    )];
+    Arc::make_mut(&mut view.background_tasks).insert(
+        "task-build".into(),
+        crate::model::BackgroundTask {
+            status: crate::model::BackgroundTaskStatus::Completed,
+            output: "Build completed".into(),
+            ..crate::model::BackgroundTask::running("task-build".into())
+        },
+    );
     app.refresh_chat_lines(120);
     let text = joined(&app.chat.lines);
     assert!(text.find("Execution stopped").unwrap() < text.find("Later request").unwrap());
@@ -1687,15 +1695,19 @@ async fn turn_outcome_and_task_completion_render_at_their_owners() {
         .lines
         .iter()
         .map(ToString::to_string)
-        .find(|line| line.contains("Build completed"))
+        .find(|line| line.contains("已完成"))
         .unwrap();
     assert!(task_line.contains("Shell"));
-    assert!(text.find("Build completed").unwrap() < text.find("Later request").unwrap());
-    Arc::make_mut(&mut app.view).notices[1].text = "Build failed".into();
+    assert!(text.find("已完成").unwrap() < text.find("Later request").unwrap());
+    let task = Arc::make_mut(&mut Arc::make_mut(&mut app.view).background_tasks)
+        .get_mut("task-build")
+        .unwrap();
+    task.status = crate::model::BackgroundTaskStatus::Failed;
+    task.output = "Build failed".into();
     app.refresh_chat_lines(120);
     let text = joined(&app.chat.lines);
-    assert!(text.contains("Build failed"));
-    assert!(!text.contains("Build completed"));
+    assert!(text.contains("失败"));
+    assert!(!text.contains("已完成"));
 }
 
 fn custom_call(name: &str, input: &str) -> ToolCall {

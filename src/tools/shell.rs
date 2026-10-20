@@ -84,7 +84,15 @@ impl Tool for ShellTool {
     }
 
     async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
-        super::result_with_task(call, self.run(&call.arguments).await)
+        let mut result = super::result_with_task(call, self.run(&call.arguments).await);
+        if let Some(id) = &result.background_task_id {
+            result.task = self
+                .background
+                .as_ref()
+                .and_then(|tasks| tasks.snapshot(id))
+                .map(|snapshot| snapshot.task());
+        }
+        result
     }
 }
 

@@ -29,6 +29,9 @@ pub struct Turn {
     /// 当前用户请求从开始到最终响应完成的总耗时，单位毫秒。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worked_ms: Option<u64>,
+    /// 后台完成投递的领域快照，与模型可见的 reminder 文本解耦。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_task: Option<super::BackgroundTask>,
     #[serde(default)]
     pub meta: TurnMeta,
 }
@@ -42,6 +45,7 @@ impl Turn {
             usage: None,
             elapsed_ms: None,
             worked_ms: None,
+            background_task: None,
             meta: TurnMeta::default(),
         }
     }

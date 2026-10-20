@@ -58,6 +58,9 @@ pub struct ToolResult {
     /// 后台执行的任务或子会话身份，用于关联运行状态。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_task_id: Option<String>,
+    /// 启动或查询时的结构化快照；原始工具输出保持不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<super::BackgroundTask>,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MediaContent>,
@@ -70,6 +73,7 @@ impl ToolResult {
         Self {
             tool_call_id: tool_call_id.into(),
             background_task_id: None,
+            task: None,
             content: content.into(),
             is_error: false,
             attachments: Vec::new(),
@@ -80,6 +84,7 @@ impl ToolResult {
         Self {
             tool_call_id: tool_call_id.into(),
             background_task_id: None,
+            task: None,
             content: error_message.into(),
             is_error: true,
             attachments: Vec::new(),

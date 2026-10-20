@@ -3,6 +3,7 @@
 use super::*;
 use super::{citations::*, state::*, thought::*, tool::*, user_block::*};
 use crate::ui::views::{bold, fg};
+use std::sync::Arc;
 
 pub(super) fn worked_duration(elapsed_ms: u64) -> String {
     if elapsed_ms.is_multiple_of(1_000) {
@@ -16,12 +17,21 @@ pub(crate) fn append_collapsed_response(
     render: &mut ChatRender<'_>,
     turn_id: &str,
     elapsed_ms: u64,
+    background_running: usize,
     state: &mut RenderState,
 ) {
     render.lines.push(Line::from(""));
     let line_start = render.lines.len();
     render.lines.push(Line::from(vec![Span::styled(
-        format!("> Worked {}", worked_duration(elapsed_ms)),
+        format!(
+            "> Worked {}{}",
+            worked_duration(elapsed_ms),
+            if background_running > 0 {
+                format!(" · 后台运行 {background_running}")
+            } else {
+                String::new()
+            }
+        ),
         fg(Color::Rgb(150, 150, 150)),
     )]));
     render.response_hits.push(ResponseHit {
@@ -50,6 +60,49 @@ pub(crate) fn collect_tool_results(view: &SessionView) -> HashMap<String, &ToolR
         }
     }
     map
+}
+
+pub(crate) fn collect_query_owners(
+    view: &SessionView,
+    results: &HashMap<String, &ToolResult>,
+) -> HashMap<String, String> {
+    let mut owners = HashMap::new();
+    let mut queries = HashMap::new();
+    for part in view
+        .session
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.messages)
+        .flat_map(|message| &message.parts)
+        .chain(view.draft.iter().map(Arc::as_ref))
+    {
+        let ContentPart::ToolCall(call) = part else {
+            continue;
+        };
+        if let Some(id) = results
+            .get(&call.id)
+            .and_then(|result| result.background_task_id.as_ref())
+        {
+            owners.insert(id.clone(), call.id.clone());
+        }
+        let field = match call.name.as_str() {
+            "TaskOutput" => "task_id",
+            "WaitSession" | "SendMessage" => "session_id",
+            _ => continue,
+        };
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
+            continue;
+        };
+        let Some(id) = args.get(field).and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if call.name == "SendMessage" {
+            owners.remove(id);
+        } else if let Some(owner) = owners.get(id) {
+            queries.insert(call.id.clone(), owner.clone());
+        }
+    }
+    queries
 }
 
 pub(crate) fn append_parts<'a>(
@@ -319,6 +372,9 @@ pub(crate) fn append_part(
             }
         }
         (Role::Assistant, ContentPart::ToolCall(call)) => {
+            if render.query_owners.contains_key(&call.id) {
+                return;
+            }
             push_part_separator(render, state, prev_web);
             push_tool_call(render, call);
         }

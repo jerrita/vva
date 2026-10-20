@@ -7,7 +7,6 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
 
@@ -92,13 +91,34 @@ pub struct TaskSnapshot {
     pub tail: String,
 }
 
+impl TaskSnapshot {
+    pub fn task(&self) -> crate::model::BackgroundTask {
+        use crate::model::{BackgroundTask, BackgroundTaskStatus};
+        let (status, exit_code) = match self.status {
+            BackgroundStatus::Running => (BackgroundTaskStatus::Running, None),
+            BackgroundStatus::Killed => (BackgroundTaskStatus::Stopped, None),
+            BackgroundStatus::Exited { code: Some(0) } => {
+                (BackgroundTaskStatus::Completed, Some(0))
+            }
+            BackgroundStatus::Exited { code } => (BackgroundTaskStatus::Failed, code),
+        };
+        BackgroundTask {
+            task_id: self.id.clone(),
+            status,
+            output: self.tail.clone(),
+            exit_code,
+            total_bytes: Some(self.total_bytes),
+            truncated: self.total_bytes > self.tail.len() as u64,
+        }
+    }
+}
+
 /// 完成回投：参数为 task id。tools 层不感知 harness 的 Command 协议，
 /// 由 manager 关闭 WeakSender 构造（Title 任务同款通道）。
 pub type CompletionSink = Arc<dyn Fn(String) + Send + Sync>;
 
 pub struct BackgroundTasks {
     tasks: Mutex<BTreeMap<String, BackgroundTask>>,
-    next_id: AtomicU64,
     sink: CompletionSink,
 }
 
@@ -106,7 +126,6 @@ impl BackgroundTasks {
     pub fn new(sink: CompletionSink) -> Self {
         Self {
             tasks: Mutex::new(BTreeMap::new()),
-            next_id: AtomicU64::new(1),
             sink,
         }
     }
@@ -122,7 +141,7 @@ impl BackgroundTasks {
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("Failed to run command: {e}"))?;
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed).to_string();
+        let id = format!("task_{}", uuid::Uuid::new_v4().simple());
         let inner = Arc::new(Mutex::new(TaskInner {
             status: BackgroundStatus::Running,
             output: TaskOutputBuffer::default(),
@@ -322,6 +341,22 @@ impl Tool for TaskOutputTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
+        self.run(arguments).map(|(text, _)| text)
+    }
+
+    async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
+        match self.run(&call.arguments) {
+            Ok((text, task)) => crate::model::ToolResult {
+                task: Some(task),
+                ..crate::model::ToolResult::success(&call.id, text)
+            },
+            Err(error) => crate::model::ToolResult::error(&call.id, error),
+        }
+    }
+}
+
+impl TaskOutputTool {
+    fn run(&self, arguments: &str) -> Result<(String, crate::model::BackgroundTask), String> {
         let args: TaskIdArgs = parse_args(arguments, "TaskOutput")?;
         let snapshot = self
             .tasks
@@ -344,7 +379,7 @@ impl Tool for TaskOutputTool {
             "\n--- last {TASK_OUTPUT_TAIL} bytes ---\n{}",
             snapshot.tail
         ));
-        Ok(text)
+        Ok((text, snapshot.task()))
     }
 }
 
@@ -404,6 +439,22 @@ impl Tool for TaskStopTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
+        self.run(arguments).await.map(|(text, _)| text)
+    }
+
+    async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
+        match self.run(&call.arguments).await {
+            Ok((text, task)) => crate::model::ToolResult {
+                task: Some(task),
+                ..crate::model::ToolResult::success(&call.id, text)
+            },
+            Err(error) => crate::model::ToolResult::error(&call.id, error),
+        }
+    }
+}
+
+impl TaskStopTool {
+    async fn run(&self, arguments: &str) -> Result<(String, crate::model::BackgroundTask), String> {
         let args: TaskIdArgs = parse_args(arguments, "TaskStop")?;
         if args.task_id.starts_with("sess_") {
             let broker = self
@@ -411,9 +462,16 @@ impl Tool for TaskStopTool {
                 .as_ref()
                 .ok_or_else(|| "Session control is not available in this context".to_string())?;
             broker.abort_session(&args.task_id).await?;
-            return Ok(format!("Session {} turn aborted.", args.task_id));
+            let mut task = crate::model::BackgroundTask::running(args.task_id.clone());
+            task.status = crate::model::BackgroundTaskStatus::Stopped;
+            return Ok((format!("Session {} turn aborted.", args.task_id), task));
         }
-        self.tasks.stop(&args.task_id)
+        let text = self.tasks.stop(&args.task_id)?;
+        let task = self
+            .tasks
+            .snapshot(&args.task_id)
+            .ok_or_else(|| format!("Background task {} {NOT_FOUND}", args.task_id))?;
+        Ok((text, task.task()))
     }
 }
 

@@ -20,6 +20,11 @@ pub(super) struct TaskDeps {
     pub preamble: Option<SessionPreamble>,
 }
 
+pub(super) struct PendingSubagentCompletion {
+    task: crate::model::BackgroundTask,
+    reminder: String,
+}
+
 pub(super) struct SessionTask {
     pub(super) hashline: Arc<crate::tools::hashline::HashlineSession>,
     pub(super) view: SessionView,
@@ -43,8 +48,8 @@ pub(super) struct SessionTask {
     pub(super) tasks: Arc<crate::tools::background::BackgroundTasks>,
     /// 已完成、尚未注入会话的后台任务 id（轮次间隙注入）
     pub(super) task_completions: Vec<String>,
-    /// 已完成、尚未注入会话的后台子代理 session id（轮次间隙注入最终消息）
-    pub(super) subagent_completions: Vec<String>,
+    /// 已完成、尚未注入会话的后台子代理报告（捕获完成瞬间的最终消息）
+    pub(super) subagent_completions: Vec<PendingSubagentCompletion>,
     /// 运行中到达的程序化消息及其独立完成回执
     pub(super) pending_deliveries: Vec<PendingDelivery>,
     /// 已完成轮次计数通道：每次 finish_turn 递增，供外部等待轮次结束
@@ -346,17 +351,8 @@ impl SessionTask {
                 }
                 self.view.notices = kept;
             }
-            AgentEvent::TaskCompleted { task_id, text } => {
-                if let Some(notice) = self.view.notices.iter_mut().find(|notice| {
-                    matches!(&notice.kind, NoticeKind::Task { task_id: id } if id == task_id)
-                }) {
-                    notice.text.clone_from(text);
-                } else {
-                    self.view.notices.push(Notice::new(
-                        text.clone(),
-                        NoticeKind::Task { task_id: task_id.clone() },
-                    ));
-                }
+            AgentEvent::BackgroundTaskUpdated(task) => {
+                crate::model::update_background_task(Arc::make_mut(&mut self.view.background_tasks), task.clone());
             }
             AgentEvent::Error(text) => {
                 self.view.draft.clear();
@@ -383,8 +379,24 @@ impl SessionTask {
             .append_turn(&self.view.session.header.id, &turn)
             .await
             .map_err(|e| e.to_string())?;
+        let tasks: Vec<_> = turn
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .filter_map(|part| match part {
+                ContentPart::ToolResult(result) => result.task.clone(),
+                _ => None,
+            })
+            .chain(turn.background_task.clone())
+            .collect();
         Arc::make_mut(&mut self.view.session).append_turn(turn);
-        self.publish();
+        if tasks.is_empty() {
+            self.publish();
+        } else {
+            for task in tasks {
+                self.event(AgentEvent::BackgroundTaskUpdated(task)).await;
+            }
+        }
         Ok(())
     }
 
@@ -485,11 +497,18 @@ impl SessionTask {
         }
         self.view.draft.clear();
         self.view.notices.retain(|notice| match &notice.kind {
-            NoticeKind::Turn { turn_id, .. } => session.turns.iter().any(|turn| &turn.id == turn_id),
-            NoticeKind::Task { task_id } => session.turns.iter().flat_map(|turn| &turn.messages)
-                .flat_map(|message| &message.parts).any(|part| matches!(part, ContentPart::ToolResult(result) if result.background_task_id.as_ref() == Some(task_id))),
+            NoticeKind::Turn { turn_id, .. } => {
+                session.turns.iter().any(|turn| &turn.id == turn_id)
+            }
             _ => true,
         });
+        let mut tasks = crate::model::background_tasks(&session);
+        for (id, task) in &mut tasks {
+            if let Some(current) = self.view.background_tasks.get(id) {
+                *task = current.clone();
+            }
+        }
+        self.view.background_tasks = Arc::new(tasks);
         self.replace_session(session);
         Ok(())
     }
@@ -716,39 +735,30 @@ impl SessionTask {
         }));
     }
 
-    /// 后台任务完成：id 入队等待轮次间隙注入完整内容（background-task reminder）；
-    /// 完成状态关联任务身份，忙闲路径共用。
+    /// 后台任务完成：原位发布状态，id 入队等待安全轮隙持久化并投递模型。
     pub(super) async fn queue_task_completion(&mut self, task_id: String) {
-        let notice = self
-            .tasks
-            .snapshot(&task_id)
-            .map(|snapshot| {
-                format!(
-                    "Background task {} {}",
-                    snapshot.id,
-                    crate::tools::background::status_line(&snapshot.status)
-                )
-            })
-            .unwrap_or_else(|| format!("Background task {task_id} finished"));
-        self.event(AgentEvent::TaskCompleted {
-            task_id: task_id.clone(),
-            text: notice,
-        })
-        .await;
-        self.task_completions.push(task_id);
+        if let Some(snapshot) = self.tasks.snapshot(&task_id) {
+            self.event(AgentEvent::BackgroundTaskUpdated(snapshot.task()))
+                .await;
+        }
+        if !self.task_completions.contains(&task_id) {
+            self.task_completions.push(task_id);
+        }
     }
 
     /// 将已完成后台任务的完整通知作为用户轮次注入会话（下一次模型调用可见）
     pub(super) async fn drain_task_completions(&mut self) -> Result<(), String> {
-        for task_id in std::mem::take(&mut self.task_completions) {
+        while let Some(task_id) = self.task_completions.first().cloned() {
             match self.tasks.snapshot(&task_id) {
                 Some(snapshot) => {
                     let text = crate::tools::background::format_notification(&snapshot);
-                    self.append(Turn::new(Role::User, vec![Message::text(text)]))
-                        .await?;
+                    let mut turn = Turn::new(Role::User, vec![Message::text(text)]);
+                    turn.background_task = Some(snapshot.task());
+                    self.append(turn).await?;
                 }
                 None => tracing::warn!("Background task {task_id} vanished before notification"),
             }
+            self.task_completions.remove(0);
         }
         Ok(())
     }
@@ -774,27 +784,56 @@ impl SessionTask {
     /// 后台子代理完成：入队等待轮次间隙注入最终消息；
     /// 完成状态关联子会话身份，忙闲路径共用。
     pub(super) async fn queue_subagent_completion(&mut self, session_id: String) {
-        self.event(AgentEvent::TaskCompleted {
-            task_id: session_id.clone(),
-            text: format!("Background agent {session_id} finished"),
-        })
-        .await;
-        self.subagent_completions.push(session_id);
+        if self
+            .subagent_completions
+            .iter()
+            .any(|pending| pending.task.task_id == session_id)
+        {
+            return;
+        }
+        let (mut task, reminder) = match self.broker.session_report(&session_id).await {
+            Ok(report) => (
+                crate::tools::agent::subagent_task(&report),
+                crate::tools::agent::format_subagent_reminder(&report),
+            ),
+            Err(error) => {
+                let text = format!("Background agent {session_id} report failed: {error}");
+                let mut task = crate::model::BackgroundTask::running(session_id.clone());
+                task.status = crate::model::BackgroundTaskStatus::Interrupted;
+                task.output = text.clone();
+                (task, crate::system::format_background_task_reminder(&text))
+            }
+        };
+        if self
+            .view
+            .background_tasks
+            .get(&session_id)
+            .is_some_and(|task| task.status == crate::model::BackgroundTaskStatus::Stopped)
+        {
+            task.status = crate::model::BackgroundTaskStatus::Stopped;
+        }
+        self.event(AgentEvent::BackgroundTaskUpdated(task.clone()))
+            .await;
+        self.subagent_completions
+            .push(PendingSubagentCompletion { task, reminder });
     }
 
     /// 将后台子代理的最终消息通知作为用户轮次注入会话（下一次模型调用可见）
     pub(super) async fn drain_subagent_completions(&mut self) -> Result<(), String> {
-        for session_id in std::mem::take(&mut self.subagent_completions) {
-            match self.broker.session_report(&session_id).await {
-                Ok(report) => {
-                    let text = crate::tools::agent::format_subagent_reminder(&report);
-                    self.append(Turn::new(Role::User, vec![Message::text(text)]))
-                        .await?;
-                }
-                Err(error) => {
-                    tracing::warn!("Subagent {session_id} report failed: {error}");
-                }
+        while let Some(pending) = self.subagent_completions.first() {
+            let mut turn = Turn::new(Role::User, vec![Message::text(&pending.reminder)]);
+            let mut task = pending.task.clone();
+            if self
+                .view
+                .background_tasks
+                .get(&task.task_id)
+                .is_some_and(|task| task.status == crate::model::BackgroundTaskStatus::Stopped)
+            {
+                task.status = crate::model::BackgroundTaskStatus::Stopped;
             }
+            turn.background_task = Some(task);
+            self.append(turn).await?;
+            self.subagent_completions.remove(0);
         }
         Ok(())
     }
@@ -1209,6 +1248,13 @@ impl SessionTask {
             Ok(TurnOutcome::Aborted) => self.event(AgentEvent::Aborted).await,
             Err(error) => self.event(AgentEvent::Error(error)).await,
         }
+        // 完成结果在安全轮隙持久化；取消和失败保持原有不自动续跑行为。
+        if let Err(error) = self.drain_task_completions().await {
+            tracing::warn!("Failed to persist background results: {error}");
+        }
+        if let Err(error) = self.drain_subagent_completions().await {
+            tracing::warn!("Failed to persist subagent results: {error}");
+        }
         self.cli = None;
         self.touch_activity().await;
         // 已完成轮次计数递增，唤醒等待本轮结束的外部订阅者（Agent / WaitSession）
@@ -1284,6 +1330,15 @@ impl SessionTask {
 
     /// 空闲时完成通知已入队：自动续跑，execute 首轮注入通知；返回真表示终止会话任务
     async fn run_completion_turn(&mut self, commands: &mut mpsc::Receiver<Command>) -> bool {
+        // 模型配置失败也保留工具块最终结果。
+        if let Err(error) = self.drain_task_completions().await {
+            self.event(AgentEvent::Notice(error)).await;
+            return false;
+        }
+        if let Err(error) = self.drain_subagent_completions().await {
+            self.event(AgentEvent::Notice(error)).await;
+            return false;
+        }
         match self.build_engine().await {
             Ok(engine) => {
                 let result = self.run_turns(engine, commands).await;

@@ -88,9 +88,19 @@ export interface ToolCall {
 export interface ToolResult {
   tool_call_id: string
   background_task_id?: string
+  task?: BackgroundTask
   content: string
   attachments?: MediaContent[]
   is_error: boolean
+}
+
+export interface BackgroundTask {
+  task_id: string
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
+  output: string
+  exit_code?: number
+  total_bytes?: number
+  truncated: boolean
 }
 
 export interface UserQuestionOption {
@@ -144,6 +154,7 @@ export interface Turn {
   usage?: TokenUsage
   elapsed_ms?: number
   worked_ms?: number
+  background_task?: BackgroundTask
 }
 
 export interface Session {
@@ -185,6 +196,7 @@ export interface SessionSnapshot {
   state: string
   persisted: boolean
   notices: Notice[]
+  background_tasks: Record<string, BackgroundTask>
   /** 外置 web 工具接管的后端名；空表示原生在位或未开启 */
   external_web: string[]
   session: Session
@@ -199,6 +211,7 @@ export interface SessionDelta {
   state: string
   persisted: boolean
   notices?: Notice[]
+  background_tasks?: Record<string, BackgroundTask>
   external_web?: string[]
   session?: Omit<Session, 'turns'>
   turns?: { from: number; items: Turn[] }
@@ -307,5 +320,4 @@ export type Notice = { id: string; text: string } & (
   | { kind: 'session' }
   | { kind: 'capability' }
   | { kind: 'turn'; turn_id: string; aborted: boolean }
-  | { kind: 'task'; task_id: string }
 )

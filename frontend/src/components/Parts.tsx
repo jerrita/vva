@@ -17,6 +17,8 @@ import { useLightbox } from './Lightbox'
 import { Markdown } from './Markdown'
 import { baseName, describeSearch, describeTool, externalWebCall, relativePath } from './trace/describe'
 import type { Outcome, StepClass, TallyKey, ToolView } from './trace/describe'
+import { taskLabel } from '../utils/taskTrace'
+import type { TaskTrace } from '../utils/taskTrace'
 
 /** 图片数据源地址：URL 直连或 Base64 data URL */
 export function mediaSourceUrl(source: MediaSource): string {
@@ -52,7 +54,7 @@ type Block =
 const BATCHABLE = new Set([READ, HASHLINE_READ, GREP, HASHLINE_GREP, GLOB])
 const BATCH_MIN = 3
 
-function toSteps(parts: ContentPart[]): (Step | Exclude<Block, { kind: 'trace' }>)[] {
+function toSteps(parts: ContentPart[], tasks?: TaskTrace): (Step | Exclude<Block, { kind: 'trace' }>)[] {
   const out: (Step | Exclude<Block, { kind: 'trace' }>)[] = []
   const tools = new Map<string, ToolStep>()
   for (const part of parts) {
@@ -67,12 +69,14 @@ function toSteps(parts: ContentPart[]): (Step | Exclude<Block, { kind: 'trace' }
         if (part.content.trim()) out.push({ kind: 'thought', content: part.content })
         break
       case 'tool_call': {
+        if (tasks?.queryOwners.has(part.id)) break
         const step: ToolStep = { kind: 'tool', call: part, result: null }
         tools.set(part.id, step)
         out.push(step)
         break
       }
       case 'tool_result': {
+        if (tasks?.queryOwners.has(part.tool_call_id)) break
         const step = tools.get(part.tool_call_id)
         if (step) step.result = part
         else out.push({ kind: 'orphan', result: part })
@@ -127,10 +131,10 @@ function batchSteps(steps: Step[]): Step[] {
   return out
 }
 
-function toBlocks(parts: ContentPart[]): Block[] {
+function toBlocks(parts: ContentPart[], tasks?: TaskTrace): Block[] {
   const blocks: Block[] = []
   let trace: Step[] | null = null
-  for (const node of toSteps(parts)) {
+  for (const node of toSteps(parts, tasks)) {
     if (node.kind === 'text' || node.kind === 'image') {
       if (trace) blocks.push({ kind: 'trace', steps: batchSteps(trace) })
       trace = null
@@ -149,20 +153,26 @@ function toBlocks(parts: ContentPart[]): Block[] {
 export interface Tally {
   counts: [TallyKey, number][]
   failed: number
+  backgroundRunning: number
 }
 
 const TALLY_ORDER: TallyKey[] = ['查看', '搜索', '修改', '执行', '委派']
 
 /** 工作段的动作计数：按类别汇总，失败单列 */
-export function tallyParts(parts: ContentPart[]): Tally {
+export function tallyParts(parts: ContentPart[], tasks?: TaskTrace): Tally {
   const counts = new Map<TallyKey, number>()
   let failed = 0
+  let backgroundRunning = 0
   const bump = (key: TallyKey) => counts.set(key, (counts.get(key) ?? 0) + 1)
-  for (const node of toSteps(parts)) {
+  for (const node of toSteps(parts, tasks)) {
     if (node.kind === 'tool') {
       const web = externalWebCall(node.call, node.result)
       bump(web ? '搜索' : describeTool(node.call, node.result, undefined, []).tally)
-      if (node.result?.is_error) failed++
+      const id = node.result?.background_task_id
+      const task = id ? tasks?.tasks[id] : undefined
+      if (task?.status === 'running') backgroundRunning++
+      if (node.result?.is_error || task?.status === 'failed' ||
+        tasks?.queries.get(node.call.id)?.some(query => query.result?.is_error)) failed++
     } else if (node.kind === 'search') {
       bump('搜索')
       if (node.call.status === 'failed') failed++
@@ -173,12 +183,13 @@ export function tallyParts(parts: ContentPart[]): Tally {
   return {
     counts: TALLY_ORDER.filter(key => counts.has(key)).map(key => [key, counts.get(key)!]),
     failed,
+    backgroundRunning,
   }
 }
 
 // ---- 行组件 ----
 
-type GlyphState = StepClass | 'thought' | 'running' | 'error'
+type GlyphState = StepClass | `${StepClass} running` | 'thought' | 'running' | 'error'
 
 function Glyph({ state }: { state: GlyphState }) {
   return <span className={`glyph ${state}`} aria-hidden />
@@ -328,7 +339,7 @@ function OutputView({ command, content }: { command?: string; content: string })
 
 function toolGlyph(view: ToolView, result: ToolResult | null, live: boolean): GlyphState {
   if (result?.is_error) return 'error'
-  if (!result && live) return 'running'
+  if (!result && live) return `${view.cls} running`
   return view.cls
 }
 
@@ -337,11 +348,13 @@ function ToolRow({
   live,
   workspace,
   onPreviewFile,
+  tasks,
 }: {
   step: ToolStep
   live: boolean
   workspace?: string
   onPreviewFile?: PreviewFile
+  tasks?: TaskTrace
 }) {
   const { call, result } = step
   const web = externalWebCall(call, result)
@@ -351,18 +364,42 @@ function ToolRow({
     ? editDiffs(call.name, call.arguments, result && !result.is_error ? result.content : undefined)
     : []
   const view = describeTool(call, result, workspace, diffs)
-  const error = result?.is_error ?? false
+  const task = result?.background_task_id ? tasks?.tasks[result.background_task_id] : undefined
+  const error = (result?.is_error ?? false) || task?.status === 'failed'
   const line: LineProps = {
-    glyph: toolGlyph(view, result, live),
+    glyph: error ? 'error' : task?.status === 'running' ? `${view.cls} running` : toolGlyph(view, result, live),
     verb: view.verb,
     target: view.target,
     mono: view.mono,
     secondary: view.secondary,
-    outcome: <OutcomeView outcome={view.outcome} error={error} />,
+    outcome: task
+      ? <span className={`step-outcome${error ? ' fail' : ''}`}>{taskLabel(task)}</span>
+      : <OutcomeView outcome={view.outcome} error={error} />,
   }
 
   let body: ReactNode = null
-  if (error && result) {
+  if (task) {
+    const queryErrors = tasks?.queries.get(call.id)?.filter(query => query.result?.is_error) ?? []
+    body = (
+      <>
+        {call.name === 'Agent'
+          ? <div className="task-reply"><Markdown text={task.output || (task.status === 'running' ? '等待回复…' : '（无回复）')} /></div>
+          : <OutputView command={view.command} content={task.output} />}
+        <div className="task-meta">
+          <span>{task.task_id}</span>
+          {task.exit_code != null && <span>退出码 {task.exit_code}</span>}
+          {task.truncated && <span>输出已截断，展示末尾内容</span>}
+          {task.status === 'interrupted' && <span>会话运行时已结束，任务未恢复</span>}
+        </div>
+        {queryErrors.map(query => (
+          <div className="task-query-error" key={query.call.id}>
+            <span>{query.call.name} 查询失败</span>
+            <OutputView content={query.result!.content} />
+          </div>
+        ))}
+      </>
+    )
+  } else if (error && result) {
     body = <OutputView command={view.command} content={result.content} />
   } else if (view.body === 'diff' && diffs.length > 0) {
     body = <DiffView diffs={diffs} workspace={workspace} onPreviewFile={onPreviewFile} />
@@ -512,19 +549,21 @@ function TraceView({
   live,
   workspace,
   onPreviewFile,
+  tasks,
 }: {
   steps: Step[]
   /** 本段处于流式末尾：未决工具为运行态，末尾思考滚动预览 */
   live: boolean
   workspace?: string
   onPreviewFile?: PreviewFile
+  tasks?: TaskTrace
 }) {
   return (
     <div className="trace">
       {steps.map((step, index) => {
         switch (step.kind) {
           case 'tool':
-            return <ToolRow key={index} step={step} live={live} workspace={workspace} onPreviewFile={onPreviewFile} />
+            return <ToolRow key={step.call.id} step={step} live={live} workspace={workspace} onPreviewFile={onPreviewFile} tasks={tasks} />
           case 'batch':
             return (
               <BatchRow key={index} name={step.name} steps={step.steps} workspace={workspace} onPreviewFile={onPreviewFile} />
@@ -593,14 +632,16 @@ export function Parts({
   live = false,
   workspace,
   onPreviewFile,
+  tasks,
 }: {
   parts: ContentPart[]
   live?: boolean
   /** 会话 workspace：项目内文件展示为相对路径 */
   workspace?: string
   onPreviewFile?: PreviewFile
+  tasks?: TaskTrace
 }) {
-  const blocks = toBlocks(parts)
+  const blocks = toBlocks(parts, tasks)
   return (
     <>
       {blocks.map((block, index) => {
@@ -612,6 +653,7 @@ export function Parts({
               live={live && index === blocks.length - 1}
               workspace={workspace}
               onPreviewFile={onPreviewFile}
+              tasks={tasks}
             />
           )
         }

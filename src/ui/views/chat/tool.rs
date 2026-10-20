@@ -296,6 +296,35 @@ pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
 
 pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let result = render.results.get(&call.id).copied();
+    let task = result
+        .and_then(|result| result.background_task_id.as_ref())
+        .and_then(|id| render.tasks.get(id));
+    let display_result = task.zip(result).map(|(task, result)| {
+        let mut result = result.clone();
+        result.content.clone_from(&task.output);
+        result.is_error = task.status == crate::model::BackgroundTaskStatus::Failed;
+        result.task = Some(task.clone());
+        let mut errors: Vec<_> = render
+            .query_owners
+            .iter()
+            .filter(|(_, owner)| *owner == &call.id)
+            .filter_map(|(id, _)| {
+                render
+                    .results
+                    .get(id)
+                    .filter(|result| result.is_error)
+                    .map(|result| (id, result))
+            })
+            .collect();
+        errors.sort_by_key(|(id, _)| *id);
+        for (_, error) in errors {
+            result
+                .content
+                .push_str(&format!("\n查询失败: {}", error.content));
+        }
+        result
+    });
+    let result = display_result.as_ref().or(result);
     let expand = render
         .expand
         .get(&call.id)
@@ -332,12 +361,15 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
         Some(summary) => spans.extend(summary.spans(detail_style)),
         None => spans.push(Span::styled(detail, detail_style)),
     }
-    if let Some(task_id) = result.and_then(|result| result.background_task_id.as_deref())
-        && let Some(notice) = render.notices.iter().find(|notice| {
-            matches!(&notice.kind, crate::harness::NoticeKind::Task { task_id: id } if id == task_id)
-        })
-    {
-        spans.push(Span::styled(format!(" · {}", notice.text), detail_style));
+    if let Some(task) = task {
+        spans.push(Span::styled(
+            format!(" · {}", task.label()),
+            if task.status == crate::model::BackgroundTaskStatus::Running {
+                fg(Color::Rgb(220, 140, 170))
+            } else {
+                detail_style
+            },
+        ));
     }
     let header_start = render.lines.len();
     let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");

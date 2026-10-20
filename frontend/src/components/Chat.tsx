@@ -1,5 +1,8 @@
+import { useEffect, useRef } from 'react'
 import type { PreviewFile } from '../hooks/usePanelLayout'
-import type { ContentPart, Session, Turn } from '../types'
+import type { BackgroundTask, ContentPart, Session, Turn } from '../types'
+import { taskTrace } from '../utils/taskTrace'
+import type { TaskTrace } from '../utils/taskTrace'
 import { CopyButton } from './CopyButton'
 import { IconFile, IconFork, IconRevert } from './icons'
 import { useLightbox } from './Lightbox'
@@ -64,7 +67,7 @@ function buildItems(turns: Turn[]): Item[] {
     if (turn.role === 'system') continue
     if (turn.role === 'user') {
       if (reminderType(turn) !== null) {
-        // 机器注入轮次（含 background-task）：一律不渲染，完成信号走 Notice 横幅；
+        // 机器注入轮次不渲染；后台完成状态由原工具块承载。
         // 轮隙不切断运行段折叠
         continue
       }
@@ -113,9 +116,7 @@ function buildItems(turns: Turn[]): Item[] {
           workParts.push(part)
         }
       }
-      if (workParts.length > 0) {
-        pushTurn(turn, workParts)
-      }
+      pushTurn(turn, workParts)
       if (answerParts.length > 0) {
         flush()
         items.push({ kind: 'assistant', turn, parts: answerParts })
@@ -137,16 +138,23 @@ function WorkedBlock({
   live = false,
   workspace,
   onPreviewFile,
+  tasks,
 }: {
   group: WorkGroup
   live?: boolean
   workspace?: string
   onPreviewFile?: PreviewFile
+  tasks: TaskTrace
 }) {
   const ms = group.workedMs ?? group.elapsedMs
-  const tally = tallyParts(group.parts)
+  const tally = tallyParts(group.parts, tasks)
+  const details = useRef<HTMLDetailsElement>(null)
+  // 仅主轮次切换改变自动折叠；后台状态更新保留用户的展开选择。
+  useEffect(() => {
+    if (details.current) details.current.open = live
+  }, [live])
   return (
-    <details className="worked" open={live}>
+    <details className="worked" ref={details}>
       <summary>
         <span className="worked-time">{live ? '进行中' : ms != null ? `用时 ${fmtDuration(ms)}` : '执行过程'}</span>
         {tally.counts.map(([key, count]) => (
@@ -159,9 +167,12 @@ function WorkedBlock({
             失败 <b>{tally.failed}</b>
           </span>
         )}
+        {tally.backgroundRunning > 0 && (
+          <span className="tally background-running">后台运行 <b>{tally.backgroundRunning}</b></span>
+        )}
       </summary>
       <div className="worked-body">
-        <Parts parts={group.parts} live={live} workspace={workspace} onPreviewFile={onPreviewFile} />
+        <Parts parts={group.parts} live={live} workspace={workspace} onPreviewFile={onPreviewFile} tasks={tasks} />
       </div>
     </details>
   )
@@ -295,7 +306,7 @@ export function Chat({
   onFork,
   onPreviewFile,
 }: {
-  snap: { state: string; draft: ContentPart[]; session: Session } | null
+  snap: { state: string; draft: ContentPart[]; session: Session; background_tasks: Record<string, BackgroundTask> } | null
   pending: string | null
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
@@ -316,6 +327,7 @@ export function Chat({
   const showDraft = snap.draft.length > 0 || running
   // 运行中最后一个工作段即当前响应段：容器保持展开，结束后随 live 翻转自动收起
   const items = buildItems(turns)
+  const tasks = taskTrace([...turns.flatMap(turn => turn.messages.flatMap(message => message.parts)), ...snap.draft], snap.background_tasks)
   let liveWork = -1
   if (running) {
     // 仅当前运行段（最后一条用户消息之后、且无最终回答收尾）的工作段视为 live：
@@ -352,6 +364,7 @@ export function Chat({
             <WorkedBlock
               key={`work-${index}`}
               group={item.group}
+              tasks={tasks}
               live={index === liveWork}
               workspace={workspace}
               onPreviewFile={onPreviewFile}
@@ -378,7 +391,7 @@ export function Chat({
       {pending && <UserBubble turn={{ id: 'pending', role: 'user', messages: [{ parts: [{ type: 'text', text: pending }] }] }} onPreviewFile={onPreviewFile} />}
       {showDraft && (
         <div className="msg assistant">
-          <Parts parts={snap.draft} live={running} workspace={workspace} onPreviewFile={onPreviewFile} />
+            <Parts parts={snap.draft} live={running} workspace={workspace} onPreviewFile={onPreviewFile} tasks={tasks} />
           {running && (
             <div className="status-chip">
               <span className="dot" />

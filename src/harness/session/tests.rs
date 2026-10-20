@@ -290,14 +290,11 @@ async fn task_completion_injects_persisted_user_turn() {
     let (mut task, id) = task_with_finished_background(echo).await;
 
     // 完成状态关联任务身份
-    task.queue_task_completion(id).await;
-    assert!(
-        task.view
-            .notices
-            .last()
-            .is_some_and(|notice| notice.text.contains("exited with code 0")),
-        "{:?}",
-        task.view.notices
+    task.queue_task_completion(id.clone()).await;
+    assert!(task.view.notices.is_empty());
+    assert_eq!(
+        task.view.background_tasks[&id].status,
+        crate::model::BackgroundTaskStatus::Completed
     );
 
     task.drain_task_completions().await.unwrap();
@@ -309,7 +306,11 @@ async fn task_completion_injects_persisted_user_turn() {
         "{text}"
     );
     assert!(text.ends_with("</system-reminder>"), "{text}");
-    for expected in ["Background task 1 exited with code 0", "done", "TaskOutput"] {
+    for expected in [
+        format!("Background task {id} exited with code 0").as_str(),
+        "done",
+        "TaskOutput",
+    ] {
         assert!(text.contains(expected), "{text}");
     }
     let loaded = task
@@ -318,6 +319,18 @@ async fn task_completion_injects_persisted_user_turn() {
         .await
         .unwrap()
         .unwrap();
+    let snapshot = loaded
+        .turns
+        .last()
+        .unwrap()
+        .background_task
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        snapshot.status,
+        crate::model::BackgroundTaskStatus::Completed
+    );
+    assert!(snapshot.output.contains("done"));
     assert!(
         loaded
             .turns
@@ -347,7 +360,8 @@ async fn execute_drains_completions_before_next_model_call() {
         task_with_finished_background(if cfg!(windows) { "exit 0" } else { "true" }).await;
     // 空闲路径也发布任务完成状态
     task.queue_task_completion(id).await;
-    assert_eq!(task.view.notices.len(), 1);
+    assert!(task.view.notices.is_empty());
+    assert_eq!(task.view.background_tasks.len(), 1);
 
     let (_tx, mut rx) = mpsc::channel(1);
     let finished = task
@@ -378,7 +392,7 @@ async fn drain_subagent_completions_injects_final_message_reminder() {
         error: None,
         text: "found 3 matches".into(),
     })));
-    task.subagent_completions.push("sess_kid1".into());
+    task.queue_subagent_completion("sess_kid1".into()).await;
     task.drain_subagent_completions().await.unwrap();
 
     let text = task.view.session.turns.last().unwrap().text_content();
@@ -392,15 +406,50 @@ async fn drain_subagent_completions_injects_final_message_reminder() {
     );
     assert!(text.contains("found 3 matches"), "{text}");
     assert!(task.subagent_completions.is_empty());
-    // 报告失败（会话消失）：跳过不报错
+    // 报告失败（会话消失）：持久化中断状态，保留明确的失败原因。
     task.broker = Arc::new(StubBroker(None));
-    task.subagent_completions.push("sess_gone".into());
+    task.queue_subagent_completion("sess_gone".into()).await;
     task.drain_subagent_completions().await.unwrap();
-    assert_eq!(task.view.session.turns.len(), 1);
+    assert_eq!(task.view.session.turns.len(), 2);
+    assert_eq!(
+        task.view.session.turns[1]
+            .background_task
+            .as_ref()
+            .unwrap()
+            .status,
+        crate::model::BackgroundTaskStatus::Interrupted
+    );
     cleanup(&task);
 }
 
 // ---- 工具执行 ----
+
+#[tokio::test]
+async fn launch_receipt_does_not_regress_early_completion_and_reload_interrupts_running_tasks() {
+    use crate::model::{BackgroundTask, BackgroundTaskStatus, ToolResult};
+    let (mut task, _) = event_task();
+    task.store.save_header(&task.view.session).await.unwrap();
+    let completed = BackgroundTask {
+        status: BackgroundTaskStatus::Completed,
+        output: "ready".into(),
+        ..BackgroundTask::running("task_sample".into())
+    };
+    task.event(AgentEvent::BackgroundTaskUpdated(completed.clone()))
+        .await;
+    let mut result = ToolResult::success("call_sample", "started");
+    result.background_task_id = Some(completed.task_id.clone());
+    result.task = Some(BackgroundTask::running(completed.task_id.clone()));
+    task.append(Turn::new(Role::Tool, vec![Message::tool_result(result)]))
+        .await
+        .unwrap();
+    assert_eq!(task.view.background_tasks[&completed.task_id], completed);
+    let restored = SessionView::new((*task.view.session).clone(), true);
+    assert_eq!(
+        restored.background_tasks[&completed.task_id].status,
+        BackgroundTaskStatus::Interrupted
+    );
+    cleanup(&task);
+}
 
 #[tokio::test]
 async fn parallel_tool_calls_run_concurrently_and_preserve_order() {

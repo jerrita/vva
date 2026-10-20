@@ -308,6 +308,43 @@ button.step-line:hover .step-verb {
   color: var(--faint);
 }
 
+.task-reply {
+  padding: 9px 12px;
+  max-height: 440px;
+  overflow: auto;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 6px 12px 9px;
+  font: 11px var(--font-mono);
+  color: var(--faint);
+  overflow-wrap: anywhere;
+}
+
+.task-query-error {
+  border-top: 1px solid var(--border-soft);
+  color: var(--danger);
+}
+
+.task-query-error > span {
+  display: block;
+  padding: 8px 12px 0;
+  font: 11px var(--font-mono);
+}
+
+.background-running::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--rose);
+}
+
 /* 思考全文：正文排版，不套代码底 */
 .step-body:has(> .thought-body),
 .step-body:has(> .step-batch) {

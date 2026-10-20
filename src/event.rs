@@ -37,11 +37,8 @@ pub enum AgentEvent {
     Notice(String),
     /// 当前配置下的能力提示全集。
     Capabilities(Vec<String>),
-    /// 后台完成状态关联任务身份。
-    TaskCompleted {
-        task_id: String,
-        text: String,
-    },
+    /// 后台工具块的生命周期快照。
+    BackgroundTaskUpdated(crate::model::BackgroundTask),
     Finished,
     /// 轮次被用户取消（区别于正常完成）
     Aborted,

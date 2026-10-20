@@ -22,6 +22,8 @@ struct TurnView<'a> {
     elapsed_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     worked_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background_task: &'a Option<crate::model::BackgroundTask>,
 }
 
 impl<'a> From<&'a Turn> for TurnView<'a> {
@@ -33,6 +35,7 @@ impl<'a> From<&'a Turn> for TurnView<'a> {
             usage: &turn.usage,
             elapsed_ms: turn.elapsed_ms,
             worked_ms: turn.worked_ms,
+            background_task: &turn.background_task,
         }
     }
 }
@@ -66,6 +69,7 @@ pub(super) struct SessionSnapshot<'a> {
     state: String,
     persisted: bool,
     notices: &'a [Notice],
+    background_tasks: &'a std::collections::BTreeMap<String, crate::model::BackgroundTask>,
     external_web: &'a [String],
     session: SessionData<'a>,
     draft: Vec<&'a ContentPart>,
@@ -79,6 +83,7 @@ impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
             state: view.state.status(),
             persisted: view.persisted,
             notices: &view.notices,
+            background_tasks: &view.background_tasks,
             external_web: &view.external_web,
             session: SessionData {
                 info: SessionInfo::from(&*view.session),
@@ -119,6 +124,8 @@ pub(super) struct SessionDelta<'a> {
     persisted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     notices: Option<&'a [Notice]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    background_tasks: Option<&'a std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     external_web: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -208,6 +215,8 @@ impl<'a> SessionDelta<'a> {
             state: current.state.status(),
             persisted: current.persisted,
             notices: (previous.notices != current.notices).then_some(&current.notices),
+            background_tasks: (!Arc::ptr_eq(&previous.background_tasks, &current.background_tasks))
+                .then_some(&current.background_tasks),
             external_web: (previous.external_web != current.external_web)
                 .then_some(&current.external_web),
             session,
@@ -233,6 +242,7 @@ mod tests {
             session: Arc::new(Session::new("/synthetic", None)),
             draft: vec![Arc::new(ContentPart::text("起点🙂"))],
             notices: Vec::new(),
+            background_tasks: Default::default(),
             external_web: Vec::new(),
             state: RunState::Responding,
             persisted: true,
@@ -242,6 +252,24 @@ mod tests {
 
     fn delta(before: &SessionView, after: &SessionView) -> Value {
         serde_json::to_value(SessionDelta::between(before, after)).unwrap()
+    }
+
+    #[test]
+    fn task_events_update_snapshot_and_delta_without_history_replacement() {
+        let before = view();
+        let mut after = before.clone();
+        after.revision += 1;
+        let task = crate::model::BackgroundTask::running("task_sample".into());
+        Arc::make_mut(&mut after.background_tasks).insert(task.task_id.clone(), task);
+        let patch = delta(&before, &after);
+        assert_eq!(
+            patch["background_tasks"]["task_sample"]["status"],
+            "running"
+        );
+        assert!(patch.get("turns").is_none());
+        assert!(patch.get("draft").is_none());
+        let snapshot = serde_json::to_value(SessionSnapshot::from(&after)).unwrap();
+        assert_eq!(snapshot["background_tasks"], patch["background_tasks"]);
     }
 
     #[test]

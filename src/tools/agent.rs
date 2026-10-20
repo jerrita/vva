@@ -177,7 +177,12 @@ impl Tool for AgentTool {
     }
 
     async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
-        super::result_with_task(call, self.run(&call.arguments).await)
+        let mut result = super::result_with_task(call, self.run(&call.arguments).await);
+        result.task = result
+            .background_task_id
+            .clone()
+            .map(crate::model::BackgroundTask::running);
+        result
     }
 }
 
@@ -266,6 +271,26 @@ pub fn format_subagent_reminder(report: &SubagentReport) -> String {
         report.session_id
     ));
     crate::system::format_background_task_reminder(&notification)
+}
+
+/// UI 使用完整最终回复，模型 reminder 保持独立的上下文预算。
+pub fn subagent_task(report: &SubagentReport) -> crate::model::BackgroundTask {
+    use crate::model::{BackgroundTask, BackgroundTaskStatus};
+    let (status, output) = if let Some(error) = &report.error {
+        (BackgroundTaskStatus::Failed, error.clone())
+    } else if report.text.trim().is_empty() {
+        (
+            BackgroundTaskStatus::Failed,
+            "子代理未返回最终回复。".into(),
+        )
+    } else {
+        (BackgroundTaskStatus::Completed, report.text.clone())
+    };
+    BackgroundTask {
+        status,
+        output,
+        ..BackgroundTask::running(report.session_id.clone())
+    }
 }
 
 #[cfg(test)]

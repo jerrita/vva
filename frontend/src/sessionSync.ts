@@ -65,6 +65,7 @@ export function applySessionDelta(previous: SessionSnapshot, delta: SessionDelta
     state: delta.state,
     persisted: delta.persisted,
     notices: delta.notices ?? previous.notices,
+    background_tasks: delta.background_tasks ?? previous.background_tasks,
     external_web: delta.external_web ?? previous.external_web,
     session,
     draft,

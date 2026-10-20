@@ -109,3 +109,9 @@ src/ui/
 - **候选源**：启动时后台线程 `walk_workspace`（遵循 .gitignore，[`src/find.rs`](../src/find.rs)，与 Web go-to-file 共用）构建索引，输入时共用 `rank_candidates` 排序取前 8 条（空查询按 mtime 降序展示最近文件），浮层支持 ↑↓ / Ctrl-P/N 循环、Tab/Enter 插入 `@path `、Esc 关闭（输入变化后恢复）；光标移动与后台索引就绪时刷新候选；
 - **提交展开**：UI 仅插入纯文本，展开统一发生在 harness `SessionTask::start`：文本文件读取为 `ContentPart::FileRef`（128KB 截断标记），图片/PDF 转原生附件并过输入能力校验，二进制/超限/能力缺失降级为文本注记（模型自行用工具读取），路径不存在发 Notice；TUI / Web / `vva run` CLI 三端共享同一展开逻辑；
 - **渲染**：用户轮次中 `FileRef` 渲染为紧凑引用行（`📎 path · N 行`，不倾倒正文），Web 端为可点击芯片（侧栏预览）。
+
+### 3.9 后台工具块
+- 后台 Shell / Agent 的生命周期和结果在原调用位置展示，详见 [后台任务设计](background_tasks.md)。
+- `BackgroundTaskUpdated` 更新共享 `SessionView.background_tasks`；Web 快照与 SSE 增量、TUI 历史缓存使用同一结构化状态源。
+- TaskOutput 与首次后台委派的 WaitSession 归入原工具块，查询错误在块内展示；SendMessage 后的等待保持独立步骤。
+- 完成结果追加到 JSONL 的 reminder 轮次元数据，重载后恢复；尚未结束的任务显示已中断。

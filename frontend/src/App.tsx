@@ -348,10 +348,18 @@ export default function App() {
     followBottom,
   } = useComposerVisibility({ activeId, scrollRef })
 
-  // 用户位于底部时跟随滚动
+  const lastVisibleTurn = useMemo(() => {
+    const turns = snap?.session.turns ?? []
+    for (let index = turns.length - 1; index >= 0; index--) {
+      if (!turns[index].background_task) return turns[index]
+    }
+    return null
+  }, [snap?.session.turns])
+
+  // 正文与草稿增长时跟随；后台状态和隐藏的完成投递保留当前位置。
   useEffect(() => {
     followBottom()
-  }, [snap, followBottom])
+  }, [lastVisibleTurn, snap?.draft, followBottom])
 
   // 请求失败统一走顶部 error banner
   const attempt = useCallback(async (action: () => Promise<unknown>) => {

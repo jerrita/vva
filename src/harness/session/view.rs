@@ -33,6 +33,7 @@ pub struct SessionView {
     pub session: Arc<Session>,
     pub draft: Vec<Arc<ContentPart>>,
     pub notices: Vec<Notice>,
+    pub background_tasks: Arc<std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
     /// 外置 web 工具接管的后端名（原生能力缺位时），供状态栏标注
     pub external_web: Vec<String>,
     pub state: RunState,
@@ -42,11 +43,18 @@ pub struct SessionView {
 
 impl SessionView {
     pub(super) fn new(session: Session, persisted: bool) -> Self {
+        let mut background_tasks = crate::model::background_tasks(&session);
+        for task in background_tasks.values_mut() {
+            if task.status == crate::model::BackgroundTaskStatus::Running {
+                task.status = crate::model::BackgroundTaskStatus::Interrupted;
+            }
+        }
         Self {
             revision: 0,
             session: Arc::new(session),
             draft: Vec::new(),
             notices: Vec::new(),
+            background_tasks: Arc::new(background_tasks),
             external_web: Vec::new(),
             state: RunState::Idle,
             persisted,
@@ -70,7 +78,6 @@ pub enum NoticeKind {
     Session,
     Capability,
     Turn { turn_id: String, aborted: bool },
-    Task { task_id: String },
 }
 
 impl Notice {

@@ -143,9 +143,10 @@ async fn stream_events(mut rx: mpsc::Receiver<AgentEvent>) {
                     eprintln!("\n⚠️  [Notice] {notice}");
                 }
             }
-            AgentEvent::TaskCompleted { text: notice, .. } | AgentEvent::Notice(notice) => {
+            AgentEvent::Notice(notice) => {
                 eprintln!("\n⚠️  [Notice] {notice}");
             }
+            AgentEvent::BackgroundTaskUpdated(_) => {}
             AgentEvent::Error(err) => eprintln!("\n❌ [Error] {err}"),
             AgentEvent::AskUser(request) => {
                 println!("\n❓ [AskUser] {} question(s)", request.questions.len());

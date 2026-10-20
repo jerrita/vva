@@ -156,6 +156,18 @@ pub(super) fn push_tool_block(
         return truncated;
     }
 
+    if call.name == "Agent" && result.is_some_and(|result| result.task.is_some()) {
+        let (body, _) = render_markdown(
+            &result.expect("task result").content,
+            max_width.saturating_sub(TOOL_BLOCK_CHROME),
+        );
+        let truncated = body.len() > cap;
+        for line in body.into_iter().take(cap) {
+            lines.push(fill_to_width(line.spans, max_width));
+        }
+        push_block_tail(lines, truncated, max_width, hint_style);
+        return truncated;
+    }
     let body = result.map(tool_result_rows).unwrap_or_default();
     let truncated = !full && body.len() > TOOL_PREVIEW_LIMIT;
     let shown = body.len().min(cap);

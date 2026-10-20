@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { applySessionDelta, sessionSummary, subscribeSession } from './src/sessionSync.ts'
 
 const snapshot = () => ({
-  revision: 1, state: 'Responding...', persisted: true, notices: [],
+  revision: 1, state: 'Responding...', persisted: true, notices: [], background_tasks: {},
   session: {
     id: 'synthetic', workspace_root: '/synthetic', created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z', current_model: 'test/model',
@@ -12,6 +12,17 @@ const snapshot = () => ({
     turns: [{ id: 'turn', role: 'user', messages: [{ parts: [{ type: 'text', text: 'sample' }] }] }],
   },
   draft: [{ type: 'reasoning', content: '思考' }, { type: 'text', text: '起点🙂' }],
+})
+
+test('task-only deltas update inline status without replacing transcript or draft', () => {
+  const before = snapshot()
+  const tasks = { task_sample: { task_id: 'task_sample', status: 'completed', output: 'ready', truncated: false } }
+  const after = applySessionDelta(before, delta({ background_tasks: tasks }))
+  assert.equal(after.background_tasks, tasks)
+  assert.equal(after.session, before.session)
+  assert.equal(after.draft, before.draft)
+  assert.deepEqual(before.background_tasks, {})
+  assert.deepEqual(applySessionDelta(after, delta({ base_revision: 5, revision: 6, background_tasks: {} })).background_tasks, {})
 })
 const delta = (extra = {}) => ({ base_revision: 1, revision: 5, state: 'Responding...', persisted: true, ...extra })
 

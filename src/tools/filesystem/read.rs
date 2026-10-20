@@ -296,6 +296,7 @@ Paths are absolute or workspace-relative; shell variables and ~ are not expanded
         match self.read(&call.arguments).await {
             Ok((content, attachments)) => ToolResult {
                 background_task_id: None,
+                task: None,
                 tool_call_id: call.id.clone(),
                 content,
                 attachments,

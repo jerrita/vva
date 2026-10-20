@@ -57,6 +57,7 @@
 | **供应商适配** | [docs/providers.md](docs/providers.md) | Responses 链式继承、Anthropic 缓存与签名、Gemini 搜索注脚与通用 SSE 解码 |
 | **配置路由** | [docs/configuration.md](docs/configuration.md) | JSON/JSONC 词法注释剥离、`${VAR}` 环境变量展开、模型规格寻址与端点规范化 |
 | **终端交互** | [docs/ui.md](docs/ui.md) | Ratatui TUI 架构、会话任务与 `SessionView` 订阅、`InputBuffer` 多行编辑与模态框状态解耦 |
+| **后台任务展示** | [docs/background_tasks.md](docs/background_tasks.md) | 原工具块生命周期、结构化状态与结果持久化、异步查询归并 |
 | **Agent Space** | [docs/agent.md](docs/agent.md) | 常驻 IM agent：分层小模型 Router、TTL 清理与 curator 沉淀、rollover 压缩、Scheduler、cache 稳定性纪律 |
 
 ---
@@ -79,6 +80,7 @@ src/
 │   └── state.rs            # 运行时偏好 (~/.vva/state.json)：上次选用的模型与推理档位
 ├── model/                  # 领域模型与强类型体系
 │   ├── mod.rs              # 模块导出与通用类型
+│   ├── background.rs       # 后台任务结构化快照、生命周期状态与历史投影
 │   ├── meta.rs             # Response, Anthropic, Gemini 专属强类型轮次元数据 (含 ResponseOutputItem 原生条目链)
 │   ├── content.rs          # 多模态 (Image)、搜索与 Annotation
 │   ├── message.rs          # Role 与 Message (内容分组值对象，仅持有 parts)

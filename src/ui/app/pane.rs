@@ -9,7 +9,7 @@ use crate::model::{ContentPart, Role, Session, Turn};
 use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
     ChatRender, RenderState, append_collapsed_response, append_parts, append_turn_outcome,
-    collect_tool_results, extract_selected_text, is_empty_session,
+    collect_query_owners, collect_tool_results, extract_selected_text, is_empty_session,
 };
 
 use super::draft::DraftRenderCache;
@@ -169,6 +169,8 @@ pub struct ChatCache {
     thinking_concise: bool,
     responses_collapsed: bool,
     notices: Vec<crate::harness::Notice>,
+    tasks: Arc<std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
+    query_owners: HashMap<String, String>,
     history_lines: usize,
     render_state: RenderState,
     tool_expand: HashMap<String, ToolExpand>,
@@ -214,9 +216,11 @@ impl ChatCache {
 
 /// 以 App 的字段切片组装 `ChatRender`（字段级借用，调用方仍可同时持有 cache 等其他字段）
 macro_rules! chat_render {
-    ($app:ident, $cache:ident, $results:expr, $width:expr) => {
+    ($app:ident, $cache:ident, $results:expr, $queries:expr, $width:expr) => {
         ChatRender {
             notices: &$app.view.notices,
+            tasks: &$app.view.background_tasks,
+            query_owners: $queries,
             lines: &mut $app.chat.lines,
             links: &mut $app.chat.links,
             max_width: $width,
@@ -292,6 +296,7 @@ impl super::App {
     pub fn refresh_chat_lines(&mut self, width: usize) {
         let width = width.max(20);
         let results = collect_tool_results(&self.view);
+        let query_owners = collect_query_owners(&self.view, &results);
         let responses_collapsed = !self.active_session.is_running();
         let cache = &mut self.chat_cache;
         let session = Arc::downgrade(&self.view.session);
@@ -304,6 +309,8 @@ impl super::App {
             || cache.response_expand != self.response_expand
             || cache.citations_expand != self.citations_expand
             || cache.notices != self.view.notices
+            || !Arc::ptr_eq(&cache.tasks, &self.view.background_tasks)
+            || cache.query_owners != query_owners
             || self.chat.lines.is_empty()
         {
             self.chat.lines.clear();
@@ -329,7 +336,7 @@ impl super::App {
                 for (turn_index, turn) in turns.iter().enumerate().take(range[1]).skip(range[0]) {
                     let line_start = self.chat.lines.len();
                     let is_response_turn = group.is_response_turn(turn_index);
-                    let mut render = chat_render!(self, cache, &results, width);
+                    let mut render = chat_render!(self, cache, &results, &query_owners, width);
                     if let (true, Some(id), Some(elapsed_ms)) = (
                         group.collapse
                             && is_response_turn
@@ -341,6 +348,22 @@ impl super::App {
                             &mut render,
                             id,
                             elapsed_ms,
+                            turns[range[0]..range[1]]
+                                .iter()
+                                .flat_map(|turn| &turn.messages)
+                                .flat_map(|message| &message.parts)
+                                .filter_map(|part| match part {
+                                    ContentPart::ToolResult(result) => {
+                                        result.background_task_id.as_ref()
+                                    }
+                                    _ => None,
+                                })
+                                .filter(|id| {
+                                    self.view.background_tasks.get(*id).is_some_and(|task| {
+                                        task.status == crate::model::BackgroundTaskStatus::Running
+                                    })
+                                })
+                                .count(),
                             &mut cache.render_state,
                         );
                     }
@@ -409,7 +432,7 @@ impl super::App {
         let history_lines = cache.history_lines;
         let mut state = cache.render_state;
         {
-            let mut render = chat_render!(self, cache, &results, width);
+            let mut render = chat_render!(self, cache, &results, &query_owners, width);
             cache.draft.render(
                 &mut render,
                 &draft,
@@ -423,6 +446,8 @@ impl super::App {
         }
         cache.revision = self.view.revision;
         cache.notices.clone_from(&self.view.notices);
+        cache.tasks.clone_from(&self.view.background_tasks);
+        cache.query_owners = query_owners;
     }
 }
 
