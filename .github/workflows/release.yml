@@ -113,6 +113,8 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -122,7 +124,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v version="${GITHUB_REF_NAME#v}" '
+            /^## / {
+              if (found) exit
+              if ($2 == "[" version "]") found = 1
+              next
+            }
+            found { print }
+            END {
+              if (!found) {
+                print "Changelog entry not found: " version > "/dev/stderr"
+                exit 1
+              }
+            }
+          ' CHANGELOG.md > "$notes"
+          [ -s "$notes" ] || { echo "Changelog entry is empty: $GITHUB_REF_NAME" >&2; exit 1; }
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --generate-notes
+            --notes-file "$notes"
