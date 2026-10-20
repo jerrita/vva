@@ -2,10 +2,12 @@ use std::path::{Path, PathBuf};
 
 use crate::skills::Skill;
 
-/// 生成当前工作空间下的固定 System Prompt
+const SYSTEM_TEMPLATE: &str = include_str!("prompts/system.md");
+
+/// 生成当前工作空间下的固定 System Prompt：静态模板 + 动态环境信息
 pub fn build_system_prompt(workspace: &Path, scratch: &Path) -> String {
     format!(
-        "You are vva, expert at agentic coding and knowledge work.\n\n\
+        "{}\n\n\
          ## Environment Context\n\
          - Date: {}\n\
          - Operating System: {} ({})\n\
@@ -14,6 +16,7 @@ pub fn build_system_prompt(workspace: &Path, scratch: &Path) -> String {
          The Scratch Pad is the absolute directory shown in Environment Context. \
          Store durable notes and working artifacts under that absolute path. \
          Relative paths, including scratch/..., resolve under the workspace root.\n",
+        SYSTEM_TEMPLATE.trim_end(),
         chrono::Local::now().format("%Y-%m-%d"),
         get_os_info(),
         std::env::consts::ARCH,

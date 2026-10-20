@@ -162,7 +162,7 @@ pub struct GlobalSettings {
     pub default: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub small_model: Option<String>,
-    /// 模型未声明 `annotation.editor` 时的缺省文件编辑协议；缺省 `hashline`
+    /// 模型未声明 `annotation.editor` 时的缺省文件编辑协议；缺省 `patch`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor: Option<crate::model::EditorKind>,
     /// 外置 web search / fetch 补全配置；模型原生能力缺位时以客户端工具补齐

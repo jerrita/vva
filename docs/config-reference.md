@@ -59,7 +59,7 @@
   "settings": {
     "default": "a/gpt-5.6-terra",     // 缺省模型规格 {provider_id}/{model_id}
     "small_model": "a/gpt-5.6-luna",  // 会话标题生成用的小模型，缺省时用主模型
-    "editor": "hashline",             // 缺省文件编辑协议：replace | patch | hashline
+    "editor": "patch",                // 缺省文件编辑协议：replace | patch | hashline
     "web": { /* 外置 web search / fetch，见 2.1 */ },
     "agent": { /* agent space，见 2.2 */ }
   },
@@ -75,7 +75,7 @@
 |---|---|---|---|
 | `default` | string | 是 | 缺省模型规格；未传 `--model` 且 `state.json` 不可用时使用 |
 | `small_model` | string | 否 | 会话标题生成所用的模型规格；缺省时沿用主模型 |
-| `editor` | string | 否 | 模型未声明 `annotation.editor` 时新会话采用的编辑协议：`replace` / `patch` / `hashline`；缺省 `hashline` |
+| `editor` | string | 否 | 模型未声明 `annotation.editor` 时新会话采用的编辑协议：`replace` / `patch` / `hashline`；缺省 `patch` |
 | `web` | object | 否 | 外置 web search / fetch 补全，见 2.1 |
 | `agent` | object | 否 | agent space（常驻 IM agent）配置，见 2.2；`vva agent` 要求声明 |
 

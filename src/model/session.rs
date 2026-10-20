@@ -46,8 +46,8 @@ impl ToggleOverrides {
 #[serde(rename_all = "snake_case")]
 pub enum EditorKind {
     Replace,
-    Patch,
     #[default]
+    Patch,
     Hashline,
 }
 

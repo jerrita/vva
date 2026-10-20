@@ -54,7 +54,7 @@ classDiagram
     - `current_variant: Option<String>`（如 `Some("high")` 或 `None`）；
     - `web_search: bool`（保持工具/函数挂载与 prompt cache 一致）；
     - `version: u32`（会话格式版本，当前 `SESSION_VERSION = 2`；版本不符的会话不解析）；
-    - `editor: EditorKind`（`hashline` / `replace` / `patch`，创建时取当时模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `hashline`；会话内换模不改写，以保证文件工具协议与历史工具结果一致）。各协议注册的文件工具名互不重叠：`replace` 为 `Read` / `Write` / `Edit` / `Glob` / `Grep`；`patch` 为 `Read` / `apply_patch`（Codex V4A，freeform）/ `Glob` / `Grep`；`hashline` 为 `hashline_read` / `hashline_grep` / `hashline_edit`（`[PATH#TAG]` 快照与行号补丁，freeform，`[PATH]` + `ADD` 新建文件）/ `Glob`；工具名常量见 [`src/tools/names.rs`](../src/tools/names.rs)；
+    - `editor: EditorKind`（`hashline` / `replace` / `patch`，创建时取当时模型 `annotation.editor`，未声明时取 `settings.editor`，缺省 `patch`；会话内换模不改写，以保证文件工具协议与历史工具结果一致）。各协议注册的文件工具名互不重叠：`replace` 为 `Read` / `Write` / `Edit` / `Glob` / `Grep`；`patch` 为 `Read` / `apply_patch`（Codex V4A，freeform）/ `Glob` / `Grep`；`hashline` 为 `hashline_read` / `hashline_grep` / `hashline_edit`（`[PATH#TAG]` 快照与行号补丁，freeform，`[PATH]` + `ADD` 新建文件）/ `Glob`；工具名常量见 [`src/tools/names.rs`](../src/tools/names.rs)；
   - **agent space 字段**（均可缺省，旧 JSONL 照常加载；详见 [agent.md](agent.md)）：`kind: SessionKind`（`Topic` 缺省不序列化 / `Oneshot` / `Curator`）、`origin: Option<Origin{channel, chat_id}>`、`routed_by`、`continued_from`（rollover 接替会话承接的旧会话，不借用 subagent 的 `parent`）、`superseded_by`（rollover 后的接替会话）、`last_activity`（TTL 清理依据）；`SessionSummary` 仅带出 `kind` / `origin` / `superseded_by`；
   - 恢复或切换会话时，继承历史记录中保存的模型、推理强度、网络搜索状态与编辑协议；
   - 新建会话未显式指定模型时，沿用 `~/.vva/state.json` 中上次选用的模型与推理档位，无法解析时回落到 `settings.default`；

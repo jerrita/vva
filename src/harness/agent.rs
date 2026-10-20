@@ -576,13 +576,13 @@ mod tests {
         session.header.depth = 1;
         let engine = build_engine(&config, &session).unwrap();
 
-        // 缺省 hashline 编辑协议：只读白名单保留该协议的读取与检索工具
-        assert!(engine.tools.get(names::HASHLINE_READ).is_some());
+        // 缺省 patch 编辑协议：只读白名单保留该协议的读取与检索工具
+        assert!(engine.tools.get(names::READ).is_some());
         assert!(engine.tools.get(names::GLOB).is_some());
-        assert!(engine.tools.get(names::HASHLINE_GREP).is_some());
+        assert!(engine.tools.get(names::GREP).is_some());
         for pruned in [
             names::SHELL,
-            names::HASHLINE_EDIT,
+            names::APPLY_PATCH,
             "Agent",
             "SendMessage",
             "WaitSession",
