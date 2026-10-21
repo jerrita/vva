@@ -48,7 +48,6 @@ fn builtin_general() -> AgentDef {
                 "TaskOutput",
                 "TaskStop",
                 "SendMessage",
-                "WaitSession",
                 "WebSearch",
                 "WebFetch",
             ]))

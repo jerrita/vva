@@ -121,7 +121,10 @@ impl Lifecycle {
             }
             due += 1;
             let live = self.manager.live(&summary.id).await;
-            if live.as_ref().is_some_and(|handle| handle.is_running()) {
+            if live
+                .as_ref()
+                .is_some_and(|handle| handle.is_running() || handle.has_background_work())
+            {
                 continue;
             }
             if self.backing_off(&summary.id, now) {
@@ -136,7 +139,9 @@ impl Lifecycle {
             }
             // 沉淀期间会话又有活动：保留，下个周期增量沉淀
             if let Some(handle) = &live
-                && (handle.is_running() || Some(handle.turn_seq()) != seen_turns)
+                && (handle.is_running()
+                    || handle.has_background_work()
+                    || Some(handle.turn_seq()) != seen_turns)
             {
                 continue;
             }
@@ -423,7 +428,7 @@ mod tests {
         f.manager.store().save_header(&session).await.unwrap();
         let handle = f.manager.live_or_load(&session.header.id).await.unwrap();
         handle.submit("继续", Vec::new(), None).await.unwrap();
-        assert!(handle.is_running());
+        assert!(handle.is_running() || handle.has_background_work());
 
         assert!(f.lifecycle.sweep().await.unwrap().is_empty());
         assert_eq!(f.runs(), 0, "运行中的会话不沉淀");

@@ -113,5 +113,5 @@ src/ui/
 ### 3.9 后台工具块
 - 后台 Shell / Agent 的生命周期和结果在原调用位置展示，详见 [后台任务设计](background_tasks.md)。
 - `BackgroundTaskUpdated` 更新共享 `SessionView.background_tasks`；Web 快照与 SSE 增量、TUI 历史缓存使用同一结构化状态源。
-- TaskOutput 与首次后台委派的 WaitSession 归入原工具块，查询错误在块内展示；SendMessage 后的等待保持独立步骤。
+- TaskOutput 归入原工具块，查询错误在块内展示；SendMessage 保留独立步骤，回复自动唤醒调用会话。
 - 完成结果追加到 JSONL 的 reminder 轮次元数据，重载后恢复；尚未结束的任务显示已中断。

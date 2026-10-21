@@ -115,7 +115,7 @@ impl SessionManager {
                 store: self.store.clone(),
                 config: self.app_config(),
                 state_path: self.state_path.clone(),
-                broker: Arc::new(SessionBrokerHandle::new(self.clone())),
+                broker: Arc::new(SessionBrokerHandle::new(self.clone(), id.clone())),
                 tool_factory: self.tool_factory.clone(),
                 preamble: self.preamble.clone(),
             },
@@ -404,16 +404,36 @@ impl SessionManager {
 /// tools 层 SessionBroker 的 harness 实现：派生子代理会话与跨会话投递。
 pub(super) struct SessionBrokerHandle {
     manager: std::sync::Weak<SessionManager>,
-    /// 每个调用会话独立保存投递回执；超时后可再次等待。
-    receipts: Mutex<HashMap<String, std::collections::VecDeque<DeliveryReceipt>>>,
+    owner_id: String,
 }
 
 impl SessionBrokerHandle {
-    pub(super) fn new(manager: Arc<SessionManager>) -> Self {
+    pub(super) fn new(manager: Arc<SessionManager>, owner_id: String) -> Self {
         Self {
             manager: Arc::downgrade(&manager),
-            receipts: Mutex::new(HashMap::new()),
+            owner_id,
         }
+    }
+
+    async fn watch_session(
+        &self,
+        session_id: String,
+        receipt: super::handle::DeliveryReceipt,
+        background: bool,
+    ) -> Result<(), String> {
+        let owner = self
+            .manager()?
+            .live(&self.owner_id)
+            .await
+            .ok_or_else(|| "Calling session is closed".to_string())?;
+        owner
+            .request(|reply| Command::WatchSession {
+                session_id,
+                receipt,
+                background,
+                reply,
+            })
+            .await
     }
 
     fn manager(&self) -> Result<Arc<SessionManager>, String> {
@@ -476,24 +496,6 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         manager.unique_session_id(&mut session).await?;
         let handle = manager.spawn_registered(session, false).await;
         let turn_seq = handle.turn_seq();
-        // 后台回投 watcher 需在提交前建立订阅基线，避免漏掉首轮完成
-        let background_watcher = background.then(|| {
-            let mut turns = handle.turn_receiver();
-            let child_id = handle.id.clone();
-            let parent_id = parent.parent_id.clone();
-            let manager = Arc::downgrade(&manager);
-            tokio::spawn(async move {
-                // 仅回投首轮完成；后续轮次由 SendMessage/WaitSession 显式交互
-                if turns.changed().await.is_ok()
-                    && let Some(manager) = manager.upgrade()
-                {
-                    let parent = manager.sessions.lock().await.get(&parent_id).cloned();
-                    if let Some(parent) = parent {
-                        parent.notify_subagent_finished(child_id);
-                    }
-                }
-            })
-        });
         if !background {
             manager
                 .foreground_children
@@ -503,14 +505,22 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
                 .or_default()
                 .push(handle.id.clone());
         }
-        if let Err(error) = handle.submit(prompt, Vec::new(), None).await {
-            // 启动失败：回收空会话句柄与登记（任务随通道关闭退出）
-            manager.sessions.lock().await.remove(&handle.id);
-            self.release_foreground_child(&handle.id).await;
-            if let Some(watcher) = background_watcher {
-                watcher.abort();
+        let submitted = if background {
+            handle.deliver(prompt).await.map(Some)
+        } else {
+            handle.submit(prompt, Vec::new(), None).await.map(|()| None)
+        };
+        let receipt = match submitted {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                // 启动失败：回收空会话句柄与登记（任务随通道关闭退出）
+                manager.sessions.lock().await.remove(&handle.id);
+                self.release_foreground_child(&handle.id).await;
+                return Err(format!("Subagent session failed to start: {error}"));
             }
-            return Err(format!("Subagent session failed to start: {error}"));
+        };
+        if let Some(receipt) = receipt {
+            self.watch_session(handle.id.clone(), receipt, true).await?;
         }
         Ok(crate::tools::agent::SubagentLaunch {
             session_id: handle.id.clone(),
@@ -519,19 +529,22 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
     }
 
     async fn deliver(&self, session_id: &str, text: &str) -> Result<String, String> {
+        if session_id == self.owner_id {
+            return Err("SendMessage requires another session".into());
+        }
         let handle = self.manager()?.live_or_load(session_id).await?;
         let running = handle.is_running();
         let receipt = handle.deliver(text).await?;
-        self.receipts
-            .lock()
-            .await
-            .entry(session_id.into())
-            .or_default()
-            .push_back(receipt);
+        self.watch_session(session_id.to_string(), receipt, false)
+            .await?;
         Ok(if running {
-            format!("Queued; session {session_id} is running and will process the message next.")
+            format!(
+                "Queued; session {session_id} is running and will process the message next. Its reply will arrive automatically."
+            )
         } else {
-            format!("Delivered; session {session_id} is processing the message.")
+            format!(
+                "Delivered; session {session_id} is processing the message. Its reply will arrive automatically."
+            )
         })
     }
 
@@ -541,50 +554,15 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         seen_seq: u64,
         timeout: Option<std::time::Duration>,
     ) -> Result<crate::tools::agent::SubagentReport, String> {
-        async fn wait_timeout<F: Future>(
-            timeout: Option<std::time::Duration>,
-            fut: F,
-        ) -> Result<F::Output, tokio::time::error::Elapsed> {
-            match timeout {
-                Some(duration) => tokio::time::timeout(duration, fut).await,
-                None => Ok(fut.await),
-            }
-        }
-        let receipt = self
-            .receipts
-            .lock()
-            .await
-            .get_mut(session_id)
-            .and_then(|queue| queue.pop_front());
-        if let Some(mut receipt) = receipt {
-            let result = match wait_timeout(timeout, &mut receipt).await {
-                Ok(result) => result,
-                Err(_) => {
-                    self.receipts
-                        .lock()
-                        .await
-                        .entry(session_id.into())
-                        .or_default()
-                        .push_front(receipt);
-                    return Err(format!("Timed out waiting for session {session_id}"));
-                }
-            };
-            return result.map_err(|_| format!("Session {session_id} is closed"))?;
-        }
         let handle = self.manager()?.live_or_load(session_id).await?;
-        let mut turns = handle.turn_receiver();
-        loop {
-            if turns.borrow_and_update().seq > seen_seq {
-                break;
-            }
-            let changed = turns.changed();
-            wait_timeout(timeout, changed)
+        let report = match timeout {
+            Some(duration) => tokio::time::timeout(duration, handle.settled_report(seen_seq))
                 .await
-                .map_err(|_| format!("Timed out waiting for session {session_id}"))?
-                .map_err(|_| format!("Session {session_id} is closed"))?;
-        }
+                .map_err(|_| format!("Timed out waiting for session {session_id}"))??,
+            None => handle.settled_report(seen_seq).await?,
+        };
         self.release_foreground_child(session_id).await;
-        Ok(handle.report())
+        Ok(report)
     }
 
     async fn session_report(
@@ -604,7 +582,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             .get(session_id)
             .cloned()
             .ok_or_else(|| format!("Session {session_id} not found"))?;
-        if !handle.is_running() {
+        if !handle.is_running() && !handle.has_background_work() {
             return Err(format!("Session {session_id} is not running"));
         }
         handle.abort_current().await
@@ -623,7 +601,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         for child in children {
             let handle = manager.sessions.lock().await.get(&child).cloned();
             if let Some(handle) = handle
-                && handle.is_running()
+                && (handle.is_running() || handle.has_background_work())
             {
                 let _ = handle.abort_current().await;
             }
@@ -673,15 +651,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delivery_receipts_are_isolated_and_survive_timeout_and_later_turns() {
+    async fn cross_session_requests_keep_independent_receipts() {
         let (manager, root) = manager();
-        let session = Session::new(&root, None);
-        let id = session.header.id.clone();
-        let (commands, mut rx) = mpsc::channel(4);
-        let mut running = SessionView::new(session, false);
-        running.state = RunState::Thinking;
-        let (_, view) = watch::channel(Arc::new(running));
-        let (turn_tx, turns) = watch::channel(CompletedTurn::default());
+        let target = manager.spawn(Session::new(&root, None), false);
+        let id = target.id.clone();
+        let (commands, mut requests) = mpsc::channel(4);
+        let mut target_view = SessionView::new(Session::new(&root, None), false);
+        target_view.state = RunState::Thinking;
+        let (_, view) = watch::channel(Arc::new(target_view));
+        let (_, turns) = watch::channel(CompletedTurn::default());
         manager.sessions.lock().await.insert(
             id.clone(),
             Arc::new(ManagedSession {
@@ -691,66 +669,67 @@ mod tests {
                 turns,
             }),
         );
-        let first = SessionBrokerHandle::new(manager.clone());
-        let second = SessionBrokerHandle::new(manager.clone());
-        let (pending_tx, mut pending_rx) = mpsc::channel(2);
+        let mut callers = Vec::new();
+        for _ in 0..2 {
+            let session = Session::new(&root, None);
+            let owner_id = session.header.id.clone();
+            let (commands, rx) = mpsc::channel(1);
+            let (_, view) = watch::channel(Arc::new(SessionView::new(session, false)));
+            let (_, turns) = watch::channel(CompletedTurn::default());
+            let handle = Arc::new(ManagedSession {
+                id: owner_id.clone(),
+                commands,
+                view,
+                turns,
+            });
+            manager
+                .sessions
+                .lock()
+                .await
+                .insert(owner_id.clone(), handle);
+            callers.push((SessionBrokerHandle::new(manager.clone(), owner_id), rx));
+        }
         let actor = tokio::spawn(async move {
+            let mut deliveries = Vec::new();
             for _ in 0..2 {
-                let Some(Command::Deliver { delivery, reply }) = rx.recv().await else {
+                let Some(Command::Deliver { delivery, reply }) = requests.recv().await else {
                     panic!("expected delivery");
                 };
                 let _ = reply.send(Ok(()));
-                pending_tx.send(delivery).await.unwrap();
+                deliveries.push(delivery);
+            }
+            for delivery in deliveries {
+                let report = SubagentReport {
+                    session_id: id.clone(),
+                    agent: String::new(),
+                    title: String::new(),
+                    turn_seq: 2,
+                    error: None,
+                    text: delivery.text.clone(),
+                };
+                let _ = delivery.completion.send(Ok(report));
             }
         });
-        first.deliver(&id, "first request").await.unwrap();
-        second.deliver(&id, "second request").await.unwrap();
-        let a = pending_rx.recv().await.unwrap();
-        let b = pending_rx.recv().await.unwrap();
-        // 正在执行的旧轮完成，不能解除对排队投递的等待。
-        turn_tx.send_replace(CompletedTurn {
-            seq: 1,
-            text: "earlier result".into(),
-            error: None,
-        });
-        assert!(first.wait_turn(&id, 0, Some(Duration::ZERO)).await.is_err());
-        for (delivery, text) in [(a, "first reply"), (b, "second reply")] {
-            assert!(
-                delivery
-                    .completion
-                    .send(Ok(SubagentReport {
-                        session_id: id.clone(),
-                        agent: String::new(),
-                        title: String::new(),
-                        turn_seq: 2,
-                        text: text.into(),
-                        error: None,
-                    }))
-                    .is_ok()
-            );
+        let mut receipts = Vec::new();
+        for (index, (broker, rx)) in callers.iter_mut().enumerate() {
+            let text = format!("reply {index}");
+            let future = broker.deliver(&target.id, &text);
+            tokio::pin!(future);
+            tokio::select! {
+                _ = &mut future => panic!("registration must be acknowledged"),
+                command = rx.recv() => {
+                    let Some(Command::WatchSession { receipt, background, reply, .. }) = command else { panic!("expected registration") };
+                    assert!(!background);
+                    receipts.push(receipt);
+                    let _ = reply.send(Ok(()));
+                }
+            }
+            future.await.unwrap();
         }
-        // 后续轮次覆盖 watch 后，回执仍返回对应投递的固定结果。
-        turn_tx.send_replace(CompletedTurn {
-            seq: 3,
-            text: "later result".into(),
-            error: None,
-        });
-        assert_eq!(
-            second
-                .wait_turn(&id, 3, Some(Duration::from_secs(1)))
-                .await
-                .unwrap()
-                .text,
-            "second reply"
-        );
-        assert_eq!(
-            first
-                .wait_turn(&id, 3, Some(Duration::from_secs(1)))
-                .await
-                .unwrap()
-                .text,
-            "first reply"
-        );
+        for (index, receipt) in receipts.into_iter().enumerate() {
+            let report = receipt.await.unwrap().unwrap();
+            assert_eq!(report.text, format!("reply {index}"));
+        }
         actor.await.unwrap();
         let _ = std::fs::remove_dir_all(root);
     }

@@ -87,7 +87,7 @@ pub(crate) fn collect_query_owners(
         }
         let field = match call.name.as_str() {
             "TaskOutput" => "task_id",
-            "WaitSession" | "SendMessage" => "session_id",
+            "SendMessage" => "session_id",
             _ => continue,
         };
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {

@@ -70,6 +70,7 @@ impl TaskOutputBuffer {
 struct TaskInner {
     status: BackgroundStatus,
     output: TaskOutputBuffer,
+    pending: bool,
 }
 
 struct BackgroundTask {
@@ -145,6 +146,7 @@ impl BackgroundTasks {
         let inner = Arc::new(Mutex::new(TaskInner {
             status: BackgroundStatus::Running,
             output: TaskOutputBuffer::default(),
+            pending: true,
         }));
         self.tasks
             .lock()
@@ -212,6 +214,27 @@ impl BackgroundTasks {
         })
     }
 
+    /// 运行中或完成结果尚未交给会话的任务数。
+    pub fn pending_count(&self) -> usize {
+        self.tasks
+            .lock()
+            .expect("background tasks lock poisoned")
+            .values()
+            .filter(|task| task.inner.lock().expect("task state lock poisoned").pending)
+            .count()
+    }
+
+    pub fn acknowledge(&self, id: &str) {
+        if let Some(task) = self
+            .tasks
+            .lock()
+            .expect("background tasks lock poisoned")
+            .get(id)
+        {
+            task.inner.lock().expect("task state lock poisoned").pending = false;
+        }
+    }
+
     /// 停止运行中的任务：置 Killed 并中止 monitor，wait future 被 drop
     /// 后由 kill_on_drop 杀掉子进程。已终态或未知 id 显式报错。
     pub fn stop(&self, id: &str) -> Result<String, String> {
@@ -227,6 +250,7 @@ impl BackgroundTasks {
             ));
         }
         inner.status = BackgroundStatus::Killed;
+        inner.pending = false;
         drop(inner);
         if let Some(monitor) = task.monitor.take() {
             monitor.abort();
@@ -325,7 +349,7 @@ impl Tool for TaskOutputTool {
     }
 
     fn description(&self) -> &str {
-        "Check the status and captured output of a background task started with Shell run_in_background. Returns the status, total bytes captured, and the most recent output; a changed byte count means new output arrived since the last check."
+        "Check the status and captured output of a background task started with Shell run_in_background. Returns the status, total bytes captured, and the most recent output; completion automatically resumes the session, so use this tool only when you need to inspect progress or read more output."
     }
 
     fn input(&self) -> crate::model::ToolInput {
@@ -414,7 +438,8 @@ impl Tool for TaskStopTool {
         if self.broker.is_some() {
             "Stop a running background task started with Shell run_in_background, or abort the \
              current turn of a session (e.g. a background subagent) by passing its sess_ id as \
-             task_id. Stopped tasks do not produce a completion notification."
+             task_id. Shell stops return their status here; pending session replies report the \
+             interruption automatically."
         } else {
             "Stop a running background task started with Shell run_in_background. \
              Stopped tasks do not produce a completion notification."
@@ -586,6 +611,7 @@ mod tests {
             let (sink, ids) = recording_sink();
             let tasks = BackgroundTasks::new(sink);
             let inner = Arc::new(Mutex::new(TaskInner {
+                pending: true,
                 status: BackgroundStatus::Running,
                 output: TaskOutputBuffer::default(),
             }));

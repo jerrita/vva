@@ -20,7 +20,7 @@ function argument(call: ToolCall, key: string): string | null {
   }
 }
 
-/** 只归并有明确启动身份的查询；SendMessage 后的等待属于新的会话交互。 */
+/** 只归并有明确启动身份的输出查询。 */
 export function taskTrace(parts: ContentPart[], tasks: Record<string, BackgroundTask>): TaskTrace {
   const results = new Map<string, ToolResult>()
   for (const part of parts) {
@@ -32,13 +32,7 @@ export function taskTrace(parts: ContentPart[], tasks: Record<string, Background
     if (part.type !== 'tool_call') continue
     const result = results.get(part.id)
     if (result?.background_task_id) owners.set(result.background_task_id, part.id)
-    if (part.name === 'SendMessage') {
-      const id = argument(part, 'session_id')
-      if (id) owners.delete(id)
-    }
-    const id = part.name === 'TaskOutput'
-      ? argument(part, 'task_id')
-      : part.name === 'WaitSession' ? argument(part, 'session_id') : null
+    const id = part.name === 'TaskOutput' ? argument(part, 'task_id') : null
     const owner = id ? owners.get(id) : undefined
     if (!owner) continue
     trace.queryOwners.set(part.id, owner)

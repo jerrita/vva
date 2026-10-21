@@ -27,13 +27,11 @@ test('follow-up conversations and unowned queries remain standalone', () => {
   const trace = taskTrace([
     call('agent', 'Agent', { run_in_background: true }),
     result('agent', { background_task_id: 'sess_sample' }),
-    call('join', 'WaitSession', { session_id: 'sess_sample' }), result('join'),
     call('send', 'SendMessage', { session_id: 'sess_sample', text: 'next task' }), result('send'),
-    call('followup', 'WaitSession', { session_id: 'sess_sample' }), result('followup'),
     call('orphan', 'TaskOutput', { task_id: 'task_missing' }), result('orphan'),
     { type: 'tool_call', id: 'streaming', name: 'TaskOutput', arguments: '{"task_id":' },
   ], {})
-  assert.deepEqual([...trace.queryOwners], [['join', 'agent']])
+  assert.deepEqual([...trace.queryOwners], [])
 })
 
 test('task labels preserve failure exit codes and restart interruption', () => {

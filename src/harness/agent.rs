@@ -230,7 +230,7 @@ impl AgentEngine {
         for tool in extra {
             tools.register(tool);
         }
-        let subagent_tools: [Arc<dyn crate::tools::Tool>; 3] = [
+        let subagent_tools: [Arc<dyn crate::tools::Tool>; 2] = [
             Arc::new(crate::tools::agent::AgentTool::new(
                 broker.clone(),
                 // curator 由 agent space 系统创建，不可由模型派生
@@ -242,10 +242,7 @@ impl AgentEngine {
                 ),
                 crate::tools::agent::SubagentContext::from_session(session),
             )),
-            Arc::new(crate::tools::session_ipc::SendMessageTool::new(
-                broker.clone(),
-            )),
-            Arc::new(crate::tools::session_ipc::WaitSessionTool::new(broker)),
+            Arc::new(crate::tools::session_ipc::SendMessageTool::new(broker)),
         ];
         for tool in subagent_tools {
             tools.register(tool);
@@ -552,7 +549,6 @@ mod tests {
 
         assert!(engine.tools.get("Agent").is_some());
         assert!(engine.tools.get("SendMessage").is_some());
-        assert!(engine.tools.get("WaitSession").is_some());
         // agent 参数 enum 来自发现结果（含内置定义）
         let agent = engine.tools.get("Agent").unwrap();
         let parameters = agent.input().expect_json();
@@ -580,13 +576,7 @@ mod tests {
         assert!(engine.tools.get(names::READ).is_some());
         assert!(engine.tools.get(names::GLOB).is_some());
         assert!(engine.tools.get(names::GREP).is_some());
-        for pruned in [
-            names::SHELL,
-            names::APPLY_PATCH,
-            "Agent",
-            "SendMessage",
-            "WaitSession",
-        ] {
+        for pruned in [names::SHELL, names::APPLY_PATCH, "Agent", "SendMessage"] {
             assert!(
                 engine.tools.get(pruned).is_none(),
                 "{pruned} should be pruned"

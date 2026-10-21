@@ -139,7 +139,7 @@ src/
 │   ├── mod.rs              # Tool Trait (input/spills_output) 与 ToolRegistry (按编辑协议组装文件工具集、register/retain 白名单裁剪)
 │   ├── names.rs            # 工具名常量 (每个名字只对应一种协议) 与内置白名单用的文件工具全集
 │   ├── agent.rs            # Agent 工具与 SessionBroker trait：派生 subagent 会话 (前台阻塞/后台回投) + SubagentReport/完成通知格式化
-│   ├── session_ipc.rs      # SendMessage / WaitSession 跨会话消息工具 (空闲触发轮次、忙时入队)
+│   ├── session_ipc.rs      # SendMessage 跨会话消息工具 (空闲触发轮次、忙时入队、回复自动回投)
 │   ├── shell.rs            # Shell 执行 (前台超时/输出上限/退出码检查 + run_in_background 后台执行)
 │   ├── background.rs       # 后台任务注册表 (TaskOutput / TaskStop 工具，TaskStop 兼停 sess_ 子会话，内存态、随会话结束回收)
 │   ├── filesystem/         # Read、Write、Edit、Glob、Grep 与共享基建 (路径解析/目录遍历/brace 展开/unified diff)
@@ -174,7 +174,7 @@ src/
 │   └── session/            # SessionManager 句柄表 + SessionTask 会话任务 (单一所有者顺序执行提交/配置/取消，按 revision 节流发布 SessionView 快照)
 │       ├── mod.rs          # 模块导出 (SessionManager/ManagedSession/SessionView/RunState)
 │       ├── view.rs         # SessionView 只读快照与 RunState
-│       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议 (Submit/Deliver/Note/SubagentFinished 等；note 只追加不起轮次) 与 turn_seq 轮次计数
+│       ├── handle.rs       # ManagedSession RPC 句柄与 Command 协议 (Submit/Deliver/Note/SessionFinished 等；note 只追加不起轮次) 与 turn_seq 轮次计数
 │       ├── manager.rs      # SessionManager 句柄表/生命周期/配置热替换/with_tool_factory 会话工具工厂/with_preamble 首次落盘 reminder 前导 + SessionBrokerHandle (spawn_subagent/deliver/wait_turn 子代理编排)
 │       └── task.rs         # SessionTask 执行任务 (事件流驱动草稿/agent 循环/AskUser/中止时合成未决工具结果/后台任务与子代理完成注入续跑/Deliver 邮箱冲刷)
 ├── ui/                     # 现代化 Ratatui 交互式终端用户界面

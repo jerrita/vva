@@ -5,6 +5,7 @@ pub(super) struct CompletedTurn {
     pub seq: u64,
     pub text: String,
     pub error: Option<String>,
+    pub settled: bool,
 }
 
 impl CompletedTurn {
@@ -96,9 +97,17 @@ pub enum Command {
         text: String,
         reply: Reply,
     },
-    /// 后台子代理完成：注入最终消息轮次并自动续跑（无应答，watcher 经句柄投递）
-    SubagentFinished {
+    /// 在异步任务返回前登记，保证轮次收尾时保留输出与回执。
+    WatchSession {
         session_id: String,
+        receipt: DeliveryReceipt,
+        background: bool,
+        reply: Reply,
+    },
+    /// 固定本次执行的结果，避免后续轮次覆盖回投内容。
+    SessionFinished {
+        report: crate::tools::agent::SubagentReport,
+        background: bool,
     },
 }
 
@@ -123,6 +132,11 @@ impl ManagedSession {
         !matches!(self.view.borrow().state, RunState::Idle)
     }
 
+    pub fn has_background_work(&self) -> bool {
+        let completed = self.turns.borrow();
+        completed.seq > 0 && !completed.settled
+    }
+
     pub fn turn_seq(&self) -> u64 {
         self.turns.borrow().seq
     }
@@ -137,11 +151,27 @@ impl ManagedSession {
         completed.subagent_report(self.id.clone(), &view.session)
     }
 
-    /// 后台子代理完成回投（watcher 调用）：通道饱和或会话退出时丢弃
-    pub(super) fn notify_subagent_finished(&self, session_id: String) {
-        let _ = self
-            .commands
-            .try_send(Command::SubagentFinished { session_id });
+    /// 等待当前执行及其派生的后台工作完成；期间不调用模型或计时轮询。
+    pub(super) fn settled_report(
+        &self,
+        seen_seq: u64,
+    ) -> impl Future<Output = Result<crate::tools::agent::SubagentReport, String>> + Send + 'static
+    {
+        let view = self.subscribe();
+        let mut turns = self.turn_receiver();
+        let id = self.id.clone();
+        async move {
+            loop {
+                let completed = turns.borrow_and_update().clone();
+                if completed.seq > seen_seq && completed.settled {
+                    return Ok(completed.subagent_report(id.clone(), &view.borrow().session));
+                }
+                turns
+                    .changed()
+                    .await
+                    .map_err(|_| "Session is closed".to_string())?;
+            }
+        }
     }
 
     pub(super) async fn request(

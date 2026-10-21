@@ -221,7 +221,6 @@ pub(super) fn tool_call_detail(name: &str, arguments: &str, result: Option<&Tool
                 None => session.to_string(),
             }
         }
-        "WaitSession" => str_or_raw(&args, "session_id", arguments),
         _ => arguments.to_string(),
     }
 }
@@ -288,7 +287,7 @@ pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
         // 后台任务工具：预览任务输出/停止结果，点击展开全文
         "TaskOutput" | "TaskStop" => Some(ToolExpand::Preview),
         // 子代理工具：预览最终消息 / 投递回执，点击展开全文
-        "Agent" | "SendMessage" | "WaitSession" => Some(ToolExpand::Preview),
+        "Agent" | "SendMessage" => Some(ToolExpand::Preview),
         // 外置 web 工具对齐原生 WebSearchCall：仅一行 + 来源列表，不渲染输出块
         _ => None,
     }

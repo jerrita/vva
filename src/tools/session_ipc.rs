@@ -1,10 +1,8 @@
 //! 跨会话消息工具：session 间类 actor 通信。
 //!
-//! SendMessage 投递消息（空闲即触发轮次，忙时入队）；WaitSession 订阅目标会话，
-//! 等待其一轮结束并返回最后一条助手消息。
+//! SendMessage 投递消息（空闲即触发轮次，忙时入队），回复经运行时自动回投。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -12,9 +10,6 @@ use serde::Deserialize;
 use super::Tool;
 use super::agent::SessionBroker;
 use crate::tools::parse_args;
-
-/// WaitSession 缺省等待上限
-const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Deserialize)]
 struct SendMessageArgs {
@@ -41,7 +36,9 @@ impl Tool for SendMessageTool {
     fn description(&self) -> &str {
         "Deliver a message to another session by its sess_ id (e.g. a subagent you launched). \
          An idle session starts a new turn; a running session queues the message until its \
-         current turn ends. Call WaitSession afterwards to receive the reply."
+         current turn ends. The reply automatically resumes this session, including after you \
+         end your response. Continue other work, or end your response when nothing else can proceed; \
+         do not sleep or poll for the reply."
     }
 
     fn input(&self) -> crate::model::ToolInput {
@@ -69,79 +66,6 @@ impl Tool for SendMessageTool {
             return Err("SendMessage text must not be empty".into());
         }
         self.broker.deliver(&args.session_id, &args.text).await
-    }
-}
-
-#[derive(Deserialize)]
-struct WaitSessionArgs {
-    session_id: String,
-    #[serde(default)]
-    timeout_s: Option<u64>,
-}
-
-pub struct WaitSessionTool {
-    broker: Arc<dyn SessionBroker>,
-}
-
-impl WaitSessionTool {
-    pub fn new(broker: Arc<dyn SessionBroker>) -> Self {
-        Self { broker }
-    }
-}
-
-#[async_trait]
-impl Tool for WaitSessionTool {
-    fn name(&self) -> &str {
-        "WaitSession"
-    }
-
-    fn description(&self) -> &str {
-        "Wait for another session's current turn (or its next turn if idle) to finish and \
-         return that turn's final assistant message. Pair with SendMessage: deliver, then wait."
-    }
-
-    fn input(&self) -> crate::model::ToolInput {
-        crate::model::ToolInput::Json({
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Target session id (starts with sess_)."
-                    },
-                    "timeout_s": {
-                        "type": "integer",
-                        "description": "Maximum seconds to wait; defaults to 600."
-                    }
-                },
-                "required": ["session_id"]
-            })
-        })
-    }
-
-    async fn execute(&self, arguments: &str) -> Result<String, String> {
-        let args: WaitSessionArgs = parse_args(arguments, "WaitSession")?;
-        let timeout = Duration::from_secs(args.timeout_s.unwrap_or(DEFAULT_WAIT_TIMEOUT.as_secs()));
-        // 基线取当前计数：目标运行中即等本轮结束，空闲即等下一轮（如随后的 SendMessage）
-        let baseline = self.broker.session_report(&args.session_id).await?.turn_seq;
-        let report = self
-            .broker
-            .wait_turn(&args.session_id, baseline, Some(timeout))
-            .await?;
-        if let Some(error) = report.error {
-            return Err(format!(
-                "Session {} turn failed: {error}",
-                report.session_id
-            ));
-        }
-        if report.text.trim().is_empty() {
-            return Ok(format!(
-                "Session {} finished its turn without a final message (aborted or failed \
-                 before responding).",
-                report.session_id
-            ));
-        }
-        Ok(report.text)
     }
 }
 
@@ -179,7 +103,7 @@ mod tests {
             &self,
             _session_id: &str,
             _seen_seq: u64,
-            _timeout: Option<Duration>,
+            _timeout: Option<std::time::Duration>,
         ) -> Result<SubagentReport, String> {
             Ok(self.report_text())
         }

@@ -384,15 +384,15 @@ async fn execute_drains_completions_before_next_model_call() {
 async fn drain_subagent_completions_injects_final_message_reminder() {
     let (mut task, _view) = event_task();
     task.store.save_header(&task.view.session).await.unwrap();
-    task.broker = Arc::new(StubBroker(Some(SubagentReport {
+    let report = SubagentReport {
         session_id: "sess_kid1".into(),
         agent: "explore".into(),
         title: "[explore] probe".into(),
         turn_seq: 1,
         error: None,
         text: "found 3 matches".into(),
-    })));
-    task.queue_subagent_completion("sess_kid1".into()).await;
+    };
+    task.queue_session_completion(report, true).await;
     task.drain_subagent_completions().await.unwrap();
 
     let text = task.view.session.turns.last().unwrap().text_content();
@@ -406,9 +406,18 @@ async fn drain_subagent_completions_injects_final_message_reminder() {
     );
     assert!(text.contains("found 3 matches"), "{text}");
     assert!(task.subagent_completions.is_empty());
-    // 报告失败（会话消失）：持久化中断状态，保留明确的失败原因。
-    task.broker = Arc::new(StubBroker(None));
-    task.queue_subagent_completion("sess_gone".into()).await;
+    task.queue_session_completion(
+        SubagentReport {
+            session_id: "sess_gone".into(),
+            agent: String::new(),
+            title: String::new(),
+            turn_seq: 0,
+            text: String::new(),
+            error: Some("Session is closed".into()),
+        },
+        true,
+    )
+    .await;
     task.drain_subagent_completions().await.unwrap();
     assert_eq!(task.view.session.turns.len(), 2);
     assert_eq!(
@@ -417,7 +426,7 @@ async fn drain_subagent_completions_injects_final_message_reminder() {
             .as_ref()
             .unwrap()
             .status,
-        crate::model::BackgroundTaskStatus::Interrupted
+        crate::model::BackgroundTaskStatus::Failed
     );
     cleanup(&task);
 }
@@ -1224,7 +1233,7 @@ async fn subagent_fixture() -> (
         )
         .await
         .unwrap();
-    let broker = super::manager::SessionBrokerHandle::new(manager.clone());
+    let broker = super::manager::SessionBrokerHandle::new(manager.clone(), parent.id.clone());
     (dir, manager, parent, broker)
 }
 
@@ -1293,75 +1302,6 @@ async fn spawn_subagent_rejects_depth_overflow() {
         .await
         .unwrap_err();
     assert!(error.contains("nesting depth"), "{error}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// 投递回复先于 WaitSession 完成时，等待仍返回对应回执。
-#[tokio::test]
-async fn wait_turn_returns_delivered_reply_after_fast_completion() {
-    let (dir, manager, parent, broker) = subagent_fixture().await;
-    let launch = broker
-        .spawn_subagent(
-            &SubagentContext::from_session(&parent.snapshot().session),
-            &agent_def("general"),
-            "find things",
-            "probe",
-            false,
-        )
-        .await
-        .unwrap();
-    // 首轮（派生提示词）在不可达端点上快速失败结束
-    let first = broker
-        .wait_turn(
-            &launch.session_id,
-            launch.turn_seq,
-            Some(Duration::from_secs(15)),
-        )
-        .await
-        .unwrap();
-
-    // 子会话空闲：投递返回独立回执并触发回复轮。
-    let delivered = broker
-        .deliver(&launch.session_id, "reply ok")
-        .await
-        .unwrap();
-    assert!(delivered.starts_with("Delivered;"), "{delivered}");
-    // 等待回复轮结束，保留回执供后续 WaitSession 消费。
-    let handle = manager.get_or_load(&launch.session_id).await.unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while handle.turn_seq() <= first.turn_seq {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "reply turn did not finish"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    // 复现竞态时序：WaitSession 在回复轮完成后才计算调用方计数
-    let stale_seen = broker
-        .session_report(&launch.session_id)
-        .await
-        .unwrap()
-        .turn_seq;
-    assert_eq!(stale_seen, first.turn_seq + 1);
-
-    // 回执保存本次回复轮报告，立即返回。
-    let reply = broker
-        .wait_turn(
-            &launch.session_id,
-            stale_seen,
-            Some(Duration::from_secs(15)),
-        )
-        .await
-        .unwrap();
-    assert_eq!(reply.turn_seq, stale_seen);
-
-    // 回执消费后，下一次等待订阅新的完成轮次。
-    let started = std::time::Instant::now();
-    let again = broker
-        .wait_turn(&launch.session_id, stale_seen, Some(Duration::from_secs(1)))
-        .await;
-    assert!(again.is_err());
-    assert!(started.elapsed() >= Duration::from_millis(900));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1526,5 +1466,401 @@ async fn note_while_running_is_queued_then_appended_in_order() {
             (Role::User, "N2".into()),
         ]
     );
+    cleanup(&task);
+}
+
+fn command_task() -> (SessionTask, Arc<ManagedSession>, mpsc::Receiver<Command>) {
+    let root = tmp("async-session");
+    let session = Session::with_model(
+        &root,
+        Some("Async fixture".into()),
+        "p/m",
+        None,
+        Default::default(),
+    );
+    let id = session.header.id.clone();
+    let (commands, rx) = mpsc::channel(1);
+    let (task, view, turns) = SessionTask::new(
+        session,
+        true,
+        TaskDeps {
+            store: Arc::new(JsonlSessionStore::new(&root).unwrap()),
+            config: Arc::new(unreachable_config()),
+            state_path: root.join("state.json"),
+            broker: Arc::new(StubBroker(None)),
+            tool_factory: None,
+            preamble: None,
+        },
+        commands.downgrade(),
+    );
+    let handle = Arc::new(ManagedSession {
+        id,
+        commands,
+        view,
+        turns,
+    });
+    (task, handle, rx)
+}
+
+/// 本地 Responses SSE 端点记录每次模型请求，便于验证被动唤醒与上下文注入。
+async fn completion_endpoint() -> (
+    AppConfig,
+    mpsc::UnboundedReceiver<serde_json::Value>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (requests, rx) = mpsc::unbounded_channel();
+    let app = axum::Router::new().fallback(move |axum::Json(request): axum::Json<serde_json::Value>| {
+        let requests = requests.clone();
+        async move {
+            requests.send(request).unwrap();
+            let event = serde_json::json!({
+                "type": "response.completed", "sequence_number": 1,
+                "response": {
+                    "id": "resp_fixture", "object": "response", "created_at": 0,
+                    "status": "completed", "error": null, "incomplete_details": null,
+                    "model": "m", "store": false, "previous_response_id": null,
+                    "output": [{"type": "message", "id": "msg_fixture", "status": "completed",
+                        "role": "assistant", "content": [{"type": "output_text", "text": "handled", "annotations": []}]}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+                        "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}
+                }
+            });
+            ([("content-type", "text/event-stream")], format!("data: {event}\n\n"))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = unreachable_config();
+    config.providers.get_mut("p").unwrap().base_url =
+        format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (config, rx, server)
+}
+
+fn async_report(text: &str) -> SubagentReport {
+    SubagentReport {
+        session_id: "sess_worker".into(),
+        agent: "general".into(),
+        title: String::new(),
+        turn_seq: 1,
+        text: text.into(),
+        error: None,
+    }
+}
+
+#[tokio::test]
+async fn idle_session_resumes_for_each_result_and_retains_output_and_delivery() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (config, mut requests, server) = completion_endpoint().await;
+        let (mut task, handle, commands) = command_task();
+        task.config = Arc::new(config);
+        task.store.save_header(&task.view.session).await.unwrap();
+        let root = task.view.session.header.workspace_root.clone();
+        let (cli, mut output) = mpsc::channel(64);
+        task.cli = Some(cli);
+        let (delivery, mut receipt) = queued("original request");
+        task.active_deliveries.push(delivery);
+        let (first, first_receipt) = oneshot::channel();
+        let (second, second_receipt) = oneshot::channel();
+        task.watch_session("sess_worker".into(), first_receipt, true);
+        task.watch_session("sess_worker".into(), second_receipt, false);
+        Arc::make_mut(&mut task.view.session)
+            .append_turn(Turn::assistant_turn(vec![Message::text("pending")]));
+        task.finish_turn(Ok(TurnOutcome::Completed)).await;
+        assert!(handle.has_background_work());
+        assert!(!handle.is_running());
+        assert!(receipt.try_recv().is_err());
+        assert!(requests.try_recv().is_err());
+        let mut turns = handle.turn_receiver();
+        turns.borrow_and_update();
+        let actor = tokio::spawn(task.run(commands));
+
+        first
+            .send(Ok(async_report("first result")))
+            .unwrap_or_else(|_| panic!("first watcher closed"));
+        turns.changed().await.unwrap();
+        let first_request = requests.recv().await.unwrap().to_string();
+        assert!(first_request.contains("first result"));
+        assert!(handle.has_background_work());
+        assert!(!turns.borrow().settled);
+        assert!(receipt.try_recv().is_err());
+        assert!(requests.try_recv().is_err());
+
+        second
+            .send(Ok(async_report("second result")))
+            .unwrap_or_else(|_| panic!("second watcher closed"));
+        turns.changed().await.unwrap();
+        assert!(!handle.has_background_work());
+        assert!(turns.borrow().settled);
+        let final_reply = receipt.await.unwrap().unwrap();
+        assert_eq!(final_reply.text, "handled");
+        let second_request = requests.recv().await.unwrap().to_string();
+        assert!(second_request.contains("second result"));
+        // 后续回复保留独立轮次，原后台工具块仍对应首次委派的结果。
+        assert_eq!(
+            handle.snapshot().background_tasks["sess_worker"].output,
+            "first result"
+        );
+        let mut finished = 0;
+        while let Some(event) = output.recv().await {
+            if matches!(event, AgentEvent::Finished) {
+                finished += 1;
+            }
+        }
+        assert_eq!(finished, 3);
+        assert!(requests.try_recv().is_err());
+        drop(handle);
+        actor.await.unwrap();
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    })
+    .await
+    .expect("automatic wakeup timed out");
+}
+
+#[tokio::test]
+async fn stopped_idle_session_persists_results_without_resuming_until_new_input() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (config, mut requests, server) = completion_endpoint().await;
+        let (mut task, handle, commands) = command_task();
+        task.config = Arc::new(config);
+        task.store.save_header(&task.view.session).await.unwrap();
+        let root = task.view.session.header.workspace_root.clone();
+        let (result, receipt) = oneshot::channel();
+        task.watch_session("sess_worker".into(), receipt, true);
+        task.finish_turn(Ok(TurnOutcome::Completed)).await;
+        let actor = tokio::spawn(task.run(commands));
+        handle.abort_current().await.unwrap();
+        result
+            .send(Ok(async_report("saved result")))
+            .unwrap_or_else(|_| panic!("watcher closed"));
+        // 通过视图事件等待持久化，无计时轮询。
+        let mut view = handle.subscribe();
+        loop {
+            if view
+                .borrow_and_update()
+                .session
+                .turns
+                .iter()
+                .any(|turn| turn.text_content().contains("saved result"))
+            {
+                break;
+            }
+            view.changed().await.unwrap();
+        }
+        assert_eq!(handle.turn_seq(), 1);
+        assert!(requests.try_recv().is_err());
+        handle.deliver_wait("continue").await.unwrap();
+        assert!(
+            requests
+                .recv()
+                .await
+                .unwrap()
+                .to_string()
+                .contains("saved result")
+        );
+        assert_eq!(handle.turn_seq(), 2);
+        drop(handle);
+        actor.await.unwrap();
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    })
+    .await
+    .expect("stopped session did not settle");
+}
+
+#[tokio::test]
+async fn shell_completion_survives_a_full_command_queue() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (mut task, handle, mut commands) = command_task();
+        task.store.save_header(&task.view.session).await.unwrap();
+        let (reply, _) = oneshot::channel();
+        handle
+            .commands
+            .send(Command::Note {
+                text: "queued".into(),
+                reply,
+            })
+            .await
+            .unwrap();
+        let command = if cfg!(windows) { "exit 0" } else { "true" };
+        let id = task
+            .tasks
+            .spawn("fixture", command, &task.view.session.header.workspace_root)
+            .unwrap();
+        assert_eq!(task.tasks.pending_count(), 1);
+        wait_for_task(&task, &id, BackgroundStatus::Exited { code: Some(0) }).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(commands.recv().await, Some(Command::Note { .. })));
+        let Some(Command::TaskFinished { task_id }) = commands.recv().await else {
+            panic!("completion missing")
+        };
+        assert_eq!(task_id, id);
+        task.queue_task_completion(task_id).await;
+        task.drain_task_completions().await.unwrap();
+        assert_eq!(task.tasks.pending_count(), 0);
+        cleanup(&task);
+    })
+    .await
+    .expect("shell completion was lost");
+}
+
+#[tokio::test]
+async fn background_agent_and_followup_reply_automatically_resume_the_owner() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (config, mut requests, server) = completion_endpoint().await;
+        let root = tmp("async-agent");
+        let manager = manager_for(&root, config);
+        let parent = manager
+            .create_session(
+                "p/m".into(),
+                None,
+                Some("Parent fixture".into()),
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        parent.deliver_wait("initial request").await.unwrap();
+        let broker = super::manager::SessionBrokerHandle::new(manager.clone(), parent.id.clone());
+        let baseline = parent.turn_seq();
+        let launch = broker
+            .spawn_subagent(
+                &SubagentContext::from_session(&parent.snapshot().session),
+                &agent_def("general"),
+                "worker request",
+                "worker fixture",
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(
+            parent
+                .settled_report(baseline)
+                .await
+                .unwrap()
+                .error
+                .is_none()
+        );
+        let initial = parent.snapshot().background_tasks[&launch.session_id].clone();
+        assert_eq!(
+            initial.status,
+            crate::model::BackgroundTaskStatus::Completed
+        );
+
+        let baseline = parent.turn_seq();
+        broker
+            .deliver(&launch.session_id, "follow-up request")
+            .await
+            .unwrap();
+        assert!(
+            parent
+                .settled_report(baseline)
+                .await
+                .unwrap()
+                .error
+                .is_none()
+        );
+        let view = parent.snapshot();
+        assert_eq!(view.background_tasks[&launch.session_id], initial);
+        let reminders: Vec<_> = view
+            .session
+            .turns
+            .iter()
+            .filter(|turn| turn.role == Role::User)
+            .map(Turn::text_content)
+            .filter(|text| text.contains("type=\"background-task\""))
+            .collect();
+        assert_eq!(reminders.len(), 2);
+        assert!(reminders[0].contains("Background agent"));
+        assert!(reminders[1].contains("replied (turn 2)"));
+        assert_eq!(std::iter::from_fn(|| requests.try_recv().ok()).count(), 5);
+        drop(parent);
+        drop(broker);
+        drop(manager);
+        server.abort();
+        let _ = std::fs::remove_dir_all(root);
+    })
+    .await
+    .expect("agent result was not delivered automatically");
+}
+
+#[tokio::test]
+async fn shell_exit_resumes_idle_session_for_success_and_failure() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (config, mut requests, server) = completion_endpoint().await;
+        for exit_code in [0, 7] {
+            let (mut task, handle, commands) = command_task();
+            task.config = Arc::new(config.clone());
+            task.store.save_header(&task.view.session).await.unwrap();
+            let root = task.view.session.header.workspace_root.clone();
+            let command = if cfg!(windows) {
+                format!("Write-Output fixture; exit {exit_code}")
+            } else {
+                format!("printf fixture; exit {exit_code}")
+            };
+            let id = task.tasks.spawn("fixture", &command, &root).unwrap();
+            // 退出早于响应结束时，未消费的完成结果也应保留输出通道。
+            wait_for_task(
+                &task,
+                &id,
+                BackgroundStatus::Exited {
+                    code: Some(exit_code),
+                },
+            )
+            .await;
+            let (cli, mut output) = mpsc::channel(64);
+            task.cli = Some(cli);
+            let (delivery, receipt) = queued("original request");
+            task.active_deliveries.push(delivery);
+            task.finish_turn(Ok(TurnOutcome::Completed)).await;
+            assert!(handle.has_background_work());
+            let actor = tokio::spawn(task.run(commands));
+            let report = receipt.await.unwrap().unwrap();
+            assert_eq!(report.text, "handled");
+            let request = requests.recv().await.unwrap().to_string();
+            assert!(request.contains(&id));
+            assert!(request.contains("fixture"));
+            assert!(request.contains(&format!("exited with code {exit_code}")));
+            assert_eq!(
+                handle.snapshot().background_tasks[&id].exit_code,
+                Some(exit_code)
+            );
+            assert!(!handle.has_background_work());
+            while output.recv().await.is_some() {}
+            assert!(requests.try_recv().is_err());
+            drop(handle);
+            actor.await.unwrap();
+            let _ = std::fs::remove_dir_all(root);
+        }
+        server.abort();
+    })
+    .await
+    .expect("shell exit did not resume the session");
+}
+
+#[tokio::test]
+async fn completion_persistence_failure_closes_output_and_reports_error() {
+    let (mut task, _view) = event_task();
+    task.queue_session_completion(async_report("fixture"), false)
+        .await;
+    let (cli, mut output) = mpsc::channel(64);
+    task.cli = Some(cli);
+    let (delivery, receipt) = queued("fixture");
+    task.active_deliveries.push(delivery);
+    // 尚无会话文件，持久化失败必须结束本次输出并解除回执。
+    task.finish_turn(Ok(TurnOutcome::Completed)).await;
+    assert!(receipt.await.unwrap().is_err());
+    assert!(task.turn_tx.borrow().settled);
+    assert!(task.turn_tx.borrow().error.is_some());
+    assert!(!task.auto_resume);
+    let mut reported = false;
+    while let Some(event) = output.recv().await {
+        if matches!(event, AgentEvent::Error(_)) {
+            reported = true;
+        }
+    }
+    assert!(reported);
+    assert_eq!(task.subagent_completions.len(), 1);
     cleanup(&task);
 }

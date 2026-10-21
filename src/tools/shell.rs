@@ -72,7 +72,7 @@ impl Tool for ShellTool {
                 "properties": {
                     "intent": { "type": "string", "description": "Brief, nonempty explanation of what the command accomplishes, shown in the UI." },
                     "command": { "type": "string", "description": shell_command_hint() },
-                    "run_in_background": { "type": "boolean", "description": "Run detached with no timeout: returns a task id immediately while the command keeps running. Check status and output with TaskOutput, stop with TaskStop. You are notified when the task exits. Tasks die when the session ends; in one-shot CLI runs that is process exit." }
+                    "run_in_background": { "type": "boolean", "description": "Run detached with no timeout: returns a task id immediately while the command keeps running. Check status and output with TaskOutput, stop with TaskStop. Completion automatically resumes this session, even after you end your response. Continue other work or end your response; do not sleep or poll for completion. Tasks die when the session ends; in one-shot CLI runs that is process exit." }
                 },
                 "required": ["intent", "command"]
             })
@@ -110,7 +110,7 @@ impl ShellTool {
             let id = tasks.spawn(&args.intent, &args.command, &self.working_dir)?;
             return Ok((
                 format!(
-                    "Background task started: {id}\nintent: {}\ncommand: {}\nNo timeout applies. Use TaskOutput with task_id \"{id}\" to check status and output; TaskStop to stop it. You will be notified when it exits.",
+                    "Background task started: {id}\nintent: {}\ncommand: {}\nNo timeout applies. Use TaskOutput with task_id \"{id}\" to check status and output; TaskStop to stop it. Completion automatically resumes this session, even after you end your response. Continue other work or end your response; do not sleep or poll for completion.",
                     args.intent, args.command
                 ),
                 Some(id),
@@ -199,7 +199,7 @@ fn shell_description(file_tools: &[&str]) -> String {
         SHELL_NOUN,
         " syntax and shell-quote paths containing spaces within command. Commands run non-interactively with a 120-second timeout. Returns stdout and a separate STDERR section when present; nonzero exit status and timeout produce errors. Output larger than 32 KiB is saved to the project tool_outputs directory; the result includes the first 32 KiB followed by a size notice and that path so you can ",
         &browse.join(" or "),
-        " the full output.\nFor long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and you are notified when it exits. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.\nExample arguments: {\"intent\":\"Check working tree changes\",\"command\":\"git status --short\"}.",
+        " the full output.\nFor long-running commands (dev servers, watchers, builds), set run_in_background to true: the command runs detached with no timeout, the call returns a task id immediately, stdout and stderr are captured merged, and completion automatically resumes this session, even after you end your response. Continue other work or end your response; do not sleep or poll for completion. Check progress with TaskOutput, stop early with TaskStop. Background tasks die when the session ends; in one-shot CLI runs that is process exit.\nExample arguments: {\"intent\":\"Check working tree changes\",\"command\":\"git status --short\"}.",
     ]
     .concat()
 }

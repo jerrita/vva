@@ -309,15 +309,6 @@ export function describeTool(
         body: 'output',
       }
     }
-    case 'WaitSession':
-      return {
-        verb: 'Wait',
-        cls: 'delegate',
-        tally: '委派',
-        target: str(args.session_id) ?? call.arguments,
-        mono: true,
-        body: 'output',
-      }
     case 'AskUser':
       return {
         verb: 'Ask',

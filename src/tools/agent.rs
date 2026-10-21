@@ -64,7 +64,7 @@ pub struct SubagentLaunch {
 #[async_trait]
 pub trait SessionBroker: Send + Sync {
     /// 派生子代理会话并提交首轮 prompt（depth 超限报错）；
-    /// background 时注册完成回投 watcher
+    /// background 时注册独立完成回执
     async fn spawn_subagent(
         &self,
         parent: &SubagentContext,
@@ -77,7 +77,7 @@ pub trait SessionBroker: Send + Sync {
     /// 向目标会话投递消息：空闲即触发轮次，忙时入队待轮次间隙处理
     async fn deliver(&self, session_id: &str, text: &str) -> Result<String, String>;
 
-    /// 优先等待调用方尚未消费的投递回执；无回执时等待轮次计数超过 seen_seq
+    /// 前台委派使用：等待轮次及其派生的后台工作完成
     async fn wait_turn(
         &self,
         session_id: &str,
@@ -141,7 +141,8 @@ impl Tool for AgentTool {
          with an empty history, so the prompt is self-contained (goal, constraints, relevant \
          paths). Multiple Agent calls in one turn run concurrently. Set run_in_background to \
          detach the subagent: its final message arrives here as a system reminder when it \
-         finishes, and you continue working meanwhile."
+         finishes, even after you end your response. Continue other work meanwhile, or end \
+         your response when nothing else can proceed. Do not sleep or poll for completion."
     }
 
     fn input(&self) -> crate::model::ToolInput {
@@ -215,7 +216,8 @@ impl AgentTool {
                 format!(
                     "Background agent started: {} (type: {})\ndescription: {}\nIt runs in its \
                  own session; its final message will be injected here as a system reminder when \
-                 it finishes.",
+                 it finishes, even after you end your response. Continue other work or end \
+                 your response; do not sleep or poll for completion.",
                     launch.session_id, def.name, args.description
                 ),
                 Some(launch.session_id),
@@ -243,11 +245,18 @@ impl AgentTool {
 const SUBAGENT_REMINDER_TEXT_BYTES: usize = 8 * 1024;
 
 /// 后台子代理完成通知轮次正文：状态行 + 截尾最终消息，background-task reminder 包裹
-pub fn format_subagent_reminder(report: &SubagentReport) -> String {
-    let mut notification = format!(
-        "Background agent {} ({}) finished.",
-        report.session_id, report.agent
-    );
+pub fn format_session_reminder(report: &SubagentReport, background: bool) -> String {
+    let mut notification = if background {
+        format!(
+            "Background agent {} ({}) finished.",
+            report.session_id, report.agent
+        )
+    } else {
+        format!(
+            "Session {} replied (turn {}).",
+            report.session_id, report.turn_seq
+        )
+    };
     if !report.title.is_empty() {
         notification.push_str(&format!("\ntitle: {}", report.title));
     }
@@ -267,7 +276,7 @@ pub fn format_subagent_reminder(report: &SubagentReport) -> String {
         ));
     }
     notification.push_str(&format!(
-        "\nUse SendMessage / WaitSession with session_id \"{}\" to continue its conversation.",
+        "\nUse SendMessage with session_id \"{}\" to continue its conversation.",
         report.session_id
     ));
     crate::system::format_background_task_reminder(&notification)
@@ -378,17 +387,17 @@ mod tests {
 
     #[test]
     fn reminder_wraps_status_and_tail() {
-        let reminder = format_subagent_reminder(&report("all done"));
+        let reminder = format_session_reminder(&report("all done"), true);
         assert!(reminder.starts_with("<system-reminder type=\"background-task\">"));
         assert!(reminder.contains("Background agent sess_a1 (general) finished."));
         assert!(reminder.contains("title: [general] probe"));
         assert!(reminder.contains("--- final message"));
-        assert!(reminder.contains("SendMessage / WaitSession"));
+        assert!(reminder.contains("SendMessage"));
     }
 
     #[test]
     fn reminder_marks_missing_final_message() {
-        let reminder = format_subagent_reminder(&report("  "));
+        let reminder = format_session_reminder(&report("  "), true);
         assert!(reminder.contains("produced no final message"));
         assert!(!reminder.contains("--- final message"));
     }
@@ -396,7 +405,7 @@ mod tests {
     #[test]
     fn reminder_truncates_long_text_at_char_boundary() {
         let text: String = "好".repeat(5000);
-        let reminder = format_subagent_reminder(&report(&text));
+        let reminder = format_session_reminder(&report(&text), true);
         let truncated: String = reminder.chars().filter(|ch| *ch == '好').collect();
         // 8 KiB 上限下最多保留 4096 个三字节字符
         assert!(truncated.chars().count() <= 4096);
