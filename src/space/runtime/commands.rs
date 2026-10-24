@@ -4,18 +4,16 @@ use std::sync::Arc;
 
 use super::mode_model::check_mode_model;
 use super::{DeliveryTarget, Runtime};
-use crate::agent_space::binding::is_group_binding;
-use crate::agent_space::channel::Inbound;
-use crate::agent_space::command::{self, Command};
-use crate::agent_space::curator::{CuratorReport, CuratorStatus};
-use crate::agent_space::markdown;
-use crate::agent_space::rollover::{cache_hit_rate, context_tokens};
-use crate::agent_space::router::resolve_prefix;
-use crate::agent_space::scheduler::{
-    ScheduleStore, Task, TaskState, Trigger, format_time, now_minute,
-};
 use crate::harness::ManagedSession;
 use crate::model::ToggleOverrides;
+use crate::space::binding::is_group_binding;
+use crate::space::channel::Inbound;
+use crate::space::command::{self, Command};
+use crate::space::curator::{CuratorReport, CuratorStatus};
+use crate::space::markdown;
+use crate::space::rollover::{cache_hit_rate, context_tokens};
+use crate::space::router::resolve_prefix;
+use crate::space::scheduler::{ScheduleStore, Task, TaskState, Trigger, format_time, now_minute};
 use crate::ui::history::compute_stats;
 
 const MODEL_USAGE: &str =

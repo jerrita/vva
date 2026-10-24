@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::api::{MsgType, Target};
-use crate::agent_space::channel::{ChannelError, ReplyRef, Result};
+use crate::space::channel::{ChannelError, ReplyRef, Result};
 
 /// 引用消息的 `message_type`（官方消息类型表：103 = 引用）。
 const MESSAGE_TYPE_QUOTE: u32 = 103;

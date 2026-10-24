@@ -1,6 +1,6 @@
 //! SendFile 工具：经当前会话所在渠道把本地文件发给用户。
 //!
-//! 渠道绑定、运行期按会话注入（见 `agent_space::tool_factory`），不属于静态注册表；
+//! 渠道绑定、运行期按会话注入（见 `space::tool_factory`），不属于静态注册表；
 //! subagent 会话不挂载。渠道返回的错误（如 QQ guild / dm 不支持上传）原样作为工具错误，由模型转述。
 
 use std::path::PathBuf;

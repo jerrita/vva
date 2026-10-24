@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use super::text::{MAX_MESSAGE_CHARS, PASSIVE_REPLY_LIMIT, chunk_text, strip_markdown};
-use crate::agent_space::channel::{ChannelError, Result};
+use crate::space::channel::{ChannelError, Result};
 
 const API_BASE: &str = "https://api.sgroup.qq.com";
 const TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";

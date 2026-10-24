@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 
 use super::api::QqApi;
 use super::event::{MessageEvent, parse_message_event};
-use crate::agent_space::channel::{ChannelError, Result};
+use crate::space::channel::{ChannelError, Result};
 
 const OP_DISPATCH: u8 = 0;
 const OP_HEARTBEAT: u8 = 1;

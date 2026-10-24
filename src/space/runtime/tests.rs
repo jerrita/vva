@@ -6,13 +6,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::mode_model::MODE_MODEL_FILE;
 use super::*;
-use crate::agent_space::channel::{self, FileSource, InboundFile};
-use crate::agent_space::command::Command;
-use crate::agent_space::curator::CuratorResult;
-use crate::agent_space::router::{ModelReply, RouteInput, RouteModel};
-use crate::agent_space::scheduler::Task;
 use crate::config::model::ModelLimitConfig;
 use crate::config::{ModelConfig, ProviderConfig, ProviderType};
+use crate::space::channel::{self, FileSource, InboundFile};
+use crate::space::command::Command;
+use crate::space::curator::CuratorResult;
+use crate::space::router::{ModelReply, RouteInput, RouteModel};
+use crate::space::scheduler::Task;
 use crate::storage::jsonl::JsonlSessionStore;
 
 /// 内存假 channel：记录出站文本，id 依次为 out1、out2…
@@ -337,9 +337,7 @@ async fn switch_resolves_prefix_and_rejects_ambiguity() {
         .await;
     let sent = f.channel.wait(3).await;
     assert!(
-        sent[2]
-            .text
-            .contains(&crate::agent_space::markdown::text(&other)),
+        sent[2].text.contains(&crate::space::markdown::text(&other)),
         "{}",
         sent[2].text
     );
@@ -351,11 +349,10 @@ async fn switch_resolves_prefix_and_rejects_ambiguity() {
 
     f.runtime.handle(inbound("m5", "/sessions")).await;
     let sent = f.channel.wait(5).await;
-    assert!(ids.iter().all(|id| {
-        sent[4]
-            .text
-            .contains(&crate::agent_space::markdown::text(id))
-    }));
+    assert!(
+        ids.iter()
+            .all(|id| { sent[4].text.contains(&crate::space::markdown::text(id)) })
+    );
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 
@@ -685,9 +682,9 @@ async fn group_scope_filters_lists_switches_and_clears_legacy_focus() {
     f.runtime.command(&msg, Command::Sessions).await.unwrap();
     let sent = f.channel.wait(1).await;
     let list = &sent[0].text;
-    assert!(list.contains(&crate::agent_space::markdown::text(&group.id)));
+    assert!(list.contains(&crate::space::markdown::text(&group.id)));
     for id in [&personal.id, &second.id, &other_group.id] {
-        assert!(!list.contains(&crate::agent_space::markdown::text(id)));
+        assert!(!list.contains(&crate::space::markdown::text(id)));
         assert!(
             f.runtime
                 .command(&msg, Command::Switch(id.clone()))

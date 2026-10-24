@@ -52,7 +52,7 @@ src/
 │   ├── mention.rs          # @ 文件引用解析与展开
 │   ├── testing.rs          # (cfg(test)) StubBroker
 │   └── session/            # SessionManager 句柄表 · SessionTask 执行任务 · ManagedSession 句柄/Command · SessionView 快照
-├── agent_space/            # 常驻 IM agent (设计见 docs/agent.md)
+├── space/                  # 常驻 IM agent (设计见 docs/agent.md)
 │   ├── mod.rs              # AgentSpace 启动校验与装配、tool_factory
 │   ├── runtime/            # 主循环 / inbound / commands / schedule / mode_model
 │   ├── router.rs · decisions.rs        # L0/L1/L2 路由；Decisions API 后端

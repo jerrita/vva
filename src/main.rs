@@ -479,8 +479,7 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
         }
 
         Commands::Agent => {
-            let space =
-                vva::agent_space::AgentSpace::new(store, app_config, vva_dir.join("state.json"))?;
+            let space = vva::space::AgentSpace::new(store, app_config, vva_dir.join("state.json"))?;
             space.run().await?;
         }
 

@@ -1,4 +1,3 @@
-pub mod agent_space;
 pub mod agents;
 pub mod config;
 pub mod discover;
@@ -8,6 +7,7 @@ pub mod harness;
 pub mod model;
 pub mod provider;
 pub mod skills;
+pub mod space;
 pub mod storage;
 pub mod system;
 pub mod tools;

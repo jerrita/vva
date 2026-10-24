@@ -1,6 +1,6 @@
 # Agent Space 设计
 
-常驻、经 IM 触达的个人 agent，入口 `vva agent`。配置字段见 [config-reference §2.2](config-reference.md#22-settingsagent-常驻-im-agent)，源码位于 `src/agent_space/`。
+常驻、经 IM 触达的个人 agent，入口 `vva agent`。配置字段见 [config-reference §2.2](config-reference.md#22-settingsagent-常驻-im-agent)，源码位于 `src/space/`。
 
 ## 1. 目标与总体架构
 

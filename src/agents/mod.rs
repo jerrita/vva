@@ -79,7 +79,7 @@ fn builtin_explore() -> AgentDef {
 /// 内置定义；curator 仅供 agent space 系统创建的会话使用（不暴露给 Agent 工具）
 pub fn builtin_agents() -> Vec<AgentDef> {
     vec![
-        crate::agent_space::curator::curator_agent(),
+        crate::space::curator::curator_agent(),
         builtin_explore(),
         builtin_general(),
     ]

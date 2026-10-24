@@ -520,7 +520,7 @@ fn validate(d: &RouteDecision, input: &RouteInput) -> Result<Route, RouteError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_space::binding::FileKind;
+    use crate::space::binding::FileKind;
     use std::sync::{Arc, Mutex};
 
     struct FakeModel {

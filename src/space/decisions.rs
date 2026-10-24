@@ -208,7 +208,7 @@ fn decide(answers: Answers, min_confidence: f64) -> Result<RouteDecision, Decisi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_space::router::Candidate;
+    use crate::space::router::Candidate;
 
     fn input() -> RouteInput {
         RouteInput {

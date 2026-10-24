@@ -237,7 +237,7 @@ impl AgentEngine {
                 Arc::new(
                     deps.agents
                         .into_iter()
-                        .filter(|def| def.name != crate::agent_space::curator::CURATOR_AGENT)
+                        .filter(|def| def.name != crate::space::curator::CURATOR_AGENT)
                         .collect(),
                 ),
                 crate::tools::agent::SubagentContext::from_session(session),

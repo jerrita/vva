@@ -195,9 +195,9 @@ impl Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_space::curator::CuratorRunner;
     use crate::config::{AppConfig, ModelConfig, ProviderConfig};
     use crate::model::{Message, Origin, Session, Turn};
+    use crate::space::curator::CuratorRunner;
     use crate::storage::jsonl::JsonlSessionStore;
     use std::path::PathBuf;
 
