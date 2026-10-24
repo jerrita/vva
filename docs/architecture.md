@@ -1,87 +1,52 @@
-# 核心架构与设计原则 (Core Architecture & Design Principles)
+# 核心架构
 
-## 1. 背景与痛点：“最小公分母”（Lowest Common Denominator, LCD）问题
+## 1. 问题：最小公分母（LCD）
 
-通用 AI Coding Harness 在多模型支持上面临设计缺陷：“最小公分母”退化。
-为了抹平不同供应商之间的协议差异，将请求退化为无状态的 `/v1/chat/completions`：
+通用 coding harness 为抹平供应商差异，把请求退化为无状态的 `/v1/chat/completions`，丢失各家原生能力：
 
-1. **OpenAI Responses API 优势丧失**：
-   - 丢弃服务端链式状态追踪 `response_id`，多轮对话需重复上传历史上下文，增加网络传输与 Token 消耗。
-2. **Anthropic 核心优势被剔除**：
-   - 丢弃 Prompt Caching (`cache_control`) 标记，增加输入 Token 成本与首字延迟；
-   - 丢弃思考块（Thinking）关联的防篡改数字签名 (`signature`)，导致多轮思考链在后续往返中无法原样回传，触发上游校验错误。
-3. **Google Gemini 原生能力降级**：
-   - 将 Gemini 原生 Google Search Grounding 替换为外部检索，丢失字符偏移量网页引用（Citation Token Offset）。
-4. **供应商切换时的断层**：
-   - 切换模型时由于上下文格式割裂，需要清空会话或重新初始化，无法跨模型接力。
+| 供应商 | 丢失的能力 |
+|---|---|
+| OpenAI Responses | 服务端链式 `response_id`，多轮需重复上传历史 |
+| Anthropic | Prompt Caching（`cache_control`）；Thinking 块 `signature`，思考链无法原样回传而触发校验错误 |
+| Gemini | 原生 Google Search Grounding 的字符偏移引用 |
+| 跨供应商 | 切换模型时上下文格式割裂，无法接力 |
 
-**vva (Vendor-Versatile Agent Harness)** 的目标：**在维持统一 Session 交互抽象的同时，支持各大供应商官方协议原生特性**。
+vva 在统一 Session 抽象之上保留各供应商原生特性。设计约束（统一存储、零兜底、强类型元数据）见 [AGENTS.md §2](../AGENTS.md#2-设计约束)。
 
----
-
-## 2. 核心架构设计原则
+## 2. 分层
 
 ```
-+-------------------------------------------------------------------------+
-|                        CLI / TUI Interaction Layer                      |
-|        (main.rs / ui/mod.rs / ui/app/ / ui/views/ / ui/input.rs)        |
-+------------------------------------+------------------------------------+
-                                     |
-                                     v
-+-------------------------------------------------------------------------+
-|                        Harness & Session Layer                          |
-|         (harness/session.rs / harness/agent.rs / tools/mod.rs)          |
-+-------------------+--------------------------------+--------------------+
-                    |                                |
-                    v                                v
-+---------------------------------------+  +------------------------------+
-|       Vendor Provider Adapters        |  |     Unified Domain Store     |
-|   (Responses / Anthropic / Gemini)    |  | (storage/jsonl.rs -> .jsonl) |
-| - Native Protocols & SSE Streaming    |  | - Session -> Turn -> Message |
-| - Zero Fallback & Typed Metadata      |  | - Strict Typed TurnMeta/Meta |
-+---------------------------------------+  +------------------------------+
++--------------------------------------------------------------+
+|  交互层   main.rs · ui/ · web/ · agent_space/                  |
++------------------------------+-------------------------------+
+                               v
++--------------------------------------------------------------+
+|  调度层   harness/ (SessionManager · SessionTask · AgentEngine)|
+|           tools/                                              |
++---------------+----------------------------+-----------------+
+                v                            v
++-----------------------------+  +-----------------------------+
+|  供应商适配层  provider/       |  |  存储层  storage/ (JSONL)    |
+|  Responses·Anthropic·Gemini |  |  Session→Turn→Message→Part  |
++-----------------------------+  +-----------------------------+
+          领域模型 model/ 与配置 config/ 贯穿各层
 ```
 
-### 2.1 统一存储与“零兜底”约束 (Unified Storage & Zero Fallback Rule)
-> **设计原则**：**存储保持统一，不进行降级或兜底。** 各供应商实现原生协议适配转换与专属强类型 Meta 存储。
+| 层 | 职责 | 详述 |
+|---|---|---|
+| 配置 `config/` | 分层加载、JSONC / 环境变量展开、`{provider}/{model}` 寻址。`resolve_model` 只做解析并返回 `ResolvedModel`，Provider 由 `create_provider()` 在发起调用时单独构造，统计价格、列模型清单等只读路径不创建适配器 | [config-reference](config-reference.md) |
+| 领域模型 `model/` | 四层实体、多模态内容、引用注脚、轮次级强类型元数据 | [domain_model](domain_model.md) |
+| 供应商适配 `provider/` | 实现 `Provider` trait 并声明 `ProviderCapabilities`；协议转换后经 SSE 输出标准 `AgentEvent` | [providers](providers.md) |
+| 调度 `harness/` `tools/` | `AgentEngine` 组装 Provider、工具注册表与补全参数；`SessionTask` 是会话唯一所有者，顺序处理提交、配置变更与取消，驱动 Agent Loop 并落盘；`SessionManager` 只维护句柄表，CLI / TUI / Web / agent space 共用 | [background_tasks](background_tasks.md) |
+| 存储 `storage/` | `JsonlSessionStore` 行级追加写，崩溃容灾，流式读取 | [storage](storage.md) |
+| 交互 | CLI 单次执行与会话检查；TUI 与 Web 订阅 `SessionView`；agent space 驱动 IM | [ui](ui.md) · [web_sync](web_sync.md) · [agent](agent.md) |
 
-1. **统一领域存储 (Unified Domain Storage)**：
-   - 持久化层保存领域模型实体（`Session`, `Turn`, `Message`, `ContentPart`）与各供应商强类型元数据，与私有请求/响应协议解耦。
-2. **适配器层零兜底 (Zero Fallback in Provider Adapters)**：
-   - 每个 Provider 实现官方原生协议规范。
-   - **禁止跨协议伪造退化**：Responses API 适配器不检查 Chat Completions 的 `choices` 字段，不进行数据伪造与推导；
-   - **禁止非标字段猜测链**：不编写类似 `"output_text" | "text"`、`"web_search_call" | "web_search"` 或 `.or_else(|| json["reasoning_effort"])` 等猜测链。官方文档未定义的字段，不在代码中编写猜测逻辑。
-3. **UI / Harness 调度层零兜底**：
-   - 会话任务发布 `SessionView` 快照，UI 直接渲染其中的已完成轮次与流式草稿，不维护第二份聊天历史，也不在轮次结束时重载历史覆盖界面。界面未展现内容时排查适配器转换逻辑。
-   - 领域 `WebSearchCall` 与 `TurnMeta.output_items` 解耦：前者对齐流式条目完成快照，后者保存 completed 原生 output 以回传。
-4. **单测 Mock 真实性约束**：
-   - 单元测试 Mock 报文对照厂商官方标准规范构造，不在生产代码中为错误测试数据添加容错分支。
+## 3. 数据流
 
-### 2.2 强类型供应商元数据 (Strict Typed Meta)
-系统为三大供应商定义编译期强类型元数据，不使用弱类型的 `HashMap<String, serde_json::Value>`：
-- **OpenAI Responses API**：`ResponseTurnMeta`（`response_id`, `previous_response_id`, `status`, `service_tier`, `reasoning_effort`, `store`, `output_items`）
-- **Anthropic Messages API**：`AnthropicTurnMeta`（`cache_creation_input_tokens`, `cache_read_input_tokens`, `stop_reason`）
-- **Google Gemini API**：`GeminiTurnMeta`（`finish_reason`, `safety_ratings`, `code_execution_result`）
+1. 交互层向 `ManagedSession` 提交输入，`SessionTask` 展开 `@` 引用并调用 `AgentEngine`；
+2. Provider 以原生协议请求，流式增量转为 `AgentEvent`；
+3. 事件驱动 `SessionTask` 更新草稿，并以 `SessionView` 快照经 `watch` 发布（33ms 节流）；
+4. 工具调用由 `ToolRegistry` 执行，结果配对后进入下一次请求；
+5. 每个完成的 Turn 追加写入 JSONL，供应商强类型元数据随 Turn 保存，下一次请求按原生协议回传。
 
----
-
-## 3. 系统分层与调用拓扑
-
-1. **配置层 (`src/config/`)**：
-   - 负责读取并规范化用户配置文件（JSON/JSONC 注释剥离、环境变量插值展开）；
-   - 根据模型标识符（如 `prov/model-id`）解析目标 Provider 配置、有效端点类型及推理强度档位。
-2. **领域模型层 (`src/model/`)**：
-   - 统一四层级联领域模型，保证业务逻辑与供应商通信格式解耦；
-   - 包含多模态载荷、工具调用与引用注脚。
-3. **供应商适配层 (`src/provider/`)**：
-   - 实现 `Provider` trait，声明原生能力集（`ProviderCapabilities`）；
-   - 处理各家协议转换，通过泛型 SSE 流解码输出标准 `AgentEvent`。
-4. **执行与调度层 (`src/harness/`, `src/tools/`)**：
-   - `AgentEngine` 组装 Provider、工具注册表与补全参数；
-   - `SessionTask` 是会话的唯一所有者，顺序处理提交、配置变更与取消，驱动多轮 Agent Loop 并落盘历史；`SessionManager` 只维护会话句柄表，CLI 与 TUI 共用该入口；
-   - Shell 支持 `run_in_background` 后台执行：任务在会话级注册表中 detached 运行（TaskOutput 查询 / TaskStop 停止），完成后经 `Command::TaskFinished` 注入用户通知轮次并自动续跑，任务随会话结束回收。
-5. **存储层 (`src/storage/`)**：
-   - `JsonlSessionStore` 提供行级追加写的持久化方案，支持崩溃容灾与流式历史读取。
-6. **交互层 (`src/ui/`, `src/main.rs`)**：
-   - CLI 支持单次会话执行与检查；
-   - Ratatui TUI 订阅会话任务发布的 `SessionView`，实现非阻塞后台运行与实时渲染。
+后续新增供应商的步骤见 [AGENTS.md §4](../AGENTS.md#4-开发指南)。

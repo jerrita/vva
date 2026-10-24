@@ -1,6 +1,6 @@
 # 配置参考 (Configuration Reference)
 
-本文档是 vva 配置系统的完整用户参考。设计原理与实现细节见 [configuration.md](configuration.md)。
+本文档是 vva 配置系统的完整用户参考。
 
 ---
 
@@ -49,6 +49,15 @@
 | `GEMINI_API_KEY` | `gemini` | gemini |
 
 此模式下默认模型为 `openai/gpt-5.6-terra`；由于供应商未声明 `models`，任意模型名可直接使用，例如 `vva run --model anthropic/claude-sonnet-4-5`。
+
+### 1.5 env 文件
+
+| 文件 | 生效方式 |
+|---|---|
+| 全局 `~/.vva/env` | 进程启动、运行时构建前写入进程环境，已存在的变量不覆盖；参与配置文件 `${VAR}` 插值 |
+| 项目 `<workspace>/.vva/env` | 不写入进程环境；Shell 工具（前台与 `run_in_background`）每条命令执行前读取并注入子进程，覆盖同名进程变量；修改即时生效，`vva web` 多工作区互不串扰 |
+
+格式为 dotenv 子集：`KEY=VALUE`、`#` 注释、可选 `export ` 前缀；双引号值支持 `\n` `\t` `\"` `\\` 转义，单引号值原样保留；未加引号与双引号值展开 `${VAR}`（先查本文件已定义键，再查进程环境）。非法行、非法键名、引号未闭合时报错并带行号（全局文件启动失败，项目文件该条命令失败）。
 
 ---
 
