@@ -328,11 +328,11 @@ function DiffView({
   )
 }
 
-function OutputView({ command, content }: { command?: string; content: string }) {
+function OutputView({ command, content }: { command?: string; content?: string }) {
   return (
     <pre className="step-output">
       {command && <span className="step-command">{command}</span>}
-      {content.trim() ? content.replace(/\n+$/, '') : <span className="step-empty">（无输出）</span>}
+      {content === undefined ? null : content.trim() ? content.replace(/\n+$/, '') : <span className="step-empty">（无输出）</span>}
     </pre>
   )
 }
@@ -405,6 +405,9 @@ function ToolRow({
     body = <DiffView diffs={diffs} workspace={workspace} onPreviewFile={onPreviewFile} />
   } else if (view.body === 'output' && result) {
     body = <OutputView command={view.command} content={result.content} />
+  } else if (view.body === 'output' && view.command) {
+    // 执行中尚无结果，先展示命令
+    body = <OutputView command={view.command} />
   }
 
   const preview = view.filePath && onPreviewFile ? () => onPreviewFile(view.filePath!, view.range ?? null) : undefined

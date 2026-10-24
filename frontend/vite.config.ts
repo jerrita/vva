@@ -4,6 +4,10 @@ import { defineConfig } from 'vite'
 // 开发模式下 API 代理到本地 vva web 服务
 export default defineConfig({
   plugins: [react()],
+  // 产物内嵌进二进制、由本机服务加载，单包体积不影响加载
+  build: {
+    chunkSizeWarningLimit: 1500,
+  },
   server: {
     proxy: {
       '/api': process.env.VVA_API ?? 'http://127.0.0.1:3000',
