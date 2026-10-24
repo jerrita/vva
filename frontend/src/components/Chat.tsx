@@ -79,8 +79,22 @@ function buildItems(turns: Turn[]): Item[] {
     // 运行段 = 相邻助手轮直到用户消息；折叠折到运行段最后一条消息，
     // 中间轮的思考/工具与文本均并入折叠组，不单独展示。
     // 本轮带 tool_call 时后续必有工具结果，即使结果尚未落盘也不拆尾部文本。
-    const next = turns[index + 1]
-    const isRunEnd = next == null || next.role === 'user'
+    let nextIndex = index + 1
+    let awaitingContinuation = false
+    while (nextIndex < turns.length) {
+      const next = turns[nextIndex]
+      if (next.role === 'system') {
+        nextIndex++
+      } else if (reminderType(next) !== null) {
+        awaitingContinuation = true
+        nextIndex++
+      } else {
+        break
+      }
+    }
+    const next = turns[nextIndex]
+    // reminder 隐藏后仍属于当前运行段；仅收到通知时，前次回答先并入工作段等待续接。
+    const isRunEnd = next == null ? !awaitingContinuation : next.role === 'user'
     const pendingTools = parts.some(part => part.type === 'tool_call')
     if (!isRunEnd || pendingTools) {
       pushTurn(turn, parts)
