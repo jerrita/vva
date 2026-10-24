@@ -43,6 +43,13 @@ curl -fsSL https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.
 irm https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.ps1 | iex
 ```
 
+已安装时，安装脚本比较本地与最新版本，已是最新则跳过下载。也可直接执行：
+
+```bash
+vva version   # 查看当前版本
+vva update    # 更新到最新 release（安装到当前可执行文件所在目录）
+```
+
 从源码构建需要 Rust 1.85+；构建期需要 Node.js 与 npm（Web 前端打包进二进制，运行时无需 Node）。
 
 ```bash

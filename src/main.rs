@@ -83,6 +83,12 @@ enum Commands {
 
     /// 启动 agent space (常驻 IM agent；工作区固定为 ~/.vva/space/)
     Agent,
+
+    /// 打印当前版本
+    Version,
+
+    /// 更新到最新 release (安装到当前可执行文件所在目录)
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -313,6 +319,16 @@ fn log_filter(level: &str) -> Result<EnvFilter, String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+    // 版本与更新不依赖配置与 env 文件，先于加载执行
+    match cli.command {
+        Some(Commands::Version) => {
+            println!("vva {}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some(Commands::Update) => return self_update(),
+        _ => {}
+    }
     let home_dir = home_dir().unwrap_or_else(|| PathBuf::from("."));
     let vva_dir = home_dir.join(".vva");
     // 全局 env 在运行时启动前写入进程环境，已存在的变量不覆盖
@@ -325,11 +341,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(vva_dir))
+        .block_on(run(cli, vva_dir))
 }
 
-async fn run(vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+/// 当前可执行文件所在目录运行官方安装脚本；脚本比较版本，已是最新时跳过下载
+fn self_update() -> Result<(), Box<dyn std::error::Error>> {
+    const SCRIPT_BASE: &str = "https://raw.githubusercontent.com/jerrita/vva/master/scripts";
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let dir = exe.parent().ok_or("无法确定可执行文件所在目录")?;
+    let mut command = if cfg!(windows) {
+        let mut command = std::process::Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &format!("irm {SCRIPT_BASE}/install.ps1 | iex"),
+        ]);
+        command
+    } else {
+        let mut command = std::process::Command::new("bash");
+        command.args([
+            "-c",
+            &format!("set -o pipefail; curl -fsSL --retry 3 {SCRIPT_BASE}/install.sh | bash"),
+        ]);
+        command
+    };
+    let status = command.env("VVA_INSTALL_DIR", dir).status()?;
+    if !status.success() {
+        return Err(format!("更新失败: {status}").into());
+    }
+    Ok(())
+}
+
+async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let sessions_dir = vva_dir.join("sessions");
     let store = Arc::new(JsonlSessionStore::new(&sessions_dir)?);
 
@@ -438,6 +483,8 @@ async fn run(vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
                 vva::agent_space::AgentSpace::new(store, app_config, vva_dir.join("state.json"))?;
             space.run().await?;
         }
+
+        Commands::Version | Commands::Update => unreachable!("已在加载配置前处理"),
 
         Commands::Session { action } => match action {
             SessionAction::List => {

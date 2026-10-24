@@ -27,19 +27,39 @@ else
   dir="${VVA_INSTALL_DIR:-$HOME/.local/bin}"
 fi
 
-tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" |
-  sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
-[ -n "$tag" ] || { echo "无法获取最新版本" >&2; exit 1; }
+# 经 releases/latest 重定向解析最新 tag，不占用 GitHub API 限额
+latest=$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest")
+tag=${latest##*/}
+case "$tag" in
+  v*) ;;
+  *) echo "无法获取最新版本" >&2; exit 1 ;;
+esac
+
+current=$("$dir/vva" --version 2>/dev/null || true)
+if [ "$current" = "vva ${tag#v}" ]; then
+  echo "已是最新版本 $tag ($dir/vva)"
+  exit 0
+fi
 
 name="vva-$tag-$platform"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "下载 $tag ..."
-curl -fsSL "https://github.com/$repo/releases/download/$tag/$name.tar.gz" | tar xz -C "$tmp"
+curl -fsSL --retry 3 -o "$tmp/$name.tar.gz" "https://github.com/$repo/releases/download/$tag/$name.tar.gz"
+tar xzf "$tmp/$name.tar.gz" -C "$tmp"
+installed=$("$tmp/$name/vva" --version) || { echo "下载的二进制无法运行" >&2; exit 1; }
+[ "$installed" = "vva ${tag#v}" ] || { echo "版本不符: 期望 $tag，实际 $installed" >&2; exit 1; }
+
 mkdir -p "$dir"
-install -m 755 "$tmp/$name/vva" "$dir/vva"
-echo "已安装 vva $tag 到 $dir/vva"
+# 先写入同目录临时文件再 rename，运行中的旧进程不受影响
+install -m 755 "$tmp/$name/vva" "$dir/.vva.new"
+mv -f "$dir/.vva.new" "$dir/vva"
+if [ -n "${current#vva }" ]; then
+  echo "已从 ${current#vva } 更新到 $tag: $dir/vva"
+else
+  echo "已安装 vva $tag 到 $dir/vva"
+fi
 
 case ":$PATH:" in
   *":$dir:"*) ;;
