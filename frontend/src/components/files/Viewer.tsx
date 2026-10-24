@@ -165,6 +165,7 @@ export function Viewer({
       bodyRef.current?.scrollTo({ top: 0 })
     }
     // starts 随 text 同步变化，定位只随请求触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, focusSeq])
 
   const jumpChange = (direction: 1 | -1) => {

@@ -21,7 +21,7 @@ const clampFileSidebar = clamp(FILE_SIDEBAR_MIN, FILE_SIDEBAR_MAX)
 const clampExplorer = clamp(EXPLORER_MIN, EXPLORER_MAX)
 const clampAiPanel = clamp(AI_PANEL_MIN, AI_PANEL_MAX)
 
-function persistedWidth(key: string, min: number, max: number, fallback: number) {
+function usePersistedWidth(key: string, min: number, max: number, fallback: number) {
   return usePersistentState(
     key,
     () => {
@@ -46,16 +46,16 @@ export type PreviewFile = (path: string, focus?: FileFocus) => void
  */
 export function usePanelLayout() {
   const [sidebarHidden, setSidebarHidden] = usePersistentFlag('vva.sidebar-hidden')
-  const [sidebarWidth, setSidebarWidth] = persistedWidth('vva.sidebar-width', SIDEBAR_MIN, SIDEBAR_MAX, 268)
+  const [sidebarWidth, setSidebarWidth] = usePersistedWidth('vva.sidebar-width', SIDEBAR_MIN, SIDEBAR_MAX, 268)
   const [fileSidebarOpen, setFileSidebarOpen] = usePersistentFlag('vva.file-sidebar-open')
-  const [fileSidebarWidth, setFileSidebarWidth] = persistedWidth(
+  const [fileSidebarWidth, setFileSidebarWidth] = usePersistedWidth(
     'vva.file-sidebar-width',
     FILE_SIDEBAR_MIN,
     FILE_SIDEBAR_MAX,
     420,
   )
-  const [explorerWidth, setExplorerWidth] = persistedWidth('vva.explorer-width', EXPLORER_MIN, EXPLORER_MAX, 260)
-  const [aiPanelWidth, setAiPanelWidth] = persistedWidth('vva.ai-panel-width', AI_PANEL_MIN, AI_PANEL_MAX, 460)
+  const [explorerWidth, setExplorerWidth] = usePersistedWidth('vva.explorer-width', EXPLORER_MIN, EXPLORER_MAX, 260)
+  const [aiPanelWidth, setAiPanelWidth] = usePersistedWidth('vva.ai-panel-width', AI_PANEL_MIN, AI_PANEL_MAX, 460)
   const [mode, setMode] = usePersistentState<LayoutMode>(
     'vva.layout-mode',
     () => (localStorage.getItem('vva.layout-mode') === 'ide' ? 'ide' : 'chat'),

@@ -86,4 +86,4 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **类型契约**：`src/types.ts` 必须与后端 `src/model/*` 的 serde 序列化格式一一镜像；新增后端字段同步更新。
 - **API 层**：所有请求经 `src/api.ts` 的 `request()`（统一错误提取与空响应处理），不得在组件内裸写 fetch。
 - **错误反馈**：请求失败走 App 顶部 error banner；后端 Notice 走 notice banner。
-- **验证**：改动后 `npm run build`（含 `tsc --noEmit`）+ `cargo build`；视觉变更用 headless Chromium 截图验证浅/深双主题。
+- **验证**：改动后 `npm run lint` + `npm run build`（含 `tsc --noEmit`）+ `cargo build`；视觉变更用 headless Chromium 截图验证浅/深双主题。

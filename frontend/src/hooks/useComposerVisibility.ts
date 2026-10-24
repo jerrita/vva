@@ -85,7 +85,7 @@ export function useComposerVisibility(options: {
       el.scrollTop = el.scrollHeight
       revealComposer()
     }
-  }, [revealComposer])
+  }, [revealComposer, scrollRef])
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current
@@ -117,7 +117,7 @@ export function useComposerVisibility(options: {
     // 输入中不隐藏输入框
     if (composerFocused.current) return
     if (delta < -COMPOSER_HIDE_DELTA) setComposerHidden(true)
-  }, [revealComposer])
+  }, [revealComposer, scrollRef])
 
   // 上滑意图即刻脱离跟随：scroll 事件到帧末才触发，流式跟随写入若同帧先行，
   // 会覆盖用户刚滚上的位置并被判定为仍在底部，形成强制拉回；
@@ -125,7 +125,7 @@ export function useComposerVisibility(options: {
   const unstickFollow = useCallback(() => {
     const el = scrollRef.current
     if (el && el.scrollTop > 0) nearBottom.current = false
-  }, [])
+  }, [scrollRef])
 
   const onWheel = useCallback(
     (event: ReactWheelEvent<HTMLDivElement>) => {

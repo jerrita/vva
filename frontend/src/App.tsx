@@ -98,16 +98,18 @@ export default function App() {
   const turnCount = active?.turns.length ?? 0
 
   // 打开或新建位于隐藏项目的会话时，该项目重新显示
+  const activeSessionId = active?.id
+  const activeRoot = active?.workspace_root
   useEffect(() => {
-    if (!active) return
-    const name = projectName(active.workspace_root)
+    if (activeSessionId == null || activeRoot == null) return
+    const name = projectName(activeRoot)
     setHiddenProjects(prev => {
       if (!prev.has(name)) return prev
       const next = new Set(prev)
       next.delete(name)
       return next
     })
-  }, [active?.id, active?.workspace_root, setHiddenProjects])
+  }, [activeSessionId, activeRoot, setHiddenProjects])
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -169,7 +171,7 @@ export default function App() {
     resetFiles()
     if (!activeId) return
     return subscribeSession(activeId, setSnap, e => setError(toError(e)))
-  }, [activeId])
+  }, [activeId, resetFiles])
 
   const relatedFiles = useMemo(
     () => (active ? extractRelatedFiles(active, snap?.draft) : []),

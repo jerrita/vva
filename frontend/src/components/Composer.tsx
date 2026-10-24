@@ -10,7 +10,7 @@ export interface ComposerHandle {
 }
 
 /** 与 harness mention_at_cursor 对齐：开启边界后触发，空白/CJK 收尾标点结束 token。 */
-const AT_PATTERN = /(?:^|[\s（【「『“‘《〈\(\[\{<])@([^\s@，．。；：！？）】」』”’》〉…]*)$/
+const AT_PATTERN = /(?:^|[\s（【「『“‘《〈([{<])@([^\s@，．。；：！？）】」』”’》〉…]*)$/
 
 type AtToken = { start: number; query: string }
 
