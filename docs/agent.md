@@ -22,7 +22,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
         │              │
         └─ 出站渲染（订阅 SessionView）─► Channel
 
-  生命周期：空闲 TTL → curator 沉淀 → 删除
+  生命周期：空闲 TTL → 按标记沉淀 → 删除
   上下文：回合结束达到预留线 → rollover
   Scheduler：cron → Deliver
 ```
@@ -70,7 +70,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ### 4.1 TTL 清理
 
-空闲超过 TTL → curator 增量沉淀 → 删除。沉淀失败则保留 session 并告警，下个周期重试；运行中或有排队消息的 session 不清理；候选表按 LRU 取前 N 个，超出者走同一清理流程；重启后状态从 header 恢复。
+空闲超过 TTL → 按[沉淀标记](#43-curator知识沉淀)决定是否整理 → 删除。沉淀失败则保留 session 并告警，按指数退避重试；撤销标记后下次扫描直接清理，跳过沉淀失败退避。运行中或有排队消息的 session 不清理；候选表按 LRU 取前 N 个，超出者走同一清理流程；重启后状态从 header 恢复。
 
 ### 4.2 rollover
 
@@ -91,7 +91,10 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ### 4.3 Curator（知识沉淀）
 
-- 由系统在删除会话前触发的后台 session（`kind=curator`；TTL 周期扫描或 `/delete`；`/clear` 与 rollover 本身不触发，被接替的旧会话按 TTL 照常整理），非聊天模型派生的 subagent；
+- **沉淀资格**：Agent Space 顶层 topic 会话通过 `SetSessionCuration({"enabled": true})` 请求整理，`false` 撤销；标记持久化于 header 的 `curation_requested`，新旧会话缺省均为 `false`。工具绑定当前会话，在运行中经会话命令通道更新 header，落盘成功后返回；重复设置幂等，不延长 TTL；
+- **主动标记**：模型发现稳定偏好、已确认的决策与约束、可复用经验时调用工具；临时进度、一次性查询和普通任务执行无需标记。标记覆盖本会话全部未处理内容及后续对话，curator 决定具体写入内容，允许无需更新；
+- 由系统在删除已标记会话前触发后台 session（`kind=curator`；TTL 周期扫描或 `/delete`），未标记会话直接删除。`Curator::curate` 统一检查资格与标记，跳过时返回 `Unchanged`，不创建整理输入或启动模型；oneshot、curator 自身与子代理会话不参与；
+- `/clear` 与 rollover 本身不触发沉淀。rollover 旧会话保留标记，按 TTL 清理；新会话默认未标记。整理成功保留标记，整理期间新增内容仍可增量处理；
 - 模型取 `settings.agent.curator_model`（启动时校验，不受 `/model` 影响），省略时取当前 agent 模式模型；
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
 - 产出写入 `~/.vva/space/memory/`：`MEMORY.md` 只列领域 → `<领域>/INDEX.md` 列主题 → `<领域>/<topic>.md` 内容；纳入 git，每次整理一个 commit，提交信息含来源 session 与范围。反复出现的工作流晋升为 skill，写入 `~/.vva/space/.vva/skills`（仅 agent space 会话可发现）；
@@ -139,7 +142,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | `/model [list\|[--global] <规格> [档位]]` | 有 focus 改 focus 会话，无 focus 改 **agent 模式模型**，`--global` 两者都改；切换须目标模型声明 `limit.context`；会话切换使缓存失效；agent 会话的切换不写 `state.json` |
 | `/skills` | 列出 agent space 可发现技能 |
 | `/schedule [list\|pause\|resume\|delete\|run <id>]` | 管理定时任务（私聊） |
-| `/delete [前缀]` | 缺省 focus；先 curator 整理再删除，后台执行并回报，整理失败则保留会话 |
+| `/delete [前缀]` | 缺省 focus；按沉淀标记决定是否整理后删除，后台执行并回报，整理失败则保留会话 |
 | `/clear [前缀]` | 直接删除，跳过整理 |
 | `/sethome` `/unsethome` | 加入 / 移出 home |
 
@@ -183,7 +186,7 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
 - **入站**：白名单外丢弃；各 chat 类型 binding 隔离；断线 resume 不重复不丢；无文字文件只缓冲；多附件保序；超长回复分段并标注。
 - **路由**：reply 命中直达且零模型调用；reply 目标已清理 → warning + 新 session 带引用；`/switch` 歧义拒绝；零 session 直接创建；候选表只含四字段；非法决策显式报错；带媒体不得 oneshot；running 且非 guide 拒绝；每次决策落 `router.jsonl`。
 - **oneshot / guide**：oneshot 不进候选并随后清理；guide 经 `Deliver` 不打断运行；竞态降级为 existing；残留插话不丢；stop 清空队列。
-- **生命周期**：TTL 到期先沉淀后删除；沉淀失败保留；运行中不清理；重启恢复。
+- **生命周期**：TTL 到期按标记沉淀后删除；沉淀失败保留；运行中不清理；重启恢复。
 - **rollover**：达到预留线回合结束触发；旧 session 内容仅追加；新 session `continued_from` 正确且 `parent` 为空；binding 切换；旧 session 被 router 排除；失败不改变 session；压缩调用不触发工具；第二轮起重新命中前缀。
 - **cache**：system 不变；动态内容走 reminder；记忆索引仅创建时快照；日期冻结；Anthropic 签名与 `cache_control`、Responses 链路不中断。
 - **curator**：游标增量、幂等；写入产生 commit；skill 可被 `discover_skills` 发现；冲突不覆盖；完成推送摘要。

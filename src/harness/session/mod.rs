@@ -1,5 +1,6 @@
 //! 会话运行时：句柄表（manager）、RPC 句柄（handle）、执行任务（task）与发布视图（view）。
 
+mod curation;
 mod handle;
 mod manager;
 mod task;

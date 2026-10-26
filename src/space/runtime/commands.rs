@@ -170,14 +170,14 @@ impl Runtime {
             return Err("会话正在运行，请先 /stop，或用 /clear 直接删除".into());
         }
         let reply = format!(
-            "⏳ 正在整理记忆，完成后删除会话 **{}**。",
+            "⏳ 正在删除会话 **{}**，已标记的会话会先整理记忆。",
             markdown::text(&handle.id)
         );
         let this = self.clone();
         tokio::spawn(async move {
             let id = &handle.id;
             let reply = match this.curate_then_remove(&handle).await {
-                Ok(()) => format!("✅ 已整理并删除会话 **{}**。", markdown::text(id)),
+                Ok(()) => format!("✅ 已删除会话 **{}**。", markdown::text(id)),
                 Err(error) => format!(
                     "⚠️ 删除失败，会话 **{}** 已保留。\n\n{}",
                     markdown::text(id),

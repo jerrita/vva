@@ -1199,6 +1199,7 @@ mod tests {
             origin: None,
             superseded_by: None,
             last_activity: None,
+            curation_requested: false,
         };
         let running = SessionSummary {
             id: "sess_run".into(),

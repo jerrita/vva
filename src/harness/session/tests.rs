@@ -242,6 +242,117 @@ fn cleanup(task: &SessionTask) {
 // ---- 配置与模型切换 ----
 
 #[tokio::test]
+async fn curation_tool_persists_running_session_flag_and_reports_write_failure() {
+    let (mut task, view) = event_task();
+    task.config = Arc::new(unreachable_config());
+    let session = Arc::make_mut(&mut task.view.session);
+    session.set_model("p/m", None);
+    session.header.title = Some("fixture".into());
+    session.header.origin = Some(crate::model::Origin {
+        channel: "test".into(),
+        chat_id: "chat".into(),
+    });
+    let (commands, mut rx) = mpsc::channel(4);
+    task.commands = commands.downgrade();
+    let runtime = task.start("fixture", Vec::new()).await.unwrap();
+    let tool = runtime.tools.get("SetSessionCuration").unwrap();
+    let (_events_tx, mut events_rx) = mpsc::channel(4);
+    let before = task.view.session.turns.clone();
+    let activity = task.view.session.header.last_activity;
+    for enabled in [true, true, false, false, true] {
+        let args = serde_json::json!({"enabled": enabled}).to_string();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            task.drive(tool.execute(&args), &mut rx, &mut events_rx),
+        )
+        .await
+        .expect("tool must finish while session is running")
+        .unwrap();
+        result.unwrap();
+        assert_eq!(view.borrow().session.header.curation_requested, enabled);
+        let stored = task
+            .store
+            .load_session(&task.view.session.header.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.header.curation_requested, enabled);
+        assert_eq!(stored.turns, before);
+        assert_eq!(stored.header.last_activity, activity);
+    }
+    for args in [
+        r#"{}"#,
+        r#"{"enabled":"true"}"#,
+        r#"{"enabled":false,"session_id":"other"}"#,
+    ] {
+        assert!(tool.execute(args).await.is_err());
+        assert!(task.view.session.header.curation_requested);
+    }
+
+    // 后续轮次写入仍保留标记。
+    task.execute(engine(done_provider(), runtime.tools), &mut rx)
+        .await
+        .unwrap();
+    task.finish_turn(Ok(TurnOutcome::Completed)).await;
+    assert!(
+        task.store
+            .load_session(&task.view.session.header.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .header
+            .curation_requested
+    );
+
+    // 用普通文件占住存储目录，保证 header 写入失败，内存标记应保持原值。
+    let root = task.view.session.header.workspace_root.clone();
+    std::fs::remove_dir_all(&root).unwrap();
+    std::fs::write(&root, "blocked").unwrap();
+    let result = task
+        .drive(
+            tool.execute(r#"{"enabled":false}"#),
+            &mut rx,
+            &mut events_rx,
+        )
+        .await
+        .unwrap();
+    assert!(result.is_err());
+    assert!(view.borrow().session.header.curation_requested);
+    std::fs::remove_file(root).unwrap();
+}
+
+#[tokio::test]
+async fn curation_tool_is_only_registered_for_managed_top_level_topics() {
+    for (kind, origin, parent, expected) in [
+        (crate::model::SessionKind::Topic, true, None, true),
+        (crate::model::SessionKind::Topic, false, None, false),
+        (
+            crate::model::SessionKind::Topic,
+            true,
+            Some("sess_parent".to_string()),
+            false,
+        ),
+        (crate::model::SessionKind::Oneshot, true, None, false),
+        (crate::model::SessionKind::Curator, true, None, false),
+    ] {
+        let (mut task, _view) = event_task();
+        task.config = Arc::new(unreachable_config());
+        let session = Arc::make_mut(&mut task.view.session);
+        session.set_model("p/m", None);
+        session.header.title = Some("fixture".into());
+        session.header.kind = kind;
+        session.header.parent = parent;
+        session.header.origin = origin.then(|| crate::model::Origin {
+            channel: "test".into(),
+            chat_id: "chat".into(),
+        });
+        let engine = task.start("fixture", Vec::new()).await.unwrap();
+        assert_eq!(engine.tools.get("SetSessionCuration").is_some(), expected);
+        cleanup(&task);
+    }
+}
+
+#[tokio::test]
 async fn model_switch_checks_persisted_media_before_mutating_state() {
     let (mut task, _) = event_task();
     task.config = Arc::new(serde_json::from_value(serde_json::json!({

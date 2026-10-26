@@ -125,6 +125,7 @@ impl Session {
                 continued_from: None,
                 superseded_by: None,
                 last_activity: None,
+                curation_requested: false,
             },
             updated_at: now,
             turns: Vec::new(),
@@ -236,6 +237,9 @@ pub struct SessionHeader {
     /// 最近一次用户活动时刻，TTL 清理依据（重启后据此恢复）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
+    /// 当前会话请求在清理前沉淀；缺省不整理
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub curation_requested: bool,
 }
 
 /// agent space 会话类别
@@ -277,6 +281,11 @@ fn is_agent_managed(kind: SessionKind, origin: Option<&Origin>) -> bool {
 }
 
 impl SessionHeader {
+    /// 可主动请求沉淀的 agent space 顶层主题会话
+    pub fn supports_curation(&self) -> bool {
+        self.kind.is_topic() && self.agent_managed() && self.parent.is_none()
+    }
+
     /// 是否为 agent space 管理的会话：仅此类会话维护 `last_activity`
     pub fn agent_managed(&self) -> bool {
         is_agent_managed(self.kind, self.origin.as_ref())
@@ -325,6 +334,8 @@ pub struct SessionSummary {
     pub superseded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub curation_requested: bool,
 }
 
 impl SessionSummary {
@@ -350,6 +361,7 @@ impl SessionSummary {
             origin: header.origin,
             superseded_by: header.superseded_by,
             last_activity: header.last_activity,
+            curation_requested: header.curation_requested,
         }
     }
 }
@@ -368,6 +380,7 @@ mod tests {
         assert!(header.origin.is_none());
         assert!(header.routed_by.is_none() && header.superseded_by.is_none());
         assert!(header.last_activity.is_none());
+        assert!(!header.curation_requested);
         // 缺省字段不被序列化
         let out = serde_json::to_string(&JsonlRecord::Header(header)).unwrap();
         for key in [
@@ -376,6 +389,7 @@ mod tests {
             "routed_by",
             "superseded_by",
             "last_activity",
+            "curation_requested",
         ] {
             assert!(!out.contains(key), "{key} 不应被序列化");
         }

@@ -29,7 +29,7 @@ Line 4..N: {"type":"turn",...}
 
 - **Header（`JsonlRecord::Header`）**：[`SessionHeader`](../src/model/session.rs)，字段含义见 [domain_model §1.1](domain_model.md#11-session会话根实体)。版本不符的会话不解析：列表跳过并告警，加载报错；工具协议随版本整体变化，不做旧格式转换。可选字段缺省时全部省略，旧文件无需迁移。
 - **Turn（`JsonlRecord::Turn`）**：每完成一轮（用户提问、模型响应、工具返回）以 `O_APPEND` 追加一行，含该轮 `messages`、`usage`、`meta`。
-- **Header 重写**：创建会话或模型 / 标题 / 网络搜索配置变更时调用 `save_header`，将「新首行 + 全部已有轮次」写入同目录临时文件，`fsync` 后 `rename` 原子替换，中途失败时原文件完整。其余时间文件只被追加。
+- **Header 重写**：创建会话或模型 / 标题 / 网络搜索配置 / 沉淀标记变更时调用 `save_header`，将「新首行 + 全部已有轮次」写入同目录临时文件，`fsync` 后 `rename` 原子替换，中途失败时原文件完整。其余时间文件只被追加。
 
 ## 3. SessionStore
 

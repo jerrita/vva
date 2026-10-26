@@ -34,6 +34,10 @@ pub(super) struct PendingDelivery {
 }
 
 pub enum SharedCommand {
+    SetCuration {
+        enabled: bool,
+        reply: Reply,
+    },
     Configure {
         model: Option<String>,
         variant: Option<Option<String>>,

@@ -1,4 +1,4 @@
-//! Session 生命周期：空闲超过 TTL → curator 沉淀 → 删除。
+//! Session 生命周期：空闲超过 TTL → 按标记沉淀 → 删除。
 //!
 //! 周期扫描 agent 工作区中由 agent space 管理的会话（带 IM 来源或非 Topic 类别）。
 //! 沉淀失败的会话保留并告警，按指数退避重试（同一原因只推送一次）；运行中的会话不清理。
@@ -127,7 +127,7 @@ impl Lifecycle {
             {
                 continue;
             }
-            if self.backing_off(&summary.id, now) {
+            if summary.curation_requested && self.backing_off(&summary.id, now) {
                 continue;
             }
             let seen_turns = live.as_ref().map(|handle| handle.turn_seq());
@@ -232,6 +232,7 @@ mod tests {
         async fn seed(&self, kind: SessionKind, idle_secs: i64) -> Session {
             let mut session = Session::new(&self.dir, None);
             session.header.kind = kind;
+            session.header.curation_requested = kind.is_topic();
             session.header.origin = Some(Origin {
                 channel: "qq".into(),
                 chat_id: "c1".into(),
@@ -335,6 +336,27 @@ mod tests {
                 .all(|r| r.result.status == CuratorStatus::Unchanged
                     && r.origin.as_ref().is_some_and(|o| o.channel == "qq"))
         );
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn unmarked_and_revoked_sessions_are_deleted_without_curation_or_backoff() {
+        let f = fixture(Err("unavailable".into()), AppConfig::default());
+        let mut session = f.seed(SessionKind::Topic, 7200).await;
+        assert!(f.lifecycle.sweep().await.unwrap().is_empty());
+        assert_eq!(f.runs(), 1);
+
+        session.header.curation_requested = false;
+        f.manager.store().save_header(&session).await.unwrap();
+        let mut unmarked = f.seed(SessionKind::Topic, 7200).await;
+        unmarked.header.curation_requested = false;
+        f.manager.store().save_header(&unmarked).await.unwrap();
+        let deleted = f.lifecycle.sweep().await.unwrap();
+        assert_eq!(deleted.len(), 2);
+        assert!(deleted.contains(&session.header.id));
+        assert!(deleted.contains(&unmarked.header.id));
+        assert_eq!(f.runs(), 1);
+        assert!(f.lifecycle.failures.lock().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&f.dir);
     }
 

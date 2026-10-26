@@ -441,6 +441,9 @@ async fn curator_model_selection_across_mode_changes() {
         .unwrap();
         let f = fixture_with_config(config).await;
         let source = f.topic(BINDING).await;
+        let mut session = source.snapshot().session.as_ref().clone();
+        session.header.curation_requested = true;
+        f.manager.store().save_header(&session).await.unwrap();
         let mut seen = HashSet::new();
         for mode in ["p/m", "p/other"] {
             let next = super::mode_model::check_mode_model(&f.manager, mode, None).unwrap();

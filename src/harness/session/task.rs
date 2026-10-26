@@ -537,6 +537,16 @@ impl SessionTask {
             .await
             .map_err(|e| e.to_string())?;
         let agents = crate::agents::discover_agents(&session.header.workspace_root);
+        let mut extra_tools = self
+            .tool_factory
+            .as_ref()
+            .map(|factory| factory(&session.header))
+            .unwrap_or_default();
+        if session.header.supports_curation() {
+            extra_tools.push(Arc::new(super::curation::SetSessionCuration::new(
+                self.commands.clone(),
+            )));
+        }
         AgentEngine::new(
             &self.config,
             session,
@@ -548,11 +558,7 @@ impl SessionTask {
                 skills,
                 agents,
                 broker: self.broker.clone(),
-                extra_tools: self
-                    .tool_factory
-                    .as_ref()
-                    .map(|factory| factory(&session.header))
-                    .unwrap_or_default(),
+                extra_tools,
             },
         )
     }
@@ -932,6 +938,17 @@ impl SessionTask {
     /// 运行中 (drive) 与空闲 (run) 语义一致的命令
     async fn handle_shared(&mut self, command: SharedCommand) {
         match command {
+            SharedCommand::SetCuration { enabled, reply } => {
+                let result = if !self.view.session.header.supports_curation() {
+                    Err("当前会话不支持沉淀标记".into())
+                } else if self.view.session.header.curation_requested == enabled {
+                    Ok(())
+                } else {
+                    self.update_header(|header| header.curation_requested = enabled)
+                        .await
+                };
+                let _ = reply.send(result);
+            }
             SharedCommand::Configure {
                 model,
                 variant,

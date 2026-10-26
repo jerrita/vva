@@ -274,6 +274,9 @@ impl Curator {
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("会话 {session_id} 不存在"))?;
+        if !session.header.supports_curation() || !session.header.curation_requested {
+            return Ok(CuratorResult::unchanged("会话未请求沉淀"));
+        }
         let mut cursors = Cursors::load(self.cursors_path())?;
         let start = cursors.start(session_id, &session.turns);
         let end = session.turns.len();
@@ -578,6 +581,11 @@ mod tests {
 
     async fn seed(store: &JsonlSessionStore, root: &Path, texts: &[(&str, &str)]) -> Session {
         let mut session = Session::new(root, None);
+        session.header.origin = Some(crate::model::Origin {
+            channel: "test".into(),
+            chat_id: "chat".into(),
+        });
+        session.header.curation_requested = true;
         store.save_header(&session).await.unwrap();
         for (role, text) in texts {
             let turn = match *role {
@@ -598,6 +606,74 @@ mod tests {
             .unwrap();
         std::fs::write(Path::new(memory).join("MEMORY.md"), "- [偏好](pref.md)\n").unwrap();
         Ok("新增偏好主题".into())
+    }
+
+    #[tokio::test]
+    async fn unrequested_and_ineligible_sessions_skip_curation_without_side_effects() {
+        let (curator, runner, store, root) = fixture(write_topic).await;
+        let mut session = seed(&store, &root, &[("user", "A reusable convention")]).await;
+        for (requested, kind, parent, origin) in [
+            (
+                false,
+                SessionKind::Topic,
+                None,
+                session.header.origin.clone(),
+            ),
+            (
+                true,
+                SessionKind::Oneshot,
+                None,
+                session.header.origin.clone(),
+            ),
+            (
+                true,
+                SessionKind::Curator,
+                None,
+                session.header.origin.clone(),
+            ),
+            (
+                true,
+                SessionKind::Topic,
+                Some("sess_parent".into()),
+                session.header.origin.clone(),
+            ),
+            (true, SessionKind::Topic, None, None),
+        ] {
+            session.header.curation_requested = requested;
+            session.header.kind = kind;
+            session.header.parent = parent;
+            session.header.origin = origin;
+            store.save_header(&session).await.unwrap();
+            assert_eq!(
+                curator.curate(&session.header.id).await.status,
+                CuratorStatus::Unchanged
+            );
+            assert_eq!(calls(&runner), 0);
+            assert!(!curator.memory_dir().exists());
+            assert!(!curator.cursors_path().exists());
+            assert!(!curator.input_path(&session.header.id).exists());
+        }
+        // 后续打标仍处理此前全部对话。
+        session.header.origin = Some(crate::model::Origin {
+            channel: "test".into(),
+            chat_id: "chat".into(),
+        });
+        store.save_header(&session).await.unwrap();
+        assert_eq!(
+            curator.curate(&session.header.id).await.status,
+            CuratorStatus::Updated
+        );
+        assert_eq!(calls(&runner), 1);
+        assert!(
+            store
+                .load_session(&session.header.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .header
+                .curation_requested
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

@@ -398,9 +398,12 @@ mod tests {
 
     #[test]
     fn successor_holds_only_prefix_and_summary() {
-        let old = prefixed(vec![tool_round("r1", "c1"), tool_round("r2", "c2")]);
+        let mut old = prefixed(vec![tool_round("r1", "c1"), tool_round("r2", "c2")]);
         let before = old.turns.len();
+        old.header.curation_requested = true;
         let new = successor_session(&old, before, "SUMMARY", None);
+        assert!(old.header.curation_requested);
+        assert!(!new.header.curation_requested);
 
         assert_eq!(
             new.header.continued_from.as_deref(),

@@ -55,6 +55,7 @@ classDiagram
 | `workspace_root` | 工作区路径，用于按工程过滤会话 |
 | agent space 字段（均可缺省，旧 JSONL 照常加载） | `kind`（`Topic` 缺省不序列化 / `Oneshot` / `Curator`）、`origin{channel, chat_id}`、`routed_by`、`continued_from`（rollover 接替会话所承接的旧会话，不借用 subagent 的 `parent`）、`superseded_by`、`last_activity`（TTL 依据）；详见 [agent](agent.md) |
 | subagent 标记 | `parent` / `agent` / `depth` |
+| `curation_requested` | 沉淀请求标记，缺省 `false` 且省略序列化；工具与生命周期规则见 [agent §4.3](agent.md#43-curator知识沉淀) |
 
 `SessionSummary` 仅带出 `kind` / `origin` / `superseded_by` 等列表所需字段。
 
