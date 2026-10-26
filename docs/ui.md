@@ -52,6 +52,10 @@
 - 右键级联：复制活跃选区 → 命中档位标签时循环切换档位（`App::cycle_variant`，按模型声明顺序，越过末位回 default）→ 其余区域粘贴；
 - 档位清单由 `App::variant_options` 统一构造（default 置首），与 `/variant` 弹窗同源。
 
+运行中的待发消息展示在输入框上方，选择态由 `App.selected_input` 按消息 ID 维护；
+队列及模式由 `SessionTask` 管理，并经 `SessionView.pending_inputs` 发布。
+按键语义见[运行中发送消息](usage.md#运行中发送消息)。
+
 ### 3.3 `@` 文件引用
 
 [`app/editor.rs`](../src/ui/app/editor.rs) · [`harness/mention.rs`](../src/harness/mention.rs) · [`find.rs`](../src/find.rs)

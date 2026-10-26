@@ -25,6 +25,7 @@ Web 轮次投影包含消息、usage、elapsed_ms、worked_ms；Turn.meta 留在
 | turns | 保留前 from 轮，用 items 替换剩余尾部；支持追加、回退、已有轮次修改 |
 | draft | 截取到 len，再应用 updates；set 替换指定部件，text/reasoning 追加字符串后缀 |
 | notices | 整体替换通知列表 |
+| pending_inputs | 整体替换待发消息列表；首帧携带完整队列，消费时与新增用户轮次同帧更新 |
 | 可选字段缺席 | 保持原值 |
 
 前端以一帧为单位原子更新历史、草稿和状态，保留未变化的对象引用。

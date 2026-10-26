@@ -99,6 +99,8 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
+        self.input_attachments.clear();
+        self.last_key_input_time = None;
         self.clear_input_selection();
         self.file_completion_dismissed = false;
         self.input.clear();

@@ -1876,6 +1876,54 @@ body.resizing .chat-scroll {
   color: var(--faint);
 }
 
+/* 待发消息：逐条选择发送时机，取回后与当前草稿合并。 */
+.pending-inputs {
+  max-height: min(300px, 35dvh);
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+}
+.pending-inputs-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  color: var(--muted);
+  font: 11px var(--font-mono);
+  padding: 2px 0 8px;
+}
+.pending-inputs-heading span:last-child { color: var(--faint); }
+.pending-input {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.pending-input-content { flex: 1 1 200px; min-width: 0; }
+.pending-input-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; }
+.pending-input-attachments { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.pending-input-attachments img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
+.pending-input-attachments span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.pending-input-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.pending-input-modes { display: flex; padding: 2px; border-radius: 6px; background: var(--panel-2); }
+.pending-input-modes button, .pending-input-take {
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--muted);
+  font: 11px var(--font-body);
+  cursor: pointer;
+}
+.pending-input-modes button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.pending-input-take:hover { color: var(--accent); background: var(--accent-soft); }
+.pending-input-actions button:disabled { opacity: .5; cursor: default; }
+.send-button.queue { width: auto; padding: 0 12px; font: 12px var(--font-body); }
+.steering-label { color: var(--accent); font: 11px var(--font-mono); margin: 12px 0 4px; }
+
 .empty-composer > .composer {
   width: 100%;
 }

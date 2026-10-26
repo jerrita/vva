@@ -174,6 +174,10 @@ struct TestTool {
 enum TestBlock {
     Barrier(tokio::sync::Barrier),
     Forever,
+    Gate {
+        permits: Arc<tokio::sync::Semaphore>,
+        finished: Arc<tokio::sync::Semaphore>,
+    },
 }
 
 #[async_trait::async_trait]
@@ -198,6 +202,11 @@ impl crate::tools::Tool for TestTool {
             TestBlock::Forever => {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 Ok(String::new())
+            }
+            TestBlock::Gate { permits, finished } => {
+                permits.acquire().await.unwrap().forget();
+                finished.add_permits(1);
+                Ok(arguments.into())
             }
         }
     }
@@ -671,6 +680,75 @@ async fn abort_during_tools_synthesizes_paired_error_results() {
         .unwrap();
     assert_eq!(loaded.turns.len(), 2);
     cleanup(&task);
+}
+
+#[tokio::test]
+async fn steering_waits_for_the_complete_parallel_tool_batch() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (mut task, handle, mut commands) = command_task();
+        task.store.save_header(&task.view.session).await.unwrap();
+        let permits = Arc::new(tokio::sync::Semaphore::new(0));
+        let finished = Arc::new(tokio::sync::Semaphore::new(0));
+        let tools = registry_with(TestTool {
+            name: "Gate",
+            blocking: TestBlock::Gate {
+                permits: permits.clone(),
+                finished: finished.clone(),
+            },
+        });
+        let provider = ScriptedProvider::new(|repeat| {
+            if repeat {
+                return vec![Message::text("completed")];
+            }
+            vec![Message::new(
+                ["tool_one", "tool_two"]
+                    .map(|id| ContentPart::ToolCall(ToolCall::new(id, "Gate", "{}")))
+                    .into(),
+            )]
+        });
+        let (events, mut output) = mpsc::channel(64);
+        task.cli = Some(events);
+        let control = async {
+            while !matches!(output.recv().await, Some(AgentEvent::ToolExecuting { .. })) {}
+            handle
+                .submit("guidance between requests", vec![], None)
+                .await
+                .unwrap();
+            let id = handle.snapshot().pending_inputs[0].id.clone();
+            handle.set_input_mode(id, InputMode::Steer).await.unwrap();
+            permits.add_permits(1);
+            finished.acquire().await.unwrap().forget();
+            assert!(
+                !handle
+                    .snapshot()
+                    .session
+                    .turns
+                    .iter()
+                    .any(|turn| turn.steering)
+            );
+            assert_eq!(handle.snapshot().pending_inputs.len(), 1);
+            permits.add_permits(1);
+        };
+        let (outcome, ()) = tokio::join!(
+            task.execute(engine(provider, tools), &mut commands),
+            control
+        );
+        assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
+        let turns = &task.view.session.turns;
+        let guide = turns.iter().position(|turn| turn.steering).unwrap();
+        assert_eq!(
+            turns[..guide]
+                .iter()
+                .filter(|turn| turn.role == Role::Tool)
+                .count(),
+            2
+        );
+        assert!(turns.last().unwrap().worked_ms.is_some());
+        assert!(task.view.pending_inputs.is_empty());
+        cleanup(&task);
+    })
+    .await
+    .expect("parallel steering timed out");
 }
 
 // ---- 草稿事件流 ----
@@ -1619,11 +1697,25 @@ async fn completion_endpoint() -> (
     mpsc::UnboundedReceiver<serde_json::Value>,
     tokio::task::JoinHandle<()>,
 ) {
+    completion_endpoint_controlled(None).await
+}
+
+async fn completion_endpoint_controlled(
+    gate: Option<Arc<tokio::sync::Semaphore>>,
+) -> (
+    AppConfig,
+    mpsc::UnboundedReceiver<serde_json::Value>,
+    tokio::task::JoinHandle<()>,
+) {
     let (requests, rx) = mpsc::unbounded_channel();
     let app = axum::Router::new().fallback(move |axum::Json(request): axum::Json<serde_json::Value>| {
         let requests = requests.clone();
+        let gate = gate.clone();
         async move {
             requests.send(request).unwrap();
+            if let Some(gate) = gate {
+                gate.acquire().await.unwrap().forget();
+            }
             let event = serde_json::json!({
                 "type": "response.completed", "sequence_number": 1,
                 "response": {
@@ -1658,6 +1750,180 @@ fn async_report(text: &str) -> SubagentReport {
         text: text.into(),
         error: None,
     }
+}
+
+#[tokio::test]
+async fn user_queue_steers_before_finalizing_and_runs_after_messages_in_order() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (config, mut requests, server) =
+            completion_endpoint_controlled(Some(gate.clone())).await;
+        let (mut task, handle, commands) = command_task();
+        task.config = Arc::new(config);
+        task.store.save_header(&task.view.session).await.unwrap();
+        let root = task.view.session.header.workspace_root.clone();
+        let actor = tokio::spawn(task.run(commands));
+        handle
+            .submit("initial request", vec![], None)
+            .await
+            .unwrap();
+        requests.recv().await.unwrap();
+        for prompt in ["follow one", "follow two", "guide one", "guide two"] {
+            handle.submit(prompt, vec![], None).await.unwrap();
+        }
+        let pending = handle.snapshot().pending_inputs.clone();
+        for input in &pending[2..] {
+            handle
+                .set_input_mode(input.id.clone(), InputMode::Steer)
+                .await
+                .unwrap();
+        }
+        handle
+            .set_input_mode(pending[3].id.clone(), InputMode::After)
+            .await
+            .unwrap();
+        handle
+            .set_input_mode(pending[3].id.clone(), InputMode::Steer)
+            .await
+            .unwrap();
+        assert_eq!(handle.snapshot().pending_inputs.len(), 4);
+        assert_eq!(
+            handle
+                .snapshot()
+                .session
+                .turns
+                .iter()
+                .filter(|turn| turn.role == Role::User
+                    && !turn.text_content().starts_with("<system-reminder"))
+                .count(),
+            1
+        );
+
+        gate.add_permits(1);
+        let guided = requests.recv().await.unwrap().to_string();
+        assert!(guided.contains("guide one") && guided.contains("guide two"));
+        assert!(!guided.contains("follow one") && !guided.contains("follow two"));
+        assert_eq!(handle.turn_seq(), 0);
+        assert_eq!(handle.snapshot().pending_inputs.len(), 2);
+        let snapshot = handle.snapshot();
+        let guides: Vec<_> = snapshot
+            .session
+            .turns
+            .iter()
+            .filter(|turn| turn.steering)
+            .collect();
+        assert_eq!(
+            guides
+                .iter()
+                .map(|turn| turn.text_content())
+                .collect::<Vec<_>>(),
+            ["guide one", "guide two"]
+        );
+        assert!(
+            snapshot
+                .session
+                .turns
+                .iter()
+                .filter(|turn| turn.role == Role::Assistant)
+                .all(|turn| turn.worked_ms.is_none())
+        );
+        assert!(handle.take_input(pending[2].id.clone()).await.is_err());
+        assert!(
+            handle
+                .set_input_mode(pending[2].id.clone(), InputMode::After)
+                .await
+                .is_err()
+        );
+        assert_eq!(handle.snapshot().pending_inputs.len(), 2);
+
+        gate.add_permits(1);
+        let first = requests.recv().await.unwrap().to_string();
+        assert!(first.contains("follow one") && !first.contains("follow two"));
+        assert_eq!(handle.turn_seq(), 1);
+        gate.add_permits(1);
+        let second = requests.recv().await.unwrap().to_string();
+        assert!(second.contains("follow two"));
+        assert_eq!(handle.turn_seq(), 2);
+        let mut views = handle.subscribe();
+        gate.add_permits(1);
+        while handle.is_running() {
+            views.changed().await.unwrap();
+        }
+        assert_eq!(handle.turn_seq(), 3);
+        assert!(handle.snapshot().pending_inputs.is_empty());
+        assert!(
+            handle
+                .snapshot()
+                .session
+                .turns
+                .last()
+                .unwrap()
+                .worked_ms
+                .is_some()
+        );
+        handle.abort_current().await.unwrap();
+        drop(handle);
+        actor.await.unwrap();
+        server.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    })
+    .await
+    .expect("user queue timed out");
+}
+
+#[tokio::test]
+async fn stopping_keeps_pending_input_and_take_returns_attachments_once() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (mut config, mut requests, server) = completion_endpoint_controlled(Some(gate)).await;
+        config
+            .providers
+            .get_mut("p")
+            .unwrap()
+            .models
+            .get_mut("m")
+            .unwrap()
+            .modalities = Some(crate::config::model::ModalitiesConfig {
+            input: vec!["text".into(), "image".into()],
+            output: vec!["text".into()],
+        });
+        let (mut task, handle, commands) = command_task();
+        task.config = Arc::new(config);
+        task.store.save_header(&task.view.session).await.unwrap();
+        let root = task.view.session.header.workspace_root.clone();
+        let actor = tokio::spawn(task.run(commands));
+        handle
+            .submit("initial request", vec![], None)
+            .await
+            .unwrap();
+        requests.recv().await.unwrap();
+        let attachment = ContentPart::Image {
+            source: MediaSource::Base64 {
+                data: "c3ludGhldGlj".into(),
+                mime_type: "image/png".into(),
+            },
+            mime_type: None,
+        };
+        handle
+            .submit("queued input", vec![attachment.clone()], None)
+            .await
+            .unwrap();
+        let id = handle.snapshot().pending_inputs[0].id.clone();
+        handle.abort_current().await.unwrap();
+        assert!(!handle.is_running());
+        assert_eq!(handle.snapshot().pending_inputs.len(), 1);
+        let restored = handle.take_input(id.clone()).await.unwrap();
+        assert_eq!(restored.prompt, "queued input");
+        assert_eq!(restored.attachments, [attachment]);
+        assert!(handle.take_input(id).await.is_err());
+        assert!(requests.try_recv().is_err());
+        drop(handle);
+        actor.await.unwrap();
+        server.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    })
+    .await
+    .expect("stopping user queue timed out");
 }
 
 #[tokio::test]

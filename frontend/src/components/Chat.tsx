@@ -32,6 +32,7 @@ function reminderType(turn: Turn): string | null {
 /** 历史轮次中的连续工作段（思考/搜索/工具与中间轮文本），折叠为一个用时行 */
 interface WorkGroup {
   parts: ContentPart[]
+  guides: { offset: number; turn: Turn }[]
   /** 各响应耗时之和 */
   elapsedMs: number | null
   /** 整个请求周期的总耗时（最终响应携带） */
@@ -47,11 +48,11 @@ function buildItems(turns: Turn[]): Item[] {
   const items: Item[] = []
   let group: WorkGroup | null = null
   const flush = () => {
-    if (group && group.parts.length > 0) items.push({ kind: 'work', group })
+    if (group && (group.parts.length > 0 || group.guides.length > 0)) items.push({ kind: 'work', group })
     group = null
   }
   const pushTurn = (turn: Turn, parts: ContentPart[]) => {
-    group ??= { parts: [], elapsedMs: null, workedMs: null }
+    group ??= { parts: [], guides: [], elapsedMs: null, workedMs: null }
     for (const part of parts) {
       group.parts.push(part)
     }
@@ -71,6 +72,11 @@ function buildItems(turns: Turn[]): Item[] {
         // 轮隙不切断运行段折叠
         continue
       }
+      if (turn.steering) {
+        group ??= { parts: [], guides: [], elapsedMs: null, workedMs: null }
+        group.guides.push({ offset: group.parts.length, turn })
+        continue
+      }
       flush()
       items.push({ kind: 'user', turn, index })
       continue
@@ -85,7 +91,7 @@ function buildItems(turns: Turn[]): Item[] {
       const next = turns[nextIndex]
       if (next.role === 'system') {
         nextIndex++
-      } else if (reminderType(next) !== null) {
+      } else if (reminderType(next) !== null || next.steering) {
         awaitingContinuation = true
         nextIndex++
       } else {
@@ -186,7 +192,16 @@ const WorkedBlock = memo(function WorkedBlock({
         )}
       </summary>
       <div className="worked-body">
-        <Parts parts={group.parts} live={live} workspace={workspace} onPreviewFile={onPreviewFile} tasks={tasks} />
+        {group.guides.map((guide, index) => (
+          <div key={guide.turn.id}>
+            <Parts parts={group.parts.slice(index === 0 ? 0 : group.guides[index - 1].offset, guide.offset)}
+              live={live} workspace={workspace} onPreviewFile={onPreviewFile} tasks={tasks} />
+            <div className="steering-label">引导</div>
+            <UserBubble turn={guide.turn} disabled onPreviewFile={onPreviewFile} />
+          </div>
+        ))}
+        <Parts parts={group.parts.slice(group.guides.at(-1)?.offset ?? 0)} live={live}
+          workspace={workspace} onPreviewFile={onPreviewFile} tasks={tasks} />
       </div>
     </details>
   )

@@ -770,13 +770,47 @@ pub async fn submit_message(
     Json(request): Json<SubmitMessageRequest>,
 ) -> ApiResult<StatusCode> {
     let files = request.files.into_iter().map(ContentPart::from).collect();
-    // 会话正在执行其他请求时拒绝重复提交
     session
         .0
         .submit(&request.prompt, files, None)
         .await
         .map_err(fail(StatusCode::CONFLICT))?;
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+pub struct InputModeRequest {
+    pub id: String,
+    pub mode: crate::harness::InputMode,
+}
+
+pub async fn set_input_mode(
+    session: Session,
+    Json(request): Json<InputModeRequest>,
+) -> ApiResult<StatusCode> {
+    session
+        .0
+        .set_input_mode(request.id, request.mode)
+        .await
+        .map_err(fail(StatusCode::CONFLICT))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct TakeInputRequest {
+    pub id: String,
+}
+
+pub async fn take_input(
+    session: Session,
+    Json(request): Json<TakeInputRequest>,
+) -> ApiResult<Json<crate::harness::PendingInput>> {
+    session
+        .0
+        .take_input(request.id)
+        .await
+        .map(Json)
+        .map_err(fail(StatusCode::CONFLICT))
 }
 
 #[derive(Deserialize)]

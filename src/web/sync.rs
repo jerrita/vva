@@ -22,6 +22,7 @@ struct TurnView<'a> {
     elapsed_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     worked_ms: Option<u64>,
+    steering: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     background_task: &'a Option<crate::model::BackgroundTask>,
 }
@@ -35,6 +36,7 @@ impl<'a> From<&'a Turn> for TurnView<'a> {
             usage: &turn.usage,
             elapsed_ms: turn.elapsed_ms,
             worked_ms: turn.worked_ms,
+            steering: turn.steering,
             background_task: &turn.background_task,
         }
     }
@@ -65,6 +67,7 @@ struct SessionData<'a> {
 
 #[derive(Serialize)]
 pub(super) struct SessionSnapshot<'a> {
+    pending_inputs: &'a [crate::harness::PendingInput],
     revision: u64,
     state: String,
     persisted: bool,
@@ -80,6 +83,7 @@ pub(super) struct SessionSnapshot<'a> {
 impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
     fn from(view: &'a SessionView) -> Self {
         Self {
+            pending_inputs: &view.pending_inputs,
             revision: view.revision,
             state: view.state.status(),
             persisted: view.persisted,
@@ -188,6 +192,8 @@ fn shell_output_patches<'a>(
 
 #[derive(Serialize)]
 pub(super) struct SessionDelta<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_inputs: Option<&'a [crate::harness::PendingInput]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     shell_outputs: Vec<ShellOutputPatch<'a>>,
     base_revision: u64,
@@ -283,6 +289,8 @@ impl<'a> SessionDelta<'a> {
         );
         Self {
             shell_outputs: shell_output_patches(previous, current),
+            pending_inputs: (!Arc::ptr_eq(&previous.pending_inputs, &current.pending_inputs))
+                .then_some(current.pending_inputs.as_slice()),
             base_revision: previous.revision,
             revision: current.revision,
             state: current.state.status(),
@@ -321,11 +329,34 @@ mod tests {
             state: RunState::Responding,
             persisted: true,
             pending_user_question: None,
+            pending_inputs: Arc::default(),
         }
     }
 
     fn delta(before: &SessionView, after: &SessionView) -> Value {
         serde_json::to_value(SessionDelta::between(before, after)).unwrap()
+    }
+
+    #[test]
+    fn pending_input_consumption_is_atomic_with_the_user_turn() {
+        let mut before = view();
+        Arc::make_mut(&mut before.pending_inputs).push(crate::harness::PendingInput {
+            id: "input_fixture".into(),
+            prompt: "guidance".into(),
+            attachments: vec![],
+            mode: crate::harness::InputMode::Steer,
+        });
+        let snapshot = serde_json::to_value(SessionSnapshot::from(&before)).unwrap();
+        assert_eq!(snapshot["pending_inputs"][0]["mode"], "steer");
+        let mut after = before.clone();
+        Arc::make_mut(&mut after.pending_inputs).clear();
+        let mut turn = Turn::user_turn(Message::text("guidance"));
+        turn.steering = true;
+        Arc::make_mut(&mut after.session).append_turn(turn);
+        let patch = delta(&before, &after);
+        assert_eq!(patch["pending_inputs"], json!([]));
+        assert_eq!(patch["turns"]["items"][0]["steering"], true);
+        assert!(delta(&after, &after).get("pending_inputs").is_none());
     }
 
     #[test]

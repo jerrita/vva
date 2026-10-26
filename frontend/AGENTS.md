@@ -68,7 +68,7 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **CJK 强调**：Markdown 经 `remark-cjk-friendly` 解析，`**结论：**正文` 这类紧邻中文标点的强调正常生效。
 - **引用注脚**：消息文本的 url_citation 渲染为 `.citations` 折叠行（`引用来源（N）`），按 URL 去重（对齐 TUI `search_citations`），默认收起，展开为编号列表。
 - **按钮体系**：`primary-button`/`send-button`（主色实心）、`ghost-button`（描边）、`danger-button`（绯红警示）、`icon-ghost`（图标幽灵）、`chip`/`chip-toggle`（输入框工具行）。
-- **输入框**：会话底栏；窄屏向上滚动隐藏（聚焦时除外），回到底部或从屏幕底部上滑重新展示。
+- **输入框**：会话底栏；窄屏向上滚动隐藏（聚焦时除外），回到底部或从屏幕底部上滑重新展示。待发消息在输入框上方逐条展示，提供「轮后发送 / 插入引导」与「取回编辑」；操作语义见 [运行中发送消息](../docs/usage.md#运行中发送消息)。
 - **顶栏**：半透明毛玻璃（`color-mix` 半透明 `--panel` + `backdrop-filter: blur`），脱离文档流覆盖主区（高度令牌 `--topbar-h`），聊天内容从其下方滚过；横幅、聊天区与空态自行让出顶栏高度。桌面端主区 `overflow: hidden` 裁切至圆角。
 - **浮层**：
   - 锚定弹层（`.new-panel`）：瞬态表单，点击外部/Esc 关闭；含「已有项目 / 新建项目」双模式（`.segmented` 切换），新项目为绝对路径输入，目录由后端自动创建；

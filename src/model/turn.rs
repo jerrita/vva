@@ -29,6 +29,9 @@ pub struct Turn {
     /// 当前用户请求从开始到最终响应完成的总耗时，单位毫秒。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worked_ms: Option<u64>,
+    /// 用户在当前执行中插入的引导，延续同一次执行的状态与计时。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub steering: bool,
     /// 后台完成投递的领域快照，与模型可见的 reminder 文本解耦。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_task: Option<super::BackgroundTask>,
@@ -45,6 +48,7 @@ impl Turn {
             usage: None,
             elapsed_ms: None,
             worked_ms: None,
+            steering: false,
             background_task: None,
             meta: TurnMeta::default(),
         }

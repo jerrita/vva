@@ -120,7 +120,10 @@ fn attachment_error(engine: &AgentEngine, part: &ContentPart) -> Option<String> 
 }
 
 /// 提交前校验上传附件：避免不支持模态的模型留下无效轮次
-fn validate_attachments(engine: &AgentEngine, parts: &[ContentPart]) -> Result<(), String> {
+pub(super) fn validate_attachments(
+    engine: &AgentEngine,
+    parts: &[ContentPart],
+) -> Result<(), String> {
     parts
         .iter()
         .find_map(|part| attachment_error(engine, part))
@@ -605,7 +608,7 @@ impl SessionTask {
     }
 
     /// 以当前会话组装引擎 (重新发现技能)
-    async fn build_engine(&self) -> Result<AgentEngine, String> {
+    pub(super) async fn build_engine(&self) -> Result<AgentEngine, String> {
         let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
         self.build_engine_for(&self.view.session, skills).await
     }
@@ -614,6 +617,15 @@ impl SessionTask {
         &mut self,
         prompt: &str,
         images: Vec<ContentPart>,
+    ) -> Result<AgentEngine, String> {
+        self.append_input(prompt, images, false).await
+    }
+
+    pub(super) async fn append_input(
+        &mut self,
+        prompt: &str,
+        images: Vec<ContentPart>,
+        steering: bool,
     ) -> Result<AgentEngine, String> {
         let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
         let engine = self
@@ -645,7 +657,9 @@ impl SessionTask {
         if !self.view.persisted {
             self.persist_new_session(&skills, prompt, generate).await?;
         }
-        self.view.draft.clear();
+        if !steering {
+            self.view.draft.clear();
+        }
         let mut parts = images;
         parts.push(ContentPart::text(prompt));
         parts.extend(mention_parts);
@@ -670,17 +684,21 @@ impl SessionTask {
                     .await?;
             }
         }
-        self.append(Turn::user_turn(Message::new(parts))).await?;
+        let mut turn = Turn::user_turn(Message::new(parts));
+        turn.steering = steering;
+        self.append(turn).await?;
         // /<skill_name> 斜杠调用：user turn 保留原文，技能正文以独立 reminder 轮次注入
         if let Some(skill) = crate::skills::match_invocation(prompt, &skills) {
             let reminder = crate::system::format_skill_load_reminder(skill);
             self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
                 .await?;
         }
-        self.auto_resume = true;
+        if !steering {
+            self.auto_resume = true;
+        }
         self.view.state = RunState::Thinking;
         self.publish();
-        if generate {
+        if generate && !steering {
             self.spawn_title_task(prompt);
         }
         Ok(engine)
@@ -928,6 +946,7 @@ impl SessionTask {
             tokio::select! {
                 result = &mut future => {
                     while let Ok(event) = events.try_recv() { self.event(event).await; }
+                    if !self.ready_commands(commands).await { return None; }
                     self.publish_throttled();
                     return Some(result);
                 }
@@ -945,47 +964,88 @@ impl SessionTask {
                         self.publish_throttled();
                         return None;
                     };
-                    match command {
-                        Command::Shared(command) => self.handle_shared(command).await,
-                        Command::TaskFinished { task_id } => {
-                            self.queue_task_completion(task_id).await;
-                        }
-                        Command::WatchSession { session_id, receipt, background, reply } => {
-                            self.watch_session(session_id, receipt, background);
-                            let _ = reply.send(Ok(()));
-                        }
-                        Command::SessionFinished { report, background } => {
-                            self.async_count -= 1;
-                            self.queue_session_completion(report, background).await;
-                        }
-                        Command::Note { text, reply } => {
-                            tracing::debug!("运行中收到提示，入队: {} 字符", text.chars().count());
-                            self.pending_notes.push(text);
-                            let _ = reply.send(Ok(()));
-                        }
-                        Command::Deliver { delivery, reply } => {
-                            // 程序化消息不拒绝：入队待轮次结束后处理
-                            self.pending_deliveries.push(delivery);
-                            let _ = reply.send(Ok(()));
-                        }
-                        Command::Submit { reply, .. } | Command::Revert { reply, .. } => {
-                            let _ = reply.send(Err(BUSY.into()));
-                        }
-                        Command::Stop { delete, reply } => {
-                            self.cancel_pending_user_question();
-                            self.stop_request = Some((delete, reply));
-                            self.publish_throttled();
-                            return None;
-                        }
+                    if !self.running_command(command).await {
+                        return None;
                     }
                 }
             }
         }
     }
 
+    async fn running_command(&mut self, command: Command) -> bool {
+        match command {
+            Command::Shared(command) => self.handle_shared(command).await,
+            Command::TaskFinished { task_id } => {
+                self.queue_task_completion(task_id).await;
+            }
+            Command::WatchSession {
+                session_id,
+                receipt,
+                background,
+                reply,
+            } => {
+                self.watch_session(session_id, receipt, background);
+                let _ = reply.send(Ok(()));
+            }
+            Command::SessionFinished { report, background } => {
+                self.async_count -= 1;
+                self.queue_session_completion(report, background).await;
+            }
+            Command::Note { text, reply } => {
+                tracing::debug!("运行中收到提示，入队: {} 字符", text.chars().count());
+                self.pending_notes.push(text);
+                let _ = reply.send(Ok(()));
+            }
+            Command::Deliver { delivery, reply } => {
+                // 程序化消息不拒绝：入队待轮次结束后处理
+                self.pending_deliveries.push(delivery);
+                let _ = reply.send(Ok(()));
+            }
+            Command::Submit {
+                prompt,
+                images,
+                reply,
+                ..
+            } => {
+                let result = self.queue_input(prompt, images).await;
+                let _ = reply.send(result);
+            }
+            Command::Revert { reply, .. } => {
+                let _ = reply.send(Err(BUSY.into()));
+            }
+            Command::Stop { delete, reply } => {
+                self.cancel_pending_user_question();
+                self.stop_request = Some((delete, reply));
+                self.publish_throttled();
+                return false;
+            }
+        }
+        true
+    }
+
+    async fn ready_commands(&mut self, commands: &mut mpsc::Receiver<Command>) -> bool {
+        // 只处理边界到达时已入通道的命令，持续输入不会阻塞执行。
+        for _ in 0..commands.len() {
+            if let Ok(command) = commands.try_recv()
+                && !self.running_command(command).await
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// 运行中 (drive) 与空闲 (run) 语义一致的命令
     async fn handle_shared(&mut self, command: SharedCommand) {
         match command {
+            SharedCommand::SetInputMode { id, mode, reply } => {
+                let result = self.set_input_mode(&id, mode);
+                let _ = reply.send(result);
+            }
+            SharedCommand::TakeInput { id, reply } => {
+                let result = self.take_input(&id);
+                let _ = reply.send(result);
+            }
             SharedCommand::SetCuration { enabled, reply } => {
                 let result = if !self.view.session.header.supports_curation() {
                     Err("当前会话不支持沉淀标记".into())
@@ -1069,9 +1129,13 @@ impl SessionTask {
         let definitions = engine.tools.definitions();
         let worked_started = Instant::now();
         loop {
+            if !self.ready_commands(commands).await {
+                return Ok(TurnOutcome::Aborted);
+            }
             self.drain_task_completions().await?;
             self.drain_subagent_completions().await?;
             self.drain_notes().await?;
+            self.drain_steering().await?;
             self.text_parts.clear();
             self.view.state = RunState::Thinking;
             self.publish();
@@ -1104,13 +1168,20 @@ impl SessionTask {
             let mut turn = Turn::assistant_turn(response.messages);
             turn.usage = response.usage;
             turn.elapsed_ms = Some(response_started.elapsed().as_millis() as u64);
-            turn.worked_ms = calls
-                .is_empty()
-                .then(|| worked_started.elapsed().as_millis() as u64);
+            turn.worked_ms = (calls.is_empty()
+                && !self
+                    .view
+                    .pending_inputs
+                    .iter()
+                    .any(|input| input.mode == InputMode::Steer))
+            .then(|| worked_started.elapsed().as_millis() as u64);
             turn.meta = response.meta;
             self.view.draft.clear();
             self.append(turn).await?;
             if calls.is_empty() {
+                if self.drain_steering().await? {
+                    continue;
+                }
                 return Ok(TurnOutcome::Completed);
             }
             let Some(results) = self.run_tools(&engine, &calls, commands, &mut rx).await else {
@@ -1304,6 +1375,9 @@ impl SessionTask {
     async fn stop(&mut self, delete: bool, reply: Reply) -> bool {
         self.auto_resume = false;
         self.cli = None;
+        if delete {
+            Arc::make_mut(&mut self.view.pending_inputs).clear();
+        }
         self.cancel_deliveries("Session stopped");
         self.turn_tx.send_modify(|completed| {
             if !completed.settled {
@@ -1326,7 +1400,7 @@ impl SessionTask {
 
     /// 连续执行轮次：后台任务与后台子代理在轮次间隙完成时自动续跑，直到队列清空或轮次终止。
     /// 用户中止与供应商错误暂停自动续跑，完成结果仍持久化。
-    async fn run_turns(
+    pub(super) async fn run_turns(
         &mut self,
         mut engine: AgentEngine,
         commands: &mut mpsc::Receiver<Command>,
@@ -1335,6 +1409,7 @@ impl SessionTask {
         loop {
             let outcome = self.execute(engine, commands).await?;
             if outcome == TurnOutcome::Aborted
+                || !self.view.pending_inputs.is_empty()
                 || (self.task_completions.is_empty() && self.subagent_completions.is_empty())
             {
                 return Ok(outcome);
@@ -1472,6 +1547,9 @@ impl SessionTask {
             if close || !successful {
                 return close;
             }
+            if self.run_pending_inputs(commands).await {
+                return true;
+            }
         }
         false
     }
@@ -1493,7 +1571,9 @@ impl SessionTask {
         match self.build_engine().await {
             Ok(engine) => {
                 let result = self.run_turns(engine, commands).await;
-                self.finish_turn(result).await || self.run_pending_deliveries(commands).await
+                self.finish_turn(result).await
+                    || self.run_pending_inputs(commands).await
+                    || self.run_pending_deliveries(commands).await
             }
             // 组装失败同样持久化完成结果，并暂停自动续跑。
             Err(error) => self.finish_turn(Err(error)).await,
@@ -1528,6 +1608,7 @@ impl SessionTask {
                     self.cli = events;
                     let result = self.run_turns(engine, &mut commands).await;
                     if self.finish_turn(result).await
+                        || self.run_pending_inputs(&mut commands).await
                         || self.run_pending_deliveries(&mut commands).await
                     {
                         break;

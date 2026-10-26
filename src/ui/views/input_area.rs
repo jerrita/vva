@@ -94,8 +94,7 @@ pub fn render_input_area(
     frame.render_widget(input_p, text);
 
     // 绘制光标 (基于行号和列显示宽度定位，正确支持多行、视口滚动及全角 CJK 字符)
-    if !is_running
-        && inner_height > 0
+    if inner_height > 0
         && inner_width > 0
         && cursor_row >= scroll_y
         && cursor_row < scroll_y + inner_height
@@ -329,6 +328,55 @@ fn render_file_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
 /// 提示区读取会话快照与本地反馈，不参与聊天历史缓存。
 pub(crate) fn feedback_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    if let Some(selected) = app.selected_input_index() {
+        let start = selected.saturating_sub(3);
+        for (index, input) in app
+            .view
+            .pending_inputs
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(6)
+        {
+            let mode = match input.mode {
+                crate::harness::InputMode::After => "after",
+                crate::harness::InputMode::Steer => "steer",
+            };
+            let summary = input
+                .prompt
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let text = format!(
+                "{} {mode}  {}{}",
+                if index == selected { "›" } else { " " },
+                summary,
+                if input.attachments.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{} attachments]", input.attachments.len())
+                }
+            );
+            lines.push(Line::from(Span::styled(
+                crate::ui::text::truncate(&text, width),
+                fg(if index == selected {
+                    Color::Cyan
+                } else {
+                    Color::DarkGray
+                }),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "↑/↓ select · Enter steer · Esc after / edit",
+            fg(Color::DarkGray),
+        )));
+    }
+    if !app.input_attachments.is_empty() {
+        lines.push(Line::from(format!(
+            "{} attachments in draft",
+            app.input_attachments.len()
+        )));
+    }
     for text in app
         .view
         .notices

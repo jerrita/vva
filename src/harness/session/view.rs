@@ -1,5 +1,21 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputMode {
+    #[default]
+    After,
+    Steer,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PendingInput {
+    pub id: String,
+    pub prompt: String,
+    pub attachments: Vec<ContentPart>,
+    pub mode: InputMode,
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum RunState {
     #[default]
@@ -40,6 +56,7 @@ pub struct SessionView {
     pub state: RunState,
     pub persisted: bool,
     pub pending_user_question: Option<UserQuestionRequest>,
+    pub pending_inputs: Arc<Vec<PendingInput>>,
 }
 
 impl SessionView {
@@ -61,6 +78,7 @@ impl SessionView {
             state: RunState::Idle,
             persisted,
             pending_user_question: None,
+            pending_inputs: Arc::default(),
         }
     }
 }

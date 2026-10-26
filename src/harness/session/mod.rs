@@ -2,6 +2,7 @@
 
 mod curation;
 mod handle;
+mod input;
 mod manager;
 mod task;
 #[cfg(test)]
@@ -12,7 +13,7 @@ pub use handle::ManagedSession;
 use handle::{Command, CompletedTurn, PendingDelivery, SharedCommand};
 pub use manager::SessionManager;
 use task::{SessionTask, TaskDeps};
-pub use view::{Notice, NoticeKind, RunState, SessionView};
+pub use view::{InputMode, Notice, NoticeKind, PendingInput, RunState, SessionView};
 
 use std::collections::HashMap;
 use std::future::Future;
