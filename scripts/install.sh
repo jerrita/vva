@@ -17,6 +17,7 @@ case "$os/$arch" in
   Android/aarch64 | Android/arm64) platform=android-arm64 ;;
   Linux/x86_64) platform=linux-x64 ;;
   Linux/aarch64 | Linux/arm64) platform=linux-arm64 ;;
+  Linux/riscv64) platform=linux-riscv64 ;;
   Darwin/arm64) platform=macos-arm64 ;;
   *) echo "不支持的平台: $os/$arch" >&2; exit 1 ;;
 esac
