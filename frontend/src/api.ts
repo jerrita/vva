@@ -1,4 +1,4 @@
-import type { FileAttachment, FsEntriesResponse,
+import type { FileAttachment, FsEntriesResponse, InputMode, PendingInput,
   FsFindResponse, ModelsResponse, SessionFileResponse, SessionSnapshot, SessionSummary, SidebarStats, SkillsResponse, UserAnswer } from './types'
 
 export function toError(error: unknown): string {
@@ -57,6 +57,10 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
   submit: (id: string, prompt: string, files: FileAttachment[] = []) =>
     request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt, files })),
+  setInputMode: (id: string, inputId: string, mode: InputMode) =>
+    request<void>(`/api/sessions/${id}/inputs/mode`, json('POST', { id: inputId, mode })),
+  takeInput: (id: string, inputId: string) =>
+    request<PendingInput>(`/api/sessions/${id}/inputs/take`, json('POST', { id: inputId })),
   uploadFile: (filename: string, data: string, workspace?: string) =>
     request<{ path: string }>('/api/files', json('POST', { filename, data, workspace })),
   /** 回退到指定用户轮次：丢弃该轮次及其后的内容 */

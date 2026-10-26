@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { applySessionDelta, sessionSummary, subscribeSession } from './src/sessionSync.ts'
 
 const snapshot = () => ({
-  revision: 1, state: 'Responding...', persisted: true, notices: [], background_tasks: {},
+  revision: 1, state: 'Responding...', persisted: true, notices: [], background_tasks: {}, pending_inputs: [],
   session: {
     id: 'synthetic', workspace_root: '/synthetic', created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z', current_model: 'test/model',
@@ -25,6 +25,21 @@ test('task-only deltas update inline status without replacing transcript or draf
   assert.deepEqual(applySessionDelta(after, delta({ base_revision: 5, revision: 6, background_tasks: {} })).background_tasks, {})
 })
 const delta = (extra = {}) => ({ base_revision: 1, revision: 5, state: 'Responding...', persisted: true, ...extra })
+
+test('pending inputs synchronize skipped mode changes and consumption with committed turns', () => {
+  const before = snapshot()
+  const input = { id: 'input_one', mode: 'after', prompt: 'queued instruction', attachments: [] }
+  const queued = applySessionDelta(before, delta({ pending_inputs: [input] }))
+  assert.equal(queued.session, before.session)
+  const guided = applySessionDelta(queued, delta({ base_revision: 5, revision: 9,
+    pending_inputs: [{ ...input, mode: 'steer' }] }))
+  const turn = { id: 'guide', role: 'user', steering: true, messages: [{ parts: [{ type: 'text', text: input.prompt }] }] }
+  const consumed = applySessionDelta(guided, delta({ base_revision: 9, revision: 12,
+    pending_inputs: [], turns: { from: 1, items: [turn] } }))
+  assert.deepEqual(consumed.pending_inputs, [])
+  assert.equal(consumed.session.turns[1], turn)
+  assert.equal(guided.pending_inputs.length, 1)
+})
 
 test('session list projection preserves cleared metadata and search configuration', () => {
   const before = snapshot()

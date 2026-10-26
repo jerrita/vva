@@ -71,6 +71,8 @@ pub async fn run_server(
             post(api::submit_message).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/sessions/{id}/revert", post(api::revert_session))
+        .route("/api/sessions/{id}/inputs/mode", post(api::set_input_mode))
+        .route("/api/sessions/{id}/inputs/take", post(api::take_input))
         .route("/api/sessions/{id}/fork", post(api::fork_session))
         .route("/api/sessions/{id}/abort", post(api::abort_session))
         .route(

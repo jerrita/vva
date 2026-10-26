@@ -35,7 +35,7 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  Enter        ", fg(Color::Green)),
         Span::styled(
-            "- Submit prompt / execute selected command",
+            "- Send / queue prompt / promote pending message to steer",
             fg(Color::White),
         ),
     ]));
@@ -56,7 +56,7 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  Up / Down    ", fg(Color::Green)),
         Span::styled(
-            "- Move cursor between lines in input / navigate suggestions",
+            "- Move cursor / select pending messages / navigate suggestions",
             fg(Color::White),
         ),
     ]));
@@ -69,7 +69,10 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Esc          ", fg(Color::Green)),
-        Span::styled("- Close popup modal / clear input", fg(Color::White)),
+        Span::styled(
+            "- Close popup / steer → after → edit pending message",
+            fg(Color::White),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Ctrl+C       ", fg(Color::Green)),

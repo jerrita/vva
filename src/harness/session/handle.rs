@@ -34,6 +34,15 @@ pub(super) struct PendingDelivery {
 }
 
 pub enum SharedCommand {
+    SetInputMode {
+        id: String,
+        mode: InputMode,
+        reply: Reply,
+    },
+    TakeInput {
+        id: String,
+        reply: oneshot::Sender<Result<PendingInput, String>>,
+    },
     SetCuration {
         enabled: bool,
         reply: Reply,
@@ -124,6 +133,21 @@ pub struct ManagedSession {
 }
 
 impl ManagedSession {
+    pub async fn set_input_mode(&self, id: String, mode: InputMode) -> Result<(), String> {
+        self.request(|reply| Command::Shared(SharedCommand::SetInputMode { id, mode, reply }))
+            .await
+    }
+
+    pub async fn take_input(&self, id: String) -> Result<PendingInput, String> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Shared(SharedCommand::TakeInput { id, reply }))
+            .await
+            .map_err(|_| "Session is closed".to_string())?;
+        response
+            .await
+            .map_err(|_| "Session task stopped".to_string())?
+    }
     pub fn snapshot(&self) -> Arc<SessionView> {
         self.view.borrow().clone()
     }

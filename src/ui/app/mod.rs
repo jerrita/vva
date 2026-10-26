@@ -20,6 +20,7 @@ pub use selection::{SelectionTracker, TextCoord, TextSelection, char_in_column_r
 pub mod dispatch;
 pub mod draft;
 pub mod editor;
+mod input_queue;
 pub mod pane;
 pub mod scroll;
 pub mod selection;
@@ -37,6 +38,8 @@ pub struct App {
     /// 本地操作反馈，下次提交或关闭时清理。
     pub feedback: Vec<String>,
     pub input: InputBuffer,
+    pub selected_input: Option<String>,
+    pub input_attachments: Vec<crate::model::ContentPart>,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
     pub max_scroll: usize,
@@ -109,6 +112,8 @@ impl App {
             view,
             feedback: Vec::new(),
             input: InputBuffer::new(),
+            selected_input: None,
+            input_attachments: Vec::new(),
             scroll_offset: 0,
             auto_scroll: true,
             max_scroll: 0,

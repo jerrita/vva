@@ -375,7 +375,7 @@ export default function App() {
   const submit = useCallback(
     async (text: string, files: FileAttachment[] = []) => {
       setError(null)
-      await attempt(async () => {
+      try {
         let id = activeId
         if (!id) {
           const created = await api.createSession({
@@ -386,16 +386,19 @@ export default function App() {
           })
           id = created.session.id
           localOnlyIds.current.add(id)
-          setActiveId(id)
         }
         await api.submit(id, text, files)
-        setPending(text || null)
-        setSessions(prev =>
+        if (!activeId) setActiveId(id)
+        if (!running) setPending(text || null)
+        if (!running) setSessions(prev =>
           prev.map(item => (item.id === id ? { ...item, state: 'Thinking...' } : item)),
         )
-      })
+      } catch (error) {
+        setError(toError(error))
+        throw error
+      }
     },
-    [activeId, draftModel, draftVariant, draftSearch, draftProject, attempt],
+    [activeId, draftModel, draftVariant, draftSearch, draftProject, running],
   )
 
   const abort = useCallback(async () => {
@@ -748,8 +751,12 @@ export default function App() {
                 />
               )}
               <Composer
+                key={activeId}
                 ref={composerRef}
                 running={running}
+                pendingInputs={snap?.pending_inputs}
+                onInputMode={(id, mode) => api.setInputMode(activeId, id, mode)}
+                onTakeInput={id => api.takeInput(activeId, id)}
                 onSend={submit}
                 onStop={abort}
                 onError={setError}

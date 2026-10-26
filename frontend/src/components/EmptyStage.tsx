@@ -13,7 +13,7 @@ interface EmptyStageProps {
   controls: ReactNode
   running: boolean
   skills: SkillEntry[]
-  onSend: (text: string, files: FileAttachment[]) => void
+  onSend: (text: string, files: FileAttachment[]) => Promise<void>
   onStop: () => void
   onError: (message: string) => void
 }

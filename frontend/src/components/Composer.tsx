@@ -1,7 +1,7 @@
 import { useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { ClipboardEvent, DragEvent, KeyboardEvent, ReactNode, Ref } from 'react'
 import { api, toError } from '../api'
-import type { FileAttachment, FsFindEntry, SkillEntry } from '../types'
+import type { FileAttachment, FsFindEntry, InputMode, PendingInput, SkillEntry } from '../types'
 import { IconArrowUp, IconPlus, IconStop, IconX } from './icons'
 
 /** 外部写入输入框内容（回退后还原提示词） */
@@ -16,6 +16,9 @@ type AtToken = { start: number; query: string }
 
 export function Composer({
   running,
+  pendingInputs = [],
+  onInputMode,
+  onTakeInput,
   onSend,
   onStop,
   onError,
@@ -28,7 +31,10 @@ export function Composer({
   ref,
 }: {
   running: boolean
-  onSend: (text: string, files: FileAttachment[]) => void
+  pendingInputs?: PendingInput[]
+  onInputMode?: (id: string, mode: InputMode) => Promise<void>
+  onTakeInput?: (id: string) => Promise<PendingInput>
+  onSend: (text: string, files: FileAttachment[]) => Promise<void>
   onStop: () => void
   onError: (message: string) => void
   controls?: ReactNode
@@ -41,6 +47,9 @@ export function Composer({
   ref?: Ref<ComposerHandle>
 }) {
   const [text, setText] = useState('')
+  const [sending, setSending] = useState(false)
+  const [busyInput, setBusyInput] = useState<string | null>(null)
+  const sendingRef = useRef(false)
   const [files, setFiles] = useState<FileAttachment[]>([])
   const [uploadedFiles, setUploadedFiles] = useState<{ filename: string; path: string }[]>([])
   const [uploading, setUploading] = useState(0)
@@ -185,6 +194,7 @@ export function Composer({
     })
 
   const addFiles = async (selected: File[]) => {
+    if (sendingRef.current) return
     for (const file of selected) {
       const native = file.type === 'application/pdf' || ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type)
       try {
@@ -238,17 +248,55 @@ export function Composer({
     if (dropped.length > 0) void addFiles(dropped)
   }
 
-  const send = () => {
-    if (!hasContent || running || uploading > 0) return
+  const send = async () => {
+    if (!hasContent || sendingRef.current || busyInput || uploading > 0) return
+    sendingRef.current = true
+    setSending(true)
     const prompt = [text.trim(), ...uploadedFiles.map(file => `文件已保存到 scratch：${file.path}`)]
       .filter(Boolean).join('\n\n')
-    onSend(prompt, files)
-    setText('')
-    setFiles([])
-    setUploadedFiles([])
-    resetPalette()
-    setAtToken(null)
-    requestAnimationFrame(resize)
+    try {
+      await onSend(prompt, files)
+      setText('')
+      setFiles([])
+      setUploadedFiles([])
+      resetPalette()
+      setAtToken(null)
+      requestAnimationFrame(resize)
+    } catch (error) {
+      onError(toError(error))
+    } finally {
+      sendingRef.current = false
+      setSending(false)
+    }
+  }
+
+  const changeMode = async (input: PendingInput, mode: InputMode) => {
+    if (!onInputMode || busyInput || sendingRef.current) return
+    setBusyInput(input.id)
+    try { await onInputMode(input.id, mode) }
+    catch (error) { onError(toError(error)) }
+    finally { setBusyInput(null) }
+  }
+
+  const takeInput = async (id: string) => {
+    if (!onTakeInput || busyInput || sendingRef.current) return
+    setBusyInput(id)
+    try {
+      const input = await onTakeInput(id)
+      const restored: FileAttachment[] = input.attachments.map(part => {
+        if ((part.type === 'image' || part.type === 'file') && part.source.kind === 'base64') {
+          return { filename: part.type === 'file' ? part.filename : 'image',
+            mime_type: part.source.mime_type, data: part.source.data }
+        }
+        throw new Error('待发消息附件类型无效')
+      })
+      setText(current => [input.prompt, current].filter(Boolean).join('\n\n'))
+      setFiles(current => [...restored, ...current])
+      resetPalette()
+      setAtToken(null)
+      requestAnimationFrame(() => { resize(); textareaRef.current?.focus() })
+    } catch (error) { onError(toError(error)) }
+    finally { setBusyInput(null) }
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -306,7 +354,7 @@ export function Composer({
     }
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
-      send()
+      void send()
     }
   }
 
@@ -326,6 +374,38 @@ export function Composer({
       onDragLeave={onDragLeave}
       onDrop={onDrop}
     >
+      {pendingInputs.length > 0 && (
+        <div className="pending-inputs" aria-label="待发消息">
+          <div className="pending-inputs-heading">
+            <span>待发消息 · {pendingInputs.length}</span>
+            <span>{running ? '轮后依次发送，引导在下个可插入点生效' : '执行已暂停，可取回编辑后发送'}</span>
+          </div>
+          {pendingInputs.map(input => (
+            <div className="pending-input" key={input.id}>
+              <div className="pending-input-content">
+                {input.prompt && <div className="pending-input-text">{input.prompt}</div>}
+                {input.attachments.length > 0 && <div className="pending-input-attachments">
+                  {input.attachments.map((part, index) =>
+                    part.type === 'image' && part.source.kind === 'base64'
+                      ? <img key={index} src={`data:${part.source.mime_type};base64,${part.source.data}`} alt="待发图片" />
+                      : part.type === 'file' ? <span key={index}>{part.filename}</span> : null,
+                  )}
+                </div>}
+              </div>
+              <div className="pending-input-actions">
+                <div className="pending-input-modes" role="group" aria-label="发送时机">
+                  <button type="button" aria-pressed={input.mode === 'after'} disabled={!running || !!busyInput || sending}
+                    onClick={() => void changeMode(input, 'after')} title="当前执行结束后发送">轮后发送</button>
+                  <button type="button" aria-pressed={input.mode === 'steer'} disabled={!running || !!busyInput || sending}
+                    onClick={() => void changeMode(input, 'steer')} title="在下个可插入点引导当前执行">插入引导</button>
+                </div>
+                <button type="button" className="pending-input-take" disabled={!!busyInput || sending}
+                  onClick={() => void takeInput(input.id)}>取回编辑</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       {dragging && <div className="composer-drop-hint">松开以上传文件</div>}
       {(files.length > 0 || uploadedFiles.length > 0) && (
         <div className="composer-attachments">
@@ -337,6 +417,7 @@ export function Composer({
                 <span className="attachment-file">{file.filename}</span>
               )}
               <button
+                disabled={sending}
                 onClick={() => setFiles(prev => prev.filter((_, i) => i !== index))}
                 title="移除文件"
                 aria-label="移除文件"
@@ -349,6 +430,7 @@ export function Composer({
             <figure key={`uploaded-${index}`} className="attachment-chip">
               <span className="attachment-file" title={file.filename}>{file.filename}</span>
               <button
+                disabled={sending}
                 onClick={() => setUploadedFiles(prev => prev.filter((_, i) => i !== index))}
                 title="移除文件"
                 aria-label={`移除文件 ${file.filename}`}
@@ -413,7 +495,8 @@ export function Composer({
         ref={textareaRef}
         value={text}
         rows={1}
-        placeholder={running ? '正在执行…' : '输入消息，/ 选择技能，@ 引用文件或文件夹，Enter 发送，Shift+Enter 换行'}
+        readOnly={sending}
+        placeholder={running ? '输入后 Enter 排队，可在待发消息中切换为引导' : '输入消息，/ 选择技能，@ 引用文件或文件夹，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
           resetPalette()
@@ -438,7 +521,7 @@ export function Composer({
               event.target.value = ''
             }}
           />
-          <button className="icon-ghost" onClick={() => fileInputRef.current?.click()} title="添加文件" aria-label="添加文件">
+          <button className="icon-ghost" disabled={sending} onClick={() => fileInputRef.current?.click()} title="添加文件" aria-label="添加文件">
             <IconPlus size={17} />
           </button>
           {controls}
@@ -447,15 +530,16 @@ export function Composer({
         {contextRatio !== undefined && onOpenStats && (
           <ContextRing ratio={contextRatio} text={contextText ?? ''} onClick={onOpenStats} />
         )}
-        {running ? (
-          <button className="send-button stop" onClick={onStop} title="停止" aria-label="停止">
+        {running && (
+          <button className="icon-ghost" onClick={onStop} title="停止执行" aria-label="停止执行">
             <IconStop size={15} />
           </button>
-        ) : (
-          <button className="send-button" onClick={send} disabled={!hasContent || uploading > 0} title="发送" aria-label="发送">
-            <IconArrowUp size={17} />
-          </button>
         )}
+          <button className={`send-button${running ? ' queue' : ''}`} onClick={() => void send()}
+            disabled={!hasContent || sending || !!busyInput || uploading > 0}
+            title={running ? '本轮结束后发送' : '发送'} aria-label={running ? '加入待发消息' : '发送'}>
+            {running ? '排队' : <IconArrowUp size={17} />}
+          </button>
         </div>
       </div>
     </div>

@@ -246,6 +246,8 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent, events: &mut EventRx) {
         KeyCode::Enter => {
             if is_newline_enter(&key) {
                 app.insert_char('\n');
+            } else if app.input.is_empty() {
+                app.submit_input().await;
             } else {
                 let is_rapid_paste = app
                     .last_key_input_time
@@ -260,7 +262,12 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent, events: &mut EventRx) {
                     };
 
                     if let Some(next_ev) = upcoming_event {
-                        app.insert_char('\n');
+                        if matches!(&next_ev, CrosstermEvent::Key(next) if next.code == KeyCode::Enter && !is_newline_enter(next))
+                        {
+                            app.submit_input().await;
+                        } else {
+                            app.insert_char('\n');
+                        }
                         Box::pin(handle_crossterm_event(app, next_ev, events)).await;
                     } else {
                         app.submit_input().await;
@@ -296,6 +303,10 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent, events: &mut EventRx) {
             app.input.move_cursor_right();
         }
         KeyCode::Up => {
+            if app.input.is_empty() && !app.view.pending_inputs.is_empty() {
+                app.select_pending_input(-1);
+                return;
+            }
             let (row, _) = app.input.cursor_line_and_col();
             if app.input.is_empty() || app.history_index.is_some() || row == 0 {
                 if !app.prompt_history.is_empty() {
@@ -308,6 +319,10 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent, events: &mut EventRx) {
             }
         }
         KeyCode::Down => {
+            if app.input.is_empty() && !app.view.pending_inputs.is_empty() {
+                app.select_pending_input(1);
+                return;
+            }
             let (row, _) = app.input.cursor_line_and_col();
             let line_count = app.input.line_count();
             if app.history_index.is_some() {
@@ -560,15 +575,14 @@ fn is_ctrl_key(key: &KeyEvent, canonical: char) -> bool {
     }
 }
 
-/// Esc 在生成时中止当前轮；空闲时级联清除界面选区与输入。
+/// Esc 优先撤回待发消息，正文草稿保持可编辑；停止使用 Ctrl+C。
 async fn handle_escape(app: &mut App) {
-    if app.active_session.is_running() {
-        if let Err(error) = app.active_session.abort_current().await {
-            app.feedback.push(error);
-        }
+    if !app.view.pending_inputs.is_empty() {
+        app.retreat_pending_input().await;
+    } else if !app.input.is_empty() || !app.input_attachments.is_empty() {
+        app.clear_input_selection();
     } else {
         let has_selection = app.input.selection.is_some()
-            || !app.input.is_empty()
             || app.chat.selection.is_some()
             || app.sidebar.selection.is_some();
         if has_selection {
@@ -592,12 +606,10 @@ async fn handle_escape(app: &mut App) {
     }
 }
 
-/// Esc 级联：清除输入选区 → 清空输入 → 清除聊天选区 → 清除侧边栏选区
+/// 清除输入选区 → 清除聊天选区 → 清除侧边栏选区。
 fn escape_clear(app: &mut App) {
     if app.input.selection.is_some() {
         app.clear_input_selection();
-    } else if !app.input.is_empty() {
-        app.clear_input();
     } else if app.chat.selection.is_some() {
         app.chat.selection.clear();
     } else if app.sidebar.selection.is_some() {
@@ -610,7 +622,7 @@ async fn handle_abort_or_quit(app: &mut App) {
     if app.copy_active_selection() {
         return;
     }
-    if !app.input.is_empty() {
+    if !app.input.is_empty() || !app.input_attachments.is_empty() {
         app.clear_input();
     } else if app.active_session.is_running() {
         if let Err(error) = app.active_session.abort_current().await {

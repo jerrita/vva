@@ -16,7 +16,8 @@ fn on_off(arg: &str) -> Option<bool> {
 impl App {
     pub async fn submit_input(&mut self) {
         let input_text = self.input.trim().to_string();
-        if input_text.is_empty() {
+        if input_text.is_empty() && self.input_attachments.is_empty() {
+            self.advance_pending_input().await;
             return;
         }
 
@@ -27,32 +28,47 @@ impl App {
         self.history_index = None;
         self.saved_draft.clear();
 
-        self.clear_input();
-        self.clear_selections();
-
         self.feedback.clear();
         // 处理斜杠命令
         if input_text.starts_with('/') {
+            if crate::skills::match_invocation(&input_text, &self.skills).is_some() {
+                if self.submit_prompt(&input_text).await {
+                    self.clear_input();
+                    self.input_attachments.clear();
+                }
+                return;
+            }
+            self.clear_input();
             self.handle_slash_command(&input_text).await;
             return;
         }
 
         // 普通用户 Prompt
-        self.submit_prompt(&input_text).await;
+        if self.submit_prompt(&input_text).await {
+            self.clear_input();
+            self.input_attachments.clear();
+            self.clear_selections();
+        }
     }
 
     /// 提交普通用户 Prompt 到当前会话
-    async fn submit_prompt(&mut self, prompt: &str) {
+    async fn submit_prompt(&mut self, prompt: &str) -> bool {
         self.auto_scroll = true;
 
-        if let Err(e) = self
-            .session_mgr
-            .submit_prompt(self.active_session.clone(), prompt)
-            .await
-        {
+        let result = if self.input_attachments.is_empty() {
+            self.session_mgr
+                .submit_prompt(self.active_session.clone(), prompt)
+                .await
+        } else {
+            self.active_session
+                .submit(prompt, self.input_attachments.clone(), None)
+                .await
+        };
+        if let Err(e) = &result {
             self.feedback.push(format!("Error: {e}"));
         }
         self.refresh_view();
+        result.is_ok()
     }
 
     /// 设置或切换原生网络搜索（/search 命令与 Config 弹窗共用）

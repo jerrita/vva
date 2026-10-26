@@ -14,6 +14,15 @@ fn default_tool_mode(full_only: bool) -> ToolExpand {
 impl App {
     pub fn refresh_view(&mut self) {
         let view = self.active_session.snapshot();
+        if let Some(last) = view.pending_inputs.last()
+            && !self
+                .view
+                .pending_inputs
+                .iter()
+                .any(|input| input.id == last.id)
+        {
+            self.selected_input = Some(last.id.clone());
+        }
         if !std::sync::Arc::ptr_eq(&view.session, &self.view.session) {
             self.stats = compute_stats(&view.session, &self.session_mgr.app_config());
         }
@@ -30,6 +39,7 @@ impl App {
 
     /// 接管一个会话句柄：重置界面局部状态并订阅其视图（切换、新建共用）
     pub fn attach_session(&mut self, session: std::sync::Arc<crate::harness::ManagedSession>) {
+        self.selected_input = None;
         self.active_session = session;
         self.view_rx = self.active_session.subscribe();
         self.clear_selections();

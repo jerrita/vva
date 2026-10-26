@@ -85,6 +85,7 @@ export function applySessionDelta(previous: SessionSnapshot, delta: SessionDelta
   }
   return {
     shell_outputs: shellOutputs,
+    pending_inputs: delta.pending_inputs ?? previous.pending_inputs,
     revision: delta.revision,
     state: delta.state,
     persisted: delta.persisted,

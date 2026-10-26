@@ -171,6 +171,7 @@ export interface Turn {
   usage?: TokenUsage
   elapsed_ms?: number
   worked_ms?: number
+  steering?: boolean
   background_task?: BackgroundTask
 }
 
@@ -209,6 +210,7 @@ export interface SessionSummary {
 }
 
 export interface SessionSnapshot {
+  pending_inputs: PendingInput[]
   revision: number
   state: string
   persisted: boolean
@@ -224,6 +226,7 @@ export interface SessionSnapshot {
 
 /** Web 传输增量；session 元信息整体替换，缺席的可选字段随之清空。 */
 export interface SessionDelta {
+  pending_inputs?: PendingInput[]
   base_revision: number
   revision: number
   state: string
@@ -242,6 +245,15 @@ export interface SessionDelta {
     )[]
   }
   pending_user_question?: UserQuestionRequest | null
+}
+
+export type InputMode = 'after' | 'steer'
+
+export interface PendingInput {
+  id: string
+  prompt: string
+  attachments: ContentPart[]
+  mode: InputMode
 }
 
 export interface ModelEntry {

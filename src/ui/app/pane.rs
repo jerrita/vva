@@ -548,7 +548,7 @@ fn turn_is_system_reminder(turn: &Turn) -> bool {
 
 /// 运行段边界：真实用户消息；机器注入 reminder（含后台任务通知）随行注入不算
 fn turn_is_user_boundary(turn: &Turn) -> bool {
-    turn.role == Role::User && !turn_is_system_reminder(turn)
+    turn.role == Role::User && !turn.steering && !turn_is_system_reminder(turn)
 }
 
 fn shift_line(line: &mut usize, from: usize, change: isize) {

@@ -72,6 +72,7 @@ classDiagram
 [`src/model/turn.rs`](../src/model/turn.rs)。交互与计费结算锚点，身份与元数据的唯一归属层：
 
 - `role: Role`（`User` / `Assistant` / `Tool` / `System`）；
+- `steering: bool`：用户在当前执行中插入的引导，缺省 `false` 且省略序列化；展示时延续当前运行段；
 - `usage: TokenUsage`（`prompt_tokens` / `completion_tokens` / `total_tokens` / `cached_tokens` / `reasoning_tokens`）；
 - `meta: TurnMeta`，轮次级强类型供应商元数据（§3）。
 
