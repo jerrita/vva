@@ -391,6 +391,19 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
     let is_tui = matches!(&command, Commands::Run { prompt: None, .. });
 
     let filter = log_filter(&cli.log_level)?;
+    let subscriber = tracing_subscriber::fmt()
+        .with_timer(
+            (|writer: &mut tracing_subscriber::fmt::format::Writer<'_>| {
+                write!(
+                    writer,
+                    "{}",
+                    chrono::Utc::now().format("%m-%d %H:%M:%S%.3f")
+                )
+            })
+                as fn(&mut tracing_subscriber::fmt::format::Writer<'_>) -> std::fmt::Result,
+        )
+        .with_target(false)
+        .with_env_filter(filter);
     if is_tui {
         // TUI 模式下日志写入文件
         let log_file = std::fs::OpenOptions::new()
@@ -398,13 +411,10 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
             .append(true)
             .open(vva_dir.join("vva.log"));
         if let Ok(file) = log_file {
-            let _ = tracing_subscriber::fmt()
-                .with_writer(Arc::new(file))
-                .with_env_filter(filter)
-                .try_init();
+            let _ = subscriber.with_writer(Arc::new(file)).try_init();
         }
     } else {
-        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+        let _ = subscriber.try_init();
     }
 
     let app_config = match load_config(cli.config.as_deref()) {
