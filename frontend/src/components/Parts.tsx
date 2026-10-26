@@ -1,3 +1,4 @@
+import { memo, useLayoutEffect, useRef, useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import type { PreviewFile } from '../hooks/usePanelLayout'
 import type {
@@ -7,6 +8,7 @@ import type {
   MediaSource,
   ToolCall,
   ToolResult,
+  ShellOutput,
   WebSearchCall,
 } from '../types'
 import { editDiffs } from '../utils/editDiff'
@@ -54,7 +56,7 @@ type Block =
 const BATCHABLE = new Set([READ, HASHLINE_READ, GREP, HASHLINE_GREP, GLOB])
 const BATCH_MIN = 3
 
-function toSteps(parts: ContentPart[], tasks?: TaskTrace): (Step | Exclude<Block, { kind: 'trace' }>)[] {
+function toSteps(parts: ContentPart[], tasks?: Pick<TaskTrace, 'queryOwners'>): (Step | Exclude<Block, { kind: 'trace' }>)[] {
   const out: (Step | Exclude<Block, { kind: 'trace' }>)[] = []
   const tools = new Map<string, ToolStep>()
   for (const part of parts) {
@@ -131,7 +133,7 @@ function batchSteps(steps: Step[]): Step[] {
   return out
 }
 
-function toBlocks(parts: ContentPart[], tasks?: TaskTrace): Block[] {
+function toBlocks(parts: ContentPart[], tasks?: Pick<TaskTrace, 'queryOwners'>): Block[] {
   const blocks: Block[] = []
   let trace: Step[] | null = null
   for (const node of toSteps(parts, tasks)) {
@@ -259,14 +261,15 @@ function StepRow({
   title?: string
   tone?: 'error'
 }) {
+  const [open, setOpen] = useState(false)
   const className = `step${tone ? ` ${tone}` : ''}`
   if (body) {
     return (
-      <details className={className}>
+      <details className={className} onToggle={event => setOpen(event.currentTarget.open)}>
         <summary className="step-line" title={title}>
           <StepLine {...line} affordance="expand" />
         </summary>
-        <div className="step-body">{body}</div>
+        <div className="step-body">{open ? body : null}</div>
       </details>
     )
   }
@@ -328,13 +331,31 @@ function DiffView({
   )
 }
 
-function OutputView({ command, content }: { command?: string; content?: string }) {
+const OutputView = memo(function OutputView({ command, content, streaming = false }: { command?: string; content?: string; streaming?: boolean }) {
+  const pane = useRef<HTMLPreElement>(null)
+  const following = useRef(true)
+  useLayoutEffect(() => {
+    if (streaming && following.current && pane.current) pane.current.scrollTop = pane.current.scrollHeight
+  }, [content, streaming])
   return (
-    <pre className="step-output">
+    <pre className="step-output" ref={pane} onScroll={event => {
+      const el = event.currentTarget
+      following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 16
+    }}>
       {command && <span className="step-command">{command}</span>}
-      {content === undefined ? null : content.trim() ? content.replace(/\n+$/, '') : <span className="step-empty">（无输出）</span>}
+      {content === undefined ? null : content.length ? content.replace(/\n+$/, '') : <span className="step-empty">（无输出）</span>}
     </pre>
   )
+})
+
+function ShellOutputView({ command, output }: { command?: string; output: ShellOutput }) {
+  return <>
+    <OutputView command={command} content={output.text} streaming />
+    {(output.start > 0 || output.error) && <div className="task-meta">
+      {output.start > 0 && <span>输出已截断，展示末尾内容</span>}
+      {output.error && <span>{output.error}</span>}
+    </div>}
+  </>
 }
 
 function toolGlyph(view: ToolView, result: ToolResult | null, live: boolean): GlyphState {
@@ -343,7 +364,7 @@ function toolGlyph(view: ToolView, result: ToolResult | null, live: boolean): Gl
   return view.cls
 }
 
-function ToolRow({
+const ToolRow = memo(function ToolRow({
   step,
   live,
   workspace,
@@ -365,16 +386,19 @@ function ToolRow({
     : []
   const view = describeTool(call, result, workspace, diffs)
   const task = result?.background_task_id ? tasks?.tasks[result.background_task_id] : undefined
-  const error = (result?.is_error ?? false) || task?.status === 'failed'
+  const output = tasks?.shellOutputs?.[call.id] ?? result?.shell_output ?? task?.shell_output
+  const error = (result?.is_error ?? false) || task?.status === 'failed' || (!task && !!output?.error)
   const line: LineProps = {
-    glyph: error ? 'error' : task?.status === 'running' ? `${view.cls} running` : toolGlyph(view, result, live),
+    glyph: error ? 'error' : (output && !output.finished) || task?.status === 'running' ? `${view.cls} running` : toolGlyph(view, result, live),
     verb: view.verb,
     target: view.target,
     mono: view.mono,
     secondary: view.secondary,
     outcome: task
       ? <span className={`step-outcome${error ? ' fail' : ''}`}>{taskLabel(task)}</span>
-      : <OutcomeView outcome={view.outcome} error={error} />,
+      : output && !output.finished
+        ? <span className="step-outcome">运行中</span>
+        : <OutcomeView outcome={view.outcome} error={error} />,
   }
 
   let body: ReactNode = null
@@ -384,7 +408,7 @@ function ToolRow({
       <>
         {call.name === 'Agent'
           ? <div className="task-reply"><Markdown text={task.output || (task.status === 'running' ? '等待回复…' : '（无回复）')} /></div>
-          : <OutputView command={view.command} content={task.output} />}
+          : output ? <ShellOutputView command={view.command} output={output} /> : <OutputView command={view.command} content={task.output} />}
         <div className="task-meta">
           <span>{task.task_id}</span>
           {task.exit_code != null && <span>退出码 {task.exit_code}</span>}
@@ -399,6 +423,8 @@ function ToolRow({
         ))}
       </>
     )
+  } else if (output) {
+    body = <ShellOutputView command={view.command} output={output} />
   } else if (error && result) {
     body = <OutputView command={view.command} content={result.content} />
   } else if (view.body === 'diff' && diffs.length > 0) {
@@ -420,7 +446,11 @@ function ToolRow({
       tone={error ? 'error' : undefined}
     />
   )
-}
+}, (a, b) => a.step.call === b.step.call && a.step.result === b.step.result &&
+  a.live === b.live && a.workspace === b.workspace && a.onPreviewFile === b.onPreviewFile &&
+  a.tasks?.tasks === b.tasks?.tasks && a.tasks?.queries === b.tasks?.queries &&
+  a.tasks?.shellOutputs?.[a.step.call.id] === b.tasks?.shellOutputs?.[b.step.call.id])
+
 
 function BatchRow({
   name,
@@ -644,7 +674,8 @@ export function Parts({
   onPreviewFile?: PreviewFile
   tasks?: TaskTrace
 }) {
-  const blocks = toBlocks(parts, tasks)
+  const queryOwners = tasks?.queryOwners
+  const blocks = useMemo(() => toBlocks(parts, queryOwners ? { queryOwners } : undefined), [parts, queryOwners])
   return (
     <>
       {blocks.map((block, index) => {

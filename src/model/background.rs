@@ -19,6 +19,8 @@ pub struct BackgroundTask {
     pub task_id: String,
     pub status: BackgroundTaskStatus,
     pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_output: Option<Box<super::ShellOutput>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -32,6 +34,7 @@ impl BackgroundTask {
             task_id,
             status: BackgroundTaskStatus::Running,
             output: String::new(),
+            shell_output: None,
             exit_code: None,
             total_bytes: None,
             truncated: false,

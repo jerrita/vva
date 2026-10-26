@@ -10,6 +10,7 @@ use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
     ChatRender, RenderState, append_collapsed_response, append_parts, append_turn_outcome,
     collect_query_owners, collect_tool_results, extract_selected_text, is_empty_session,
+    push_tool_call,
 };
 
 use super::draft::DraftRenderCache;
@@ -169,6 +170,8 @@ pub struct ChatCache {
     thinking_concise: bool,
     responses_collapsed: bool,
     notices: Vec<crate::harness::Notice>,
+    shell_outputs: Arc<std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>>,
+    shell_calls: HashMap<String, crate::model::ToolCall>,
     tasks: Arc<std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
     query_owners: HashMap<String, String>,
     history_lines: usize,
@@ -220,6 +223,7 @@ macro_rules! chat_render {
         ChatRender {
             notices: &$app.view.notices,
             tasks: &$app.view.background_tasks,
+            shell_outputs: &$app.view.shell_outputs,
             query_owners: $queries,
             lines: &mut $app.chat.lines,
             links: &mut $app.chat.links,
@@ -313,6 +317,20 @@ impl super::App {
             || cache.query_owners != query_owners
             || self.chat.lines.is_empty()
         {
+            cache.shell_calls = self
+                .view
+                .session
+                .turns
+                .iter()
+                .flat_map(|turn| &turn.messages)
+                .flat_map(|message| &message.parts)
+                .filter_map(|part| match part {
+                    ContentPart::ToolCall(call) if call.name == crate::tools::names::SHELL => {
+                        Some((call.id.clone(), call.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
             self.chat.lines.clear();
             self.chat.links.clear();
             cache.render_state = RenderState::default();
@@ -423,8 +441,78 @@ impl super::App {
             cache.response_expand.clone_from(&self.response_expand);
             cache.citations_expand.clone_from(&self.citations_expand);
             cache.draft.reset();
-        } else if cache.revision == self.view.revision {
-            return;
+        } else {
+            if cache.revision == self.view.revision {
+                return;
+            }
+            if !Arc::ptr_eq(&cache.shell_outputs, &self.view.shell_outputs) {
+                // 只重排变化的 Shell 块，保留历史文本、Markdown 与其他工具的已渲染行。
+                // 从后向前替换，使尚未处理的块坐标保持有效。
+                let changed: Vec<_> = cache
+                    .tool_hits
+                    .iter()
+                    .filter(|hit| {
+                        match (
+                            cache.shell_outputs.get(&hit.id),
+                            self.view.shell_outputs.get(&hit.id),
+                        ) {
+                            (Some(a), Some(b)) if Arc::ptr_eq(a, b) => false,
+                            (Some(a), Some(b))
+                                if self.tool_expand.get(&hit.id) == Some(&ToolExpand::Hidden) =>
+                            {
+                                a.finished != b.finished || a.error != b.error
+                            }
+                            (None, None) => false,
+                            _ => true,
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                let mut shifted = false;
+                for old in changed.into_iter().rev() {
+                    let Some(call) = cache.shell_calls.get(&old.id).cloned() else {
+                        continue;
+                    };
+                    let mut lines = Vec::new();
+                    let mut hits = Vec::new();
+                    let mut links = Vec::new();
+                    {
+                        let mut render = chat_render!(self, cache, &results, &query_owners, width);
+                        render.lines = &mut lines;
+                        render.hits = &mut hits;
+                        render.links = &mut links;
+                        push_tool_call(&mut render, &call);
+                    }
+                    let end = if old.block_end > old.header_end {
+                        old.block_end + 1
+                    } else {
+                        old.header_end
+                    };
+                    let change = lines.len() as isize - (end - old.header_start) as isize;
+                    shifted |= change != 0;
+                    self.chat.lines.splice(old.header_start..end, lines);
+                    cache.shift_lines(end, change);
+                    for link in &mut self.chat.links {
+                        shift_line(&mut link.line, end, change);
+                    }
+                    if !self.auto_scroll {
+                        shift_line(&mut self.scroll_offset, end, change);
+                    }
+                    let mut hit = hits.pop().expect("shell tool hit");
+                    hit.header_start += old.header_start;
+                    hit.header_end += old.header_start;
+                    hit.block_start += old.header_start;
+                    hit.block_end += old.header_start;
+                    if let Some(previous) = cache.tool_hits.iter_mut().find(|hit| hit.id == old.id)
+                    {
+                        *previous = hit;
+                    }
+                }
+                // 草稿边界可能移动，重置其行坐标；历史内容保持缓存。
+                if shifted {
+                    cache.draft.reset();
+                }
+            }
         }
         // 草稿区：历史边界之后增量渲染，未变部件与已提交行不重算
         let draft = self.view.draft.clone();
@@ -447,6 +535,7 @@ impl super::App {
         cache.revision = self.view.revision;
         cache.notices.clone_from(&self.view.notices);
         cache.tasks.clone_from(&self.view.background_tasks);
+        cache.shell_outputs.clone_from(&self.view.shell_outputs);
         cache.query_owners = query_owners;
     }
 }
@@ -460,4 +549,40 @@ fn turn_is_system_reminder(turn: &Turn) -> bool {
 /// 运行段边界：真实用户消息；机器注入 reminder（含后台任务通知）随行注入不算
 fn turn_is_user_boundary(turn: &Turn) -> bool {
     turn.role == Role::User && !turn_is_system_reminder(turn)
+}
+
+fn shift_line(line: &mut usize, from: usize, change: isize) {
+    if *line >= from {
+        *line = line.saturating_add_signed(change);
+    }
+}
+
+impl ChatCache {
+    fn shift_lines(&mut self, from: usize, change: isize) {
+        shift_line(&mut self.history_lines, from, change);
+        for hit in &mut self.tool_hits {
+            shift_line(&mut hit.header_start, from, change);
+            shift_line(&mut hit.header_end, from, change);
+            shift_line(&mut hit.block_start, from, change);
+            shift_line(&mut hit.block_end, from, change);
+        }
+        for hit in &mut self.thought_hits {
+            shift_line(&mut hit.header_start, from, change);
+            shift_line(&mut hit.header_end, from, change);
+            shift_line(&mut hit.body_start, from, change);
+            shift_line(&mut hit.body_end, from, change);
+        }
+        for hit in &mut self.citations_hits {
+            shift_line(&mut hit.header_start, from, change);
+            shift_line(&mut hit.header_end, from, change);
+        }
+        for hit in &mut self.user_hits {
+            shift_line(&mut hit.line_start, from, change);
+            shift_line(&mut hit.line_end, from, change);
+        }
+        for hit in &mut self.response_hits {
+            shift_line(&mut hit.line_start, from, change);
+            shift_line(&mut hit.line_end, from, change);
+        }
+    }
 }

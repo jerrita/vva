@@ -29,6 +29,7 @@ struct Env<'r> {
     expand: HashMap<String, ToolExpand>,
     thought_expand: HashMap<String, bool>,
     citations_expand: HashMap<String, bool>,
+    shell_outputs: std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>,
     tasks: std::collections::BTreeMap<String, crate::model::BackgroundTask>,
     query_owners: HashMap<String, String>,
 }
@@ -42,6 +43,7 @@ impl Default for Env<'_> {
             expand: HashMap::new(),
             thought_expand: HashMap::new(),
             citations_expand: HashMap::new(),
+            shell_outputs: Default::default(),
             tasks: Default::default(),
             query_owners: Default::default(),
         }
@@ -63,6 +65,7 @@ impl Sink {
     fn render<'a>(&'a mut self, env: &'a Env<'_>) -> ChatRender<'a> {
         ChatRender {
             notices: &[],
+            shell_outputs: &env.shell_outputs,
             tasks: &env.tasks,
             query_owners: &env.query_owners,
             lines: &mut self.lines,
@@ -456,6 +459,7 @@ fn build_chat_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         thought_expand: app.thought_expand.clone(),
         citations_expand: app.citations_expand.clone(),
         tasks: (*app.view.background_tasks).clone(),
+        shell_outputs: (*app.view.shell_outputs).clone(),
         query_owners: collect_query_owners(&app.view, &collect_tool_results(&app.view)),
     };
     let mut sink = Sink::default();
@@ -1931,4 +1935,58 @@ fn hashline_edit_failure_shows_patch_and_error() {
     let (text, _) = render_call(&call, Some(&result), &[]);
     assert!(text.contains("[src/a.rs#1A2B]"), "{text}");
     assert!(text.contains("stale_tag"));
+}
+
+#[tokio::test]
+async fn shell_output_updates_only_its_cached_block_and_preserves_coordinates() {
+    let mut app = create_test_app().await;
+    app.add_part(Role::User, ContentPart::text("Cached synthetic history"));
+    let call = ToolCall::new(
+        "stream",
+        "Shell",
+        r#"{"intent":"Stream fixture","command":"fixture"}"#,
+    );
+    app.add_part(Role::Assistant, ContentPart::ToolCall(call));
+    app.add_part(Role::User, ContentPart::text("Later synthetic history"));
+    app.refresh_chat_lines(80);
+    let prefix = app
+        .chat
+        .lines
+        .iter()
+        .flat_map(|line| &line.spans)
+        .find(|span| span.content.contains("Cached synthetic"))
+        .unwrap()
+        .content
+        .as_ptr();
+    for text in ["partial", "first\nsecond\nthird", "short", ""] {
+        let view = Arc::make_mut(&mut app.view);
+        view.revision += 1;
+        Arc::make_mut(&mut view.shell_outputs).insert(
+            "stream".into(),
+            Arc::new(crate::model::ShellOutput {
+                revision: view.revision,
+                text: text.into(),
+                ..Default::default()
+            }),
+        );
+        let expected = build_chat_lines(&app, 80);
+        app.refresh_chat_lines(80);
+        assert_eq!(app.chat.lines, expected);
+        let current = app
+            .chat
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .find(|span| span.content.contains("Cached synthetic"))
+            .unwrap()
+            .content
+            .as_ptr();
+        assert_eq!(current, prefix, "unrelated history was rendered again");
+        let later = app.chat_cache.user_hits.last().unwrap();
+        assert!(
+            app.chat.lines[later.line_start..later.line_end]
+                .iter()
+                .any(|line| line.to_string().contains("Later synthetic"))
+        );
+    }
 }

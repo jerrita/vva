@@ -1,4 +1,4 @@
-import type { BackgroundTask, ContentPart, ToolCall, ToolResult } from '../types'
+import type { BackgroundTask, ContentPart, ToolCall, ToolResult, ShellOutput } from '../types'
 
 export interface TaskQuery {
   call: ToolCall
@@ -6,6 +6,7 @@ export interface TaskQuery {
 }
 
 export interface TaskTrace {
+  shellOutputs?: Record<string, ShellOutput>
   tasks: Record<string, BackgroundTask>
   queryOwners: Map<string, string>
   queries: Map<string, TaskQuery[]>

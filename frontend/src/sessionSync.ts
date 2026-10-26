@@ -60,7 +60,31 @@ export function applySessionDelta(previous: SessionSnapshot, delta: SessionDelta
     }
     if (draft.length !== len) throw new Error('会话草稿增量不完整')
   }
+  let shellOutputs = previous.shell_outputs
+  if (delta.shell_outputs) {
+    shellOutputs = { ...shellOutputs }
+    for (const patch of delta.shell_outputs) {
+      if (patch.type === 'remove') {
+        delete shellOutputs[patch.id]
+      } else if (patch.type === 'set') {
+        shellOutputs[patch.id] = patch.output
+      } else {
+        const old = shellOutputs[patch.id]
+        if (!old || old.revision !== patch.base_revision || patch.revision <= old.revision ||
+          !Number.isInteger(patch.drop) || patch.drop < 0 || patch.drop > old.text.length ||
+          patch.start < old.start) {
+          throw new Error('命令输出增量版本或区间不匹配')
+        }
+        shellOutputs[patch.id] = {
+          revision: patch.revision, start: patch.start,
+          text: old.text.slice(patch.drop) + patch.text,
+          total_bytes: patch.total_bytes, finished: patch.finished, error: patch.error,
+        }
+      }
+    }
+  }
   return {
+    shell_outputs: shellOutputs,
     revision: delta.revision,
     state: delta.state,
     persisted: delta.persisted,

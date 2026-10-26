@@ -93,6 +93,8 @@ pub(super) fn push_tool_block(
     lines: &mut Vec<Line<'static>>,
     call: &ToolCall,
     result: Option<&ToolResult>,
+    shell_output: Option<&crate::model::ShellOutput>,
+    query_errors: &[&str],
     full: bool,
     max_width: usize,
 ) -> bool {
@@ -110,6 +112,47 @@ pub(super) fn push_tool_block(
             max_width,
         );
         push_filled_blank(lines, max_width);
+    }
+
+    if let Some(output) = shell_output {
+        // 预览只排版尾部有限行；全文档位仍受采集缓冲上限约束。
+        let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };
+        let mut body = Vec::new();
+        let text = if full {
+            output.text.as_str()
+        } else {
+            let mut start = output
+                .text
+                .len()
+                .saturating_sub(max_width.saturating_mul(cap).saturating_mul(4));
+            while !output.text.is_char_boundary(start) {
+                start += 1;
+            }
+            &output.text[start..]
+        };
+        let tail: Vec<_> = text.lines().rev().take(cap).collect();
+        for line in tail.iter().rev() {
+            push_filled_text(&mut body, line, cmd_style, max_width);
+        }
+        let from = body.len().saturating_sub(cap);
+        let truncated = from > 0 || text.len() < output.text.len() || text.lines().count() > cap;
+        lines.extend(body.into_iter().skip(from));
+        if output.start > 0 {
+            push_filled_text(lines, "输出已截断，展示末尾内容", hint_style, max_width);
+        }
+        if let Some(error) = &output.error {
+            push_filled_text(lines, error, fg(Color::Rgb(220, 120, 120)), max_width);
+        }
+        for error in query_errors {
+            push_filled_text(
+                lines,
+                &format!("查询失败: {error}"),
+                fg(Color::Rgb(220, 120, 120)),
+                max_width,
+            );
+        }
+        push_block_tail(lines, truncated, max_width, hint_style);
+        return truncated;
     }
 
     let cap = if full { usize::MAX } else { TOOL_PREVIEW_LIMIT };

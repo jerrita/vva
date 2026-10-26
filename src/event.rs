@@ -39,6 +39,10 @@ pub enum AgentEvent {
     Capabilities(Vec<String>),
     /// 后台工具块的生命周期快照。
     BackgroundTaskUpdated(crate::model::BackgroundTask),
+    ShellOutputUpdated {
+        call_id: String,
+        output: std::sync::Arc<crate::model::ShellOutput>,
+    },
     Finished,
     /// 轮次被用户取消（区别于正常完成）
     Aborted,

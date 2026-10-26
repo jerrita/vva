@@ -2,13 +2,13 @@
 //! 任务为内存态、随会话结束回收；完成经 CompletionSink 回投会话，
 //! 由 SessionTask 注入用户轮次并自动续跑。
 
+use super::shell_output::{OutputCapture, OutputHandle};
 use async_trait::async_trait;
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::io::AsyncReadExt;
 
 use super::parse_args;
 use super::{Tool, TruncateSide, truncate_utf8};
@@ -28,6 +28,9 @@ pub enum BackgroundStatus {
     Running,
     /// TaskStop / 会话回收终止
     Killed,
+    Failed {
+        error: String,
+    },
     /// code 为 None 表示被信号终止
     Exited {
         code: Option<i32>,
@@ -37,6 +40,7 @@ pub enum BackgroundStatus {
 pub fn status_line(status: &BackgroundStatus) -> String {
     match status {
         BackgroundStatus::Running => "running".to_string(),
+        BackgroundStatus::Failed { error } => format!("failed: {error}"),
         BackgroundStatus::Killed => "stopped by TaskStop".to_string(),
         BackgroundStatus::Exited { code: Some(code) } => format!("exited with code {code}"),
         BackgroundStatus::Exited { code: None } => "exited (killed by signal)".to_string(),
@@ -46,7 +50,7 @@ pub fn status_line(status: &BackgroundStatus) -> String {
 /// stdout 与 stderr 合并捕获的 keep-tail 缓冲
 #[derive(Default)]
 struct TaskOutputBuffer {
-    data: Vec<u8>,
+    data: VecDeque<u8>,
     /// 累计捕获字节数（含已丢弃部分），供模型判断是否有新输出
     total: u64,
 }
@@ -54,11 +58,11 @@ struct TaskOutputBuffer {
 impl TaskOutputBuffer {
     fn push(&mut self, chunk: &[u8]) {
         self.total = self.total.saturating_add(chunk.len() as u64);
-        self.data.extend_from_slice(chunk);
-        if self.data.len() > BACKGROUND_BUFFER_CAP {
-            let excess = self.data.len() - BACKGROUND_BUFFER_CAP;
-            self.data.drain(..excess);
-        }
+        let keep = BACKGROUND_BUFFER_CAP.saturating_sub(chunk.len());
+        let excess = self.data.len().saturating_sub(keep);
+        self.data.drain(..excess);
+        self.data
+            .extend(&chunk[chunk.len().saturating_sub(BACKGROUND_BUFFER_CAP)..]);
     }
 
     fn truncated(&self) -> bool {
@@ -71,6 +75,7 @@ struct TaskInner {
     status: BackgroundStatus,
     output: TaskOutputBuffer,
     pending: bool,
+    shell_output: Option<OutputHandle>,
 }
 
 struct BackgroundTask {
@@ -90,23 +95,26 @@ pub struct TaskSnapshot {
     pub truncated: bool,
     /// 已按 TASK_OUTPUT_TAIL 截尾、UTF-8 安全的输出
     pub tail: String,
+    pub shell_output: Option<crate::model::ShellOutput>,
 }
 
 impl TaskSnapshot {
     pub fn task(&self) -> crate::model::BackgroundTask {
         use crate::model::{BackgroundTask, BackgroundTaskStatus};
-        let (status, exit_code) = match self.status {
+        let (status, exit_code) = match &self.status {
             BackgroundStatus::Running => (BackgroundTaskStatus::Running, None),
+            BackgroundStatus::Failed { .. } => (BackgroundTaskStatus::Failed, None),
             BackgroundStatus::Killed => (BackgroundTaskStatus::Stopped, None),
             BackgroundStatus::Exited { code: Some(0) } => {
                 (BackgroundTaskStatus::Completed, Some(0))
             }
-            BackgroundStatus::Exited { code } => (BackgroundTaskStatus::Failed, code),
+            BackgroundStatus::Exited { code } => (BackgroundTaskStatus::Failed, *code),
         };
         BackgroundTask {
             task_id: self.id.clone(),
             status,
             output: self.tail.clone(),
+            shell_output: self.shell_output.clone().map(Box::new),
             exit_code,
             total_bytes: Some(self.total_bytes),
             truncated: self.total_bytes > self.tail.len() as u64,
@@ -134,19 +142,40 @@ impl BackgroundTasks {
     /// 后台启动命令，立即返回任务 id。子进程 kill_on_drop：
     /// monitor 中止（TaskStop / 会话回收）或运行时回收时兜底杀进程。
     pub fn spawn(&self, intent: &str, command: &str, working_dir: &Path) -> Result<String, String> {
-        let mut cmd = super::shell::workspace_shell_command(command, working_dir)?;
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to run command: {e}"))?;
+        self.spawn_captured(intent, command, working_dir, None)
+    }
+
+    pub(crate) fn spawn_captured(
+        &self,
+        intent: &str,
+        command: &str,
+        working_dir: &Path,
+        capture: Option<OutputCapture>,
+    ) -> Result<String, String> {
+        let child = (|| {
+            let mut cmd = super::shell::workspace_shell_command(command, working_dir)?;
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            cmd.spawn()
+                .map_err(|e| format!("Failed to run command: {e}"))
+        })();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(error) => {
+                if let Some(capture) = &capture {
+                    capture.handle.finish(Some(error.clone()));
+                }
+                return Err(error);
+            }
+        };
         let id = format!("task_{}", uuid::Uuid::new_v4().simple());
         let inner = Arc::new(Mutex::new(TaskInner {
             status: BackgroundStatus::Running,
             output: TaskOutputBuffer::default(),
             pending: true,
+            shell_output: capture.as_ref().map(|capture| capture.handle.clone()),
         }));
         self.tasks
             .lock()
@@ -160,21 +189,45 @@ impl BackgroundTasks {
                     monitor: None,
                 },
             );
-        let stdout = read_output(child.stdout.take(), inner.clone());
-        let stderr = read_output(child.stderr.take(), inner.clone());
+        let stdout_pipe = child.stdout.take().expect("stdout pipe");
+        let stderr_pipe = child.stderr.take().expect("stderr pipe");
         let sink = self.sink.clone();
         let monitor_id = id.clone();
         let monitor = tokio::spawn(async move {
             // 读取 future 随 monitor 取消回收；正常退出时等管道读尽再落终态。
-            let (exit, (), ()) = tokio::join!(child.wait(), stdout, stderr);
+            let handle = capture.as_ref().map(|capture| &capture.handle);
+            let (exit, stdout, stderr) = tokio::join!(
+                child.wait(),
+                super::shell_output::read_output(stdout_pipe, handle, None, |chunk| {
+                    inner.lock().expect("task state lock").output.push(chunk);
+                }),
+                super::shell_output::read_output(stderr_pipe, handle, None, |chunk| {
+                    inner.lock().expect("task state lock").output.push(chunk);
+                }),
+            );
+            let read_error = stdout.err().or_else(|| stderr.err());
+            if let Some(handle) = handle {
+                handle.finish(read_error.clone().or_else(|| {
+                    exit.as_ref()
+                        .err()
+                        .map(|e| format!("Failed to wait for command: {e}"))
+                }));
+            }
+            drop(capture);
             // TaskStop / 会话回收已置 Killed 且结果已内联或会话已退出：不再回投
             let notify = {
                 let mut inner = inner.lock().expect("task state lock poisoned");
                 if inner.status == BackgroundStatus::Killed {
                     false
                 } else {
-                    inner.status = BackgroundStatus::Exited {
-                        code: exit.ok().and_then(|status| status.code()),
+                    inner.status = match (read_error, exit) {
+                        (Some(error), _) => BackgroundStatus::Failed { error },
+                        (_, Err(error)) => BackgroundStatus::Failed {
+                            error: format!("Failed to wait for command: {error}"),
+                        },
+                        (_, Ok(status)) => BackgroundStatus::Exited {
+                            code: status.code(),
+                        },
                     };
                     true
                 }
@@ -210,7 +263,18 @@ impl BackgroundTasks {
             status: inner.status.clone(),
             total_bytes: inner.output.total,
             truncated: inner.output.truncated(),
-            tail: truncate_utf8(&inner.output.data, TASK_OUTPUT_TAIL, TruncateSide::Tail),
+            tail: truncate_utf8(
+                &inner
+                    .output
+                    .data
+                    .iter()
+                    .skip(inner.output.data.len().saturating_sub(TASK_OUTPUT_TAIL + 3))
+                    .copied()
+                    .collect::<Vec<_>>(),
+                TASK_OUTPUT_TAIL,
+                TruncateSide::Tail,
+            ),
+            shell_output: inner.shell_output.as_ref().map(OutputHandle::snapshot),
         })
     }
 
@@ -250,6 +314,9 @@ impl BackgroundTasks {
             ));
         }
         inner.status = BackgroundStatus::Killed;
+        if let Some(output) = &inner.shell_output {
+            output.finish(Some("Command stopped".into()));
+        }
         inner.pending = false;
         drop(inner);
         if let Some(monitor) = task.monitor.take() {
@@ -273,23 +340,6 @@ impl BackgroundTasks {
             }
         }
         tasks.clear();
-    }
-}
-
-async fn read_output(pipe: Option<impl AsyncReadExt + Unpin>, inner: Arc<Mutex<TaskInner>>) {
-    let Some(mut pipe) = pipe else {
-        return;
-    };
-    let mut buf = [0u8; 8192];
-    loop {
-        match pipe.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => inner
-                .lock()
-                .expect("task state lock poisoned")
-                .output
-                .push(&buf[..n]),
-        }
     }
 }
 
@@ -504,6 +554,7 @@ impl TaskStopTool {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+    use tokio::io::AsyncReadExt;
 
     fn recording_sink() -> (CompletionSink, Arc<Mutex<Vec<String>>>) {
         let ids = Arc::new(Mutex::new(Vec::new()));
@@ -547,7 +598,15 @@ mod tests {
         buffer.push(&head);
         buffer.push(b"tail-bytes");
         assert_eq!(buffer.data.len(), BACKGROUND_BUFFER_CAP);
-        assert_eq!(&buffer.data[BACKGROUND_BUFFER_CAP - 10..], b"tail-bytes");
+        assert_eq!(
+            buffer
+                .data
+                .iter()
+                .skip(BACKGROUND_BUFFER_CAP - 10)
+                .copied()
+                .collect::<Vec<_>>(),
+            b"tail-bytes"
+        );
         assert_eq!(buffer.total, (BACKGROUND_BUFFER_CAP + 10) as u64);
         assert!(buffer.truncated());
     }
@@ -611,16 +670,25 @@ mod tests {
             let (sink, ids) = recording_sink();
             let tasks = BackgroundTasks::new(sink);
             let inner = Arc::new(Mutex::new(TaskInner {
+                shell_output: None,
                 pending: true,
                 status: BackgroundStatus::Running,
                 output: TaskOutputBuffer::default(),
             }));
             let (stdout, mut stdout_peer) = tokio::io::duplex(64);
             let (stderr, mut stderr_peer) = tokio::io::duplex(64);
-            let stdout = read_output(Some(stdout), inner.clone());
-            let stderr = read_output(Some(stderr), inner.clone());
+            let stdout_inner = inner.clone();
+            let stderr_inner = inner.clone();
+            let stdout =
+                super::super::shell_output::read_output(stdout, None, None, move |chunk| {
+                    stdout_inner.lock().unwrap().output.push(chunk);
+                });
+            let stderr =
+                super::super::shell_output::read_output(stderr, None, None, move |chunk| {
+                    stderr_inner.lock().unwrap().output.push(chunk);
+                });
             let monitor = tokio::spawn(async move {
-                tokio::join!(stdout, stderr);
+                let _ = tokio::join!(stdout, stderr);
             });
             tasks.tasks.lock().unwrap().insert(
                 "1".into(),

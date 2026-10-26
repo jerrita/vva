@@ -297,6 +297,7 @@ Paths are absolute or workspace-relative; shell variables and ~ are not expanded
             Ok((content, attachments)) => ToolResult {
                 background_task_id: None,
                 task: None,
+                shell_output: None,
                 tool_call_id: call.id.clone(),
                 content,
                 attachments,

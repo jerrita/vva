@@ -32,6 +32,20 @@ Web 轮次投影包含消息、usage、elapsed_ms、worked_ms；Turn.meta 留在
 解析、版本或部件类型错误关闭订阅并展示错误，避免在失配基线上继续追加。
 设置命令的 HTTP 响应只确认命令完成，界面状态由 SSE 统一驱动。
 
+## Shell 输出增量
+
+首帧的 `shell_outputs` 按工具 `call_id` 提供完整展示快照。增量帧的同名字段为操作列表，仅包含变化或删除的调用：
+
+| 操作 | 应用规则 |
+|---|---|
+| set | 用 output 整体设置该调用的输出 |
+| append | 校验调用的 base_revision，按 UTF-16 单元丢弃头部 drop，再追加 text，同时更新 revision、start、total_bytes、finished、error |
+| remove | 删除该调用 |
+
+后端以连接上次发送的保留区间为基线计算增量。尾部区间有重叠且保留文本未变时发送 append；CR 改写或保留区间已无重叠时发送 set。未变化的输出以 Arc 身份跳过，不序列化其他调用的输出。前端保留未变化调用的对象引用；版本或区间错误按既有协议错误处理。
+
+采集、缓冲、持久化和两端展示行为见 [Shell 实时输出](background_tasks.md#shell-实时输出)。
+
 ## 背压与重连
 
 每条连接只持有上一份已发送视图与 watch 中的最新视图。

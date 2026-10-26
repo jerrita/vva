@@ -3,6 +3,7 @@ pub mod content;
 pub mod message;
 pub mod meta;
 pub mod session;
+pub mod shell;
 pub mod tool;
 pub mod turn;
 
@@ -26,6 +27,7 @@ pub use session::{
     EditorKind, JsonlRecord, Origin, SESSION_VERSION, Session, SessionHeader, SessionKind,
     SessionSummary, SessionToggles, ToggleOverrides, generate_session_id, provisional_title,
 };
+pub use shell::ShellOutput;
 pub use tool::{
     MediaContent, MediaKind, ToolCall, ToolCallKind, ToolDefinition, ToolInput, ToolResult,
     UserAnswer, UserQuestion, UserQuestionOption, UserQuestionRequest,

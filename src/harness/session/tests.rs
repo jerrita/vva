@@ -1975,3 +1975,168 @@ async fn completion_persistence_failure_closes_output_and_reports_error() {
     assert_eq!(task.subagent_completions.len(), 1);
     cleanup(&task);
 }
+
+#[tokio::test]
+async fn idle_shell_output_publishes_without_model_calls_and_ignores_removed_calls() {
+    use tokio::io::AsyncWriteExt;
+    let (mut task, handle, commands) = command_task();
+    task.auto_resume = false;
+    let root = task.view.session.header.workspace_root.clone();
+    task.store.save_header(&task.view.session).await.unwrap();
+    task.append(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::ToolCall(ToolCall::new("live", "Shell", "{}")),
+    ])]))
+    .await
+    .unwrap();
+    task.shell_calls.insert("live".into());
+    let capture = task.shell_outputs.capture("live");
+    let stale = task.shell_outputs.capture("removed");
+    let outputs = task.shell_outputs.clone();
+    let (pipe, mut writer) = tokio::io::duplex(64);
+    let output_handle = capture.handle.clone();
+    let reader = tokio::spawn(async move {
+        crate::tools::shell_output::read_output(pipe, Some(&output_handle), None, |_| {}).await
+    });
+    let actor = tokio::spawn(task.run(commands));
+    writer.write_all(b"without newline").await.unwrap();
+    let mut view = handle.subscribe();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if view
+                .borrow()
+                .shell_outputs
+                .get("live")
+                .is_some_and(|out| out.text == "without newline")
+            {
+                break;
+            }
+            view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(view.borrow().state, RunState::Idle));
+    assert!(!view.borrow().shell_outputs.contains_key("removed"));
+    drop(capture);
+    drop(stale);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if view.borrow().shell_outputs["live"].finished {
+                break;
+            }
+            view.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(view.borrow().shell_outputs["live"].text, "without newline");
+    drop(writer);
+    reader.await.unwrap().unwrap();
+    drop(outputs);
+    drop(handle);
+    actor.await.unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn aborted_shell_retains_streamed_output_in_paired_result_and_reload() {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let (mut task, mut view) = event_task();
+        task.store.save_header(&task.view.session).await.unwrap();
+        task.view.persisted = true;
+        let tool = crate::tools::shell::ShellTool::new(&task.view.session.header.workspace_root)
+            .with_outputs(Some(task.shell_outputs.clone()), None);
+        let mut tools = crate::tools::ToolRegistry::new();
+        tools.register(Arc::new(tool));
+        let provider = ScriptedProvider::new(|_| {
+            vec![Message::new(vec![ContentPart::ToolCall(ToolCall::new(
+                "synthetic-stream",
+                "Shell",
+                r#"{"intent":"Stream fixture","command":"printf fixture; exec sleep 60"}"#,
+            ))])]
+        });
+        let (tx, mut commands) = mpsc::channel(1);
+        let actor = tokio::spawn(async move {
+            let result = task.execute(engine(provider, tools), &mut commands).await;
+            (task, result)
+        });
+        loop {
+            if view
+                .borrow()
+                .shell_outputs
+                .get("synthetic-stream")
+                .is_some_and(|output| output.text == "fixture")
+            {
+                break;
+            }
+            view.changed().await.unwrap();
+        }
+        let (reply, _) = oneshot::channel();
+        tx.send(Command::Stop {
+            delete: false,
+            reply,
+        })
+        .await
+        .unwrap();
+        let (task, result) = actor.await.unwrap();
+        assert_eq!(result.unwrap(), TurnOutcome::Aborted);
+        let loaded = task
+            .store
+            .load_session(&task.view.session.header.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let restored = SessionView::new(loaded, true);
+        let output = &restored.shell_outputs["synthetic-stream"];
+        assert_eq!(output.text, "fixture");
+        assert!(output.finished);
+        assert!(output.error.is_some());
+        cleanup(&task);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_shell_output_coalesces_bursts_and_remains_quiet_without_new_data() {
+    let (mut task, handle, commands) = command_task();
+    task.auto_resume = false;
+    task.shell_calls.insert("synthetic".into());
+    let root = task.view.session.header.workspace_root.clone();
+    let capture = task.shell_outputs.capture("synthetic");
+    let mut decoder = crate::tools::shell_output::OutputDecoder::default();
+    let mut view = handle.subscribe();
+    view.borrow_and_update();
+    let actor = tokio::spawn(task.run(commands));
+    for _ in 0..100 {
+        decoder.push(&capture.handle, b"x", false);
+    }
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(99)).await;
+    tokio::task::yield_now().await;
+    assert!(!view.has_changed().unwrap());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(
+        view.borrow_and_update().shell_outputs["synthetic"]
+            .text
+            .len(),
+        100
+    );
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::task::yield_now().await;
+    assert!(!view.has_changed().unwrap());
+    decoder.push(&capture.handle, b"next", false);
+    tokio::task::yield_now().await;
+    assert_eq!(
+        view.borrow_and_update().shell_outputs["synthetic"]
+            .text
+            .len(),
+        104
+    );
+    drop(capture);
+    drop(handle);
+    actor.await.unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}

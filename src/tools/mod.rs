@@ -20,6 +20,7 @@ pub mod hashline;
 pub mod names;
 pub mod session_ipc;
 pub mod shell;
+pub mod shell_output;
 pub mod skill;
 pub mod web;
 
@@ -35,6 +36,7 @@ pub(crate) struct WorkspaceToolDeps {
     pub hashline: Arc<hashline::HashlineSession>,
     pub inputs: crate::config::resolver::InputCapabilities,
     pub background: Option<Arc<background::BackgroundTasks>>,
+    pub shell_outputs: Option<Arc<shell_output::ShellOutputs>>,
 }
 
 impl Default for WorkspaceToolDeps {
@@ -43,6 +45,7 @@ impl Default for WorkspaceToolDeps {
             hashline: hashline::HashlineSession::new(),
             inputs: Default::default(),
             background: None,
+            shell_outputs: None,
         }
     }
 }
@@ -193,6 +196,7 @@ impl ToolRegistry {
         if let Some(background) = deps.background {
             shell = shell.with_background(background);
         }
+        shell = shell.with_outputs(deps.shell_outputs, registry.tool_outputs.clone());
         registry.register(Arc::new(shell));
         registry
     }

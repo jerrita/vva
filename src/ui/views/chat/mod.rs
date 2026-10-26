@@ -22,6 +22,7 @@ pub(crate) use pipeline::{
 };
 pub(crate) use selection::{apply_selection_highlight, extract_selected_text};
 pub(crate) use state::{ChatRender, PartContext, RenderState, ThoughtKind};
+pub(crate) use tool::push_tool_call;
 pub use view::render_chat;
 
 use std::collections::{HashMap, HashSet};

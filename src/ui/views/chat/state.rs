@@ -15,6 +15,8 @@ pub(crate) struct RenderState {
 
 pub(crate) struct ChatRender<'a> {
     pub notices: &'a [crate::harness::Notice],
+    pub shell_outputs:
+        &'a std::collections::BTreeMap<String, std::sync::Arc<crate::model::ShellOutput>>,
     pub tasks: &'a std::collections::BTreeMap<String, crate::model::BackgroundTask>,
     pub query_owners: &'a HashMap<String, String>,
     pub lines: &'a mut Vec<Line<'static>>,

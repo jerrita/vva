@@ -89,15 +89,32 @@ export interface ToolResult {
   tool_call_id: string
   background_task_id?: string
   task?: BackgroundTask
+  shell_output?: ShellOutput
   content: string
   attachments?: MediaContent[]
   is_error: boolean
 }
 
+export interface ShellOutput {
+  revision: number
+  start: number
+  text: string
+  total_bytes: number
+  finished: boolean
+  error?: string | null
+}
+
+export type ShellOutputPatch =
+  | { type: 'set'; id: string; output: ShellOutput }
+  | { type: 'append'; id: string; base_revision: number; revision: number; start: number;
+      drop: number; text: string; total_bytes: number; finished: boolean; error: string | null }
+  | { type: 'remove'; id: string }
+
 export interface BackgroundTask {
   task_id: string
   status: 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
   output: string
+  shell_output?: ShellOutput
   exit_code?: number
   total_bytes?: number
   truncated: boolean
@@ -196,6 +213,7 @@ export interface SessionSnapshot {
   state: string
   persisted: boolean
   notices: Notice[]
+  shell_outputs: Record<string, ShellOutput>
   background_tasks: Record<string, BackgroundTask>
   /** 外置 web 工具接管的后端名；空表示原生在位或未开启 */
   external_web: string[]
@@ -211,6 +229,7 @@ export interface SessionDelta {
   state: string
   persisted: boolean
   notices?: Notice[]
+  shell_outputs?: ShellOutputPatch[]
   background_tasks?: Record<string, BackgroundTask>
   external_web?: string[]
   session?: Omit<Session, 'turns'>

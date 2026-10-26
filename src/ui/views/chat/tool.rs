@@ -293,16 +293,34 @@ pub(super) fn default_tool_expand(name: &str) -> Option<ToolExpand> {
     }
 }
 
-pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
+pub(crate) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     let result = render.results.get(&call.id).copied();
+    let shell_output = render
+        .shell_outputs
+        .get(&call.id)
+        .map(std::sync::Arc::as_ref)
+        .or_else(|| result.and_then(|result| result.shell_output.as_deref()));
     let task = result
         .and_then(|result| result.background_task_id.as_ref())
         .and_then(|id| render.tasks.get(id));
-    let display_result = task.zip(result).map(|(task, result)| {
-        let mut result = result.clone();
-        result.content.clone_from(&task.output);
+    let query_errors: Vec<_> = render
+        .query_owners
+        .iter()
+        .filter(|(_, owner)| *owner == &call.id)
+        .filter_map(|(id, _)| {
+            render
+                .results
+                .get(id)
+                .filter(|result| result.is_error)
+                .map(|result| result.content.as_str())
+        })
+        .collect();
+    let display_result = task.zip(result).map(|(task, _)| {
+        let mut result = ToolResult::success(&call.id, &task.output);
         result.is_error = task.status == crate::model::BackgroundTaskStatus::Failed;
-        result.task = Some(task.clone());
+        if call.name == "Agent" {
+            result.task = Some(task.clone());
+        }
         let mut errors: Vec<_> = render
             .query_owners
             .iter()
@@ -341,7 +359,8 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     } else {
         "* "
     };
-    let is_error = result.is_some_and(|result| result.is_error);
+    let is_error = result.is_some_and(|result| result.is_error)
+        || (task.is_none() && shell_output.is_some_and(|output| output.error.is_some()));
     // 外置 web 工具与原生 server tool 同名，头部样式对齐原生（黄色加粗 label）
     let name_style = if is_error {
         bold(Color::Rgb(220, 100, 100))
@@ -370,6 +389,20 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
             },
         ));
     }
+    if task.is_none()
+        && let Some(output) = shell_output
+    {
+        spans.push(Span::styled(
+            if !output.finished {
+                " · 运行中"
+            } else if output.error.is_some() {
+                " · 已结束"
+            } else {
+                " · 已完成"
+            },
+            detail_style,
+        ));
+    }
     let header_start = render.lines.len();
     let wrapped = wrap_spans_to_lines(&spans, render.max_width, "", "   ");
     render.lines.extend(wrapped);
@@ -390,6 +423,8 @@ pub(super) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
             render.lines,
             call,
             result,
+            shell_output,
+            &query_errors,
             expand == Some(ToolExpand::Full),
             render.max_width,
         );

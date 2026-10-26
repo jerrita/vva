@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { memo, useEffect, useRef, useMemo } from 'react'
 import type { PreviewFile } from '../hooks/usePanelLayout'
-import type { BackgroundTask, ContentPart, Session, Turn } from '../types'
+import type { BackgroundTask, ContentPart, Session, Turn, ShellOutput } from '../types'
 import { taskTrace } from '../utils/taskTrace'
 import type { TaskTrace } from '../utils/taskTrace'
 import { CopyButton } from './CopyButton'
@@ -147,7 +147,7 @@ function fmtDuration(ms: number): string {
   return `${Math.floor(total / 60)}m ${total % 60}s`
 }
 
-function WorkedBlock({
+const WorkedBlock = memo(function WorkedBlock({
   group,
   live = false,
   workspace,
@@ -190,7 +190,14 @@ function WorkedBlock({
       </div>
     </details>
   )
-}
+}, (a, b) => {
+  if (a.group !== b.group || a.live !== b.live || a.workspace !== b.workspace ||
+    a.onPreviewFile !== b.onPreviewFile || a.tasks.tasks !== b.tasks.tasks ||
+    a.tasks.queries !== b.tasks.queries) return false
+  return a.group.parts.every(part => part.type !== 'tool_call' ||
+    a.tasks.shellOutputs?.[part.id] === b.tasks.shellOutputs?.[part.id])
+})
+
 
 function TurnMeta({ turn }: { turn: Turn }) {
   const ms = turn.worked_ms ?? turn.elapsed_ms
@@ -320,12 +327,21 @@ export function Chat({
   onFork,
   onPreviewFile,
 }: {
-  snap: { state: string; draft: ContentPart[]; session: Session; background_tasks: Record<string, BackgroundTask> } | null
+  snap: { state: string; draft: ContentPart[]; session: Session; background_tasks: Record<string, BackgroundTask>; shell_outputs: Record<string, ShellOutput> } | null
   pending: string | null
   onRevert?: (index: number, prompt: string) => void
   onFork?: (index: number) => void
   onPreviewFile?: PreviewFile
 }) {
+  const turns = snap?.session.turns
+  const draft = snap?.draft
+  const backgroundTasks = snap?.background_tasks
+  const items = useMemo(() => turns ? buildItems(turns) : [], [turns])
+  const trace = useMemo(() => taskTrace([
+    ...(turns?.flatMap(turn => turn.messages.flatMap(message => message.parts)) ?? []),
+    ...(draft ?? []),
+  ], backgroundTasks ?? {}), [turns, draft, backgroundTasks])
+  const tasks = { ...trace, shellOutputs: snap?.shell_outputs }
   if (!snap) {
     return (
       <div className="chat-empty">
@@ -336,12 +352,9 @@ export function Chat({
   }
 
   const running = snap.state !== ''
-  const turns = snap.session.turns
   const workspace = snap.session.workspace_root
   const showDraft = snap.draft.length > 0 || running
   // 运行中最后一个工作段即当前响应段：容器保持展开，结束后随 live 翻转自动收起
-  const items = buildItems(turns)
-  const tasks = taskTrace([...turns.flatMap(turn => turn.messages.flatMap(message => message.parts)), ...snap.draft], snap.background_tasks)
   let liveWork = -1
   if (running) {
     // 仅当前运行段（最后一条用户消息之后、且无最终回答收尾）的工作段视为 live：

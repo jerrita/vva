@@ -70,6 +70,7 @@ pub(super) struct SessionSnapshot<'a> {
     persisted: bool,
     notices: &'a [Notice],
     background_tasks: &'a std::collections::BTreeMap<String, crate::model::BackgroundTask>,
+    shell_outputs: &'a std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>,
     external_web: &'a [String],
     session: SessionData<'a>,
     draft: Vec<&'a ContentPart>,
@@ -84,6 +85,7 @@ impl<'a> From<&'a SessionView> for SessionSnapshot<'a> {
             persisted: view.persisted,
             notices: &view.notices,
             background_tasks: &view.background_tasks,
+            shell_outputs: &view.shell_outputs,
             external_web: &view.external_web,
             session: SessionData {
                 info: SessionInfo::from(&*view.session),
@@ -117,7 +119,77 @@ struct DraftPatch<'a> {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ShellOutputPatch<'a> {
+    Set {
+        id: &'a str,
+        output: &'a crate::model::ShellOutput,
+    },
+    Append {
+        id: &'a str,
+        base_revision: u64,
+        revision: u64,
+        start: u64,
+        drop: usize,
+        text: &'a str,
+        total_bytes: u64,
+        finished: bool,
+        error: &'a Option<String>,
+    },
+    Remove {
+        id: &'a str,
+    },
+}
+
+fn shell_output_patches<'a>(
+    previous: &'a SessionView,
+    current: &'a SessionView,
+) -> Vec<ShellOutputPatch<'a>> {
+    let mut patches = Vec::new();
+    if Arc::ptr_eq(&previous.shell_outputs, &current.shell_outputs) {
+        return patches;
+    }
+    for (id, output) in current.shell_outputs.iter() {
+        if let Some(old) = previous.shell_outputs.get(id) {
+            if Arc::ptr_eq(old, output) {
+                continue;
+            }
+            // 以该连接上次发送的尾部为基线，允许 watch 跳过任意中间版本。
+            if let Some(trim) = output
+                .start
+                .checked_sub(old.start)
+                .and_then(|n| usize::try_from(n).ok())
+                && let Some(retained) = old.text.get(trim..)
+                && output.text.starts_with(retained)
+            {
+                patches.push(ShellOutputPatch::Append {
+                    id,
+                    base_revision: old.revision,
+                    revision: output.revision,
+                    start: output.start,
+                    drop: old.text[..trim].encode_utf16().count(),
+                    text: &output.text[retained.len()..],
+                    total_bytes: output.total_bytes,
+                    finished: output.finished,
+                    error: &output.error,
+                });
+                continue;
+            }
+        }
+        patches.push(ShellOutputPatch::Set { id, output });
+    }
+    for id in previous.shell_outputs.keys() {
+        if !current.shell_outputs.contains_key(id) {
+            patches.push(ShellOutputPatch::Remove { id });
+        }
+    }
+    patches
+}
+
+#[derive(Serialize)]
 pub(super) struct SessionDelta<'a> {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    shell_outputs: Vec<ShellOutputPatch<'a>>,
     base_revision: u64,
     revision: u64,
     state: String,
@@ -210,6 +282,7 @@ impl<'a> SessionDelta<'a> {
             },
         );
         Self {
+            shell_outputs: shell_output_patches(previous, current),
             base_revision: previous.revision,
             revision: current.revision,
             state: current.state.status(),
@@ -243,6 +316,7 @@ mod tests {
             draft: vec![Arc::new(ContentPart::text("起点🙂"))],
             notices: Vec::new(),
             background_tasks: Default::default(),
+            shell_outputs: Default::default(),
             external_web: Vec::new(),
             state: RunState::Responding,
             persisted: true,
@@ -252,6 +326,35 @@ mod tests {
 
     fn delta(before: &SessionView, after: &SessionView) -> Value {
         serde_json::to_value(SessionDelta::between(before, after)).unwrap()
+    }
+
+    #[test]
+    fn shell_tail_deltas_are_bounded_and_handle_skipped_frames_and_rewrites() {
+        let mut before = view();
+        let old = crate::model::ShellOutput {
+            revision: 3,
+            text: format!("🙂旧\n{}", "x".repeat(200_000)),
+            ..Default::default()
+        };
+        Arc::make_mut(&mut before.shell_outputs).insert("command".into(), Arc::new(old.clone()));
+        let mut after = before.clone();
+        after.revision += 5;
+        let mut output = old.clone();
+        output.revision = 100;
+        output.start = "🙂旧\n".len() as u64;
+        output.text = format!("{}新", "x".repeat(200_000));
+        Arc::make_mut(&mut after.shell_outputs).insert("command".into(), Arc::new(output.clone()));
+        let patch = delta(&before, &after);
+        assert_eq!(patch["shell_outputs"][0]["type"], "append");
+        assert_eq!(patch["shell_outputs"][0]["drop"], 4);
+        assert_eq!(patch["shell_outputs"][0]["text"], "新");
+        assert!(patch.to_string().len() < 600, "{}", patch.to_string().len());
+        output.revision += 1;
+        output.text = "progress 100%".into();
+        Arc::make_mut(&mut after.shell_outputs).insert("command".into(), Arc::new(output));
+        assert_eq!(delta(&before, &after)["shell_outputs"][0]["type"], "set");
+        Arc::make_mut(&mut after.shell_outputs).clear();
+        assert_eq!(delta(&before, &after)["shell_outputs"][0]["type"], "remove");
     }
 
     #[test]

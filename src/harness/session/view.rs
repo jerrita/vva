@@ -33,6 +33,7 @@ pub struct SessionView {
     pub session: Arc<Session>,
     pub draft: Vec<Arc<ContentPart>>,
     pub notices: Vec<Notice>,
+    pub shell_outputs: Arc<std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>>,
     pub background_tasks: Arc<std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
     /// 外置 web 工具接管的后端名（原生能力缺位时），供状态栏标注
     pub external_web: Vec<String>,
@@ -51,6 +52,7 @@ impl SessionView {
         }
         Self {
             revision: 0,
+            shell_outputs: Arc::new(shell_outputs(&session)),
             session: Arc::new(session),
             draft: Vec::new(),
             notices: Vec::new(),
@@ -92,4 +94,47 @@ impl Notice {
     pub fn is_banner(&self) -> bool {
         matches!(self.kind, NoticeKind::Session | NoticeKind::Capability)
     }
+}
+
+/// 从结构化回执恢复输出；跨进程加载时运行中的命令已中断。
+pub(super) fn shell_outputs(
+    session: &Session,
+) -> std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>> {
+    let mut outputs = std::collections::BTreeMap::new();
+    let mut owners = std::collections::BTreeMap::new();
+    for turn in &session.turns {
+        for part in turn.messages.iter().flat_map(|message| &message.parts) {
+            if let ContentPart::ToolResult(result) = part {
+                if let Some(output) = &result.shell_output {
+                    outputs.insert(
+                        result.tool_call_id.clone(),
+                        Arc::new(output.as_ref().clone()),
+                    );
+                }
+                if let Some(id) = &result.background_task_id {
+                    owners.insert(id.clone(), result.tool_call_id.clone());
+                }
+                if let Some(task) = &result.task
+                    && let Some(output) = &task.shell_output
+                    && let Some(owner) = owners.get(&task.task_id)
+                {
+                    outputs.insert(owner.clone(), Arc::new(output.as_ref().clone()));
+                }
+            }
+        }
+        if let Some(task) = &turn.background_task
+            && let Some(output) = &task.shell_output
+            && let Some(owner) = owners.get(&task.task_id)
+        {
+            outputs.insert(owner.clone(), Arc::new(output.as_ref().clone()));
+        }
+    }
+    for output in outputs.values_mut() {
+        if !output.finished {
+            let output = Arc::make_mut(output);
+            output.finished = true;
+            output.error = Some("Command interrupted".into());
+        }
+    }
+    outputs
 }

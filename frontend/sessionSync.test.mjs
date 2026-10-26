@@ -127,3 +127,38 @@ test('subscription resets on reconnect, rejects broken chains, and closes on cle
     globalThis.EventSource = original
   }
 })
+
+test('shell output deltas trim UTF-16 safely and preserve unrelated references', () => {
+  const before = snapshot()
+  const output = { revision: 1, start: 0, text: '🙂旧\n保留', total_bytes: 14, finished: false }
+  const other = { ...output, text: 'other' }
+  before.shell_outputs = { command: output, other }
+  const after = applySessionDelta(before, delta({ shell_outputs: [{
+    type: 'append', id: 'command', base_revision: 1, revision: 4,
+    start: 8, drop: 4, text: '新增', total_bytes: 20, finished: false, error: null,
+  }] }))
+  assert.equal(after.shell_outputs.command.text, '保留新增')
+  assert.equal(after.shell_outputs.other, other)
+  assert.equal(after.session, before.session)
+  assert.equal(after.draft, before.draft)
+  assert.equal(before.shell_outputs.command, output)
+  const finished = applySessionDelta(after, delta({ base_revision: 5, revision: 6,
+    shell_outputs: [{ type: 'set', id: 'command', output: { ...output, revision: 5, text: '100%', finished: true } },
+      { type: 'remove', id: 'other' }],
+  }))
+  assert.equal(finished.shell_outputs.command.text, '100%')
+  assert.equal(finished.shell_outputs.command.finished, true)
+  assert.equal(finished.shell_outputs.other, undefined)
+})
+
+test('shell output rejects stale revisions and invalid trim ranges', () => {
+  const before = snapshot()
+  before.shell_outputs = { command: { revision: 3, start: 0, text: 'ready', total_bytes: 5, finished: false } }
+  for (const extra of [{ base_revision: 2 }, { revision: 3 }, { drop: 6 }, { drop: -1 }, { start: -1 }]) {
+    assert.throws(() => applySessionDelta(before, delta({ shell_outputs: [{
+      type: 'append', id: 'command', base_revision: 3, revision: 4, start: 0,
+      drop: 0, text: '', total_bytes: 5, finished: true, error: null, ...extra,
+    }] })), /命令输出增量/)
+  }
+  assert.equal(before.shell_outputs.command.text, 'ready')
+})

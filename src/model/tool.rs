@@ -61,6 +61,8 @@ pub struct ToolResult {
     /// 启动或查询时的结构化快照；原始工具输出保持不变。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<super::BackgroundTask>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_output: Option<Box<super::ShellOutput>>,
     pub content: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<MediaContent>,
@@ -74,6 +76,7 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             background_task_id: None,
             task: None,
+            shell_output: None,
             content: content.into(),
             is_error: false,
             attachments: Vec::new(),
@@ -85,6 +88,7 @@ impl ToolResult {
             tool_call_id: tool_call_id.into(),
             background_task_id: None,
             task: None,
+            shell_output: None,
             content: error_message.into(),
             is_error: true,
             attachments: Vec::new(),

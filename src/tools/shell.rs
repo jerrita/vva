@@ -17,6 +17,8 @@ pub struct ShellTool {
     working_dir: PathBuf,
     background: Option<Arc<super::background::BackgroundTasks>>,
     description: String,
+    outputs: Option<Arc<super::shell_output::ShellOutputs>>,
+    output_dir: Option<PathBuf>,
 }
 
 impl ShellTool {
@@ -24,6 +26,8 @@ impl ShellTool {
         Self {
             working_dir: working_dir.into(),
             background: None,
+            outputs: None,
+            output_dir: None,
             description: shell_description(&[
                 names::READ,
                 names::WRITE,
@@ -32,6 +36,16 @@ impl ShellTool {
                 names::GREP,
             ]),
         }
+    }
+
+    pub(crate) fn with_outputs(
+        mut self,
+        outputs: Option<Arc<super::shell_output::ShellOutputs>>,
+        output_dir: Option<PathBuf>,
+    ) -> Self {
+        self.outputs = outputs;
+        self.output_dir = output_dir;
+        self
     }
 
     /// 按当前编辑器实际注册的文件工具名生成描述
@@ -80,11 +94,20 @@ impl Tool for ShellTool {
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
-        self.run(arguments).await.map(|(text, _)| text)
+        self.run(arguments, None).await.map(|(text, _)| text)
     }
 
     async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
-        let mut result = super::result_with_task(call, self.run(&call.arguments).await);
+        let capture = self
+            .outputs
+            .as_ref()
+            .map(|outputs| outputs.capture(&call.id));
+        let handle = capture.as_ref().map(|capture| capture.handle.clone());
+        let outcome = self.run(&call.arguments, capture).await;
+        let mut result = super::result_with_task(call, outcome);
+        if result.background_task_id.is_none() {
+            result.shell_output = handle.map(|handle| Box::new(handle.snapshot()));
+        }
         if let Some(id) = &result.background_task_id {
             result.task = self
                 .background
@@ -97,7 +120,28 @@ impl Tool for ShellTool {
 }
 
 impl ShellTool {
-    async fn run(&self, arguments: &str) -> Result<(String, Option<String>), String> {
+    async fn run(
+        &self,
+        arguments: &str,
+        mut capture: Option<super::shell_output::OutputCapture>,
+    ) -> Result<(String, Option<String>), String> {
+        let result = self.run_captured(arguments, &mut capture).await;
+        if let Some(capture) = &capture {
+            capture.handle.finish(
+                result
+                    .as_ref()
+                    .err()
+                    .map(|error| error.lines().next().unwrap_or(error).to_string()),
+            );
+        }
+        result
+    }
+
+    async fn run_captured(
+        &self,
+        arguments: &str,
+        capture: &mut Option<super::shell_output::OutputCapture>,
+    ) -> Result<(String, Option<String>), String> {
         let args: ShellArgs = parse_args(arguments, names::SHELL)?;
         if args.intent.trim().is_empty() {
             return Err("intent must not be empty".to_string());
@@ -107,7 +151,12 @@ impl ShellTool {
             let tasks = self.background.as_ref().ok_or_else(|| {
                 "Background execution is not available in this context".to_string()
             })?;
-            let id = tasks.spawn(&args.intent, &args.command, &self.working_dir)?;
+            let id = tasks.spawn_captured(
+                &args.intent,
+                &args.command,
+                &self.working_dir,
+                capture.take(),
+            )?;
             return Ok((
                 format!(
                     "Background task started: {id}\nintent: {}\ncommand: {}\nNo timeout applies. Use TaskOutput with task_id \"{id}\" to check status and output; TaskStop to stop it. Completion automatically resumes this session, even after you end your response. Continue other work or end your response; do not sleep or poll for completion.",
@@ -118,7 +167,13 @@ impl ShellTool {
         }
 
         let command = workspace_shell_command(&args.command, &self.working_dir)?;
-        run_shell_command(command).await.map(|text| (text, None))
+        run_shell_command(
+            command,
+            capture.as_ref().map(|capture| &capture.handle),
+            self.output_dir.as_deref(),
+        )
+        .await
+        .map(|text| (text, None))
     }
 }
 
@@ -215,45 +270,214 @@ fn shell_command_hint() -> String {
     )
 }
 
-/// 执行已组装好的 shell 命令：stdout/stderr 拼接（STDERR 分节），非零退出码报错。
-/// 超时后强制回收子进程（kill_on_drop）。
-async fn run_shell_command(mut cmd: tokio::process::Command) -> Result<String, String> {
-    cmd.kill_on_drop(true);
-
-    let output = tokio::time::timeout(SHELL_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
+/// 输出逐块写入匿名临时文件，内存只保留有界展示尾部和模型回执头部。
+async fn run_shell_command(
+    mut cmd: tokio::process::Command,
+    capture: Option<&super::shell_output::OutputHandle>,
+    output_dir: Option<&Path>,
+) -> Result<String, String> {
+    use std::process::Stdio;
+    let file = || {
+        tempfile::tempfile()
+            .map(tokio::fs::File::from_std)
+            .map_err(|e| format!("Failed to create command output file: {e}"))
+    };
+    let mut stdout_file = file()?;
+    let mut stderr_file = file()?;
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run command: {e}"))?;
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+    let outcome = tokio::time::timeout(SHELL_TIMEOUT, async {
+        let (status, stdout, stderr) = tokio::join!(
+            child.wait(),
+            super::shell_output::read_output(stdout, capture, Some(&mut stdout_file), |_| {}),
+            super::shell_output::read_output(stderr, capture, Some(&mut stderr_file), |_| {}),
+        );
+        stdout?;
+        stderr?;
+        status.map_err(|e| format!("Failed to wait for command: {e}"))
+    })
+    .await;
+    let status = match outcome {
+        Ok(status) => status,
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(format!(
                 "Command timed out after {}s and was killed",
                 SHELL_TIMEOUT.as_secs()
-            )
-        })?
-        .map_err(|e| format!("Failed to run command: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let mut result = String::new();
-    result.push_str(&stdout);
-    if !stderr.is_empty() {
-        if !result.is_empty() {
-            result.push('\n');
+            ))
         }
-        result.push_str("STDERR:\n");
-        result.push_str(&stderr);
+    };
+    let output = format_output(stdout_file, stderr_file, output_dir).await?;
+    let result = match status {
+        Ok(status) if status.success() => Ok(output),
+        Ok(status) => Err(format!(
+            "Command exited with status code {}:\n{output}",
+            status.code().unwrap_or(-1)
+        )),
+        Err(error) => Err(format!("{error}\n{output}")),
+    };
+    if let Some(capture) = capture {
+        capture.finish(
+            result
+                .as_ref()
+                .err()
+                .map(|error| error.lines().next().unwrap_or(error).to_string()),
+        );
     }
+    result
+}
 
-    if !output.status.success() {
-        let code = output.status.code().unwrap_or(-1);
-        return Err(format!("Command exited with status code {code}:\n{result}"));
-    }
-
-    Ok(result)
+async fn format_output(
+    mut stdout: tokio::fs::File,
+    mut stderr: tokio::fs::File,
+    output_dir: Option<&Path>,
+) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+    let result = async {
+        // seek 等待之前异步 write 的阻塞任务完成。
+        let stdout_len = stdout.seek(std::io::SeekFrom::End(0)).await?;
+        let stderr_len = stderr.seek(std::io::SeekFrom::End(0)).await?;
+        stdout.seek(std::io::SeekFrom::Start(0)).await?;
+        stderr.seek(std::io::SeekFrom::Start(0)).await?;
+        let separator = if stderr_len == 0 { "" } else if stdout_len == 0 { "STDERR:\n" } else { "\nSTDERR:\n" };
+        let total = stdout_len + stderr_len + separator.len() as u64;
+        let limit = super::INLINE_OUTPUT_BUDGET;
+        if total <= limit as u64 {
+            let mut bytes = Vec::with_capacity(total as usize);
+            stdout.read_to_end(&mut bytes).await?;
+            bytes.extend_from_slice(separator.as_bytes());
+            stderr.read_to_end(&mut bytes).await?;
+            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        }
+        let mut head = Vec::with_capacity(limit);
+        (&mut stdout).take(limit as u64).read_to_end(&mut head).await?;
+        if head.len() < limit {
+            head.extend_from_slice(separator.as_bytes());
+            (&mut stderr).take(limit.saturating_sub(head.len()) as u64).read_to_end(&mut head).await?;
+        }
+        let head = super::truncate_utf8(&head, limit, super::TruncateSide::Head);
+        let notice = if let Some(dir) = output_dir {
+            tokio::fs::create_dir_all(dir).await?;
+            let path = dir.join(format!("Shell_{}.txt", uuid::Uuid::new_v4().simple()));
+            let mut file = tokio::fs::File::create(&path).await?;
+            stdout.seek(std::io::SeekFrom::Start(0)).await?;
+            stderr.seek(std::io::SeekFrom::Start(0)).await?;
+            tokio::io::copy(&mut stdout, &mut file).await?;
+            file.write_all(separator.as_bytes()).await?;
+            tokio::io::copy(&mut stderr, &mut file).await?;
+            file.flush().await?;
+            format!("Output too large ({total} bytes). Full output saved to {}. Use the file-reading tools on that path.", path.display())
+        } else {
+            format!("Output truncated ({total} bytes; showing the first {limit} bytes).")
+        };
+        let mut inline_len = head.len().min(super::INLINE_OUTPUT_BUDGET.saturating_sub(notice.len() + 2));
+        while !head.is_char_boundary(inline_len) { inline_len -= 1; }
+        Ok::<_, std::io::Error>(format!("{}\n\n{notice}", &head[..inline_len]))
+    }.await;
+    result.map_err(|e| format!("Failed to save command output: {e}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_and_background_stream_before_exit_and_persist_final_tail() {
+        use super::super::shell_output::ShellOutputs;
+        use crate::model::ToolCall;
+        for background in [false, true] {
+            let workspace = tempfile::tempdir().unwrap();
+            let outputs = Arc::new(ShellOutputs::default());
+            let tasks = Arc::new(super::super::background::BackgroundTasks::new(Arc::new(
+                |_| {},
+            )));
+            let tool = ShellTool::new(workspace.path())
+                .with_background(tasks.clone())
+                .with_outputs(
+                    Some(outputs.clone()),
+                    Some(workspace.path().join("outputs")),
+                );
+            let call = ToolCall::new("synthetic", names::SHELL, serde_json::json!({
+                "intent": "Stream fixture", "command": "printf ready; while [ ! -f release ]; do sleep 0.01; done; printf complete",
+                "run_in_background": background,
+            }).to_string());
+            let work = tokio::spawn(async move { tool.execute_result(&call).await });
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    outputs.notified().await;
+                    if let Some((_, output)) = outputs
+                        .drain()
+                        .into_iter()
+                        .find(|(_, output)| output.text == "ready")
+                    {
+                        assert!(!output.finished);
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            if !background {
+                assert!(!work.is_finished());
+            }
+            tokio::fs::write(workspace.path().join("release"), "")
+                .await
+                .unwrap();
+            let result = work.await.unwrap();
+            assert!(!result.is_error, "{}", result.content);
+            let final_output = if let Some(id) = result.background_task_id {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let snapshot = tasks.snapshot(&id).unwrap();
+                        if snapshot.status != super::super::background::BackgroundStatus::Running {
+                            break snapshot.task();
+                        }
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .unwrap()
+                .shell_output
+                .unwrap()
+            } else {
+                result.shell_output.unwrap()
+            };
+            assert!(final_output.finished);
+            assert_eq!(final_output.text, "readycomplete");
+            assert!(final_output.error.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn large_output_spools_complete_stdout_and_stderr_with_bounded_receipt() {
+        use tokio::io::AsyncWriteExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut stdout = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        let mut stderr = tokio::fs::File::from_std(tempfile::tempfile().unwrap());
+        stdout.write_all(&vec![b'x'; 512 * 1024]).await.unwrap();
+        stderr.write_all(b"diagnostic").await.unwrap();
+        let receipt = format_output(stdout, stderr, Some(dir.path()))
+            .await
+            .unwrap();
+        assert!(receipt.len() <= super::super::MAX_INLINE_OUTPUT_BYTES);
+        let path = std::fs::read_dir(dir.path())
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let full = std::fs::read(path).unwrap();
+        assert_eq!(full.len(), 512 * 1024 + "\nSTDERR:\ndiagnostic".len());
+        assert!(full.ends_with(b"\nSTDERR:\ndiagnostic"));
+    }
 
     #[tokio::test]
     async fn test_run_shell_command_stdout_and_stderr() {
@@ -267,7 +491,7 @@ mod tests {
             c.arg("-c").arg("echo ok; echo err >&2");
             c
         };
-        let out = run_shell_command(cmd).await.expect("run");
+        let out = run_shell_command(cmd, None, None).await.expect("run");
         assert!(out.contains("ok"));
         assert!(out.contains("STDERR:"));
         assert!(out.contains("err"));
@@ -284,7 +508,7 @@ mod tests {
             c.arg("-c").arg("exit 42");
             c
         };
-        let err = run_shell_command(cmd).await.unwrap_err();
+        let err = run_shell_command(cmd, None, None).await.unwrap_err();
         assert!(err.contains("42"), "unexpected error: {err}");
     }
 

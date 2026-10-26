@@ -44,6 +44,11 @@ pub(super) struct SessionTask {
     pub(super) ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
     pub(super) ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
     pub(super) pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
+    /// 会话级 Shell 输出采集与合并唤醒。
+    pub(super) shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
+    output_pending: bool,
+    last_output_publish: tokio::time::Instant,
+    pub(super) shell_calls: std::collections::HashSet<String>,
     /// 会话级后台任务注册表（Shell run_in_background），随会话结束回收
     pub(super) tasks: Arc<crate::tools::background::BackgroundTasks>,
     /// 已完成、尚未注入会话的后台任务 id（轮次间隙注入）
@@ -193,6 +198,10 @@ impl SessionTask {
             },
         )));
         let task = Self {
+            shell_calls: shell_call_ids(&view.session),
+            shell_outputs: Arc::default(),
+            output_pending: false,
+            last_output_publish: tokio::time::Instant::now(),
             view,
             view_tx,
             store: deps.store,
@@ -223,6 +232,24 @@ impl SessionTask {
             pending_notes: Vec::new(),
         };
         (task, view_rx, turns)
+    }
+
+    async fn flush_shell_outputs(&mut self) {
+        self.output_pending = false;
+        self.last_output_publish = tokio::time::Instant::now();
+        let updates = self.shell_outputs.drain();
+        let mut changed = false;
+        for (call_id, output) in updates {
+            if self.shell_calls.contains(&call_id) {
+                // 所有展示变动统一通过 AgentEvent 投影。
+                self.event(AgentEvent::ShellOutputUpdated { call_id, output })
+                    .await;
+                changed = true;
+            }
+        }
+        if changed {
+            self.publish_throttled();
+        }
     }
 
     pub(super) fn publish(&mut self) {
@@ -301,7 +328,12 @@ impl SessionTask {
 
     pub(super) async fn event(&mut self, event: AgentEvent) {
         // 文本与思考增量按节流发布，其余事件改变结构或状态，立即发布
-        let is_delta = matches!(event, AgentEvent::Thought(_) | AgentEvent::Text { .. });
+        let is_delta = matches!(
+            event,
+            AgentEvent::Thought(_)
+                | AgentEvent::Text { .. }
+                | AgentEvent::ShellOutputUpdated { .. }
+        );
         let text_part = match &event {
             AgentEvent::Text { text_id, .. } => Some(self.text_part_index(text_id, true)),
             AgentEvent::Citation { text_id, .. } => Some(self.text_part_index(text_id, false)),
@@ -363,6 +395,9 @@ impl SessionTask {
                 }
                 self.view.notices = kept;
             }
+            AgentEvent::ShellOutputUpdated { call_id, output } => {
+                Arc::make_mut(&mut self.view.shell_outputs).insert(call_id.clone(), output.clone());
+            }
             AgentEvent::BackgroundTaskUpdated(task) => {
                 crate::model::update_background_task(Arc::make_mut(&mut self.view.background_tasks), task.clone());
             }
@@ -380,6 +415,9 @@ impl SessionTask {
             self.dirty = true;
         } else {
             self.publish();
+        }
+        if matches!(event, AgentEvent::ShellOutputUpdated { .. }) {
+            return;
         }
         if let Some(tx) = &self.cli {
             let _ = tx.send(event).await;
@@ -521,6 +559,8 @@ impl SessionTask {
             }
         }
         self.view.background_tasks = Arc::new(tasks);
+        self.shell_calls = shell_call_ids(&session);
+        Arc::make_mut(&mut self.view.shell_outputs).retain(|id, _| self.shell_calls.contains(id));
         self.replace_session(session);
         Ok(())
     }
@@ -555,6 +595,7 @@ impl SessionTask {
                 hashline: self.hashline.clone(),
                 ask_user_requests: self.ask_user_tx.clone(),
                 background: self.tasks.clone(),
+                shell_outputs: self.shell_outputs.clone(),
                 skills,
                 agents,
                 broker: self.broker.clone(),
@@ -756,6 +797,7 @@ impl SessionTask {
 
     /// 后台任务完成：原位发布状态，id 入队等待安全轮隙持久化并投递模型。
     pub(super) async fn queue_task_completion(&mut self, task_id: String) {
+        self.flush_shell_outputs().await;
         if let Some(snapshot) = self.tasks.snapshot(&task_id) {
             self.event(AgentEvent::BackgroundTaskUpdated(snapshot.task()))
                 .await;
@@ -891,7 +933,13 @@ impl SessionTask {
                 }
                 Some(event) = events.recv() => self.event(event).await,
                 Some(request) = self.ask_user_rx.recv() => self.receive_user_question(request).await,
-                _ = publish_tick.tick() => self.publish_throttled(),
+                _ = self.shell_outputs.notified(), if !self.output_pending => self.output_pending = true,
+                _ = publish_tick.tick() => {
+                    if self.output_pending && self.last_output_publish.elapsed() >= crate::tools::shell_output::OUTPUT_INTERVAL {
+                        self.flush_shell_outputs().await;
+                    }
+                    self.publish_throttled();
+                },
                 command = commands.recv() => {
                     let Some(command) = command else {
                         self.publish_throttled();
@@ -1102,6 +1150,9 @@ impl SessionTask {
     ) -> Option<Vec<crate::model::ToolResult>> {
         for call in calls {
             if engine.tools.validate_call(call).is_ok() {
+                if call.name == names::SHELL {
+                    self.shell_calls.insert(call.id.clone());
+                }
                 self.event(AgentEvent::ToolExecuting {
                     name: call.name.clone(),
                     args: call.arguments.clone(),
@@ -1121,7 +1172,14 @@ impl SessionTask {
                 results[index] = Some(result);
             }
         };
-        self.drive(collect, commands, events).await?;
+        let completed = self.drive(collect, commands, events).await;
+        // 取消会丢弃 JoinSet；先回收子任务，让 capture 的析构终态进入本次冲刷。
+        if completed.is_none() {
+            set.abort_all();
+            while set.join_next().await.is_some() {}
+        }
+        self.flush_shell_outputs().await;
+        completed?;
         Some(results.into_iter().map(Option::unwrap).collect())
     }
 
@@ -1134,6 +1192,16 @@ impl SessionTask {
     ) -> Result<Vec<(PathBuf, String)>, String> {
         let mut on_demand_agents = Vec::new();
         for (call, mut result) in calls.into_iter().zip(results) {
+            if call.name == names::SHELL
+                && result.background_task_id.is_none()
+                && result.shell_output.is_none()
+            {
+                result.shell_output = self
+                    .view
+                    .shell_outputs
+                    .get(&call.id)
+                    .map(|output| Box::new(output.as_ref().clone()));
+            }
             // Configure can run while tools are reading; validate before committing their media.
             if !result.attachments.is_empty() {
                 let inputs = self
@@ -1433,7 +1501,12 @@ impl SessionTask {
     }
 
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
-        while let Some(command) = commands.recv().await {
+        loop {
+            let command = tokio::select! {
+                command = commands.recv() => match command { Some(command) => command, None => break },
+                _ = self.shell_outputs.notified(), if !self.output_pending => { self.output_pending = true; continue; },
+                _ = tokio::time::sleep_until(self.last_output_publish + crate::tools::shell_output::OUTPUT_INTERVAL), if self.output_pending => { self.flush_shell_outputs().await; continue; },
+            };
             match command {
                 Command::Shared(command) => self.handle_shared(command).await,
                 Command::Submit {
@@ -1574,4 +1647,17 @@ fn log_response(
         usage.map_or(0, |u| u.completion_tokens),
         usage.and_then(|u| u.cached_tokens).unwrap_or(0)
     );
+}
+
+fn shell_call_ids(session: &Session) -> std::collections::HashSet<String> {
+    session
+        .turns
+        .iter()
+        .flat_map(|turn| &turn.messages)
+        .flat_map(|message| &message.parts)
+        .filter_map(|part| match part {
+            ContentPart::ToolCall(call) if call.name == names::SHELL => Some(call.id.clone()),
+            _ => None,
+        })
+        .collect()
 }

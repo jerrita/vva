@@ -61,6 +61,7 @@ pub(super) struct EngineDeps {
     pub hashline: Arc<crate::tools::hashline::HashlineSession>,
     pub ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
     pub background: Arc<crate::tools::background::BackgroundTasks>,
+    pub shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
     pub skills: Vec<crate::skills::Skill>,
     pub agents: Vec<crate::agents::AgentDef>,
     pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
@@ -208,6 +209,7 @@ impl AgentEngine {
                 hashline: deps.hashline,
                 inputs: inputs.clone(),
                 background: Some(deps.background.clone()),
+                shell_outputs: Some(deps.shell_outputs),
             },
         );
         let broker = deps.broker;
@@ -509,6 +511,7 @@ mod tests {
                 background: Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
                     |_| {},
                 ))),
+                shell_outputs: Arc::default(),
                 skills: Vec::new(),
                 agents,
                 broker: Arc::new(crate::harness::testing::StubBroker(None)),
