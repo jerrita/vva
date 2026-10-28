@@ -215,42 +215,43 @@ impl ResolvedModel<'_> {
     pub fn create_provider(&self) -> Arc<dyn Provider> {
         let effective_type = self.effective_type();
 
-        // 规范化 Base URL（针对各 API 标准端点严格对接与去重）
-        let base_url = self.provider_config.base_url.trim().trim_end_matches('/');
         let api_key = self.provider_config.api_key.trim();
-
-        // 空值取官方默认端点；已是完整端点（is_complete）原样使用，否则补版本段
-        let endpoint = |default: &str, version: &str, is_complete: &dyn Fn(&str) -> bool| {
-            if base_url.is_empty() {
-                default.to_string()
-            } else if is_complete(base_url) {
-                base_url.to_string()
-            } else {
-                format!("{base_url}{version}")
-            }
-        };
 
         match effective_type {
             ProviderType::Response => {
-                let url = endpoint("https://api.openai.com/v1", "/v1", &|u| {
+                let url = self.endpoint("https://api.openai.com/v1", "/v1", &|u| {
                     u.ends_with("/v1") || u.ends_with("/responses")
                 });
                 Arc::new(ResponseProvider::new(api_key).with_base_url(url))
             }
-            ProviderType::Anthropic => {
-                let url = endpoint("https://api.anthropic.com/v1", "/v1", &|u| {
-                    u.ends_with("/v1") || u.ends_with("/messages")
-                });
-                Arc::new(AnthropicProvider::new(api_key).with_base_url(url))
-            }
+            ProviderType::Anthropic => Arc::new(self.create_anthropic_provider()),
             ProviderType::Gemini => {
-                let url = endpoint(
+                let url = self.endpoint(
                     "https://generativelanguage.googleapis.com/v1beta",
                     "/v1beta",
                     &|u| u.ends_with("/v1beta") || u.ends_with("/v1") || u.contains("/models"),
                 );
                 Arc::new(GeminiProvider::new(api_key).with_base_url(url))
             }
+        }
+    }
+
+    pub(crate) fn create_anthropic_provider(&self) -> AnthropicProvider {
+        let url = self.endpoint("https://api.anthropic.com/v1", "/v1", &|u| {
+            u.ends_with("/v1") || u.ends_with("/messages")
+        });
+        AnthropicProvider::new(self.provider_config.api_key.trim()).with_base_url(url)
+    }
+
+    // 空值取官方默认端点；完整端点原样使用，其余补版本段。
+    fn endpoint(&self, default: &str, version: &str, is_complete: &dyn Fn(&str) -> bool) -> String {
+        let base = self.provider_config.base_url.trim().trim_end_matches('/');
+        if base.is_empty() {
+            default.to_string()
+        } else if is_complete(base) {
+            base.to_string()
+        } else {
+            format!("{base}{version}")
         }
     }
 }

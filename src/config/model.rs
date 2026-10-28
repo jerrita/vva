@@ -492,6 +492,13 @@ impl ModelConfig {
             .unwrap_or(true)
     }
 
+    pub fn standalone_search(&self) -> bool {
+        self.annotation
+            .as_ref()
+            .and_then(|a| a.standalone_search)
+            .unwrap_or(false)
+    }
+
     /// 该模型显式声明的文件编辑协议；未声明时为 `None`
     pub fn editor(&self) -> Option<crate::model::EditorKind> {
         self.annotation.as_ref().and_then(|a| a.editor)
@@ -532,6 +539,10 @@ pub struct ModelAnnotation {
     /// 会话 web 开关开启且配置 `settings.web.search` 时改用外置客户端工具
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_search: Option<bool>,
+    /// Anthropic 独立搜索：用于 Kimi 等搜索调用 ID 与结果 ID 不一致的端点，
+    /// 结果以客户端工具文本返回主会话，不回传服务端搜索块。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standalone_search: Option<bool>,
     /// 模型亲和组：同组模型可互相复用原生回传状态（response_id 链、encrypted
     /// thinking、签名块），跨组切换时历史降维为通用重建。缺省为 provider 节点 id
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -543,7 +554,7 @@ pub struct ModelAnnotation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<bool>,
     /// Anthropic web_search / web_fetch 服务端工具的版本后缀（如 `"20260209"`），
-    /// 用于尚未识别最新版本的中转端点；缺省使用最新版本
+    /// 原生与独立搜索共用此版本配置及默认值。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_tool_version: Option<String>,
 }

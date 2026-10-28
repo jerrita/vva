@@ -116,11 +116,19 @@ impl AgentEngine {
             })
             .transpose()?;
         let web_declared = session.header.web_search && resolved.model_config.declare_web_search();
+        let standalone_search = web_declared
+            && search_allowed
+            && resolved.effective_type() == crate::config::ProviderType::Anthropic
+            && resolved.model_config.standalone_search();
+        let search_provider = standalone_search.then(|| resolved.create_anthropic_provider());
         let options = CompletionOptions {
             model: resolved.model_id,
             max_tokens,
             reasoning_effort: resolved.selected_variant,
-            enable_web_search: web_declared && search_allowed && (!bundled_fetch || fetch_allowed),
+            enable_web_search: web_declared
+                && search_allowed
+                && (!bundled_fetch || fetch_allowed)
+                && !standalone_search,
             enable_web_fetch: web_declared
                 && resolved.model_config.declare_web_fetch()
                 && fetch_allowed,
@@ -129,6 +137,11 @@ impl AgentEngine {
             affinity: Some(affinity.clone()),
             ..Default::default()
         };
+        if let Some(provider) = search_provider {
+            tools.register(Arc::new(
+                crate::tools::web::standalone::StandaloneSearchTool::new(provider, options.clone()),
+            ));
+        }
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
         // 客户端调用时，注册表给出显式诊断而非误导性的 Tool not found
         tools.reserve_server_tools(
@@ -147,7 +160,8 @@ impl AgentEngine {
         let mut external_search = false;
         if session.header.web_search && (search_allowed || fetch_allowed) {
             let external = crate::tools::web::ExternalWeb::resolve(config)?;
-            let native_search = options.enable_web_search && capabilities.supports_native_search;
+            let native_search = standalone_search
+                || (options.enable_web_search && capabilities.supports_native_search);
             // 独立 web_fetch server tool（Anthropic）按声明位；
             // 无独立工具时，web_search 含 open_page（Response）随原生搜索在位
             let native_fetch = if capabilities.server_tool_names.contains(&"web_fetch") {
@@ -605,11 +619,13 @@ mod tests {
             crate::config::ProviderType::Anthropic,
             crate::config::ProviderType::Gemini,
         ] {
-            for native in [true, false] {
+            for (native, standalone) in [(true, false), (false, false), (true, true), (false, true)]
+            {
                 for (search, fetch) in [(false, false), (true, false), (false, true), (true, true)]
                 {
                     let mut config = web_config(Some(crate::config::model::ModelAnnotation {
                         web_search: Some(native),
+                        standalone_search: Some(standalone),
                         ..Default::default()
                     }));
                     config.providers.get_mut("p").unwrap().provider_type = Some(provider_type);
@@ -645,12 +661,189 @@ mod tests {
                         assert_eq!(engine.tools.get("web_fetch").is_some(), fetch);
                     }
                     if native && provider_type == crate::config::ProviderType::Anthropic {
-                        assert_eq!(engine.options.enable_web_search, search);
+                        assert_eq!(engine.options.enable_web_search, search && !standalone);
+                        assert_eq!(
+                            engine.tools.get("web_search").is_some(),
+                            search && standalone
+                        );
                         assert_eq!(engine.options.enable_web_fetch, fetch);
                     }
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn standalone_search_returns_text_without_replaying_server_blocks() {
+        use axum::{Json, Router, http::HeaderMap, response::IntoResponse, routing::post};
+        use serde_json::{Value, json};
+
+        let events = [
+            json!({"type": "message_start", "message": {
+                "id": "msg_search", "type": "message", "role": "assistant", "model": "search-model",
+                "content": [], "stop_reason": null, "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 0}
+            }}),
+            json!({"type": "content_block_start", "index": 0, "content_block": {
+                "type": "server_tool_use", "id": "call_search", "name": "web_search", "input": {}
+            }}),
+            json!({"type": "content_block_delta", "index": 0, "delta": {
+                "type": "input_json_delta", "partial_json": "{\"query\":\"example documentation\"}"
+            }}),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({"type": "content_block_start", "index": 1, "content_block": {
+                "type": "web_search_tool_result", "tool_use_id": "different_result_id", "content": [
+                    {"type": "web_search_result", "title": "Example docs", "url": "https://example.com/docs", "encrypted_content": "opaque_1"},
+                    {"type": "web_search_result", "url": "https://example.com/guide", "encrypted_content": "opaque_2"}
+                ]
+            }}),
+            json!({"type": "content_block_stop", "index": 1}),
+            json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": ""}}),
+            json!({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "Search summary."}}),
+            json!({"type": "content_block_stop", "index": 2}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 20}}),
+            json!({"type": "message_stop"}),
+        ];
+        let sse: String = events
+            .iter()
+            .map(|event| {
+                format!(
+                    "event: {}\ndata: {event}\n\n",
+                    event["type"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (requests, mut received) = mpsc::channel(8);
+        let app = Router::new().route("/v1/messages", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let requests = requests.clone();
+            let sse = sse.clone();
+            async move {
+                assert_eq!(headers["x-api-key"], "fixture-key");
+                assert_eq!(headers["anthropic-version"], "2023-06-01");
+                requests.send(body.clone()).await.unwrap();
+                if body["tool_choice"]["name"] == "web_search" {
+                    return ([("content-type", "text/event-stream")], sse).into_response();
+                }
+                let has_result = body["messages"].as_array().unwrap().iter().any(|message| {
+                    message["content"].as_array().unwrap().iter().any(|block| block["type"] == "tool_result")
+                });
+                let (content, stop_reason) = if has_result {
+                    (json!([{"type": "text", "text": "Answer with sources."}]), "end_turn")
+                } else {
+                    (json!([{"type": "tool_use", "id": "client_search", "name": "web_search", "input": {"query": "example documentation"}}]), "tool_use")
+                };
+                Json(json!({
+                    "id": "msg_main", "type": "message", "role": "assistant", "model": "search-model",
+                    "content": content, "stop_reason": stop_reason, "stop_sequence": null,
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                })).into_response()
+            }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for (version, expected_tool) in [
+            (None, "web_search_20260318"),
+            (Some("20250305"), "web_search_20250305"),
+        ] {
+            let config: AppConfig = serde_json::from_value(json!({
+            "settings": {"web": {"search": "tavily", "provider": {"tavily": {"api_key": "fixture-external-key"}}}},
+            "providers": {"p": {
+                "type": "anthropic", "base_url": format!("http://{address}"), "api_key": "fixture-key",
+                "models": {"search-model": {"name": "Search", "annotation": {"standalone_search": true, "web_tool_version": version, "web_fetch": false}}}
+            }}
+        })).unwrap();
+            let mut session = session_for("p/search-model", true);
+            session.append_turn(Turn::user_turn(Message::text("main-only-marker")));
+            let engine = build_engine(&config, &session).unwrap();
+            assert!(!engine.options.enable_web_search);
+            assert!(!engine.tools.is_server_tool("web_search"));
+            assert!(engine.external_web.is_empty());
+            let tool = engine.tools.get("web_search").unwrap();
+            assert!(
+                tool.input().expect_json()["properties"]
+                    .get("max_results")
+                    .is_none()
+            );
+            assert!(tool.execute(r#"{"query":" "}"#).await.is_err());
+            let disabled = build_engine(&config, &session_for("p/search-model", false)).unwrap();
+            assert!(disabled.tools.get("web_search").is_none());
+
+            let definitions = engine.tools.definitions();
+            let response = engine
+                .provider
+                .complete(&session, &definitions, &engine.options)
+                .await
+                .unwrap();
+            let crate::model::ContentPart::ToolCall(call) = &response.messages[0].parts[0] else {
+                panic!("expected client search call");
+            };
+            let result = engine.tools.execute_call(call).await;
+            assert!(!result.is_error, "{}", result.content);
+            assert!(result.content.contains("Example docs"));
+            assert!(result.content.contains("https://example.com/guide"));
+            assert!(result.content.contains("Search summary."));
+            assert!(!result.content.contains("different_result_id"));
+            assert!(!result.content.contains("opaque_"));
+            assert_eq!(result.tool_call_id, "client_search");
+            let mut turn = Turn::assistant_turn(response.messages);
+            turn.meta = response.meta;
+            session.append_turn(turn);
+            session.append_turn(Turn::new(
+                Role::Tool,
+                vec![Message::new(vec![crate::model::ContentPart::ToolResult(
+                    result,
+                )])],
+            ));
+            let final_response = engine
+                .provider
+                .complete(&session, &definitions, &engine.options)
+                .await
+                .unwrap();
+            assert_eq!(
+                final_response.messages[0].text_content(),
+                "Answer with sources."
+            );
+
+            let main = received.try_recv().unwrap();
+            assert!(
+                main["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|tool| tool.get("type").is_none())
+            );
+            let search = received.try_recv().unwrap();
+            assert_eq!(search["model"], "search-model");
+            assert_eq!(search["thinking"], json!({"type": "disabled"}));
+            assert_eq!(search["max_tokens"], 4096);
+            assert_eq!(
+                search["tool_choice"],
+                json!({"type": "tool", "name": "web_search"})
+            );
+            assert_eq!(search["tools"].as_array().unwrap().len(), 1);
+            assert_eq!(search["tools"][0]["type"], expected_tool);
+            assert_eq!(search["messages"].as_array().unwrap().len(), 1);
+            assert!(!search.to_string().contains("main-only-marker"));
+            let resumed = received.try_recv().unwrap();
+            let content: Vec<_> = resumed["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|message| message["content"].as_array().unwrap())
+                .collect();
+            assert!(
+                content.iter().any(|block| block["type"] == "tool_result"
+                    && block["tool_use_id"] == "client_search")
+            );
+            assert!(
+                content
+                    .iter()
+                    .all(|block| block["type"] != "server_tool_use"
+                        && block["type"] != "web_search_tool_result")
+            );
+        }
+        server.abort();
     }
 
     fn web_config(annotation: Option<crate::config::model::ModelAnnotation>) -> AppConfig {

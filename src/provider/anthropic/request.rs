@@ -1,4 +1,4 @@
-use super::AnthropicProvider;
+use super::{AnthropicProvider, DEFAULT_WEB_TOOL_VERSION};
 use crate::config::ProviderType;
 use crate::model::{
     ContentPart, MediaKind, MediaSource, Message, Role, Session, ToolDefinition, TurnMeta,
@@ -7,9 +7,6 @@ use crate::provider::Provider;
 use crate::provider::common::{RoleBlockMerger, WebCallSurface, web_call_surface};
 use crate::provider::common::{function_parameters, replay_call_args};
 use crate::provider::{CompletionOptions, ProviderError};
-
-/// web_search / web_fetch 服务端工具的默认版本后缀（模型级 `annotation.web_tool_version` 可覆写）
-const LATEST_WEB_TOOL_VERSION: &str = "20260318";
 
 impl AnthropicProvider {
     pub(super) fn build_request_body(
@@ -24,7 +21,7 @@ impl AnthropicProvider {
         let version = options
             .web_tool_version
             .as_deref()
-            .unwrap_or(LATEST_WEB_TOOL_VERSION);
+            .unwrap_or(DEFAULT_WEB_TOOL_VERSION);
         let direct_callers = serde_json::json!(["direct"]);
         if options.enable_web_search {
             api_tools.push(serde_json::json!({
