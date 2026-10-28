@@ -309,6 +309,48 @@ fn test_gemini_streaming_accumulator_matches_non_streaming_parse() {
 }
 
 #[test]
+fn test_gemini_streaming_ignores_usage_metadata_without_token_counts() {
+    let intermediate = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "A"}]}
+        }],
+        "usageMetadata": {"trafficType": "ON_DEMAND"}
+    });
+    let complete = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"text": "B"}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 7,
+            "candidatesTokenCount": 2,
+            "totalTokenCount": 9,
+            "trafficType": "ON_DEMAND"
+        }
+    });
+
+    let mut streaming = GeminiAccumulator::new(None, &[]);
+    streaming
+        .merge_response(&intermediate)
+        .expect("ignore intermediate usage metadata");
+    streaming
+        .merge_response(&complete)
+        .expect("merge complete usage metadata");
+    let response = streaming.finish();
+    let usage = response.usage.expect("complete token usage");
+    assert_eq!(usage.prompt_tokens, 7);
+    assert_eq!(usage.completion_tokens, 2);
+    assert_eq!(usage.total_tokens, 9);
+
+    let err = GeminiAccumulator::parse_response(&intermediate, &[])
+        .expect_err("non-streaming usage metadata remains strict");
+    assert!(matches!(
+        err,
+        ProviderError::Protocol(msg) if msg.contains("Missing 'promptTokenCount'")
+    ));
+}
+
+#[test]
 fn test_gemini_streaming_grounding_chunks_merge_not_overwrite() {
     // 回归：流式响应中多个 chunk 分别携带 groundingMetadata 时，
     // 检索来源与查询必须合并保留，不得整体覆盖

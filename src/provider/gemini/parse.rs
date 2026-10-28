@@ -53,9 +53,16 @@ impl GeminiAccumulator {
         }
     }
 
-    /// 合并单个 GenerateContentResponse（流式 chunk 或完整响应）；
-    /// 必填字段缺失或类型不符直接报协议错误
+    /// 合并单个 GenerateContentResponse 流式 chunk；必填字段缺失或类型不符直接报协议错误
     pub(super) fn merge_response(&mut self, json: &serde_json::Value) -> Result<(), ProviderError> {
+        self.merge_response_impl(json, false)
+    }
+
+    fn merge_response_impl(
+        &mut self,
+        json: &serde_json::Value,
+        require_complete_usage: bool,
+    ) -> Result<(), ProviderError> {
         if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
             if let Some(fr) = candidate["finishReason"].as_str() {
                 self.finish_reason = Some(fr.to_string());
@@ -89,7 +96,17 @@ impl GeminiAccumulator {
         }
 
         if let Some(um) = json.get("usageMetadata") {
-            self.usage = Some(parse_usage_metadata(um)?);
+            // 流式中间分片可能只携带 trafficType，等完整计数到达后再更新用量
+            let has_token_counts = [
+                "promptTokenCount",
+                "candidatesTokenCount",
+                "totalTokenCount",
+            ]
+            .into_iter()
+            .any(|field| um.get(field).is_some());
+            if require_complete_usage || has_token_counts {
+                self.usage = Some(parse_usage_metadata(um)?);
+            }
         }
         Ok(())
     }
@@ -220,7 +237,7 @@ impl GeminiAccumulator {
             ));
         }
         let mut accumulator = Self::new(None, tools);
-        accumulator.merge_response(json)?;
+        accumulator.merge_response_impl(json, true)?;
         Ok(accumulator.finish())
     }
 
