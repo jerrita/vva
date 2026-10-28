@@ -1,6 +1,6 @@
 [package]
 name = "vva"
-version = "1.9.1"
+version = "1.9.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/jerrita/vva"

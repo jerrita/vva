@@ -31,6 +31,7 @@ pub(super) struct GeminiAccumulator {
     safety_ratings: Vec<GeminiSafetyRating>,
     code_execution_result: Option<GeminiCodeExecutionResult>,
     usage: Option<TokenUsage>,
+    received_response: bool,
 }
 
 impl GeminiAccumulator {
@@ -63,6 +64,7 @@ impl GeminiAccumulator {
         json: &serde_json::Value,
         require_complete_usage: bool,
     ) -> Result<(), ProviderError> {
+        self.received_response = true;
         if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
             if let Some(fr) = candidate["finishReason"].as_str() {
                 self.finish_reason = Some(fr.to_string());
@@ -239,6 +241,16 @@ impl GeminiAccumulator {
         let mut accumulator = Self::new(None, tools);
         accumulator.merge_response_impl(json, true)?;
         Ok(accumulator.finish())
+    }
+
+    /// 空 SSE 流属于传输协议异常；收到分片后仍允许无正文的结束响应
+    pub(super) fn finish_stream(self) -> Result<ProviderResponse, ProviderError> {
+        if !self.received_response {
+            return Err(ProviderError::Protocol(
+                "Stream ended without a Gemini response".into(),
+            ));
+        }
+        Ok(self.finish())
     }
 
     /// 组装为统一的领域内容块（检索记录 → 思考 → 正文 → 工具调用）与轮次元数据

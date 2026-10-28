@@ -351,6 +351,27 @@ fn test_gemini_streaming_ignores_usage_metadata_without_token_counts() {
 }
 
 #[test]
+fn test_gemini_streaming_rejects_empty_stream() {
+    let err = GeminiAccumulator::new(None, &[])
+        .finish_stream()
+        .expect_err("empty stream must fail");
+    assert!(matches!(
+        err,
+        ProviderError::Protocol(msg) if msg.contains("without a Gemini response")
+    ));
+
+    let mut streaming = GeminiAccumulator::new(None, &[]);
+    streaming
+        .merge_response(&serde_json::json!({
+            "candidates": [{"finishReason": "STOP"}]
+        }))
+        .expect("merge final chunk");
+    streaming
+        .finish_stream()
+        .expect("a final chunk without text is still a response");
+}
+
+#[test]
 fn test_gemini_streaming_grounding_chunks_merge_not_overwrite() {
     // 回归：流式响应中多个 chunk 分别携带 groundingMetadata 时，
     // 检索来源与查询必须合并保留，不得整体覆盖
