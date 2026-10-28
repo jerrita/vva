@@ -267,12 +267,16 @@ impl AnthropicProvider {
 
         if options.disable_thinking {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
+        } else if let Some(effort) = &options.reasoning_effort
+            && !effort.is_empty()
+        {
+            body["output_config"]["effort"] = serde_json::json!(effort);
         }
 
         // 原生 structured outputs：无需 beta header，JSON 文本落在 text 块中
         if let Some(rs) = &options.response_schema {
-            body["output_config"] = serde_json::json!({
-                "format": { "type": "json_schema", "schema": rs.schema }
+            body["output_config"]["format"] = serde_json::json!({
+                "type": "json_schema", "schema": rs.schema
             });
         }
 

@@ -908,6 +908,48 @@ fn user_cache_breakpoint_covers_all_file_refs_and_trailing_media() {
 }
 
 #[test]
+fn reasoning_effort_maps_to_native_output_config() {
+    let provider = AnthropicProvider::new("test");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("Explain sorting")));
+    for effort in ["low", "medium", "high", "xhigh", "max"] {
+        let options = CompletionOptions {
+            model: "claude-opus-4-7".into(),
+            reasoning_effort: Some(effort.into()),
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .unwrap();
+        assert_eq!(body["output_config"]["effort"], effort);
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("thinking").is_none());
+    }
+}
+
+#[test]
+fn reasoning_effort_is_omitted_when_unset_or_thinking_disabled() {
+    let provider = AnthropicProvider::new("test");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("Explain sorting")));
+    for (effort, disable_thinking) in [(None, false), (Some(""), false), (Some("high"), true)] {
+        let options = CompletionOptions {
+            model: "claude-opus-4-6".into(),
+            reasoning_effort: effort.map(str::to_string),
+            disable_thinking,
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .unwrap();
+        assert!(body.get("output_config").is_none());
+        if disable_thinking {
+            assert_eq!(body["thinking"], serde_json::json!({"type": "disabled"}));
+        }
+    }
+}
+
+#[test]
 fn test_response_schema_maps_to_output_config_format() {
     let mut session = Session::new(PathBuf::from("/tmp"), None);
     session.append_turn(Turn::user_turn(Message::text("route")));
@@ -918,7 +960,8 @@ fn test_response_schema_maps_to_output_config_format() {
         "additionalProperties": false
     });
     let options = CompletionOptions {
-        model: "claude-sonnet-4-5".into(),
+        model: "claude-opus-4-6".into(),
+        reasoning_effort: Some("low".into()),
         response_schema: Some(crate::provider::ResponseSchema {
             name: "route_decision".into(),
             schema: schema.clone(),
@@ -930,6 +973,7 @@ fn test_response_schema_maps_to_output_config_format() {
         .unwrap();
     assert_eq!(body["output_config"]["format"]["type"], "json_schema");
     assert_eq!(body["output_config"]["format"]["schema"], schema);
+    assert_eq!(body["output_config"]["effort"], "low");
     assert!(body.get("output_format").is_none());
 }
 
