@@ -3896,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "vva"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "arboard",
  "async-trait",
