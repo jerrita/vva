@@ -114,6 +114,6 @@ impl Provider for GeminiProvider {
             &mut handler,
         )
         .await?;
-        Ok(handler.finish())
+        handler.finish_stream()
     }
 }
