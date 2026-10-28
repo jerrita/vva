@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.9.1] - 2026-10-28
+
+### 修复
+
+- 兼容 Gemini 流式中间分片仅返回 `trafficType` 的 `usageMetadata`，待完整 token 计数到达后再更新用量，避免误报 `Missing 'promptTokenCount'`。
+
 ## [1.9.0] - 2026-10-26
 
 ### 新增
