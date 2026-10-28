@@ -21,10 +21,16 @@ pub(super) fn project_web_search_call(
     };
     let (action, query, sources) = match action {
         Some(ResponseWebSearchAction::Search {
-            queries, sources, ..
+            query,
+            queries,
+            sources,
         }) => (
             Some(WebSearchAction::Search),
-            queries.join(", "),
+            if queries.is_empty() {
+                query.clone().unwrap_or_default()
+            } else {
+                queries.join(", ")
+            },
             sources
                 .iter()
                 .filter_map(|src| match src {

@@ -87,6 +87,12 @@ pub trait Provider: Send + Sync {
 - **流式事件**：`server_tool_use` 的输入经 `input_json_delta` 增量下发；结果块在 `content_block_start` 整块到达；引用经 `citations_delta` 逐条追加至当前 text 块。
 - **端点能力诊断**：模型误以客户端 `tool_use` 调用服务端工具时（端点未实现 server tools 的典型症状），工具结果返回显式诊断（端点不支持原生服务端工具）。
 
+### 3.4 独立搜索
+
+模型启用 `annotation.standalone_search` 后，主会话调用客户端 `web_search`，工具使用同一模型、端点和凭据发起独立 Messages 流式请求，仅携带搜索词和搜索工具，以 `tool_choice` 强制选择搜索并关闭 thinking；工具版本及开关见 [config-reference §4.2](config-reference.md#42-annotation-注记)。
+
+独立请求只提取文本与搜索结果的 URL、可选标题，不按服务端调用 ID 配对；搜索原生块和加密字段不进入主会话。提取结果作为普通 `ToolResult` 文本回传，主会话继续按客户端调用 ID 关联调用与结果。该路径不修改原生 Anthropic 适配器的强类型校验。搜索错误、缺少结果块、非法报文和流中断均作为工具错误返回；合法的空结果列表表示未命中。原生 fetch 与外置 fetch 沿用原有配置。
+
 ---
 
 ## 4. Google Gemini API 适配器

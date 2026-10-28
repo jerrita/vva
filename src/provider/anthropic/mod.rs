@@ -1,5 +1,6 @@
 mod parse;
 mod request;
+mod standalone;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,9 @@ use parse::assemble_response;
 use tokio::sync::mpsc;
 
 use stream::AnthropicStreamHandler;
+
+/// 原生与独立搜索共用的 web 工具默认版本。
+const DEFAULT_WEB_TOOL_VERSION: &str = "20260318";
 
 pub struct AnthropicProvider {
     api_key: String,

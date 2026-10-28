@@ -70,7 +70,7 @@ pub struct CompletionOptions {
     pub reasoning_effort: Option<String>,
     /// 显式关闭思考，优先于 reasoning_effort；适配器转换为供应商原生参数。
     pub disable_thinking: bool,
-    /// Anthropic 服务端 web 工具版本后缀（模型级 `annotation.web_tool_version`；缺省为最新版本）
+    /// Anthropic 服务端 web 工具版本后缀（模型级 `annotation.web_tool_version`；原生与独立搜索共用默认值）
     pub web_tool_version: Option<String>,
     /// 请求服务档位（Responses API 的 `service_tier` 参数；模型级 `annotation.fast: true` 时为 `fast`）
     pub service_tier: Option<String>,

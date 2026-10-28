@@ -266,10 +266,27 @@ OpenCode System One 配置示例（与已有主模型及渠道配置合并）：
 |---|---|---|
 | `annotation.web_fetch` | `true` | 设为 `false` 时不向端点声明 `web_fetch` 服务端工具。用于未接线特定 server tool 的中转端点——工具声明组中出现端点未识别的条目时，端点会整组丢弃声明；仅声明 `web_search` 可保住原生搜索。原生 fetch 缺位后，配置 `settings.web.fetch` 时以客户端工具补全 |
 | `annotation.web_search` | `true` | 设为 `false` 标记模型/端点不支持原生 web search，不向端点声明原生搜索；配置 `settings.web.search` 时以客户端工具 `web_search` 补全 |
+| `annotation.standalone_search` | `false` | 仅 Anthropic 生效，适用于 Kimi 等搜索调用 ID 与结果 ID 不一致的端点：联网开启且允许搜索时，将 `web_search` 注册为客户端工具，使用当前模型和端点独立检索；主请求关闭原生搜索声明。优先于外置搜索 provider，仍受 `annotation.web_search` 开关约束。结果提取与主会话回传见 [providers §3.4](providers.md#34-独立搜索) |
 | `annotation.affinity` | provider 节点 id | 模型亲和组：同组模型切换时互相复用原生回传状态（response_id 链、encrypted thinking、签名块）；跨组切换时历史降维为通用重建（推理签名丢弃、搜索调用按当前工具面重投影）并发提示。混系网关（同一节点下多家族模型）按模型标注，如 `"gpt"` |
 | `annotation.editor` | `settings.editor` | 文件编辑协议，决定注册的文件工具集。会话创建时写入 Header 并固定，之后换模不改变：`replace` 为 `Read`/`Write`/`Edit`（`old_string`/`new_string`）/`Glob`/`Grep`；`patch` 为 `Read`/`apply_patch`（Codex V4A，freeform）/`Glob`/`Grep`；`hashline` 为 `hashline_read`/`hashline_grep`/`hashline_edit`（`[PATH#TAG]` 快照 + `PUT`/`CUT`/`REM`/`MV`/`ADD` 行号补丁，freeform）/`Glob`。自定义 agent 的 `tools` 白名单写具体工具名 |
-| `annotation.web_tool_version` | `20260318` | Anthropic 协议下 `web_search_<版本>` / `web_fetch_<版本>` 服务端工具的版本后缀。用于尚未识别最新版本的中转端点（报 `unknown variant web_search_20260318`），可设为 `"20260209"` |
+| `annotation.web_tool_version` | `20260318` | Anthropic 协议下 `web_search_<版本>` / `web_fetch_<版本>` 服务端工具的版本后缀，原生与独立搜索共用此配置及默认值。用于尚未识别最新版本的中转端点（报 `unknown variant web_search_20260318`），可设为 `"20260209"`。独立搜索仅向独立请求声明搜索工具，主请求的 fetch 仍由 `annotation.web_fetch` 控制 |
 | `annotation.fast` | `false` | 设为 `true` 时请求体携带 `"service_tier": "fast"`（Responses API），走端点快速档位 |
+
+例如，`kimi-for-coding` 模型的配置片段：
+
+```json
+"kimi-for-coding": {
+  "name": "Kimi",
+  "type": "anthropic",
+  "annotation": {
+    "standalone_search": true,
+    "web_tool_version": "20250305",
+    "web_fetch": false
+  }
+}
+```
+
+此例关闭主请求的原生 fetch 声明；配置了 `settings.web.fetch` 时，仍由对应客户端工具提供页面抓取。
 
 ---
 

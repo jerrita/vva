@@ -5,6 +5,7 @@ pub mod brave;
 pub mod deepseek;
 pub mod google;
 pub mod local;
+pub(crate) mod standalone;
 pub mod tavily;
 pub mod tool;
 pub mod zhipu;

@@ -861,6 +861,60 @@ async fn test_stream_handler_reports_web_search_call_on_item_done() {
 }
 
 #[tokio::test]
+async fn test_web_search_query_fields_match_stream_and_final() {
+    let provider = ResponseProvider::new("test-key");
+    for (action, expected) in [
+        (
+            serde_json::json!({"type": "search", "query": "topic A"}),
+            "topic A",
+        ),
+        (
+            serde_json::json!({"type": "search", "queries": ["topic A", "topic B"]}),
+            "topic A, topic B",
+        ),
+        (
+            serde_json::json!({"type": "search", "query": "legacy topic", "queries": ["topic A", "topic B"]}),
+            "topic A, topic B",
+        ),
+        (
+            serde_json::json!({"type": "search", "query": "topic A", "queries": []}),
+            "topic A",
+        ),
+        (serde_json::json!({"type": "search"}), ""),
+    ] {
+        let item = serde_json::json!({
+            "type": "web_search_call", "id": "ws_query", "status": "completed", "action": action
+        });
+        let parsed = provider
+            .parse_response(serde_json::json!({
+                "id": "resp_query", "status": "completed", "output": [item.clone()]
+            }))
+            .unwrap();
+        let ContentPart::WebSearchCall(call) = &parsed.messages[0].parts[0] else {
+            panic!("expected web search call");
+        };
+        assert_eq!(call.query, expected);
+        assert_eq!(
+            parsed.meta.response.as_ref().unwrap().output_items[0],
+            serde_json::from_value::<ResponseOutputItem>(item.clone()).unwrap()
+        );
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut handler = ResponseStreamHandler::new(&provider, Some(tx));
+        handler
+            .on_event(serde_json::json!({
+                "type": "response.output_item.done", "item": item
+            }))
+            .await
+            .unwrap();
+        let AgentEvent::WebSearchCall(streamed) = rx.try_recv().unwrap() else {
+            panic!("expected search event");
+        };
+        assert_eq!(&streamed, call);
+    }
+}
+
+#[tokio::test]
 async fn test_web_actions_match_stream_final_and_storage() {
     let provider = ResponseProvider::new("test-key");
     let (tx, mut rx) = mpsc::channel(16);
