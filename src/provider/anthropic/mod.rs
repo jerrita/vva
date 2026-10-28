@@ -59,7 +59,7 @@ impl Provider for AnthropicProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_native_search: true,
-            supports_reasoning_effort: false,
+            supports_reasoning_effort: true,
             server_tool_names: vec!["web_search", "web_fetch"],
         }
     }

@@ -54,4 +54,4 @@
    - 单测验证 cache、signature、response_id、reasoning_effort 等专属特性的双向转换保真。
 2. **多模态**：图片 / 音视频用 `MediaSource::Path` 或 `MediaSource::Base64`，适配器转为目标 API 的 Payload（Gemini `inline_data`、Anthropic `base64` image source 等）。
 3. **测试**：改动核心模型、解析器、适配器或 UI 状态后运行 `cargo test`，保持 `cargo clippy -- -D warnings` 零告警。
-4. **发布**：推送 `v*` tag 触发 `.github/workflows/release.yml`。打 tag 前先把 `Cargo.toml` 的 `version`（含 `Cargo.lock`）同步为 tag 版本并提交。
+4. **发布**：推送 `v*` tag 触发 `.github/workflows/release.yml`。打 tag 前必须更新 `CHANGELOG.md`，添加与 tag 版本一致的非空 `## [版本号]` 条目，并将 `Cargo.toml` 的 `version`（含 `Cargo.lock`）同步为该版本，一并提交。

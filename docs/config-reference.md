@@ -303,7 +303,8 @@ OpenCode System One 配置示例（与已有主模型及渠道配置合并）：
 `--variant` / `/variant` 传入的档位先按 `variants` 白名单校验，非法值报 `InvalidVariant` 并列出合法项。校验通过后映射为对应协议的官方字段：
 
 - `response` 协议：映射为 `reasoning.effort`；
-- `anthropic` / `gemini` 协议：暂不支持推理档位，传入时收到能力 Notice 提示。
+- `anthropic` 协议：映射为 `output_config.effort`，可用档位以[官方 Effort 文档](https://platform.claude.com/docs/en/build-with-claude/effort)中的模型支持范围为准；
+- `gemini` 协议：暂不支持推理档位，传入时收到能力 Notice 提示。
 
 `none` 用于关闭推理档位：模型声明了 `variants` 时，仅当白名单中包含 `none` 才可用。
 

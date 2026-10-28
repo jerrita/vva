@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_capability_notices_flag_unsupported_options() {
-        // 全能力供应商（Responses）无通知
+        // 支持原生搜索和推理档位的供应商无通知
         let options = CompletionOptions {
             model: "claude-x".into(),
             enable_web_search: true,
@@ -472,6 +472,8 @@ mod tests {
         };
         let response = crate::provider::response::ResponseProvider::new("k");
         assert!(capability_notices(&response, &options, false).is_empty());
+        let anthropic = crate::provider::anthropic::AnthropicProvider::new("k");
+        assert!(capability_notices(&anthropic, &options, false).is_empty());
 
         // 无原生搜索能力的供应商生成搜索降级通知
         let search_only = CompletionOptions {
@@ -490,15 +492,13 @@ mod tests {
 
     #[test]
     fn test_capability_notices_flag_reasoning_effort_only() {
-        // Anthropic 已支持原生搜索，仅推理档位生成降级通知
-        let provider = crate::provider::anthropic::AnthropicProvider::new("k");
         let options = CompletionOptions {
             model: "claude-x".into(),
-            enable_web_search: true,
+            enable_web_search: false,
             reasoning_effort: Some("high".into()),
             ..Default::default()
         };
-        let notices = capability_notices(&provider, &options, false);
+        let notices = capability_notices(&NoSearchProvider, &options, false);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("Reasoning effort 'high'"));
     }

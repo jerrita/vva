@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.9.3] - 2026-10-28
+
+### 新增
+
+- Anthropic 支持 `annotation.standalone_search`，使用当前模型和端点发起独立搜索，将文本与来源作为工具结果回传主会话。
+
+### 改进
+
+- Anthropic 推理档位映射到原生 `output_config.effort`，与结构化输出同时生效，配置档位后不再提示被忽略。
+
 ## [1.9.2] - 2026-10-28
 
 ### 修复
