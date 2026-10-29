@@ -3,6 +3,92 @@ use crate::model::*;
 use std::path::PathBuf;
 
 #[test]
+fn reasoning_effort_maps_to_native_thinking_level() {
+    let provider = GeminiProvider::new("test");
+    assert!(provider.capabilities().supports_reasoning_effort);
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("Explain sorting")));
+    for effort in ["minimal", "low", "medium", "high"] {
+        let options = CompletionOptions {
+            model: "gemini-3-flash-preview".into(),
+            reasoning_effort: Some(effort.into()),
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .unwrap();
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"],
+            serde_json::json!({ "thinkingLevel": effort, "includeThoughts": true })
+        );
+        assert!(body.get("reasoning_effort").is_none());
+    }
+}
+
+#[tokio::test]
+async fn thought_summaries_are_streamed_and_preserved() {
+    use crate::provider::http::SseEventHandler;
+
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let mut accumulator = GeminiAccumulator::new(Some(sender), &[]);
+    accumulator
+        .on_event(serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        { "thought": true, "text": "Checking the boundary cases." },
+                        { "text": "The result is consistent." }
+                    ]
+                },
+                "finishReason": "STOP"
+            }]
+        }))
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        AgentEvent::Thought(text) if text == "Checking the boundary cases."
+    ));
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        AgentEvent::Text { delta, .. } if delta == "The result is consistent."
+    ));
+    let response = accumulator.finish();
+    assert!(matches!(
+        &response.messages[0].parts[0],
+        ContentPart::Reasoning { content, .. } if content == "Checking the boundary cases."
+    ));
+}
+
+#[test]
+fn reasoning_effort_is_omitted_when_unset_or_thinking_disabled() {
+    let provider = GeminiProvider::new("test");
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("Explain sorting")));
+    for (effort, disable_thinking) in [(None, false), (Some(""), false), (Some("high"), true)] {
+        let options = CompletionOptions {
+            model: "gemini-2.5-flash".into(),
+            reasoning_effort: effort.map(str::to_string),
+            disable_thinking,
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .unwrap();
+        if disable_thinking {
+            assert_eq!(
+                body["generationConfig"]["thinkingConfig"],
+                serde_json::json!({ "thinkingBudget": 0 })
+            );
+        } else {
+            assert!(body.get("generationConfig").is_none());
+        }
+    }
+}
+
+#[test]
 fn media_tool_results_use_native_content_blocks() {
     let session = crate::provider::common::media_tool_session();
     let body = GeminiProvider::new("test")

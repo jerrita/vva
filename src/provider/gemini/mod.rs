@@ -74,7 +74,7 @@ impl Provider for GeminiProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             supports_native_search: true,
-            supports_reasoning_effort: false,
+            supports_reasoning_effort: true,
             // google_search 由服务端以 groundingMetadata 投影，模型不按名调用；
             // url_context 由服务端读取 URL，同样不产生客户端调用，仅声明 web_fetch 在位
             server_tool_names: vec!["web_fetch"],
