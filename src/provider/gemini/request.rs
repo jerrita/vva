@@ -203,6 +203,13 @@ impl GeminiProvider {
                 "thinkingConfig".to_string(),
                 serde_json::json!({ "thinkingBudget": 0 }),
             );
+        } else if let Some(effort) = &options.reasoning_effort
+            && !effort.is_empty()
+        {
+            gen_config.insert(
+                "thinkingConfig".to_string(),
+                serde_json::json!({ "thinkingLevel": effort, "includeThoughts": true }),
+            );
         }
         if let Some(rs) = &options.response_schema {
             gen_config.insert(
