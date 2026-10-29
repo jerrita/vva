@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.10.3] - 2026-10-29
+
+### 新增
+
+- Gemini 推理档位映射为原生 `generationConfig.thinkingConfig.thinkingLevel` 并请求思考摘要；`disable_thinking` 仍使用 `thinkingBudget: 0`。
+
+### 修复
+
+- `usageMetadata` 省略零值计数时按 0 解析，思考与缓存 token 分别取自 `thoughtsTokenCount`、`cachedContentTokenCount`，流式用量更新不再因计数字段缺省中断。
+
 ## [1.10.2] - 2026-10-29
 
 ### 修复
