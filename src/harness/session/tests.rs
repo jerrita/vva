@@ -1691,6 +1691,68 @@ fn command_task() -> (SessionTask, Arc<ManagedSession>, mpsc::Receiver<Command>)
     (task, handle, rx)
 }
 
+#[tokio::test]
+async fn websocket_chain_survives_engine_rebuilds_between_user_turns() {
+    use crate::provider::response::websocket_tests::{MockWebSocket, answer};
+
+    let mut server = MockWebSocket::new().await;
+    let (mut task, _handle, mut commands) = command_task();
+    let mut config = server.config(None);
+    let alternate = config.providers["p"].models["m"].clone();
+    config
+        .providers
+        .get_mut("p")
+        .unwrap()
+        .models
+        .insert("alternate".into(), alternate);
+    task.config = Arc::new(config);
+    task.store.save_header(&task.view.session).await.unwrap();
+    task.append(Turn::user_turn(Message::text("First synthetic turn")))
+        .await
+        .unwrap();
+    let engine = task.build_engine().await.unwrap();
+    let provider = engine.provider.clone();
+    let (outcome, first) = tokio::join!(task.run_turns(engine, &mut commands), async {
+        let request = server.next().await;
+        request.reply(answer("resp_first_turn")).await;
+        request
+    });
+    assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
+    task.append(Turn::user_turn(Message::text("Second synthetic turn")))
+        .await
+        .unwrap();
+    let engine = task.build_engine().await.unwrap();
+    assert!(Arc::ptr_eq(&provider, &engine.provider));
+    let (outcome, ()) = tokio::join!(task.run_turns(engine, &mut commands), async {
+        let request = server.next().await;
+        assert_eq!(request.connection, first.connection);
+        assert_eq!(request.body["previous_response_id"], "resp_first_turn");
+        assert_eq!(request.body["input"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            request.body["input"][0]["content"][0]["text"],
+            "Second synthetic turn"
+        );
+        request.reply(answer("resp_second_turn")).await;
+    });
+    assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
+
+    task.configure(Some("p/alternate".into()), None, Default::default())
+        .await
+        .unwrap();
+    let engine = task.build_engine().await.unwrap();
+    assert!(!Arc::ptr_eq(&provider, &engine.provider));
+    let (outcome, ()) = tokio::join!(task.run_turns(engine, &mut commands), async {
+        let request = server.next().await;
+        assert_ne!(request.connection, first.connection);
+        assert!(request.body.get("previous_response_id").is_none());
+        request.reply(answer("resp_alternate")).await;
+    });
+    assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
+    let root = task.view.session.header.workspace_root.clone();
+    drop(task);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 /// 本地 Responses SSE 端点记录每次模型请求，便于验证被动唤醒与上下文注入。
 async fn completion_endpoint() -> (
     AppConfig,
@@ -1735,6 +1797,17 @@ async fn completion_endpoint_controlled(
     let mut config = unreachable_config();
     config.providers.get_mut("p").unwrap().base_url =
         format!("http://{}", listener.local_addr().unwrap());
+    config
+        .providers
+        .get_mut("p")
+        .unwrap()
+        .models
+        .get_mut("m")
+        .unwrap()
+        .annotation = Some(ModelAnnotation {
+        websocket: Some(false),
+        ..Default::default()
+    });
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });

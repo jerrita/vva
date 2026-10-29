@@ -259,8 +259,13 @@
         "annotation": {
           "type": "object",
           "additionalProperties": false,
-          "description": "模型级注记：服务端工具声明微调与文件编辑协议",
+          "description": "模型级注记：传输选择、服务端工具声明微调与文件编辑协议",
           "properties": {
+            "websocket": {
+              "type": "boolean",
+              "default": true,
+              "description": "Responses 使用 WebSocket 增量续接；false 时使用 HTTP JSON / SSE。不支持 WebSocket 的端点需显式关闭，连接失败不自动切换传输。"
+            },
             "web_fetch": {
               "type": "boolean",
               "default": true,

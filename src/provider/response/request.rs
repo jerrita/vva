@@ -39,8 +39,31 @@ impl ResponseProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<serde_json::Value, ProviderError> {
+        self.build_request_with_previous(
+            session,
+            tools,
+            options,
+            session.latest_openai_response_id(options.affinity.as_deref()),
+        )
+    }
+
+    pub(super) fn build_full_request_body(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+    ) -> Result<serde_json::Value, ProviderError> {
+        self.build_request_with_previous(session, tools, options, None)
+    }
+
+    fn build_request_with_previous(
+        &self,
+        session: &Session,
+        tools: &[ToolDefinition],
+        options: &CompletionOptions,
+        prev_id: Option<&str>,
+    ) -> Result<serde_json::Value, ProviderError> {
         let scope = options.affinity.as_deref();
-        let prev_id = session.latest_openai_response_id(scope);
 
         // 构造 tools 列表
         let mut api_tools: Vec<serde_json::Value> = Vec::new();

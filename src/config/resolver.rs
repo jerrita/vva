@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use sha2::{Digest, Sha256};
+
 use super::model::{AppConfig, ModelConfig, ProviderConfig, ProviderType};
 use super::parser::ConfigError;
 use crate::model::{ContentPart, MediaKind, MediaSource, Session};
@@ -185,6 +187,20 @@ impl InputCapabilities {
 }
 
 impl ResolvedModel<'_> {
+    /// 会话级 Provider 绑定；凭据仅参与指纹计算，不进入日志。
+    pub(crate) fn provider_identity(&self) -> [u8; 32] {
+        let identity = serde_json::to_vec(&(
+            &self.full_spec,
+            self.effective_type(),
+            self.provider_config.base_url.trim(),
+            self.provider_config.api_key.trim(),
+            self.affinity(),
+            self.model_config.websocket(),
+        ))
+        .expect("provider identity is serializable");
+        Sha256::digest(identity).into()
+    }
+
     /// 模型亲和组：annotation.affinity 优先，缺省 provider 节点 id。
     /// 同组模型切换时可复用原生回传状态（链锚点 / 签名块），跨组降维重建
     pub fn affinity(&self) -> String {
@@ -222,7 +238,11 @@ impl ResolvedModel<'_> {
                 let url = self.endpoint("https://api.openai.com/v1", "/v1", &|u| {
                     u.ends_with("/v1") || u.ends_with("/responses")
                 });
-                Arc::new(ResponseProvider::new(api_key).with_base_url(url))
+                Arc::new(
+                    ResponseProvider::new(api_key)
+                        .with_base_url(url)
+                        .with_websocket(self.model_config.websocket()),
+                )
             }
             ProviderType::Anthropic => Arc::new(self.create_anthropic_provider()),
             ProviderType::Gemini => {
