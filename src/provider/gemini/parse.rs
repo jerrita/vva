@@ -4,9 +4,9 @@ use tokio::sync::mpsc;
 
 use crate::event::AgentEvent;
 use crate::model::{
-    Annotation, ContentPart, GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta,
-    Message, SearchStatus, TokenUsage, ToolCall, ToolDefinition, ToolInput, TurnMeta,
-    WebSearchAction, WebSearchCall, WebSearchSource,
+    Annotation, ContentPart, GeminiCodeExecutionResult, GeminiContentPart, GeminiSafetyRating,
+    GeminiTurnMeta, Message, SearchStatus, TokenUsage, ToolCall, ToolDefinition, ToolInput,
+    TurnMeta, WebSearchAction, WebSearchCall, WebSearchSource,
 };
 use crate::provider::common::{EventForwarder, freeform_call_input, require_str, require_u64};
 use crate::provider::{ProviderError, ProviderResponse};
@@ -23,6 +23,7 @@ pub(super) struct GeminiAccumulator {
     thought: String,
     text: String,
     tool_calls: Vec<ToolCall>,
+    content_parts: Vec<GeminiContentPart>,
     /// 本次请求中的 Freeform 工具名：其 functionCall 参数还原为原始输入文本
     freeform_tools: HashSet<String>,
     search_call: Option<WebSearchCall>,
@@ -201,6 +202,15 @@ impl GeminiAccumulator {
 
     fn merge_parts(&mut self, raw_parts: &[serde_json::Value]) -> Result<(), ProviderError> {
         for p in raw_parts {
+            if p.get("text").is_some()
+                || p.get("functionCall").is_some()
+                || p.get("thoughtSignature").is_some()
+            {
+                self.content_parts
+                    .push(serde_json::from_value(p.clone()).map_err(|e| {
+                        ProviderError::Protocol(format!("Invalid Gemini content part: {e}"))
+                    })?);
+            }
             if p["thought"].as_bool() == Some(true) {
                 if let Some(t) = p["text"].as_str() {
                     self.thought.push_str(t);
@@ -280,6 +290,8 @@ impl GeminiAccumulator {
                 finish_reason: self.finish_reason,
                 safety_ratings: self.safety_ratings,
                 code_execution_result: self.code_execution_result,
+                content_parts: self.content_parts,
+                scope: None,
             }),
             ..Default::default()
         };

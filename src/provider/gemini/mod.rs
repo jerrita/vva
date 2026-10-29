@@ -94,7 +94,9 @@ impl Provider for GeminiProvider {
             &body,
         )
         .await?;
-        GeminiAccumulator::parse_response(&response, tools)
+        let mut parsed = GeminiAccumulator::parse_response(&response, tools)?;
+        parsed.stamp_scope(options.affinity.as_deref());
+        Ok(parsed)
     }
 
     async fn complete_stream(
@@ -114,6 +116,8 @@ impl Provider for GeminiProvider {
             &mut handler,
         )
         .await?;
-        handler.finish_stream()
+        let mut response = handler.finish_stream()?;
+        response.stamp_scope(options.affinity.as_deref());
+        Ok(response)
     }
 }

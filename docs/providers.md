@@ -103,6 +103,10 @@ pub trait Provider: Send + Sync {
 - 映射 Gemini 内置 Python 沙盒执行结果至 `GeminiTurnMeta.code_execution_result`；
 - 映射安全拦截评级至 `GeminiTurnMeta.safety_ratings`。
 
+### 4.3 Thought signatures
+- 流式与非流式响应均将原生内容块保存至 [GeminiTurnMeta](domain_model.md#3-强类型供应商元数据)，同亲和组回传时保持原始顺序与块边界；
+- `thoughtSignature` 随原始块回传，覆盖并行工具调用的首块签名、多步调用及空文本签名块，遵循 [Gemini 官方要求](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)。
+
 ---
 
 ## 5. 通用 SSE 流式事件解码器

@@ -115,4 +115,4 @@ Gemini 的 `groundingChunks` / `groundingSupports` 在适配器层计算字符�
 |---|---|
 | `ResponseTurnMeta` | `response_id`（已存储的服务端状态锚点）、`previous_response_id`、`status`、`service_tier`、`reasoning_effort`、`store`（标识服务端持久化；连接内续接见 [providers §2.1](providers.md#21-传输与上下文续接)）、`output_items: Vec<ResponseOutputItem>`（原样保留的官方输出条目及 `item_id`，按协议回传） |
 | `AnthropicTurnMeta` | `cache_creation_input_tokens`、`cache_read_input_tokens`、`stop_reason`、`content_blocks`（全部原生内容块，含服务端加密字段与 `redacted_thinking`，逐块原样回传） |
-| `GeminiTurnMeta` | `finish_reason`、`safety_ratings`、`code_execution_result`（内置代码沙盒输出） |
+| `GeminiTurnMeta` | `finish_reason`、`safety_ratings`、`code_execution_result`（内置代码沙盒输出）、`content_parts: Vec<GeminiContentPart>`（原生文本、思考与函数调用块，保留块边界及 `thoughtSignature`）、`scope`（签发时的模型亲和组） |
