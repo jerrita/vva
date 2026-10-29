@@ -33,7 +33,7 @@ impl std::fmt::Display for SseTermination {
 
 /// OpenRouter 应用归属（https://openrouter.ai/docs/app-attribution）：
 /// 仅对 openrouter.ai 端点附加，不向其他供应商泄露
-fn add_app_attribution(url: &str, headers: &mut HeaderMap) {
+pub(super) fn add_app_attribution(url: &str, headers: &mut HeaderMap) {
     let is_openrouter = reqwest::Url::parse(url).is_ok_and(|url| {
         url.host_str()
             .is_some_and(|host| host == "openrouter.ai" || host.ends_with(".openrouter.ai"))

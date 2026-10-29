@@ -4,6 +4,7 @@ pub mod gemini;
 pub mod http;
 pub mod response;
 pub mod sse;
+mod websocket;
 
 use std::sync::OnceLock;
 
@@ -20,18 +21,24 @@ static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub fn shared_client() -> &'static reqwest::Client {
     SHARED_CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .read_timeout(std::time::Duration::from_secs(300))
+        client_builder()
             .build()
             .expect("failed to build shared HTTP client")
     })
+}
+
+pub(super) fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(300))
 }
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
+    #[error("WebSocket error: {0}")]
+    WebSocket(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("API error (status {status}): {body}")]
     ApiError {
         status: reqwest::StatusCode,

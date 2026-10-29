@@ -17,7 +17,7 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-端点拼装、鉴权头、请求构建与响应解析属于各适配器内部实现。传输由 [`http.rs`](../src/provider/http.rs) 共享：`post_json` 负责非流式往返，`post_sse` 负责补 Accept 头、发起请求并驱动 SSE 事件循环，适配器只提供 URL、鉴权头、请求体与 `SseEventHandler`。
+端点拼装、鉴权头、请求构建与响应解析属于各适配器内部实现。[`http.rs`](../src/provider/http.rs) 提供 `post_json` 与 `post_sse`；[`websocket.rs`](../src/provider/websocket.rs) 使用独立的 HTTP/1.1 客户端升级连接，沿用公共客户端配置以保留代理、TLS 与鉴权行为，并在空闲期间处理控制帧。适配器负责协议事件到领域模型的转换。
 
 跨供应商的通用辅助集中在 [`common.rs`](../src/provider/common.rs)：事件背压转发（`EventForwarder`）、同角色块合并（`RoleBlockMerger`）以及严格字段读取（`require_str` / `require_u64` / `require_bool` / `require_value` / `require_array`）——必填字段缺失或类型不符一律报协议错误，三家适配器使用同一套读取器与错误语义。
 
@@ -34,23 +34,16 @@ pub trait Provider: Send + Sync {
 
 代码位置：[`src/provider/response/`](../src/provider/response/)
 
-### 2.1 服务端链式 `previous_response_id`
-- **历史状态管理**：传统 Chat Completions 无法保存服务端状态，多轮对话需重复上传历史消息。
-- **Responses 原生机制**：
-  - 适配器在构建请求 Payload 时，从 Session 历史中定位最近一次有效的 Assistant 轮次，提取其 `response_id` 作为本次请求的 `previous_response_id`：
-    ```json
-    {
-      "model": "gpt-5-terra",
-      "previous_response_id": "resp_abc123",
-      "input": [
-        {
-          "role": "user",
-          "content": "Add unit tests for this feature"
-        }
-      ]
-    }
-    ```
-  - 上传增量用户消息与未结算的工具返回，减少网络往返负载与 Token 消耗。
+### 2.1 传输与上下文续接
+
+传输选择见 [config-reference §4.2](config-reference.md#42-annotation-注记)。`complete` 与 `complete_stream` 使用相同的传输选择；WebSocket 的非流式调用收集原生事件后返回完整结果。
+
+- **连接生命周期**：Provider 由 Session 持有，工具注册表重建、后续用户输入和后台完成续跑复用连接；会话间独立。模型、端点、凭据或传输配置变化时更新绑定。
+- **WebSocket 请求**：发送 `response.create`，首次携带完整上下文。成功完成后记录连接内 `response_id` 及输入与原生输出的条目指纹；下一次仅在历史前缀、亲和组和请求参数一致时携带 `previous_response_id` 并发送增量。工具结果直接关联服务端已返回的调用，历史图片、PDF 和文本无需重复上传。
+- **状态保真**：连接内锚点支持 `store: false`，仅在 `response.completed` 解析成功后更新，不落盘；领域历史及原始附件完整保留。指纹缓存不保存第二份媒体内容。
+- **重建边界**：首次连接、重启或空闲连接关闭后发送完整上下文；历史回退、分支或请求参数变化时重新建立链。请求中止、在途断线、超时、非法事件或服务端错误均显式报错并清除连接状态，后续调用重新建链；不自动重放失败请求。
+- **HTTP 请求**：从历史中提取最近的同亲和组、已存储 `response_id`，发送其后的增量；没有有效锚点时发送完整上下文。该链式机制减少上传量，历史上下文仍参与输入 token 计量。
+- **事件投影**：两种传输共用 `ResponseStreamHandler`，经 `AgentEvent` 驱动界面。调试日志仅记录 WebSocket 的增量模式、条目数和发送字节数。
 
 ### 2.2 原生 Web Search 与注脚
 - 原生启用 `"tools": [{ "type": "web_search" }]`，请求 `include: ["web_search_call.action.sources"]`；`web_search_call.action` 含 `search` / `open_page` / `find_in_page`，原生搜索在位即含页面抓取，不注册外置 `web_fetch`；

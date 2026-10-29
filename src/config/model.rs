@@ -470,6 +470,13 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    pub fn websocket(&self) -> bool {
+        self.annotation
+            .as_ref()
+            .and_then(|annotation| annotation.websocket)
+            .unwrap_or(true)
+    }
+
     /// 计算该模型的实际有效供应商类型
     pub fn effective_type(&self, provider_type: ProviderType) -> ProviderType {
         self.model_type_override.unwrap_or(provider_type)
@@ -528,11 +535,14 @@ impl ModelConfig {
     }
 }
 
-/// 模型级注记：细粒度关闭个别原生服务端工具的声明，以及文件编辑协议。
+/// 模型级注记：传输选择、原生服务端工具声明，以及文件编辑协议。
 /// 用于未接线特定 server tool 的中转端点——带未识别条目时端点会整组丢弃工具声明，
 /// 例如 `annotation: { "web_fetch": false }` 仅声明 web_search 以保住原生搜索
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelAnnotation {
+    /// Responses 默认使用 WebSocket；false 显式使用 HTTP JSON / SSE。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_fetch: Option<bool>,
     /// 原生 web search：`false` 标记模型/端点不支持原生搜索，

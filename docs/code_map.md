@@ -30,7 +30,8 @@ src/
 │   ├── common.rs           # EventForwarder / require_* / RoleBlockMerger / normalize_endpoint
 │   ├── http.rs             # post_json / post_sse (SseEventHandler)
 │   ├── sse.rs              # SSE 解码器
-│   ├── response/           # OpenAI Responses (request / parse / stream / search / image)
+│   ├── websocket.rs        # JSON WebSocket 传输与控制帧处理
+│   ├── response/           # OpenAI Responses (request / parse / stream / websocket / search / image)
 │   ├── anthropic/          # Anthropic Messages (request / parse / stream)
 │   └── gemini/             # Gemini (request / parse 累积器 / stream)
 ├── tools/                  # 工具集

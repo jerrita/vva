@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ResolvedModel};
 use crate::model::{Message, Role, Session, Turn};
 use crate::provider::{CompletionOptions, Provider};
 use crate::tools::{ToolRegistry, WorkspaceToolDeps};
@@ -55,8 +55,38 @@ pub(super) struct AgentEngine {
     pub(super) inputs: crate::config::resolver::InputCapabilities,
 }
 
+/// Provider 的连接状态随会话保留，工具注册表仍在每次装配时刷新。
+#[derive(Default)]
+pub(super) struct SessionProvider {
+    binding: std::sync::Mutex<Option<ProviderBinding>>,
+}
+
+struct ProviderBinding {
+    identity: [u8; 32],
+    provider: Arc<dyn Provider>,
+}
+
+impl SessionProvider {
+    fn resolve(&self, model: &ResolvedModel<'_>) -> Arc<dyn Provider> {
+        let identity = model.provider_identity();
+        let mut binding = self.binding.lock().expect("provider binding poisoned");
+        if let Some(current) = binding.as_ref()
+            && current.identity == identity
+        {
+            return current.provider.clone();
+        }
+        let provider = model.create_provider();
+        *binding = Some(ProviderBinding {
+            identity,
+            provider: provider.clone(),
+        });
+        provider
+    }
+}
+
 /// 引擎装配依赖：会话级共享句柄与每次构建时重新发现的清单
 pub(super) struct EngineDeps {
+    pub provider: Arc<SessionProvider>,
     pub tool_outputs: PathBuf,
     pub hashline: Arc<crate::tools::hashline::HashlineSession>,
     pub ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
@@ -91,6 +121,7 @@ impl AgentEngine {
                     .ok_or_else(|| format!("Agent definition '{name}' is unavailable"))
             })
             .transpose()?;
+        let provider = deps.provider.resolve(&resolved);
         let mut tools = Self::base_tools(session, &inputs, deps);
         // subagent 会话按定义白名单裁剪
         let allowed = |name: &str| {
@@ -100,7 +131,6 @@ impl AgentEngine {
         };
         let search_allowed = allowed("WebSearch");
         let fetch_allowed = allowed("WebFetch");
-        let provider = resolved.create_provider();
         let capabilities = provider.capabilities();
         // Responses 的 web_search 同时提供 open_page/find_in_page，须授权完整工具能力。
         let bundled_fetch = capabilities.server_tool_names.contains(&"web_search")
@@ -408,7 +438,8 @@ mod tests {
                     "providers": {"test": {
                         "type": "response", "base_url": format!("http://{address}"),
                         "api_key": "test-key",
-                        "models": {"title-model": {"name": "Title", "type": protocol, "reasoning": reasoning}}
+                        "models": {"title-model": {"name": "Title", "type": protocol, "reasoning": reasoning,
+                            "annotation": {"websocket": false}}}
                     }}
                 })).unwrap();
                 let result = generate_title(&config, "unused/model", "整理项目文档").await;
@@ -518,6 +549,7 @@ mod tests {
             config,
             session,
             EngineDeps {
+                provider: Arc::default(),
                 tool_outputs: std::env::temp_dir()
                     .join(format!("vva-agent-test-{}", uuid::Uuid::new_v4())),
                 hashline: crate::tools::hashline::HashlineSession::new(),

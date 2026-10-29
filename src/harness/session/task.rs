@@ -26,6 +26,7 @@ pub(super) struct PendingSubagentCompletion {
 }
 
 pub(super) struct SessionTask {
+    provider: Arc<crate::harness::agent::SessionProvider>,
     pub(super) hashline: Arc<crate::tools::hashline::HashlineSession>,
     pub(super) view: SessionView,
     pub(super) view_tx: watch::Sender<Arc<SessionView>>,
@@ -201,6 +202,7 @@ impl SessionTask {
             },
         )));
         let task = Self {
+            provider: Arc::default(),
             shell_calls: shell_call_ids(&view.session),
             shell_outputs: Arc::default(),
             output_pending: false,
@@ -594,6 +596,7 @@ impl SessionTask {
             &self.config,
             session,
             EngineDeps {
+                provider: self.provider.clone(),
                 tool_outputs,
                 hashline: self.hashline.clone(),
                 ask_user_requests: self.ask_user_tx.clone(),

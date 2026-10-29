@@ -5,6 +5,9 @@ mod search;
 mod stream;
 #[cfg(test)]
 mod tests;
+mod websocket;
+#[cfg(test)]
+pub(crate) mod websocket_tests;
 
 use async_trait::async_trait;
 
@@ -20,6 +23,8 @@ use tokio::sync::mpsc;
 pub struct ResponseProvider {
     api_key: String,
     base_url: String,
+    websocket: bool,
+    websocket_session: tokio::sync::Mutex<Option<websocket::WebSocketSession>>,
 }
 
 impl ResponseProvider {
@@ -27,11 +32,20 @@ impl ResponseProvider {
         Self {
             api_key: api_key.into(),
             base_url: "https://api.openai.com/v1".into(),
+            websocket: true,
+            websocket_session: tokio::sync::Mutex::new(None),
         }
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.websocket_session.get_mut().take();
         self.base_url = base_url.into();
+        self
+    }
+
+    pub fn with_websocket(mut self, enabled: bool) -> Self {
+        self.websocket_session.get_mut().take();
+        self.websocket = enabled;
         self
     }
 }
@@ -55,6 +69,9 @@ impl Provider for ResponseProvider {
         tools: &[ToolDefinition],
         options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
+        if self.websocket {
+            return self.complete_websocket(session, tools, options, None).await;
+        }
         let body = self.build_request_body(session, tools, options)?;
         let response = post_json(
             &normalize_endpoint(&self.base_url, "responses"),
@@ -74,6 +91,11 @@ impl Provider for ResponseProvider {
         options: &CompletionOptions,
         event_sender: Option<mpsc::Sender<AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
+        if self.websocket {
+            return self
+                .complete_websocket(session, tools, options, event_sender)
+                .await;
+        }
         let mut body = self.build_request_body(session, tools, options)?;
         body["stream"] = serde_json::json!(true);
 

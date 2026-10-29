@@ -249,7 +249,7 @@ OpenCode System One 配置示例（与已有主模型及渠道配置合并）：
 | `limit.output` | int | — | 单轮输出上限（tokens） |
 | `variants` | string[] | — | 推理档位白名单，常用值 `minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
 | `cost` | object | — | 费率（美元 / 百万 tokens），用于成本估算，见 4.1 |
-| `annotation` | object | — | 模型级注记：服务端工具声明微调与请求档位，见 4.2 |
+| `annotation` | object | — | 模型级注记：传输选择、服务端工具声明微调与请求档位，见 4.2 |
 
 ### 4.1 cost 费率
 
@@ -264,6 +264,7 @@ OpenCode System One 配置示例（与已有主模型及渠道配置合并）：
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
+| `annotation.websocket` | `true` | 仅 Responses 生效：使用 WebSocket；设为 `false` 时使用 HTTP JSON / SSE。不支持 WebSocket 的端点需显式关闭，连接失败不自动切换传输。续接与重建规则见 [providers §2.1](providers.md#21-传输与上下文续接) |
 | `annotation.web_fetch` | `true` | 设为 `false` 时不向端点声明 `web_fetch` 服务端工具。用于未接线特定 server tool 的中转端点——工具声明组中出现端点未识别的条目时，端点会整组丢弃声明；仅声明 `web_search` 可保住原生搜索。原生 fetch 缺位后，配置 `settings.web.fetch` 时以客户端工具补全 |
 | `annotation.web_search` | `true` | 设为 `false` 标记模型/端点不支持原生 web search，不向端点声明原生搜索；配置 `settings.web.search` 时以客户端工具 `web_search` 补全 |
 | `annotation.standalone_search` | `false` | 仅 Anthropic 生效，适用于 Kimi 等搜索调用 ID 与结果 ID 不一致的端点：联网开启且允许搜索时，将 `web_search` 注册为客户端工具，使用当前模型和端点独立检索；主请求关闭原生搜索声明。优先于外置搜索 provider，仍受 `annotation.web_search` 开关约束。结果提取与主会话回传见 [providers §3.4](providers.md#34-独立搜索) |
