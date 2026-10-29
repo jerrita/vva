@@ -270,7 +270,6 @@ mod tests {
         assert!(texts[0].starts_with("<system-reminder type=\"memory\">"));
         assert!(texts[0].contains("- [偏好](pref.md)"));
         assert!(texts[0].contains(&dir.join("memory").to_string_lossy().replace('\\', "/")));
-        assert_eq!(preamble(&header(SessionKind::Oneshot, false)).len(), 1);
 
         // curator 与非 agent space 会话不注入
         assert!(preamble(&header(SessionKind::Curator, false)).is_empty());
@@ -314,7 +313,6 @@ mod tests {
         };
         let topic = header(SessionKind::Topic, true, false);
         assert_eq!(chat_binding(&topic).as_deref(), Some("qq:c2c:u1"));
-        assert!(chat_binding(&header(SessionKind::Oneshot, true, false)).is_some());
         // rollover 接替会话不是 subagent，仍挂载
         assert!(chat_binding(&header(SessionKind::Topic, true, true)).is_some());
         // curator 无 IM 来源

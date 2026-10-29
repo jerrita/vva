@@ -144,10 +144,6 @@ impl Runtime {
                 self.create(&msg.binding, SessionKind::Topic, routed.routed_by)
                     .await?
             }
-            Route::Oneshot => {
-                self.create(&msg.binding, SessionKind::Oneshot, routed.routed_by)
-                    .await?
-            }
         };
         let quoted = match &routed.route {
             Route::New { quoted } => quoted.as_deref(),
@@ -156,12 +152,9 @@ impl Runtime {
         let prompt = compose_prompt(&text, &files, quoted);
         {
             let mut state = self.state.lock().await;
-            // oneshot 不进候选，也不抢占 focus
-            if !matches!(routed.route, Route::Oneshot) {
-                state
-                    .bindings
-                    .set_focus(&msg.binding, Some(handle.id.clone()))?;
-            }
+            state
+                .bindings
+                .set_focus(&msg.binding, Some(handle.id.clone()))?;
             state.index.record(&self.key(&msg.message_id), &handle.id)?;
         }
         tokio::spawn(self.clone().run_turn(
@@ -218,7 +211,7 @@ impl Runtime {
             .map_err(|e| e.to_string())
     }
 
-    /// router 候选：排除 oneshot / curator / 已 superseded 与非 agent space 会话；
+    /// router 候选：排除 curator / 已 superseded 与非 agent space 会话；
     /// 按聊天范围过滤，并清理已不存在或范围外的 focus
     pub(super) async fn candidates(&self, binding: &str) -> Result<Vec<Candidate>, String> {
         let summaries: Vec<_> = self
@@ -307,7 +300,6 @@ fn describe_route(route: &Route) -> String {
         Route::Existing(id) => format!("action=existing session={id}"),
         Route::Guide(id) => format!("action=guide session={id}"),
         Route::New { .. } => "action=new".to_string(),
-        Route::Oneshot => "action=oneshot".to_string(),
     }
 }
 

@@ -177,7 +177,7 @@ pub struct GlobalSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentSpaceConfig {
-    /// oneshot 与 topic session 使用的模型规格；缺省沿用 `settings.default`
+    /// 普通 session 使用的模型规格；缺省沿用 `settings.default`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// curator 使用的模型规格；缺省跟随当前 agent 模式模型
@@ -185,8 +185,6 @@ pub struct AgentSpaceConfig {
     pub curator_model: Option<String>,
     /// 普通 session 空闲清理时长（秒）
     pub ttl_secs: u64,
-    /// oneshot session 回复后的清理等待时长（秒）；0 表示回复完即可清理
-    pub oneshot_ttl_secs: u64,
     /// rollover 预留线：上下文达到 `limit.context - 预留` 时回合结束触发
     pub rollover_reserve_tokens: u64,
     /// 待附件缓冲等待时长（秒），超时提示并清理
@@ -207,8 +205,7 @@ impl Default for AgentSpaceConfig {
         Self {
             model: None,
             curator_model: None,
-            ttl_secs: 18_000,
-            oneshot_ttl_secs: 0,
+            ttl_secs: 86_400,
             rollover_reserve_tokens: 32_000,
             pending_files_ttl_secs: 600,
             task_timeout_secs: 600,

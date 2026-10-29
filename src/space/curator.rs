@@ -621,12 +621,6 @@ mod tests {
             ),
             (
                 true,
-                SessionKind::Oneshot,
-                None,
-                session.header.origin.clone(),
-            ),
-            (
-                true,
                 SessionKind::Curator,
                 None,
                 session.header.origin.clone(),

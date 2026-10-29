@@ -30,6 +30,7 @@ pub(super) type DeliveryReceipt = oneshot::Receiver<DeliveryResult>;
 
 pub(super) struct PendingDelivery {
     pub text: String,
+    pub mode: InputMode,
     pub completion: oneshot::Sender<DeliveryResult>,
 }
 
@@ -98,7 +99,7 @@ pub enum Command {
     TaskFinished {
         task_id: String,
     },
-    /// 程序化消息投递（SendMessage / IPC）：运行中入队轮次间隙处理，空闲即运行轮次；
+    /// 程序化消息投递：运行中按 mode 在安全边界注入或轮次结束后处理，空闲即运行轮次；
     /// 与用户 Submit 区分，忙时不拒绝
     Deliver {
         delivery: PendingDelivery,
@@ -231,10 +232,15 @@ impl ManagedSession {
 
     /// 程序化消息投递：运行中排队，空闲即触发轮次
     pub(super) async fn deliver(&self, text: &str) -> Result<DeliveryReceipt, String> {
+        self.deliver_input(text, InputMode::After).await
+    }
+
+    async fn deliver_input(&self, text: &str, mode: InputMode) -> Result<DeliveryReceipt, String> {
         let (completion, receipt) = oneshot::channel();
         self.request(|reply| Command::Deliver {
             delivery: PendingDelivery {
                 text: text.into(),
+                mode,
                 completion,
             },
             reply,
@@ -248,9 +254,21 @@ impl ManagedSession {
         &self,
         text: &str,
     ) -> Result<crate::tools::agent::SubagentReport, String> {
-        let report = self
-            .deliver(text)
-            .await?
+        Self::wait_delivery(self.deliver(text).await?).await
+    }
+
+    /// 运行中在安全边界注入 Steer，空闲时直接开始新轮次；等待该轮及其后台工作完成。
+    pub async fn steer_wait(
+        &self,
+        text: &str,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        Self::wait_delivery(self.deliver_input(text, InputMode::Steer).await?).await
+    }
+
+    async fn wait_delivery(
+        receipt: DeliveryReceipt,
+    ) -> Result<crate::tools::agent::SubagentReport, String> {
+        let report = receipt
             .await
             .map_err(|_| "Session task stopped".to_string())??;
         match report.error {

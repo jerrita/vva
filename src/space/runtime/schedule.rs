@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::{DeliveryTarget, EMPTY_REPLY, Runtime};
+use super::{DeliveryTarget, EMPTY_REPLY, InputMode, Runtime};
 use crate::harness::ManagedSession;
 use crate::model::SessionKind;
 use crate::space::scheduler::{Failure, Missed, Task, Trigger, format_time};
@@ -61,7 +61,7 @@ impl Runtime {
                     .first()
                     .ok_or_else(|| Failure::Permanent("任务没有执行目标".into()))?;
                 self.origin(binding).map_err(Failure::Permanent)?;
-                self.create(binding, SessionKind::Oneshot, "scheduled")
+                self.create(binding, SessionKind::Topic, "scheduled")
                     .await
                     .map_err(Failure::Transient)?
             }
@@ -70,7 +70,7 @@ impl Runtime {
         let limit = Duration::from_secs(self.config.task_timeout_secs);
         let report = match tokio::time::timeout(
             limit,
-            self.deliver_reporting(&handle, DeliveryTarget::Homes, &prompt),
+            self.deliver_reporting(&handle, DeliveryTarget::Homes, &prompt, InputMode::After),
         )
         .await
         {

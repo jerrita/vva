@@ -53,7 +53,7 @@ classDiagram
 | `current_model` / `current_variant` / `web_search` | 当前模型规格、推理档位、联网开关。切换或恢复会话时继承；新会话未指定模型时沿用 `state.json`（见 [config-reference §5.3](config-reference.md#53-档位记忆)） |
 | `editor` | 文件编辑协议 `EditorKind`，必填。创建时取模型 `annotation.editor` → `settings.editor` → `patch`，会话内换模不改写，保证工具协议与历史工具结果一致 |
 | `workspace_root` | 工作区路径，用于按工程过滤会话 |
-| agent space 字段（均可缺省，旧 JSONL 照常加载） | `kind`（`Topic` 缺省不序列化 / `Oneshot` / `Curator`）、`origin{channel, chat_id}`、`routed_by`、`continued_from`（rollover 接替会话所承接的旧会话，不借用 subagent 的 `parent`）、`superseded_by`、`last_activity`（TTL 依据）；详见 [agent](agent.md) |
+| agent space 字段（均可缺省） | `kind`（`Topic` 缺省不序列化 / `Curator`）、`origin{channel, chat_id}`、`routed_by`、`continued_from`（rollover 接替会话所承接的旧会话，不借用 subagent 的 `parent`）、`superseded_by`、`last_activity`（TTL 依据）；详见 [agent](agent.md) |
 | subagent 标记 | `parent` / `agent` / `depth` |
 | `curation_requested` | 沉淀请求标记，缺省 `false` 且省略序列化；工具与生命周期规则见 [agent §4.3](agent.md#43-curator知识沉淀) |
 

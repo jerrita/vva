@@ -26,7 +26,6 @@ const ROUTE_MAX_TOKENS: u32 = 300;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
-    Oneshot,
     Existing,
     New,
 }
@@ -56,7 +55,7 @@ impl RouteDecision {
             schema: json!({
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["oneshot", "existing", "new"]},
+                    "action": {"type": "string", "enum": ["existing", "new"]},
                     "session_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
                     "running_intent": {"type": "string", "enum": ["none", "guide_existing"]},
                     "reason": {"type": "string"}
@@ -75,8 +74,6 @@ pub enum Route {
     Existing(String),
     /// 新建 session；`quoted` 为需作为首条上下文带入的被引用消息原文
     New { quoted: Option<String> },
-    /// 一次性问答
-    Oneshot,
     /// 向运行中的 session 插话（`Deliver`）
     Guide(String),
 }
@@ -114,8 +111,6 @@ pub enum RouteError {
         "自动路由选择 existing 却未给出 session_id。请引用回复目标会话的消息，或用 /new <消息> 新建"
     )]
     MissingSessionId,
-    #[error("带附件的消息不能作为一次性问答处理。请引用回复目标会话的消息，或用 /new <消息> 新建")]
-    OneshotWithMedia,
     #[error("自动路由选择了正在运行的会话 {0}，但并非插话。请等待其完成，或用 /new 新建")]
     RunningNotGuide(String),
     #[error("自动路由决策自相矛盾: {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
@@ -153,7 +148,7 @@ pub struct RouteInput {
     pub reply_to: Option<ReplyRef>,
     /// 缓冲取出的附件与本条消息自带附件
     pub files: Vec<AttachedFile>,
-    /// router 候选（已排除 oneshot / curator / superseded），无需预排序
+    /// router 候选（已排除 curator / superseded），无需预排序
     pub candidates: Vec<Candidate>,
 }
 
@@ -302,10 +297,9 @@ const SYSTEM_PROMPT: &str = "\
 files 为随消息到达的附件（仅文件名与类型），reply_to 为用户引用的消息片段，user_text 为用户消息。你看不到任何会话的历史正文。
 
 按以下优先级判断：
-1. oneshot：寒暄、确认在线、简单感谢，或不依赖任何历史、答完即无长期价值的独立小问题。带附件（files 非空）的消息不得选 oneshot。
-2. guide_existing：消息是对某个 running=true 会话的补充、修正、打断或改变方向。此时 action=existing，session_id 为该会话，running_intent=guide_existing。
-3. existing：承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题。通常选 focus 会话；title 明显指向其他会话时选那个会话。
-4. new：用户明确开启与所有候选会话主题完全无关、需要长期上下文的独立任务。
+1. guide_existing：消息是对某个 running=true 会话的补充、修正、打断或改变方向。此时 action=existing，session_id 为该会话，running_intent=guide_existing。
+2. existing：承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题。通常选 focus 会话；title 明显指向其他会话时选那个会话。
+3. new：用户明确开启与所有候选会话主题完全无关的独立话题或任务。
 
 约束：
 - 除 guide_existing 外，不要选择 running=true 的会话；独立任务应选 new。
@@ -484,15 +478,6 @@ impl Router {
 fn validate(d: &RouteDecision, input: &RouteInput) -> Result<Route, RouteError> {
     let guide = d.running_intent == RunningIntent::GuideExisting;
     match d.action {
-        Action::Oneshot => {
-            if !input.files.is_empty() {
-                return Err(RouteError::OneshotWithMedia);
-            }
-            if guide {
-                return Err(RouteError::Inconsistent("oneshot 不能携带 guide_existing"));
-            }
-            Ok(Route::Oneshot)
-        }
         Action::New => {
             if guide {
                 return Err(RouteError::Inconsistent("new 不能携带 guide_existing"));
@@ -645,7 +630,6 @@ mod tests {
         for (question, choice) in [
             ("action", "existing"),
             ("action", "new"),
-            ("action", "oneshot"),
             ("session", "sess_b"),
         ] {
             let e = env(uncertain(question, choice));
@@ -777,11 +761,10 @@ mod tests {
 
     #[tokio::test]
     async fn l1_decisions_map_to_routes() {
-        use Action::{Existing, New, Oneshot};
+        use Action::{Existing, New};
         use RunningIntent::GuideExisting;
         let no_guide = RunningIntent::None;
         let cases = [
-            (decision(Oneshot, None, no_guide), Route::Oneshot),
             (decision(New, None, no_guide), Route::New { quoted: None }),
             (
                 decision(Existing, Some("sess_a"), no_guide),
@@ -811,15 +794,9 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_decisions_are_explicit_errors() {
-        use Action::{Existing, New, Oneshot};
+        use Action::{Existing, New};
         use RunningIntent::GuideExisting;
         let no_guide = RunningIntent::None;
-        let mut with_file = input(candidates());
-        with_file.files.push(AttachedFile {
-            path: "/tmp/a.png".into(),
-            name: "a.png".into(),
-            kind: FileKind::Image,
-        });
         let cases = [
             (
                 decision(Existing, Some("sess_zzz"), no_guide),
@@ -840,16 +817,6 @@ mod tests {
                 decision(New, None, GuideExisting),
                 input(candidates()),
                 RouteError::Inconsistent("new 不能携带 guide_existing"),
-            ),
-            (
-                decision(Oneshot, None, GuideExisting),
-                input(candidates()),
-                RouteError::Inconsistent("oneshot 不能携带 guide_existing"),
-            ),
-            (
-                decision(Oneshot, None, no_guide),
-                with_file,
-                RouteError::OneshotWithMedia,
             ),
             // running 且非 guide 不回退到 focus
             (

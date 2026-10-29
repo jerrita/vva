@@ -69,6 +69,19 @@ impl SessionTask {
             self.start_pending_input(index, true).await?;
             consumed = true;
         }
+        while let Some(index) = self
+            .pending_deliveries
+            .iter()
+            .position(|delivery| delivery.mode == InputMode::Steer)
+        {
+            let delivery = self.pending_deliveries.remove(index);
+            if let Err(error) = self.append_input(&delivery.text, Vec::new(), true).await {
+                self.pending_deliveries.insert(index, delivery);
+                return Err(error);
+            }
+            self.active_deliveries.push(delivery);
+            consumed = true;
+        }
         Ok(consumed)
     }
 

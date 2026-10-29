@@ -196,7 +196,7 @@ pub(super) struct RawTask {
 }
 
 /// 一项任务。`session` 指定时在该会话内执行，否则在 `bindings[0]`
-/// 新建 oneshot 会话执行。通知目标由 Runtime 的 home bindings 决定。
+/// 新建普通会话执行。通知目标由 Runtime 的 home bindings 决定。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawTask", into = "RawTask")]
 pub struct Task {

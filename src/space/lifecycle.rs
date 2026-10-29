@@ -109,10 +109,7 @@ impl Lifecycle {
                 continue;
             }
             candidates += 1;
-            let ttl = match summary.kind {
-                SessionKind::Oneshot => self.config.oneshot_ttl_secs,
-                _ => self.config.ttl_secs,
-            };
+            let ttl = self.config.ttl_secs;
             let idle = (now - summary.last_activity.unwrap_or(summary.created_at))
                 .num_seconds()
                 .max(0) as u64;
@@ -131,10 +128,8 @@ impl Lifecycle {
                 continue;
             }
             let seen_turns = live.as_ref().map(|handle| handle.turn_seq());
-            // curator 会话自身是沉淀的执行载体；oneshot 答完即无长期价值，二者都不沉淀
-            if !matches!(summary.kind, SessionKind::Curator | SessionKind::Oneshot)
-                && !self.curate(&summary, now).await
-            {
+            // curator 会话自身是沉淀的执行载体，不再沉淀
+            if summary.kind != SessionKind::Curator && !self.curate(&summary, now).await {
                 continue;
             }
             // 沉淀期间会话又有活动：保留，下个周期增量沉淀
@@ -282,7 +277,6 @@ mod tests {
         let sink = reports.clone();
         let config = AgentSpaceConfig {
             ttl_secs: 3600,
-            oneshot_ttl_secs: 0,
             ..Default::default()
         };
         let lifecycle = Lifecycle::new(
@@ -301,6 +295,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_ttl_keeps_sessions_until_24_hours_of_inactivity() {
+        let mut f = fixture(Ok("无需更新".into()), AppConfig::default());
+        f.lifecycle.config = AgentSpaceConfig::default();
+        let mut session = f.seed(SessionKind::Topic, 0).await;
+        session.header.curation_requested = false;
+        f.manager.store().save_header(&session).await.unwrap();
+        let last_activity = session.header.last_activity.unwrap();
+
+        for seconds in [18_000, 86_399] {
+            let now = last_activity + chrono::Duration::seconds(seconds);
+            assert!(f.lifecycle.sweep_at(now).await.unwrap().is_empty());
+            assert!(f.exists(&session.header.id).await);
+        }
+        let now = last_activity + chrono::Duration::hours(24);
+        assert_eq!(
+            f.lifecycle.sweep_at(now).await.unwrap(),
+            vec![session.header.id.clone()]
+        );
+        assert!(!f.exists(&session.header.id).await);
+        assert_eq!(f.runs(), 0);
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
     async fn expired_sessions_are_curated_then_deleted() {
         let f = fixture(Ok("无需更新".into()), AppConfig::default());
         let topic = f.seed(SessionKind::Topic, 7200).await;
@@ -314,20 +332,15 @@ mod tests {
             .unwrap();
         superseded.header.superseded_by = Some("sess_other".into());
         f.manager.store().save_header(&superseded).await.unwrap();
-        let oneshot = f.seed(SessionKind::Oneshot, 0).await;
         let fresh = f.seed(SessionKind::Topic, 10).await;
 
         let mut deleted = f.lifecycle.sweep().await.unwrap();
         deleted.sort();
-        let mut expected = vec![
-            topic.header.id.clone(),
-            superseded.header.id.clone(),
-            oneshot.header.id.clone(),
-        ];
+        let mut expected = vec![topic.header.id.clone(), superseded.header.id.clone()];
         expected.sort();
         assert_eq!(deleted, expected);
         assert!(f.exists(&fresh.header.id).await, "未到期的会话保留");
-        assert_eq!(f.runs(), 2, "oneshot 不沉淀");
+        assert_eq!(f.runs(), 2);
         let reports = f.reports.lock().unwrap();
         assert_eq!(reports.len(), 2);
         assert!(
