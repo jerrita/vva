@@ -17,6 +17,22 @@ impl GeminiProvider {
         let mut system_instruction_parts = Vec::new();
 
         for turn in &session.turns {
+            if turn.role == Role::Assistant
+                && let Some(meta) = &turn.meta.gemini
+                && meta.scope.as_deref() == options.affinity.as_deref()
+                && !meta.content_parts.is_empty()
+            {
+                let parts = meta
+                    .content_parts
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| {
+                        ProviderError::Protocol(format!("Serialize Gemini content parts: {e}"))
+                    })?;
+                merger.push("model", parts);
+                continue;
+            }
             for msg in &turn.messages {
                 match turn.role {
                     Role::System => {

@@ -120,6 +120,8 @@ impl ProviderResponse {
             meta.scope = scope;
         } else if let Some(meta) = self.meta.anthropic.as_mut() {
             meta.scope = scope;
+        } else if let Some(meta) = self.meta.gemini.as_mut() {
+            meta.scope = scope;
         }
     }
 }

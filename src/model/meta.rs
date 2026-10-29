@@ -333,6 +333,33 @@ pub struct GeminiTurnMeta {
     /// Gemini 原生代码执行沙盒结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_execution_result: Option<GeminiCodeExecutionResult>,
+    /// 原生内容块按接收顺序保存，thoughtSignature 必须随原始 Part 回传。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_parts: Vec<GeminiContentPart>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// Gemini 原生文本、思考和函数调用块；签名也可能单独出现在空文本块中。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiContentPart {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thought_signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function_call: Option<GeminiFunctionCall>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GeminiFunctionCall {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub args: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

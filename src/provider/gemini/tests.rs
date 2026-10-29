@@ -263,7 +263,8 @@ fn test_gemini_streaming_accumulator_matches_non_streaming_parse() {
                 "content": {
                     "parts": [
                         { "thought": true, "text": "Analyzing " },
-                        { "text": "Rust 2024 is the latest edition." }
+                        { "text": "Rust 2024 " },
+                        { "text": "is the latest edition." }
                     ]
                 },
                 "finishReason": "STOP",
@@ -516,7 +517,8 @@ fn test_gemini_freeform_tool_projection() {
         serde_json::json!({
             "candidates": [{
                 "content": {"role": "model", "parts": [
-                    {"functionCall": {"name": "apply_patch", "args": args}}
+                    {"functionCall": {"name": "apply_patch", "args": args},
+                     "thoughtSignature": "cGF0Y2gtc2lnbmF0dXJl"}
                 ]},
                 "finishReason": "STOP"
             }]
@@ -532,8 +534,192 @@ fn test_gemini_freeform_tool_projection() {
     assert_eq!(call.name, "apply_patch");
     assert_eq!(call.arguments, "raw text");
 
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    let mut turn = Turn::assistant_turn(parsed.messages);
+    turn.meta = parsed.meta;
+    session.append_turn(turn);
+    let body = provider
+        .build_request_body(&session, &tools, &CompletionOptions::default())
+        .unwrap();
+    assert_eq!(
+        body["contents"][0]["parts"],
+        resp(serde_json::json!({"input": "raw text"}))["candidates"][0]["content"]["parts"]
+    );
+
     // 缺 input 显式报错
     let err = GeminiAccumulator::parse_response(&resp(serde_json::json!({"patch": "x"})), &tools)
         .expect_err("error");
+    assert!(matches!(err, ProviderError::Protocol(_)));
+}
+
+#[tokio::test]
+async fn thought_signatures_survive_parallel_sequential_calls_and_storage() {
+    use crate::storage::SessionStore;
+    use crate::storage::jsonl::JsonlSessionStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = JsonlSessionStore::new(dir.path().join("sessions")).unwrap();
+    let mut session = Session::new(dir.path().to_path_buf(), None);
+    session.append_turn(Turn::user_turn(Message::text(
+        "Compare two records and annotate them",
+    )));
+    let options = CompletionOptions {
+        affinity: Some("gemini-test".into()),
+        ..Default::default()
+    };
+    let steps = [
+        serde_json::json!([
+            {"text": "Checking both records."},
+            {"functionCall": {"name": "lookup_record", "args": {"key": "alpha"}},
+             "thoughtSignature": "cGFyYWxsZWwtc2lnbmF0dXJl"},
+            {"functionCall": {"name": "lookup_record", "args": {"key": "beta"}}}
+        ]),
+        serde_json::json!([
+            {"functionCall": {"name": "annotate_records", "args": {"label": "checked"}},
+             "thoughtSignature": "c2VxdWVudGlhbC1zaWduYXR1cmU="}
+        ]),
+    ];
+    for native_parts in &steps {
+        let mut response = GeminiAccumulator::parse_response(
+            &serde_json::json!({
+                "candidates": [{"content": {"role": "model", "parts": native_parts},
+                                "finishReason": "STOP"}]
+            }),
+            &[],
+        )
+        .unwrap();
+        response.stamp_scope(options.affinity.as_deref());
+        let results = response
+            .messages
+            .iter()
+            .flat_map(|msg| &msg.parts)
+            .filter_map(|part| {
+                if let ContentPart::ToolCall(call) = part {
+                    Some(Message::tool_result(ToolResult::success(&call.id, "done")))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut turn = Turn::assistant_turn(response.messages);
+        turn.meta = response.meta;
+        session.append_turn(turn);
+        session.append_turn(Turn::new(Role::Tool, results));
+    }
+    store.save_header(&session).await.unwrap();
+    let loaded = store
+        .load_session(&session.header.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let body = GeminiProvider::new("test")
+        .build_request_body(&loaded, &[], &options)
+        .unwrap();
+    let contents = body["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 5);
+    assert_eq!(contents[1]["parts"], steps[0]);
+    assert_eq!(contents[3]["parts"], steps[1]);
+    assert_eq!(contents[2]["parts"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        contents[2]["parts"][0]["functionResponse"]["name"],
+        "lookup_record"
+    );
+    assert_eq!(
+        contents[4]["parts"][0]["functionResponse"]["name"],
+        "annotate_records"
+    );
+}
+
+#[test]
+fn streaming_preserves_signed_part_boundaries_and_empty_signature_parts() {
+    let chunks = [
+        serde_json::json!([
+            {"thought": true, "text": "Planning.", "thoughtSignature": "dGhvdWdodC1zaWduYXR1cmU="},
+            {"text": "First ", "thoughtSignature": "dGV4dC1zaWduYXR1cmU="}
+        ]),
+        serde_json::json!([
+            {"text": "second."},
+            {"text": "", "thoughtSignature": "ZW1wdHktc2lnbmF0dXJl"}
+        ]),
+        serde_json::json!([
+            {"functionCall": {"name": "lookup_record", "args": {"key": "alpha"}},
+             "thoughtSignature": "Y2FsbC1zaWduYXR1cmU="}
+        ]),
+    ];
+    let mut accumulator = GeminiAccumulator::new(None, &[]);
+    for parts in &chunks {
+        accumulator
+            .merge_response(&serde_json::json!({
+                "candidates": [{"content": {"role": "model", "parts": parts}}]
+            }))
+            .unwrap();
+    }
+    let response = accumulator.finish_stream().unwrap();
+    assert_eq!(response.messages[0].text_content(), "First second.");
+    let mut turn = Turn::assistant_turn(response.messages);
+    turn.meta = response.meta;
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(turn);
+    let body = GeminiProvider::new("test")
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .unwrap();
+    let expected: Vec<_> = chunks
+        .iter()
+        .flat_map(|p| p.as_array().unwrap())
+        .cloned()
+        .collect();
+    assert_eq!(body["contents"][0]["parts"], serde_json::json!(expected));
+}
+
+#[test]
+fn native_signatures_are_scoped_and_legacy_metadata_still_loads() {
+    let legacy: GeminiTurnMeta = serde_json::from_value(serde_json::json!({
+        "finish_reason": "STOP", "safety_ratings": []
+    }))
+    .unwrap();
+    assert!(legacy.content_parts.is_empty());
+    assert!(legacy.scope.is_none());
+
+    let mut response = GeminiAccumulator::parse_response(
+        &serde_json::json!({
+            "candidates": [{"content": {"parts": [
+                {"text": "Checked.", "thoughtSignature": "c2NvcGVkLXNpZ25hdHVyZQ=="}
+            ]}}]
+        }),
+        &[],
+    )
+    .unwrap();
+    response.stamp_scope(Some("original"));
+    let mut turn = Turn::assistant_turn(response.messages);
+    turn.meta = response.meta;
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(turn);
+    let body = GeminiProvider::new("test")
+        .build_request_body(
+            &session,
+            &[],
+            &CompletionOptions {
+                affinity: Some("other".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        body["contents"][0]["parts"],
+        serde_json::json!([{"text": "Checked."}])
+    );
+}
+
+#[test]
+fn malformed_thought_signature_is_a_protocol_error() {
+    let err = GeminiAccumulator::parse_response(
+        &serde_json::json!({
+            "candidates": [{"content": {"parts": [
+                {"functionCall": {"name": "lookup_record", "args": {}}, "thoughtSignature": 42}
+            ]}}]
+        }),
+        &[],
+    )
+    .unwrap_err();
     assert!(matches!(err, ProviderError::Protocol(_)));
 }

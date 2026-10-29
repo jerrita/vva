@@ -19,9 +19,10 @@ pub use meta::{
     AnthropicCitation, AnthropicContentBlock, AnthropicDocumentBlock, AnthropicDocumentSource,
     AnthropicFetchResult, AnthropicFetchResultContent, AnthropicSearchResult,
     AnthropicSearchResultContent, AnthropicToolResultError, AnthropicTurnMeta,
-    GeminiCodeExecutionResult, GeminiSafetyRating, GeminiTurnMeta, ResponseMessageContent,
-    ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent, ResponseReasoningSummary,
-    ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource, TurnMeta,
+    GeminiCodeExecutionResult, GeminiContentPart, GeminiSafetyRating, GeminiTurnMeta,
+    ResponseMessageContent, ResponseMessageRole, ResponseOutputItem, ResponseReasoningContent,
+    ResponseReasoningSummary, ResponseTurnMeta, ResponseWebSearchAction, ResponseWebSearchSource,
+    TurnMeta,
 };
 pub use session::{
     EditorKind, JsonlRecord, Origin, SESSION_VERSION, Session, SessionHeader, SessionKind,
