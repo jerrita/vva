@@ -517,7 +517,7 @@ async fn scheduled_task_runs_once_in_original_scope_and_notifies_only_homes() {
     bindings.sort();
     assert_eq!(bindings, ["fake:c2c:home", "fake:group:home"]);
     assert!(sent.iter().all(|m| m.text == "pong"));
-    // 只执行一次：只有一个 oneshot 会话，来源是第一个 binding
+    // 只执行一次：只有一个普通会话，来源是第一个 binding
     let ids = f.session_ids().await;
     assert_eq!(ids.len(), 1);
     let session = f
@@ -528,7 +528,7 @@ async fn scheduled_task_runs_once_in_original_scope_and_notifies_only_homes() {
         .snapshot()
         .session
         .clone();
-    assert_eq!(session.header.kind, SessionKind::Oneshot);
+    assert_eq!(session.header.kind, SessionKind::Topic);
     assert_eq!(session.header.origin.as_ref().unwrap().chat_id, "c2c:u1");
     assert!(
         session
@@ -536,7 +536,26 @@ async fn scheduled_task_runs_once_in_original_scope_and_notifies_only_homes() {
             .iter()
             .any(|t| t.text_content().contains("type=\"scheduled\""))
     );
-    assert_eq!(f.focus().await, None, "oneshot 不抢占 focus");
+    assert_eq!(f.focus().await, None, "后台任务不抢占 focus");
+    assert!(
+        f.runtime
+            .candidates(BINDING)
+            .await
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate.id == ids[0])
+    );
+    let mut follow_up = inbound("m1", "继续补充说明");
+    follow_up.reply_to = Some(channel::ReplyRef {
+        message_id: "out1".into(),
+        text: "pong".into(),
+    });
+    f.runtime.handle(follow_up).await;
+    let sent = f.channel.wait(3).await;
+    assert_eq!(sent[2].binding, BINDING);
+    assert_eq!(sent[2].text, "pong");
+    assert_eq!(f.session_ids().await, ids);
+    assert_eq!(f.focus().await.as_deref(), Some(ids[0].as_str()));
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 
@@ -611,7 +630,7 @@ async fn memory_update_broadcast_notes_eligible_sessions_without_a_turn() {
     let mut ids = BTreeMap::new();
     for (name, kind, superseded) in [
         ("topic", SessionKind::Topic, false),
-        ("oneshot", SessionKind::Oneshot, false),
+        ("cold_topic", SessionKind::Topic, false),
         ("curator", SessionKind::Curator, false),
         ("superseded", SessionKind::Topic, true),
         ("source", SessionKind::Topic, false),
@@ -644,7 +663,7 @@ async fn memory_update_broadcast_notes_eligible_sessions_without_a_turn() {
 
     for (name, id) in &ids {
         let stored = f.manager.store().load_session(id).await.unwrap().unwrap();
-        if matches!(*name, "topic" | "oneshot") {
+        if matches!(*name, "topic" | "cold_topic") {
             assert_eq!(stored.turns.len(), 1, "{name}");
             let text = stored.turns[0].text_content();
             assert!(text.starts_with("<system-reminder type=\"memory-updated\">"));

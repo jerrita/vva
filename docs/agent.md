@@ -16,18 +16,18 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
                        ▼
                     Router ── L0 确定性锚点 / L1 小模型 / L2 显式报错
                        │
-        ┌──────────────┼────────────────┐
-        ▼              ▼                ▼
-     oneshot        existing / new   guide（Deliver 入队）
-        │              │
-        └─ 出站渲染（订阅 SessionView）─► Channel
+               ┌───────┴────────────┐
+               ▼                    ▼
+         existing / new      guide（Steer 注入）
+               │                    │
+               └─ 出站渲染（订阅 SessionView）─► Channel
 
   生命周期：空闲 TTL → 按标记沉淀 → 删除
   上下文：回合结束达到预留线 → rollover
   Scheduler：cron → Deliver
 ```
 
-复用 `SessionManager`、`Deliver`、skills、JSONL，不改动其语义。所有 session 位于固定工作区 `~/.vva/space/`；TUI / Web 暂不接入 agent space 逻辑，新增 header 字段均有缺省，旧界面照常读取。
+复用 `SessionManager`、Steer / `Deliver`、skills、JSONL。所有 session 位于固定工作区 `~/.vva/space/`；TUI / Web 暂不接入 agent space 逻辑，新增 header 字段均有缺省，旧界面照常读取。
 
 ## 2. 概念
 
@@ -52,18 +52,18 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 候选表只含 `id`、`title`（小模型生成的会话标题，首轮完成前为占位标题）、`running`、`focus`，按 id 排序（前缀稳定）；另含用户文字、被 reply 消息片段（`reply_to_text`）、待附件文件名与类型。不含历史正文。
 
-输出强类型 `RouteDecision`：`action: oneshot | existing | new`、`session_id`、`running_intent: none | guide_existing`、`reason`，使用供应商原生结构化输出。
+输出强类型 `RouteDecision`：`action: existing | new`、`session_id`、`running_intent: none | guide_existing`、`reason`，使用供应商原生结构化输出。
 
-规则优先级：oneshot（无需历史、无长期价值）→ `guide_existing`（对运行中 session 补充 / 修正）→ existing（承接、追问、无法判断）→ new（明确无关的独立任务）。
+规则优先级：`guide_existing`（对运行中 session 补充 / 修正）→ existing（承接、追问、无法判断）→ new（明确无关的独立话题或任务）。
 
 - 难以判断时续接当前 focus；Decisions 的 `action` 或 `session` 置信度低于 `min_confidence` 时由 Router 执行同一规则，focus 正在运行则以 `guide_existing` 投递；无 focus 时提示 `/switch` 设置后重发，或 `/new <消息>` 新建；
-- 调用失败、缺失字段、非法取值保持显式报错；带媒体的消息不得走 oneshot；明确选择 running session 却非 `guide_existing` 时拒绝；
+- 调用失败、缺失字段、非法取值保持显式报错；明确选择 running session 却非 `guide_existing` 时拒绝；
 - 每次决策追加一行 `router.jsonl`（输入摘要、决策、reason、小模型 usage），session header 记录 `routed_by`。
 
 ### 3.3 路由结果
 
-- **oneshot**：新建 `kind=oneshot` session（跟随主 agent 模型），不进入候选，不抢占 focus；回复后立即清理，不经 curator；
-- **guide_existing**：经 `Deliver` 入队，运行中于轮间注入，空闲则触发新轮次；决策到执行间 session 已空闲则降级为普通 existing；残留插话在最终回复后继续触发轮次；session 被 stop / 删除时清空；
+- **new**：新建 `kind=topic` session（跟随主 agent 模型），进入候选并设为当前 focus，支持后续追问，按常规 TTL 清理；
+- **existing / guide_existing**：经 Steer 投递，运行中在下次模型调用前注入（完整工具批次结束后），最后一次模型响应期间到达也继续在本轮处理；空闲则触发新轮次。reply 直达遵循相同规则；session 被 stop / 删除时清空程序化投递队列，失败或中止向投递者返回错误；
 - **reply 目标已清理**：`message_index` 仅保存 `消息 id → session id`（键带 channel 前缀 `qq:<id>`）。目标不存在时 warning 用户，新建 session，以入站自带的 `reply_to_text` 作为首条上下文并处理当前消息；命中范围外会话时显式拒绝续接，提示发送新消息或 `/new <消息>`（home 聊天引用其他来源会话的通知时同样适用）。
 
 ## 4. Session 生命周期
@@ -93,7 +93,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 - **沉淀资格**：Agent Space 顶层 topic 会话通过 `SetSessionCuration({"enabled": true})` 请求整理，`false` 撤销；标记持久化于 header 的 `curation_requested`，新旧会话缺省均为 `false`。工具绑定当前会话，在运行中经会话命令通道更新 header，落盘成功后返回；重复设置幂等，不延长 TTL；
 - **主动标记**：模型发现稳定偏好、已确认的决策与约束、可复用经验时调用工具；临时进度、一次性查询和普通任务执行无需标记。标记覆盖本会话全部未处理内容及后续对话，curator 决定具体写入内容，允许无需更新；
-- 由系统在删除已标记会话前触发后台 session（`kind=curator`；TTL 周期扫描或 `/delete`），未标记会话直接删除。`Curator::curate` 统一检查资格与标记，跳过时返回 `Unchanged`，不创建整理输入或启动模型；oneshot、curator 自身与子代理会话不参与；
+- 由系统在删除已标记会话前触发后台 session（`kind=curator`；TTL 周期扫描或 `/delete`），未标记会话直接删除。`Curator::curate` 统一检查资格与标记，跳过时返回 `Unchanged`，不创建整理输入或启动模型；curator 自身与子代理会话不参与；
 - `/clear` 与 rollover 本身不触发沉淀。rollover 旧会话保留标记，按 TTL 清理；新会话默认未标记。整理成功保留标记，整理期间新增内容仍可增量处理；
 - 模型取 `settings.agent.curator_model`（启动时校验，不受 `/model` 影响），省略时取当前 agent 模式模型；
 - 只处理游标之后的增量 turns，重复触发返回 `unchanged`；结果三态 `updated | unchanged | failed`；
@@ -109,7 +109,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - router 调用前缀固定，session 表与用户消息置尾；
 - **记忆索引**仅在 session 创建时快照：agent space 会话（排除 curator）首次落盘时追加 `<system-reminder type="memory">`，内容为当时 `memory/MEMORY.md` 全文并注明记忆库绝对路径，细节由模型按需 Read；`MEMORY.md` 不存在则不注入。全文注入、不截断，体量有界（`MEMORY.md` 只列领域，增长的是领域数而非条目数）；
 - rollover 接替会话的 system 前缀中，旧记忆快照以**当前** `MEMORY.md` 原位重生成（旧前缀没有则不加，当前无索引则丢弃旧快照）；
-- **记忆更新通知**：curator 结果为 `Updated` 时，向现存 topic / oneshot 会话（排除 curator、已 superseded、来源会话）追加 `<system-reminder type="memory-updated">`（含 curator 摘要，提示 Read `MEMORY.md`）。经 `ManagedSession::note`：只追加不起轮次，空闲直接落盘，运行中入队到轮次间隙或本轮收尾，不改动已有前缀；
+- **记忆更新通知**：curator 结果为 `Updated` 时，向现存 topic 会话（排除 curator、已 superseded、来源会话）追加 `<system-reminder type="memory-updated">`（含 curator 摘要，提示 Read `MEMORY.md`）。经 `ManagedSession::note`：只追加不起轮次，空闲直接落盘，运行中入队到轮次间隙或本轮收尾，不改动已有前缀；
 - **技能变动提示**：每条新消息提交前重新发现技能，与历史中最近一次 `skills` / `skills-changed` 提醒携带的指纹索引（`index="name:hash,..."`，hash 覆盖 description 与正文）比对；有新增 / 更新 / 移除时，在用户消息之前注入 `<system-reminder type="skills-changed">`，并以新索引为之后的基线。旧版不带索引的清单整体刷新一次；子代理 / curator 会话不注入。`/skills`（IM 与 TUI）每次现扫目录；
 - 状态页展示各 session cache 命中率与 router 小模型成本，数据来自 `usage` 与成本配置。
 
@@ -166,7 +166,7 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
   ] }
   ```
 - **触发**：`cron` 为 5 字段（本地时区，`*`、数字、列表、范围、步长；日与周都受限取并集；周日 0 或 7）；`at` 为一次性本地时刻（`YYYY-MM-DDTHH:MM`），执行后自动停用，已过时刻拒绝创建；`every` 为 `30m / 2h / 1d`（分钟精度），**从上次完成起算**，天然不重叠。cron 到点时同一任务仍在执行则跳过本次。
-- **执行目标**：`session` 指定时在该会话内执行（保留上下文；会话被 TTL 清理后任务永久失败）；否则在 `bindings[0]` 新建 oneshot 会话执行（无历史，prompt 须自足），周期任务应走后者。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道。
+- **执行目标**：`session` 指定时在该会话内执行（保留上下文；会话被 TTL 清理后任务永久失败）；否则在 `bindings[0]` 新建普通 topic 会话执行（无历史，prompt 须自足），进入路由候选并支持后续追问，后台创建不切换 focus；周期任务应走后者。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道。
 - **通知**：一次触发只执行一次，最终回复与执行进度发往全部 home bindings，并登记 `message_index`；引用按当前聊天范围校验（已清理则按 §3.3 处理）。`bindings` 仅作执行来源配置，不决定通知目标。
 - **静默**：触发 reminder 告知模型「无需通知用户时只回复 `[SILENT]`」，Runtime 对精确匹配的回复不发消息（历史照常保留）。
 - **失败**：单次失败通知 home 聊天但任务继续；连续失败达 `task_max_failures` 自动停用；永久性错误（目标会话不存在、binding 非法）与一次性任务失败立即停用，并提示 `/schedule resume`；成功清零计数。单次执行超过 `task_timeout_secs` 中止并计为失败。
@@ -184,8 +184,8 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
 ## 10. 验收要点
 
 - **入站**：白名单外丢弃；各 chat 类型 binding 隔离；断线 resume 不重复不丢；无文字文件只缓冲；多附件保序；超长回复分段并标注。
-- **路由**：reply 命中直达且零模型调用；reply 目标已清理 → warning + 新 session 带引用；`/switch` 歧义拒绝；零 session 直接创建；候选表只含四字段；非法决策显式报错；带媒体不得 oneshot；running 且非 guide 拒绝；每次决策落 `router.jsonl`。
-- **oneshot / guide**：oneshot 不进候选并随后清理；guide 经 `Deliver` 不打断运行；竞态降级为 existing；残留插话不丢；stop 清空队列。
+- **路由**：reply 命中直达且零模型调用；reply 目标已清理 → warning + 新 session 带引用；`/switch` 歧义拒绝；零 session 直接创建；候选表只含四字段；非法决策显式报错；running 且非 guide 拒绝；每次决策落 `router.jsonl`。
+- **guide**：经 Steer 在安全边界注入；并行工具结果完整配对；末次响应期间的插话继续在本轮处理；空闲时直接新起轮次；stop 清空队列。
 - **生命周期**：TTL 到期按标记沉淀后删除；沉淀失败保留；运行中不清理；重启恢复。
 - **rollover**：达到预留线回合结束触发；旧 session 内容仅追加；新 session `continued_from` 正确且 `parent` 为空；binding 切换；旧 session 被 router 排除；失败不改变 session；压缩调用不触发工具；第二轮起重新命中前缀。
 - **cache**：system 不变；动态内容走 reminder；记忆索引仅创建时快照；日期冻结；Anthropic 签名与 `cache_control`、Responses 链路不中断。

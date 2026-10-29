@@ -70,9 +70,8 @@ fn build_request(model: &str, input: &RouteInput) -> Value {
                 "type": "choice",
                 "instructions": "判断 user_text 应如何路由。不要回答用户的问题。有疑问时选 existing，续接 focus=true 的会话。",
                 "criteria": {
-                    "oneshot": "寒暄、确认在线、简单感谢，或不依赖任何历史、答完即无长期价值的独立小问题",
                     "existing": "承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题",
-                    "new": "明确开启与所有候选会话主题完全无关、需要长期上下文的独立任务"
+                    "new": "明确开启与所有候选会话主题完全无关的独立话题或任务"
                 }
             },
             "session": {
@@ -178,7 +177,6 @@ fn parse_response(response: Value, min_confidence: f64) -> Result<ModelReply, St
 fn decide(answers: Answers, min_confidence: f64) -> Result<RouteDecision, DecisionError> {
     let (choice, confidence) = choice_answer("action", answers.action)?;
     let action = match choice.as_str() {
-        "oneshot" => Action::Oneshot,
         "existing" => Action::Existing,
         "new" => Action::New,
         other => return Err(format!("Decisions 返回未知 action: {other}").into()),
@@ -238,7 +236,7 @@ mod tests {
             "model": "typesafe/jev-1.13-20260917",
             "answers": {
                 "action": {"type": "choice", "choice": action, "confidence": conf,
-                           "probabilities": {"oneshot": 0, "existing": 1, "new": 0}},
+                           "probabilities": {"existing": 1, "new": 0}},
                 "session": {"type": "choice", "choice": session, "confidence": 1,
                             "probabilities": {"sess_a": 1, "sess_b": 0}},
                 "guide": {"type": "noul", "noul": guide}
@@ -294,7 +292,7 @@ mod tests {
                 "model": "jev-1.13.0",
                 "answers": {
                     "action": {"type": "choice", "choice": "existing", "confidence": 1.0,
-                        "probabilities": {"oneshot": 0.0, "existing": 1.0, "new": 0.0}},
+                        "probabilities": {"existing": 1.0, "new": 0.0}},
                     "session": {"type": "choice", "choice": "sess_b", "confidence": 1.0,
                         "probabilities": {"sess_a": 0.0, "sess_b": 1.0}},
                     "guide": {"type": "noul", "noul": 0.99}

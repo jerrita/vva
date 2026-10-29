@@ -27,7 +27,7 @@ use super::rollover::maybe_rollover;
 use super::router::Router;
 use super::scheduler::{self, ScheduleStore};
 use crate::config::AgentSpaceConfig;
-use crate::harness::{ManagedSession, SessionManager};
+use crate::harness::{InputMode, ManagedSession, SessionManager};
 use crate::model::{Origin, Session, SessionKind, SessionSummary};
 use crate::tools::agent::SubagentReport;
 
@@ -155,7 +155,12 @@ impl Runtime {
         let started = std::time::Instant::now();
         let turns_before = handle.snapshot().session.turns.len();
         let delivered = self
-            .deliver_reporting(&handle, DeliveryTarget::Chat(&binding), &prompt)
+            .deliver_reporting(
+                &handle,
+                DeliveryTarget::Chat(&binding),
+                &prompt,
+                InputMode::Steer,
+            )
             .await;
         let (prompt_tokens, completion_tokens, cached_tokens) =
             turn_usage(&handle.snapshot().session, turns_before);
@@ -187,8 +192,15 @@ impl Runtime {
         handle: &Arc<ManagedSession>,
         target: DeliveryTarget<'_>,
         prompt: &str,
+        mode: InputMode,
     ) -> Result<SubagentReport, String> {
         let interval = Duration::from_secs(self.config.progress_interval_secs);
+        let delivered = async {
+            match mode {
+                InputMode::After => handle.deliver_wait(prompt).await,
+                InputMode::Steer => handle.steer_wait(prompt).await,
+            }
+        };
         if interval.is_zero()
             || !self
                 .reporting
@@ -196,7 +208,7 @@ impl Runtime {
                 .expect("reporting")
                 .insert(handle.id.clone())
         {
-            return handle.deliver_wait(prompt).await;
+            return delivered.await;
         }
         // 调用方超时会丢弃本 future，汇报者登记须随 drop 释放
         let _reporter = ReporterGuard {
@@ -204,7 +216,7 @@ impl Runtime {
             id: &handle.id,
         };
         progress::with_progress(
-            handle.deliver_wait(prompt),
+            delivered,
             interval,
             || handle.snapshot().session.clone(),
             |text| async move {
@@ -318,7 +330,7 @@ impl Runtime {
         self.send_report(DeliveryTarget::Homes, &text, None).await;
     }
 
-    /// 记忆已更新：向现存 topic / oneshot 会话追加 `memory-updated` 提示（只追加，不起轮次）。
+    /// 记忆已更新：向现存 topic 会话追加 `memory-updated` 提示（只追加，不起轮次）。
     /// 排除 curator 会话、已被接替的会话与来源会话（即将删除）；单个会话失败只告警
     async fn broadcast_memory_update(&self, report: &CuratorReport) {
         let summaries = match self.manager.store().list_sessions().await {

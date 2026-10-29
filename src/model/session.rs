@@ -249,8 +249,6 @@ pub enum SessionKind {
     /// 普通主题会话（含所有非 agent space 会话）
     #[default]
     Topic,
-    /// 一次性问答，不进入 router 候选，回复后清理
-    Oneshot,
     /// 知识沉淀后台会话
     Curator,
 }

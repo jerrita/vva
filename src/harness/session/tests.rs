@@ -341,7 +341,6 @@ async fn curation_tool_is_only_registered_for_managed_top_level_topics() {
             Some("sess_parent".to_string()),
             false,
         ),
-        (crate::model::SessionKind::Oneshot, true, None, false),
         (crate::model::SessionKind::Curator, true, None, false),
     ] {
         let (mut task, _view) = event_task();
@@ -685,67 +684,93 @@ async fn abort_during_tools_synthesizes_paired_error_results() {
 #[tokio::test]
 async fn steering_waits_for_the_complete_parallel_tool_batch() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        let (mut task, handle, mut commands) = command_task();
-        task.store.save_header(&task.view.session).await.unwrap();
-        let permits = Arc::new(tokio::sync::Semaphore::new(0));
-        let finished = Arc::new(tokio::sync::Semaphore::new(0));
-        let tools = registry_with(TestTool {
-            name: "Gate",
-            blocking: TestBlock::Gate {
-                permits: permits.clone(),
-                finished: finished.clone(),
-            },
-        });
-        let provider = ScriptedProvider::new(|repeat| {
-            if repeat {
-                return vec![Message::text("completed")];
-            }
-            vec![Message::new(
-                ["tool_one", "tool_two"]
-                    .map(|id| ContentPart::ToolCall(ToolCall::new(id, "Gate", "{}")))
-                    .into(),
-            )]
-        });
-        let (events, mut output) = mpsc::channel(64);
-        task.cli = Some(events);
-        let control = async {
-            while !matches!(output.recv().await, Some(AgentEvent::ToolExecuting { .. })) {}
-            handle
-                .submit("guidance between requests", vec![], None)
-                .await
-                .unwrap();
-            let id = handle.snapshot().pending_inputs[0].id.clone();
-            handle.set_input_mode(id, InputMode::Steer).await.unwrap();
-            permits.add_permits(1);
-            finished.acquire().await.unwrap().forget();
-            assert!(
-                !handle
-                    .snapshot()
-                    .session
-                    .turns
-                    .iter()
-                    .any(|turn| turn.steering)
+        for programmatic in [false, true] {
+            let (mut task, handle, mut commands) = command_task();
+            task.store.save_header(&task.view.session).await.unwrap();
+            let permits = Arc::new(tokio::sync::Semaphore::new(0));
+            let finished = Arc::new(tokio::sync::Semaphore::new(0));
+            let tools = registry_with(TestTool {
+                name: "Gate",
+                blocking: TestBlock::Gate {
+                    permits: permits.clone(),
+                    finished: finished.clone(),
+                },
+            });
+            let provider = ScriptedProvider::new(|repeat| {
+                if repeat {
+                    return vec![Message::text("completed")];
+                }
+                vec![Message::new(
+                    ["tool_one", "tool_two"]
+                        .map(|id| ContentPart::ToolCall(ToolCall::new(id, "Gate", "{}")))
+                        .into(),
+                )]
+            });
+            let (events, mut output) = mpsc::channel(64);
+            task.cli = Some(events);
+            let control = async {
+                while !matches!(output.recv().await, Some(AgentEvent::ToolExecuting { .. })) {}
+                let receipt = if programmatic {
+                    let (mut delivery, receipt) = queued("guidance between requests");
+                    delivery.mode = InputMode::Steer;
+                    handle
+                        .request(|reply| Command::Deliver { delivery, reply })
+                        .await
+                        .unwrap();
+                    Some(receipt)
+                } else {
+                    handle
+                        .submit("guidance between requests", vec![], None)
+                        .await
+                        .unwrap();
+                    let id = handle.snapshot().pending_inputs[0].id.clone();
+                    handle.set_input_mode(id, InputMode::Steer).await.unwrap();
+                    None
+                };
+                permits.add_permits(1);
+                finished.acquire().await.unwrap().forget();
+                assert!(
+                    !handle
+                        .snapshot()
+                        .session
+                        .turns
+                        .iter()
+                        .any(|turn| turn.steering)
+                );
+                assert_eq!(
+                    handle.snapshot().pending_inputs.len(),
+                    usize::from(!programmatic)
+                );
+                permits.add_permits(1);
+                receipt
+            };
+            let (outcome, receipt) = tokio::join!(
+                task.execute(engine(provider, tools), &mut commands),
+                control
             );
-            assert_eq!(handle.snapshot().pending_inputs.len(), 1);
-            permits.add_permits(1);
-        };
-        let (outcome, ()) = tokio::join!(
-            task.execute(engine(provider, tools), &mut commands),
-            control
-        );
-        assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
-        let turns = &task.view.session.turns;
-        let guide = turns.iter().position(|turn| turn.steering).unwrap();
-        assert_eq!(
-            turns[..guide]
-                .iter()
-                .filter(|turn| turn.role == Role::Tool)
-                .count(),
-            2
-        );
-        assert!(turns.last().unwrap().worked_ms.is_some());
-        assert!(task.view.pending_inputs.is_empty());
-        cleanup(&task);
+            assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
+            let turns = &task.view.session.turns;
+            let guide = turns.iter().position(|turn| turn.steering).unwrap();
+            assert_eq!(
+                turns[..guide]
+                    .iter()
+                    .filter(|turn| turn.role == Role::Tool)
+                    .count(),
+                2
+            );
+            assert!(turns.last().unwrap().worked_ms.is_some());
+            assert!(task.view.pending_inputs.is_empty());
+            assert!(task.pending_deliveries.is_empty());
+            if let Some(mut receipt) = receipt {
+                assert!(matches!(
+                    receipt.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                assert!(!task.finish_turn(Ok(TurnOutcome::Completed)).await);
+                assert_eq!(receipt.await.unwrap().unwrap().text, "completed");
+            }
+            cleanup(&task);
+        }
     })
     .await
     .expect("parallel steering timed out");
@@ -1314,6 +1339,7 @@ fn queued(text: &str) -> (PendingDelivery, super::handle::DeliveryReceipt) {
     (
         PendingDelivery {
             text: text.into(),
+            mode: InputMode::After,
             completion,
         },
         receipt,
@@ -1389,8 +1415,16 @@ async fn failed_or_aborted_turn_has_no_old_answer_and_cancels_pending_deliveries
         task.turn_start = task.view.session.turns.len();
         let (delivery, receipt) = queued("queued request");
         task.pending_deliveries.push(delivery);
+        let (mut steering, steering_receipt) = queued("pending steering");
+        steering.mode = InputMode::Steer;
+        task.pending_deliveries.push(steering);
+        let (mut active, active_receipt) = queued("active steering");
+        active.mode = InputMode::Steer;
+        task.active_deliveries.push(active);
         assert!(!task.finish_turn(outcome).await);
         assert!(receipt.await.unwrap().is_err());
+        assert!(steering_receipt.await.unwrap().is_err());
+        assert!(active_receipt.await.unwrap().is_err());
         assert!(task.pending_deliveries.is_empty());
         assert!(task.turn_tx.borrow().text.is_empty());
         assert!(task.turn_tx.borrow().error.is_some());
@@ -1823,6 +1857,91 @@ fn async_report(text: &str) -> SubagentReport {
         text: text.into(),
         error: None,
     }
+}
+
+#[tokio::test]
+async fn programmatic_steering_continues_the_current_turn_and_preserves_after_delivery() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (config, mut requests, server) =
+            completion_endpoint_controlled(Some(gate.clone())).await;
+        let (mut task, handle, commands) = command_task();
+        task.config = Arc::new(config);
+        task.store.save_header(&task.view.session).await.unwrap();
+        let root = task.view.session.header.workspace_root.clone();
+        let actor = tokio::spawn(task.run(commands));
+        let first_handle = handle.clone();
+        let first = tokio::spawn(async move { first_handle.steer_wait("initial request").await });
+        requests.recv().await.unwrap();
+
+        let (after, mut after_receipt) = queued("next request");
+        handle
+            .request(|reply| Command::Deliver {
+                delivery: after,
+                reply,
+            })
+            .await
+            .unwrap();
+        let (mut steering, mut receipt) = queued("adjust the current request");
+        steering.mode = InputMode::Steer;
+        handle
+            .request(|reply| Command::Deliver {
+                delivery: steering,
+                reply,
+            })
+            .await
+            .unwrap();
+        gate.add_permits(1);
+
+        let request = requests.recv().await.unwrap().to_string();
+        assert!(request.contains("adjust the current request"));
+        assert!(!request.contains("next request"));
+        assert_eq!(handle.turn_seq(), 0);
+        assert!(matches!(
+            receipt.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            after_receipt.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let snapshot = handle.snapshot();
+        assert!(
+            snapshot
+                .session
+                .turns
+                .iter()
+                .any(|turn| turn.steering && turn.text_content() == "adjust the current request")
+        );
+        assert!(
+            snapshot
+                .session
+                .turns
+                .iter()
+                .filter(|turn| turn.role == Role::Assistant)
+                .all(|turn| turn.worked_ms.is_none())
+        );
+
+        gate.add_permits(1);
+        let first_report = first.await.unwrap().unwrap();
+        let steering_report = receipt.await.unwrap().unwrap();
+        assert_eq!(first_report.turn_seq, 1);
+        assert_eq!(steering_report.turn_seq, first_report.turn_seq);
+        assert_eq!(steering_report.text, "handled");
+        let request = requests.recv().await.unwrap().to_string();
+        assert!(request.contains("next request"));
+        assert_eq!(handle.turn_seq(), 1);
+        gate.add_permits(1);
+        assert_eq!(after_receipt.await.unwrap().unwrap().turn_seq, 2);
+
+        handle.abort_current().await.unwrap();
+        drop(handle);
+        actor.await.unwrap();
+        server.abort();
+        std::fs::remove_dir_all(root).unwrap();
+    })
+    .await
+    .expect("programmatic steering timed out");
 }
 
 #[tokio::test]

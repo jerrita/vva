@@ -1000,7 +1000,7 @@ impl SessionTask {
                 let _ = reply.send(Ok(()));
             }
             Command::Deliver { delivery, reply } => {
-                // 程序化消息不拒绝：入队待轮次结束后处理
+                // 程序化消息不拒绝：按 mode 在安全边界注入或轮次结束后处理
                 self.pending_deliveries.push(delivery);
                 let _ = reply.send(Ok(()));
             }
@@ -1176,7 +1176,11 @@ impl SessionTask {
                     .view
                     .pending_inputs
                     .iter()
-                    .any(|input| input.mode == InputMode::Steer))
+                    .any(|input| input.mode == InputMode::Steer)
+                && !self
+                    .pending_deliveries
+                    .iter()
+                    .any(|delivery| delivery.mode == InputMode::Steer))
             .then(|| worked_started.elapsed().as_millis() as u64);
             turn.meta = response.meta;
             self.view.draft.clear();
