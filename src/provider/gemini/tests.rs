@@ -429,12 +429,95 @@ fn test_gemini_streaming_ignores_usage_metadata_without_token_counts() {
     assert_eq!(usage.completion_tokens, 2);
     assert_eq!(usage.total_tokens, 9);
 
-    let err = GeminiAccumulator::parse_response(&intermediate, &[])
-        .expect_err("non-streaming usage metadata remains strict");
+    let parsed = GeminiAccumulator::parse_response(&intermediate, &[])
+        .expect("omitted proto3 counts are zero");
+    assert_eq!(parsed.usage, Some(TokenUsage::default()));
+}
+
+#[tokio::test]
+async fn thinking_usage_without_candidate_count_does_not_interrupt_stream() {
+    use crate::provider::http::SseEventHandler;
+
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+    let mut streaming = GeminiAccumulator::new(Some(sender), &[]);
+    let thought_chunk = serde_json::json!({
+        "candidates": [{"content": {
+            "role": "model",
+            "parts": [{"thought": true, "text": "Checking the constraints."}]
+        }}],
+        "usageMetadata": {
+            "promptTokenCount": 12,
+            "thoughtsTokenCount": 8,
+            "totalTokenCount": 20
+        }
+    });
+    streaming.on_event(thought_chunk.clone()).await.unwrap();
     assert!(matches!(
-        err,
-        ProviderError::Protocol(msg) if msg.contains("Missing 'promptTokenCount'")
+        receiver.try_recv().unwrap(),
+        AgentEvent::Thought(text) if text == "Checking the constraints."
     ));
+    let usage = GeminiAccumulator::parse_response(&thought_chunk, &[])
+        .unwrap()
+        .usage
+        .unwrap();
+    assert_eq!(usage.prompt_tokens, 12);
+    assert_eq!(usage.completion_tokens, 0);
+    assert_eq!(usage.total_tokens, 20);
+    assert_eq!(usage.reasoning_tokens, Some(8));
+
+    streaming
+        .on_event(serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "The constraints hold."}]},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 12,
+                "candidatesTokenCount": 4,
+                "thoughtsTokenCount": 8,
+                "totalTokenCount": 24,
+                "cachedContentTokenCount": 3
+            }
+        }))
+        .await
+        .unwrap();
+    let usage = streaming.finish_stream().unwrap().usage.unwrap();
+    assert_eq!(usage.prompt_tokens, 12);
+    assert_eq!(usage.completion_tokens, 4);
+    assert_eq!(usage.total_tokens, 24);
+    assert_eq!(usage.cached_tokens, Some(3));
+    assert_eq!(usage.reasoning_tokens, Some(8));
+}
+
+#[test]
+fn usage_metadata_rejects_invalid_token_counts() {
+    for field in [
+        "promptTokenCount",
+        "candidatesTokenCount",
+        "totalTokenCount",
+        "cachedContentTokenCount",
+        "thoughtsTokenCount",
+    ] {
+        for invalid in [
+            serde_json::json!("invalid"),
+            serde_json::json!(-1),
+            serde_json::json!(u64::MAX),
+        ] {
+            let mut chunk = serde_json::json!({
+                "candidates": [{"finishReason": "STOP"}],
+                "usageMetadata": {}
+            });
+            chunk["usageMetadata"][field] = invalid;
+            assert!(matches!(
+                GeminiAccumulator::new(None, &[]).merge_response(&chunk),
+                Err(ProviderError::Protocol(_))
+            ));
+            assert!(matches!(
+                GeminiAccumulator::parse_response(&chunk, &[]),
+                Err(ProviderError::Protocol(_))
+            ));
+        }
+    }
 }
 
 #[test]

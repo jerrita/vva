@@ -8,7 +8,7 @@ use crate::model::{
     GeminiTurnMeta, Message, SearchStatus, TokenUsage, ToolCall, ToolDefinition, ToolInput,
     TurnMeta, WebSearchAction, WebSearchCall, WebSearchSource,
 };
-use crate::provider::common::{EventForwarder, freeform_call_input, require_str, require_u64};
+use crate::provider::common::{EventForwarder, freeform_call_input, require_str};
 use crate::provider::{ProviderError, ProviderResponse};
 
 /// Gemini GenerateContentResponse 的增量累积器。
@@ -63,7 +63,7 @@ impl GeminiAccumulator {
     fn merge_response_impl(
         &mut self,
         json: &serde_json::Value,
-        require_complete_usage: bool,
+        include_empty_usage: bool,
     ) -> Result<(), ProviderError> {
         self.received_response = true;
         if let Some(candidate) = json["candidates"].as_array().and_then(|arr| arr.first()) {
@@ -99,15 +99,17 @@ impl GeminiAccumulator {
         }
 
         if let Some(um) = json.get("usageMetadata") {
-            // 流式中间分片可能只携带 trafficType，等完整计数到达后再更新用量
+            // 流式分片可能只携带 trafficType；有计数时按当前用量快照更新。
             let has_token_counts = [
                 "promptTokenCount",
                 "candidatesTokenCount",
                 "totalTokenCount",
+                "cachedContentTokenCount",
+                "thoughtsTokenCount",
             ]
             .into_iter()
             .any(|field| um.get(field).is_some());
-            if require_complete_usage || has_token_counts {
+            if include_empty_usage || has_token_counts {
                 self.usage = Some(parse_usage_metadata(um)?);
             }
         }
@@ -304,22 +306,30 @@ impl GeminiAccumulator {
     }
 }
 
-/// 解析 Gemini usageMetadata 为统一 TokenUsage（必填计数字段缺失即协议错误）
+/// 官方 UsageMetadata 的 proto3 标量计数为零时可省略；显式提供的值仍严格校验。
+/// https://github.com/googleapis/googleapis/blob/master/google/ai/generativelanguage/v1beta/generative_service.proto
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiUsageMetadata {
+    #[serde(default)]
+    prompt_token_count: u32,
+    #[serde(default)]
+    candidates_token_count: u32,
+    #[serde(default)]
+    total_token_count: u32,
+    cached_content_token_count: Option<u32>,
+    thoughts_token_count: Option<u32>,
+}
+
+/// 解析 Gemini usageMetadata 为统一 TokenUsage。
 fn parse_usage_metadata(um: &serde_json::Value) -> Result<TokenUsage, ProviderError> {
-    let prompt = require_u64(um, "promptTokenCount")? as u32;
-    let completion = require_u64(um, "candidatesTokenCount")? as u32;
-    let total = require_u64(um, "totalTokenCount")? as u32;
-    let cached = um["cachedContentTokenCount"].as_u64().map(|v| v as u32);
-    let reasoning = um["candidatesTokensDetails"]
-        .as_array()
-        .and_then(|arr| arr.iter().find(|d| d["modality"] == "THOUGHT"))
-        .and_then(|d| d["tokenCount"].as_u64())
-        .map(|v| v as u32);
+    let usage: GeminiUsageMetadata = serde_json::from_value(um.clone())
+        .map_err(|e| ProviderError::Protocol(format!("Invalid Gemini usageMetadata: {e}")))?;
     Ok(TokenUsage {
-        prompt_tokens: prompt,
-        completion_tokens: completion,
-        total_tokens: total,
-        cached_tokens: cached,
-        reasoning_tokens: reasoning,
+        prompt_tokens: usage.prompt_token_count,
+        completion_tokens: usage.candidates_token_count,
+        total_tokens: usage.total_token_count,
+        cached_tokens: usage.cached_content_token_count,
+        reasoning_tokens: usage.thoughts_token_count,
     })
 }
