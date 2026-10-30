@@ -143,13 +143,13 @@
 |---|---|---|
 | `model` | `settings.default` | 普通 session 使用的模型规格 |
 | `curator_model` | 当前 Agent 模式模型 | curator 使用的独立模型规格；启动时校验，配置后不受 `/model` 切换影响；省略时跟随 Agent 模式模型（含 `model.json` 与运行期切换） |
-| `ttl_secs` | `86400`（24h） | 普通 session 空闲清理 |
+| `ttl_secs` | `86400`（24h） | 未指定会话 TTL 时的空闲清理值；见 [会话生命周期](agent.md#41-ttl-清理) |
 | `rollover_reserve_tokens` | `32000` | 上下文达到 `limit.context - 预留` 时回合结束触发 rollover |
 | `pending_files_ttl_secs` | `600` | 待附件缓冲等待时间 |
 | `task_timeout_secs` | `600` | 定时任务单次执行超时，超时中止并计为失败 |
 | `progress_interval_secs` | `180`（3min） | 轮次（含定时任务）未结束时每隔此时长向聊天推送进度摘要：改动文件、命令意图、文字消息、读取/检索次数；`0` 关闭 |
 | `task_max_failures` | `3` | 定时任务连续失败多少次后自动停用 |
-| `router.decisions` | 无 | L1 决策 API：`type`（可选，`openrouter` / `opencode`；省略时按 `provider` 同名预设选择，其余节点沿用 `openrouter`）、`provider`（取 `providers.<provider>.api_key`）、`model`（服务原生模型 ID）、`min_confidence`（默认 `0.6`，`action` / `session` 题低于此值续接 focus；无 focus 时显式报错）、`endpoint`（可选覆盖服务默认端点）；声明后不再要求 `small_model` |
+| `router.decisions` | 无 | L1 决策 API：`type`（可选，`openrouter` / `opencode`；省略时按 `provider` 同名预设选择，其余节点沿用 `openrouter`）、`provider`（取 `providers.<provider>.api_key`）、`model`（服务原生模型 ID）、`min_confidence`（默认 `0.6`，`action` / `focus` / `ttl` 题低于此值续接 focus；无 focus 时显式报错）、`endpoint`（可选覆盖服务默认端点）；声明后不再要求 `small_model` |
 | `channels.qq.app_id` / `secret` | 无 | QQ 机器人凭据；已声明 qq 而二者为空（如 `${VAR}` 未设置）时启动报错 |
 | `channels.qq.allowed_users` | `[]` | 用户白名单；白名单外静默丢弃；空表示拒绝所有人，含 `"*"` 表示允许任何用户 |
 

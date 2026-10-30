@@ -1,5 +1,5 @@
 //! Router：L0 确定性锚点 / L1 小模型 / L2 显式报错。
-//! 只依据元数据（候选表、用户文字、reply 片段、附件名）选择 session，不读历史；
+//! 依据 focus 元数据、用户文字、reply 片段与附件名判断是否新建，不读历史；
 //! 低置信度决策续接当前 focus；调用失败与非法决策显式报错。
 
 use std::fs::OpenOptions;
@@ -18,7 +18,7 @@ use crate::provider::{CompletionOptions, ResponseSchema};
 
 /// 日志中输入文字的摘要上限（字符数）
 const LOG_TEXT_LIMIT: usize = 200;
-/// 路由决策只含四个短字段，输出上限足够
+/// 路由决策只含短字段，输出上限足够
 const ROUTE_MAX_TOKENS: u32 = 300;
 
 // ================== 决策模型 ==================
@@ -32,9 +32,20 @@ pub enum Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunningIntent {
-    None,
-    GuideExisting,
+pub enum SessionTtl {
+    #[serde(rename = "3h")]
+    Short,
+    #[serde(rename = "12h")]
+    Normal,
+}
+
+impl SessionTtl {
+    pub fn seconds(self) -> u64 {
+        match self {
+            Self::Short => 3 * 3600,
+            Self::Normal => 12 * 3600,
+        }
+    }
 }
 
 /// L1 结构化决策：小模型原生结构化输出，或 Decisions 答案回填
@@ -42,8 +53,9 @@ pub enum RunningIntent {
 #[serde(deny_unknown_fields)]
 pub struct RouteDecision {
     pub action: Action,
-    pub session_id: Option<String>,
-    pub running_intent: RunningIntent,
+    pub focus: bool,
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub ttl: Option<SessionTtl>,
     pub reason: String,
 }
 
@@ -56,11 +68,11 @@ impl RouteDecision {
                 "type": "object",
                 "properties": {
                     "action": {"type": "string", "enum": ["existing", "new"]},
-                    "session_id": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                    "running_intent": {"type": "string", "enum": ["none", "guide_existing"]},
+                    "focus": {"type": "boolean"},
+                    "ttl": {"anyOf": [{"type": "string", "enum": ["3h", "12h"]}, {"type": "null"}]},
                     "reason": {"type": "string"}
                 },
-                "required": ["action", "session_id", "running_intent", "reason"],
+                "required": ["action", "focus", "ttl", "reason"],
                 "additionalProperties": false
             }),
         }
@@ -73,7 +85,11 @@ pub enum Route {
     /// 续写已有 session（若其正在运行，仅 L0 reply 直达会出现，由 daemon 以 Deliver 入队）
     Existing(String),
     /// 新建 session；`quoted` 为需作为首条上下文带入的被引用消息原文
-    New { quoted: Option<String> },
+    New {
+        quoted: Option<String>,
+        focus: bool,
+        ttl: SessionTtl,
+    },
     /// 向运行中的 session 插话（`Deliver`）
     Guide(String),
 }
@@ -102,17 +118,9 @@ pub enum RouteError {
     #[error("自动路由失败: {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
     Model(String),
     #[error(
-        "自动路由置信度不足且当前没有默认会话: {0}。请用 /switch <id> 设置默认会话后重发，或用 /new <消息> 新建"
+        "自动路由无法续接默认会话: {0}。请用 /switch <id> 设置默认会话后重发，或用 /new <消息> 新建"
     )]
     Uncertain(String),
-    #[error("自动路由选择了不存在的会话 {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
-    UnknownSession(String),
-    #[error(
-        "自动路由选择 existing 却未给出 session_id。请引用回复目标会话的消息，或用 /new <消息> 新建"
-    )]
-    MissingSessionId,
-    #[error("自动路由选择了正在运行的会话 {0}，但并非插话。请等待其完成，或用 /new 新建")]
-    RunningNotGuide(String),
     #[error("自动路由决策自相矛盾: {0}。请引用回复目标会话的消息，或用 /new <消息> 新建")]
     Inconsistent(&'static str),
     #[error("没有匹配 `{0}` 的会话")]
@@ -291,28 +299,22 @@ impl RouteModel for SmallRouteModel {
 // ================== Router ==================
 
 const SYSTEM_PROMPT: &str = "\
-你是个人 agent 的消息路由器。你只判断本条用户消息应交给哪个会话，不回答用户的问题。
+你是个人 agent 的消息路由器，只判断是否新建会话，不回答用户的问题。
 
-输入是一个 JSON：candidates 为候选会话表（id、title 会话标题、running 是否正在生成、focus 是否为该聊天的默认会话），\
-files 为随消息到达的附件（仅文件名与类型），reply_to 为用户引用的消息片段，user_text 为用户消息。你看不到任何会话的历史正文。
+输入 JSON 中 focus 为当前默认会话（可为 null），包含 id、title、running；files 为附件名与类型，reply_to 为引用片段，user_text 为用户消息。你看不到历史正文。
 
-按以下优先级判断：
-1. guide_existing：消息是对某个 running=true 会话的补充、修正、打断或改变方向。此时 action=existing，session_id 为该会话，running_intent=guide_existing。
-2. existing：承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题。通常选 focus 会话；title 明显指向其他会话时选那个会话。
-3. new：用户明确开启与所有候选会话主题完全无关的独立话题或任务。
+规则：
+- 默认 action=existing：承接、追问、改写、继续前文、索取先前结果或文件，以及无法确定是否新话题。始终续接当前 focus，运行状态由程序处理。
+- 用户明确开启与 focus 无关的独立话题或任务时 action=new。
+- 新建时独立判断 focus：预期持续讨论的新话题为 true；oneshot 一次性任务为 false，保留原 focus。
+- 新建时选择 ttl：一次性、短期价值的任务用 3h；正常会话用 12h。TTL 与是否切换 focus 分开判断。
+- action=existing 时 focus=false、ttl=null；action=new 时 ttl 必须为 3h 或 12h。
+- reason 用一句话说明判断依据。";
 
-约束：
-- 除 guide_existing 外，不要选择 running=true 的会话；独立任务应选 new。
-- session_id 仅在 action=existing 时填写候选表中的 id，其余情况为 null。
-- running_intent 仅在 guide_existing 时取该值，其余为 none。
-- 对是否新话题或会话归属有疑问时，选 existing，session_id 指向 focus=true 的会话；该会话 running=true 时选 guide_existing。
-- reason 用一句话说明理由。";
-
-/// 路由输入载荷（小模型提示词与 Decisions `state` 共用）：字段顺序即序列化顺序，
-/// 候选表按 id 排序在前、用户消息置尾以利前缀缓存
+/// 路由输入载荷：只向模型提供当前 focus，用户消息置尾以利前缀缓存。
 #[derive(Serialize)]
 pub(super) struct Prompt<'a> {
-    pub candidates: Vec<&'a Candidate>,
+    focus: Option<&'a Candidate>,
     files: &'a [AttachedFile],
     reply_to: Option<&'a ReplyRef>,
     user_text: &'a str,
@@ -320,10 +322,8 @@ pub(super) struct Prompt<'a> {
 
 impl<'a> Prompt<'a> {
     pub fn new(input: &'a RouteInput) -> Self {
-        let mut candidates: Vec<&Candidate> = input.candidates.iter().collect();
-        candidates.sort_by(|a, b| a.id.cmp(&b.id));
         Self {
-            candidates,
+            focus: input.candidates.iter().find(|c| c.focus),
             files: &input.files,
             reply_to: input.reply_to.as_ref(),
             user_text: &input.text,
@@ -370,6 +370,8 @@ impl Router {
                 None => Routed {
                     route: Route::New {
                         quoted: Some(reply.text.clone()),
+                        focus: true,
+                        ttl: SessionTtl::Normal,
                     },
                     routed_by: "reply",
                     warning: Some(format!(
@@ -384,6 +386,8 @@ impl Router {
             return Ok(Routed::new(
                 Route::New {
                     quoted: input.reply_to.as_ref().map(|r| r.text.clone()),
+                    focus: true,
+                    ttl: SessionTtl::Normal,
                 },
                 "first",
             ));
@@ -395,30 +399,12 @@ impl Router {
                 decision
                     .or_else(|error| match error {
                         DecisionError::Invalid(error) => Err(RouteError::Model(error)),
-                        DecisionError::LowConfidence {
-                            question: "session",
-                            ref choice,
-                            ..
-                        } if find(choice).is_none() => {
-                            Err(RouteError::UnknownSession(choice.clone()))
-                        }
-                        DecisionError::LowConfidence { .. } => {
-                            let focus = input
-                                .candidates
-                                .iter()
-                                .find(|c| c.focus)
-                                .ok_or_else(|| RouteError::Uncertain(error.to_string()))?;
-                            Ok(RouteDecision {
-                                action: Action::Existing,
-                                session_id: Some(focus.id.clone()),
-                                running_intent: if focus.running {
-                                    RunningIntent::GuideExisting
-                                } else {
-                                    RunningIntent::None
-                                },
-                                reason: format!("续接默认会话: {error}"),
-                            })
-                        }
+                        DecisionError::LowConfidence { .. } => Ok(RouteDecision {
+                            action: Action::Existing,
+                            focus: false,
+                            ttl: None,
+                            reason: format!("续接默认会话: {error}"),
+                        }),
                     })
                     .and_then(|d| validate(&d, input).map(|route| (d, route))),
                 usage,
@@ -427,9 +413,10 @@ impl Router {
         };
         match &validated {
             Ok((d, _)) => tracing::info!(
-                "路由决策: action={:?} session_id={} reason={} 小模型 usage={}",
+                "路由决策: action={:?} focus={} ttl={:?} reason={} 小模型 usage={}",
                 d.action,
-                d.session_id.as_deref().unwrap_or("-"),
+                d.focus,
+                d.ttl,
                 d.reason,
                 usage.as_ref().map_or("无".into(), |u| format!(
                     "{}/{}",
@@ -476,27 +463,27 @@ impl Router {
 
 /// L2：校验决策并转为 `Route`，任何不一致都显式报错
 fn validate(d: &RouteDecision, input: &RouteInput) -> Result<Route, RouteError> {
-    let guide = d.running_intent == RunningIntent::GuideExisting;
     match d.action {
-        Action::New => {
-            if guide {
-                return Err(RouteError::Inconsistent("new 不能携带 guide_existing"));
-            }
-            Ok(Route::New { quoted: None })
-        }
+        Action::New => Ok(Route::New {
+            quoted: None,
+            focus: d.focus,
+            ttl: d.ttl.ok_or(RouteError::Inconsistent("new 必须指定 ttl"))?,
+        }),
         Action::Existing => {
-            let id = d.session_id.as_deref().filter(|s| !s.is_empty());
-            let id = id.ok_or(RouteError::MissingSessionId)?;
+            if d.focus || d.ttl.is_some() {
+                return Err(RouteError::Inconsistent(
+                    "existing 的 focus 须为 false、ttl 须为 null",
+                ));
+            }
             let target = input
                 .candidates
                 .iter()
-                .find(|c| c.id == id)
-                .ok_or_else(|| RouteError::UnknownSession(id.to_string()))?;
-            match (target.running, guide) {
-                (true, true) => Ok(Route::Guide(target.id.clone())),
-                (true, false) => Err(RouteError::RunningNotGuide(target.id.clone())),
-                // 目标当前空闲时插话无意义，按普通续写处理
-                (false, _) => Ok(Route::Existing(target.id.clone())),
+                .find(|c| c.focus)
+                .ok_or_else(|| RouteError::Uncertain("当前没有 focus".into()))?;
+            if target.running {
+                Ok(Route::Guide(target.id.clone()))
+            } else {
+                Ok(Route::Existing(target.id.clone()))
             }
         }
     }
@@ -549,11 +536,11 @@ mod tests {
         }
     }
 
-    fn decision(action: Action, sid: Option<&str>, intent: RunningIntent) -> RouteDecision {
+    fn decision(action: Action, focus: bool, ttl: Option<SessionTtl>) -> RouteDecision {
         RouteDecision {
             action,
-            session_id: sid.map(str::to_string),
-            running_intent: intent,
+            focus,
+            ttl,
             reason: "测试".into(),
         }
     }
@@ -626,11 +613,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uncertain_action_or_session_continues_focus_and_records_reason() {
+    async fn uncertain_decision_continues_focus_and_records_reason() {
         for (question, choice) in [
             ("action", "existing"),
             ("action", "new"),
-            ("session", "sess_b"),
+            ("focus", "switch"),
+            ("ttl", "3h"),
         ] {
             let e = env(uncertain(question, choice));
             let mut i = input(candidates());
@@ -643,7 +631,7 @@ mod tests {
             assert_eq!(r.route, Route::Existing("sess_a".into()));
             let log = std::fs::read_to_string(e.dir.path().join("router.jsonl")).unwrap();
             let entry: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
-            assert_eq!(entry["decision"]["session_id"], "sess_a");
+            assert_eq!(entry["decision"]["action"], "existing");
             assert!(
                 entry["decision"]["reason"]
                     .as_str()
@@ -676,15 +664,6 @@ mod tests {
             e.router.route(&i, &e.index).await.unwrap_err(),
             RouteError::Uncertain(_)
         ));
-
-        let e = env(uncertain("session", "sess_missing"));
-        assert_eq!(
-            e.router
-                .route(&input(candidates()), &e.index)
-                .await
-                .unwrap_err(),
-            RouteError::UnknownSession("sess_missing".into())
-        );
 
         let e = env(FakeModel::with(Ok(ModelReply {
             decision: Err(DecisionError::Invalid("缺少必填字段".into())),
@@ -728,7 +707,9 @@ mod tests {
         assert_eq!(
             r.route,
             Route::New {
-                quoted: Some("旧消息".into())
+                quoted: Some("旧消息".into()),
+                focus: true,
+                ttl: SessionTtl::Normal
             }
         );
         assert!(r.warning.unwrap().contains("sess_gone"));
@@ -738,17 +719,20 @@ mod tests {
     async fn zero_sessions_creates_new() {
         let e = env(no_model());
         let r = e.router.route(&input(vec![]), &e.index).await.unwrap();
-        assert_eq!(r.route, Route::New { quoted: None });
+        assert_eq!(
+            r.route,
+            Route::New {
+                quoted: None,
+                focus: true,
+                ttl: SessionTtl::Normal
+            }
+        );
         assert_eq!(r.routed_by, "first");
     }
 
     #[tokio::test]
     async fn unindexed_reply_falls_to_l1_with_reply_text() {
-        let e = env(FakeModel::deciding(decision(
-            Action::Existing,
-            Some("sess_a"),
-            RunningIntent::None,
-        )));
+        let e = env(FakeModel::deciding(decision(Action::Existing, false, None)));
         let mut i = input(candidates());
         i.reply_to = Some(ReplyRef {
             message_id: "unknown".into(),
@@ -760,98 +744,88 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn l1_decisions_map_to_routes() {
-        use Action::{Existing, New};
-        use RunningIntent::GuideExisting;
-        let no_guide = RunningIntent::None;
-        let cases = [
-            (decision(New, None, no_guide), Route::New { quoted: None }),
-            (
-                decision(Existing, Some("sess_a"), no_guide),
-                Route::Existing("sess_a".into()),
-            ),
-            // 目标空闲时 guide 按普通续写处理
-            (
-                decision(Existing, Some("sess_a"), GuideExisting),
-                Route::Existing("sess_a".into()),
-            ),
-            (
-                decision(Existing, Some("sess_r"), GuideExisting),
-                Route::Guide("sess_r".into()),
-            ),
-        ];
-        for (d, want) in cases {
-            let e = env(FakeModel::deciding(d));
-            let r = e
-                .router
-                .route(&input(candidates()), &e.index)
-                .await
-                .unwrap();
+    async fn new_decisions_preserve_independent_focus_and_ttl() {
+        for focus in [false, true] {
+            for ttl in [SessionTtl::Short, SessionTtl::Normal] {
+                let e = env(FakeModel::deciding(decision(Action::New, focus, Some(ttl))));
+                let r = e
+                    .router
+                    .route(&input(candidates()), &e.index)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    r.route,
+                    Route::New {
+                        quoted: None,
+                        focus,
+                        ttl
+                    }
+                );
+                assert_eq!(r.routed_by, "router");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn existing_always_continues_focus_with_running_state_handled_by_router() {
+        for running in [false, true] {
+            let e = env(FakeModel::deciding(decision(Action::Existing, false, None)));
+            let i = input(vec![
+                cand("sess_other", !running, false),
+                cand("sess_focus", running, true),
+            ]);
+            let r = e.router.route(&i, &e.index).await.unwrap();
+            let want = if running {
+                Route::Guide("sess_focus".into())
+            } else {
+                Route::Existing("sess_focus".into())
+            };
             assert_eq!(r.route, want);
-            assert_eq!(r.routed_by, "router");
         }
     }
 
     #[tokio::test]
-    async fn invalid_decisions_are_explicit_errors() {
-        use Action::{Existing, New};
-        use RunningIntent::GuideExisting;
-        let no_guide = RunningIntent::None;
+    async fn invalid_decisions_and_missing_focus_are_explicit_errors() {
         let cases = [
+            (decision(Action::New, false, None), input(candidates())),
+            (decision(Action::Existing, true, None), input(candidates())),
             (
-                decision(Existing, Some("sess_zzz"), no_guide),
+                decision(Action::Existing, false, Some(SessionTtl::Short)),
                 input(candidates()),
-                RouteError::UnknownSession("sess_zzz".into()),
-            ),
-            (
-                decision(Existing, None, no_guide),
-                input(candidates()),
-                RouteError::MissingSessionId,
-            ),
-            (
-                decision(Existing, Some(""), no_guide),
-                input(candidates()),
-                RouteError::MissingSessionId,
-            ),
-            (
-                decision(New, None, GuideExisting),
-                input(candidates()),
-                RouteError::Inconsistent("new 不能携带 guide_existing"),
-            ),
-            // running 且非 guide 不回退到 focus
-            (
-                decision(Existing, Some("sess_r"), no_guide),
-                input(candidates()),
-                RouteError::RunningNotGuide("sess_r".into()),
             ),
         ];
-        for (d, i, want) in cases {
+        for (d, i) in cases {
             let e = env(FakeModel::deciding(d));
-            assert_eq!(e.router.route(&i, &e.index).await.unwrap_err(), want);
+            assert!(matches!(
+                e.router.route(&i, &e.index).await,
+                Err(RouteError::Inconsistent(_))
+            ));
         }
+        let e = env(FakeModel::deciding(decision(Action::Existing, false, None)));
+        assert!(matches!(
+            e.router
+                .route(&input(vec![cand("sess_other", false, false)]), &e.index)
+                .await,
+            Err(RouteError::Uncertain(_))
+        ));
     }
 
     #[tokio::test]
-    async fn prompt_prefix_is_stable_and_logged() {
-        let e = env(FakeModel::deciding(decision(
-            Action::Existing,
-            Some("sess_a"),
-            RunningIntent::None,
-        )));
+    async fn prompt_only_exposes_focus_and_decision_is_logged() {
+        let e = env(FakeModel::deciding(decision(Action::Existing, false, None)));
         e.router
             .route(&input(candidates()), &e.index)
             .await
             .unwrap();
         let user = e.model.prompts.lock().unwrap()[0].clone();
-        // 候选表按 id 排序，且位于用户消息之前
-        let a = user.find("sess_a").unwrap();
-        let b = user.find("sess_b").unwrap();
-        assert!(a < b && b < user.find("user_text").unwrap());
+        assert!(!user.contains("sess_b"));
+        assert!(!user.contains("sess_r"));
+        assert!(user.find("sess_a").unwrap() < user.find("user_text").unwrap());
 
         let log = std::fs::read_to_string(e.dir.path().join("router.jsonl")).unwrap();
         let line: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
         assert_eq!(line["binding"], "qq:c2c:u1");
-        assert_eq!(line["decision"]["session_id"], "sess_a");
+        assert_eq!(line["decision"]["action"], "existing");
         assert_eq!(line["usage"]["prompt_tokens"], 120);
         assert!(line["error"].is_null());
     }
@@ -896,10 +870,25 @@ mod tests {
     }
 
     #[test]
+    fn decision_requires_all_fields_and_rejects_invalid_ttl() {
+        let valid = serde_json::to_value(decision(Action::Existing, false, None)).unwrap();
+        assert!(serde_json::from_value::<RouteDecision>(valid.clone()).is_ok());
+        for field in ["action", "focus", "ttl", "reason"] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<RouteDecision>(missing).is_err());
+        }
+        let mut invalid = valid;
+        invalid["ttl"] = json!("0h");
+        assert!(serde_json::from_value::<RouteDecision>(invalid).is_err());
+    }
+
+    #[test]
     fn schema_matches_decision_fields() {
         let s = RouteDecision::response_schema();
         let props = s.schema["properties"].as_object().unwrap();
-        let ser = serde_json::to_value(decision(Action::New, None, RunningIntent::None)).unwrap();
+        let ser =
+            serde_json::to_value(decision(Action::New, true, Some(SessionTtl::Normal))).unwrap();
         let mut fields: Vec<_> = ser.as_object().unwrap().keys().collect();
         let mut schema_fields: Vec<_> = props.keys().collect();
         fields.sort();

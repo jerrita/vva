@@ -11,7 +11,7 @@ use crate::config::{ModelConfig, ProviderConfig, ProviderType};
 use crate::space::channel::{self, FileSource, InboundFile};
 use crate::space::command::Command;
 use crate::space::curator::CuratorResult;
-use crate::space::router::{ModelReply, RouteInput, RouteModel};
+use crate::space::router::{Action, ModelReply, RouteDecision, RouteInput, RouteModel, SessionTtl};
 use crate::space::scheduler::Task;
 use crate::storage::jsonl::JsonlSessionStore;
 
@@ -212,7 +212,7 @@ impl Fixture {
     async fn topic(&self, binding: &str) -> Arc<ManagedSession> {
         let handle = self
             .runtime
-            .create(binding, SessionKind::Topic, "test")
+            .create(binding, SessionKind::Topic, "test", None)
             .await
             .unwrap();
         self.manager
@@ -253,10 +253,13 @@ async fn first_message_creates_session_replies_and_reply_anchor_skips_router() {
     let f = fixture().await;
     f.runtime.handle(inbound("m1", "hello")).await;
     let sent = f.channel.wait(1).await;
-    assert_eq!(sent[0].text, "pong");
     assert_eq!(sent[0].reply_to.as_deref(), Some("m1"));
 
     let ids = f.session_ids().await;
+    assert_eq!(
+        sent[0].text,
+        format!("> decision: new, focus, {}\n\npong", ids[0])
+    );
     assert_eq!(ids.len(), 1);
     assert_eq!(f.focus().await.as_deref(), Some(ids[0].as_str()));
     let header = f
@@ -270,6 +273,7 @@ async fn first_message_creates_session_replies_and_reply_anchor_skips_router() {
         .clone();
     assert_eq!(header.origin.unwrap().chat_id, "c2c:u1");
     assert_eq!(header.routed_by.as_deref(), Some("first"));
+    assert_eq!(header.ttl_secs, Some(43_200));
 
     // 回复 bot 出站消息：L0 直达同一 session（NoModel 保证未调用小模型）
     let mut follow = inbound("m2", "继续");
@@ -282,6 +286,109 @@ async fn first_message_creates_session_replies_and_reply_anchor_skips_router() {
     assert_eq!(sent[1].text, "pong");
     assert_eq!(f.session_ids().await, ids);
     let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+/// 顺序返回新建与续接决策，验证路由结果到持久化、回复与后续 focus 的完整路径。
+struct SequenceModel(StdMutex<std::collections::VecDeque<RouteDecision>>);
+
+#[async_trait::async_trait]
+impl RouteModel for SequenceModel {
+    async fn decide(&self, _: &RouteInput) -> Result<ModelReply, String> {
+        Ok(ModelReply {
+            decision: Ok(self.0.lock().unwrap().pop_front().expect("意外的路由调用")),
+            usage: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn new_session_applies_focus_ttl_and_response_intro_then_follows_focus() {
+    for focus in [false, true] {
+        let mut f = fixture().await;
+        let old = f.topic(BINDING).await;
+        f.runtime
+            .state
+            .lock()
+            .await
+            .bindings
+            .set_focus(BINDING, Some(old.id.clone()))
+            .unwrap();
+        let ttl = if focus {
+            SessionTtl::Normal
+        } else {
+            SessionTtl::Short
+        };
+        let model = SequenceModel(StdMutex::new(
+            [
+                RouteDecision {
+                    action: Action::New,
+                    focus,
+                    ttl: Some(ttl),
+                    reason: "独立任务".into(),
+                },
+                RouteDecision {
+                    action: Action::Existing,
+                    focus: false,
+                    ttl: None,
+                    reason: "继续".into(),
+                },
+            ]
+            .into(),
+        ));
+        Arc::get_mut(&mut f.runtime).unwrap().router =
+            Router::new(Box::new(model), f.dir.join("router.jsonl"));
+
+        f.runtime.handle(inbound("m1", "计算平方")).await;
+        let sent = f.channel.wait(1).await;
+        let ids = f.session_ids().await;
+        let new_id = ids.iter().find(|id| **id != old.id).unwrap();
+        assert_eq!(
+            sent[0].text,
+            format!(
+                "> decision: new{}, {new_id}\n\npong",
+                if focus { ", focus" } else { "" }
+            )
+        );
+        let expected_focus = if focus { new_id } else { &old.id };
+        assert_eq!(f.focus().await.as_deref(), Some(expected_focus.as_str()));
+        let stored = f
+            .manager
+            .store()
+            .load_session(new_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.header.ttl_secs, Some(ttl.seconds()));
+        let indexed = f
+            .runtime
+            .state
+            .lock()
+            .await
+            .index
+            .get("fake:out1")
+            .map(str::to_string);
+        assert_eq!(indexed.as_deref(), Some(new_id.as_str()));
+
+        f.runtime.handle(inbound("m2", "补充细节")).await;
+        let sent = f.channel.wait(2).await;
+        assert_eq!(sent[1].text, "pong");
+        let active = f
+            .manager
+            .live(expected_focus)
+            .await
+            .unwrap()
+            .snapshot()
+            .session
+            .clone();
+        assert!(
+            active
+                .turns
+                .iter()
+                .any(|turn| turn.text_content().contains("补充细节"))
+        );
+        assert_eq!(f.session_ids().await, ids);
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
 }
 
 #[tokio::test]
@@ -529,6 +636,7 @@ async fn scheduled_task_runs_once_in_original_scope_and_notifies_only_homes() {
         .session
         .clone();
     assert_eq!(session.header.kind, SessionKind::Topic);
+    assert_eq!(session.header.ttl_secs, Some(43_200));
     assert_eq!(session.header.origin.as_ref().unwrap().chat_id, "c2c:u1");
     assert!(
         session
@@ -790,7 +898,8 @@ async fn first_group_message_ignores_personal_candidates_and_rejects_foreign_rep
     msg.binding = "fake:group:room".into();
     f.runtime.handle(msg.clone()).await;
     let sent = f.channel.wait(1).await;
-    assert_eq!(sent[0].text, "pong");
+    assert!(sent[0].text.starts_with("> decision: new, focus, sess_"));
+    assert!(sent[0].text.ends_with("\n\npong"));
     assert_eq!(sent[0].binding, msg.binding);
     let candidates = f.runtime.candidates(&msg.binding).await.unwrap();
     assert_eq!(candidates.len(), 1);

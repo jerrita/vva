@@ -146,6 +146,7 @@ impl Runtime {
         binding: String,
         reply_to: String,
         prompt: String,
+        intro: Option<String>,
     ) {
         tracing::info!(
             "Deliver 开始: session={} binding={binding} prompt {} 字符",
@@ -178,6 +179,10 @@ impl Runtime {
                 tracing::warn!("会话 {} 本轮执行失败: {error}", handle.id);
                 format!("本轮执行失败: {error}")
             }
+        };
+        let text = match intro {
+            Some(intro) => format!("{intro}\n\n{text}"),
+            None => text,
         };
         self.say_indexed(&binding, Some(&reply_to), &text, &handle.id)
             .await;
