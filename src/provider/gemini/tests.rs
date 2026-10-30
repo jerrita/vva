@@ -841,6 +841,55 @@ fn streaming_preserves_signed_part_boundaries_and_empty_signature_parts() {
 }
 
 #[test]
+fn native_replay_omits_unsigned_empty_text_parts() {
+    let native_parts = serde_json::json!([
+        {"functionCall": {"name": "lookup_record", "args": {"key": "alpha"}},
+         "thoughtSignature": "Y2FsbC1zaWduYXR1cmU="},
+        {"text": ""},
+        {"text": "", "thought": true},
+        {"text": " "},
+        {"text": "", "thoughtSignature": "ZW1wdHktc2lnbmF0dXJl"}
+    ]);
+    let response = GeminiAccumulator::parse_response(
+        &serde_json::json!({
+            "candidates": [{"content": {"role": "model", "parts": native_parts}}]
+        }),
+        &[],
+    )
+    .unwrap();
+    let call_id = match &response.messages[0].parts[1] {
+        ContentPart::ToolCall(call) => call.id.clone(),
+        part => panic!("Expected tool call, got {part:?}"),
+    };
+    let mut turn = Turn::assistant_turn(response.messages);
+    turn.meta = response.meta;
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("Look up a record")));
+    session.append_turn(turn);
+    session.append_turn(Turn::new(
+        Role::Tool,
+        vec![Message::tool_result(ToolResult::success(call_id, "done"))],
+    ));
+
+    let body = GeminiProvider::new("test")
+        .build_request_body(&session, &[], &CompletionOptions::default())
+        .unwrap();
+    assert_eq!(
+        body["contents"][1]["parts"],
+        serde_json::json!([native_parts[0], native_parts[3], native_parts[4]])
+    );
+    assert_eq!(
+        body["contents"][2]["parts"][0]["functionResponse"]["name"],
+        "lookup_record"
+    );
+    assert_eq!(
+        serde_json::to_value(&session.turns[1].meta.gemini.as_ref().unwrap().content_parts)
+            .unwrap(),
+        native_parts
+    );
+}
+
+#[test]
 fn native_signatures_are_scoped_and_legacy_metadata_still_loads() {
     let legacy: GeminiTurnMeta = serde_json::from_value(serde_json::json!({
         "finish_reason": "STOP", "safety_ratings": []
