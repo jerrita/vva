@@ -25,6 +25,12 @@ impl GeminiProvider {
                 let parts = meta
                     .content_parts
                     .iter()
+                    // 空文本分片保留在存储中；回传时跳过无签名、无函数调用的空块。
+                    .filter(|part| {
+                        part.text.as_deref() != Some("")
+                            || part.thought_signature.is_some()
+                            || part.function_call.is_some()
+                    })
                     .map(serde_json::to_value)
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| {
