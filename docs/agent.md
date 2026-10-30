@@ -135,7 +135,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 |---|---|
 | `/new <消息>` | 强制新建 topic，必须带文字 |
 | `/switch <前缀>` | 设置 focus（歧义列候选并拒绝），后续消息仍经 router |
-| `/sessions` | 列出会话 |
+| `/sessions` | 列出会话、空闲 TTL 与剩余时间；剩余时间按最后活动时间（尚无活动时取创建时间）计算，到期显示 0s，实际清理遵循 [TTL 清理规则](#41-ttl-清理) |
 | `/stop` | 中止 focus |
 | `/status`（`/stat`） | 会话、模型、上下文占比、cache 命中率、待附件数、当前聊天是否为 home |
 | `/rename <标题>` | 覆盖标题并取消尚未回写的自动标题 |
@@ -147,6 +147,8 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | `/sethome` `/unsethome` | 加入 / 移出 home |
 
 agent 模式模型决定新会话的模型（curator 未配置独立模型时每次整理取当前值），落盘于 `~/.vva/space/model.json` 并优先于配置文件。
+
+`/clear`、`/delete` 成功删除 focus 会话后，所有指向它的 binding 自动改指当前聊天范围内最近活跃的会话（尚无活动时取创建时间）；范围内无剩余会话则清空 focus。删除其他会话保留现有 focus。
 
 群内开放 `/new`、`/switch`、`/sessions`、`/stop`、`/status`、`/rename`、`/clear`、`/sethome`、`/unsethome`、`/help`；其余个人管理命令提示在私聊使用，帮助只列当前可用命令。
 
