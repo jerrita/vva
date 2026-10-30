@@ -12,7 +12,7 @@ use crate::space::channel::Inbound;
 use crate::space::channel::files::{sanitize_filename, unique_dest};
 use crate::space::command;
 use crate::space::markdown;
-use crate::space::router::{Candidate, ReplyRef, Route, RouteInput, Routed};
+use crate::space::router::{Candidate, ReplyRef, Route, RouteInput, Routed, SessionTtl};
 
 impl Runtime {
     /// 处理一条入站消息；失败原样回复用户
@@ -116,6 +116,8 @@ impl Runtime {
             Routed {
                 route: Route::New {
                     quoted: msg.reply_to.as_ref().map(|r| r.text.clone()),
+                    focus: true,
+                    ttl: SessionTtl::Normal,
                 },
                 routed_by: "new",
                 warning: None,
@@ -140,21 +142,36 @@ impl Runtime {
                     .await;
                 self.manager.live_or_load(id).await?
             }
-            Route::New { .. } => {
-                self.create(&msg.binding, SessionKind::Topic, routed.routed_by)
-                    .await?
+            Route::New { ttl, .. } => {
+                self.create(
+                    &msg.binding,
+                    SessionKind::Topic,
+                    routed.routed_by,
+                    Some(ttl.seconds()),
+                )
+                .await?
             }
         };
         let quoted = match &routed.route {
-            Route::New { quoted } => quoted.as_deref(),
+            Route::New { quoted, .. } => quoted.as_deref(),
+            _ => None,
+        };
+        let intro = match &routed.route {
+            Route::New { focus, .. } => Some(format!(
+                "> decision: new{}, {}",
+                if *focus { ", focus" } else { "" },
+                handle.id
+            )),
             _ => None,
         };
         let prompt = compose_prompt(&text, &files, quoted);
         {
             let mut state = self.state.lock().await;
-            state
-                .bindings
-                .set_focus(&msg.binding, Some(handle.id.clone()))?;
+            if !matches!(routed.route, Route::New { focus: false, .. }) {
+                state
+                    .bindings
+                    .set_focus(&msg.binding, Some(handle.id.clone()))?;
+            }
             state.index.record(&self.key(&msg.message_id), &handle.id)?;
         }
         tokio::spawn(self.clone().run_turn(
@@ -162,6 +179,7 @@ impl Runtime {
             msg.binding.clone(),
             msg.message_id.clone(),
             prompt,
+            intro,
         ));
         Ok(())
     }
@@ -260,6 +278,7 @@ impl Runtime {
         binding: &str,
         kind: SessionKind,
         routed_by: &str,
+        ttl_secs: Option<u64>,
     ) -> Result<Arc<ManagedSession>, String> {
         let origin = self.origin(binding)?;
         let mode = self.mode_model();
@@ -275,6 +294,7 @@ impl Runtime {
                     header.kind = kind;
                     header.origin = Some(origin);
                     header.routed_by = Some(routed_by.to_string());
+                    header.ttl_secs = ttl_secs;
                 },
             )
             .await?;

@@ -109,7 +109,7 @@ impl Lifecycle {
                 continue;
             }
             candidates += 1;
-            let ttl = self.config.ttl_secs;
+            let ttl = summary.ttl_secs.unwrap_or(self.config.ttl_secs);
             let idle = (now - summary.last_activity.unwrap_or(summary.created_at))
                 .num_seconds()
                 .max(0) as u64;
@@ -314,6 +314,34 @@ mod tests {
             vec![session.header.id.clone()]
         );
         assert!(!f.exists(&session.header.id).await);
+        assert_eq!(f.runs(), 0);
+        let _ = std::fs::remove_dir_all(&f.dir);
+    }
+
+    #[tokio::test]
+    async fn persisted_session_ttl_overrides_global_config_at_expiry_boundary() {
+        let f = fixture(Ok("无需更新".into()), AppConfig::default());
+        for hours in [3, 12] {
+            let mut session = f.seed(SessionKind::Topic, 0).await;
+            session.header.curation_requested = false;
+            session.header.ttl_secs = Some(hours * 3600);
+            f.manager.store().save_header(&session).await.unwrap();
+            let last_activity = session.header.last_activity.unwrap();
+            let ttl = chrono::Duration::hours(hours as i64);
+            assert!(
+                f.lifecycle
+                    .sweep_at(last_activity + ttl - chrono::Duration::seconds(1))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(f.exists(&session.header.id).await);
+            assert_eq!(
+                f.lifecycle.sweep_at(last_activity + ttl).await.unwrap(),
+                vec![session.header.id.clone()]
+            );
+            assert!(!f.exists(&session.header.id).await);
+        }
         assert_eq!(f.runs(), 0);
         let _ = std::fs::remove_dir_all(&f.dir);
     }

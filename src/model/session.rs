@@ -125,6 +125,7 @@ impl Session {
                 continued_from: None,
                 superseded_by: None,
                 last_activity: None,
+                ttl_secs: None,
                 curation_requested: false,
             },
             updated_at: now,
@@ -237,6 +238,9 @@ pub struct SessionHeader {
     /// 最近一次用户活动时刻，TTL 清理依据（重启后据此恢复）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
+    /// 会话空闲 TTL（秒）；未指定时使用 agent space 配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
     /// 当前会话请求在清理前沉淀；缺省不整理
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub curation_requested: bool,
@@ -332,6 +336,8 @@ pub struct SessionSummary {
     pub superseded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub curation_requested: bool,
 }
@@ -359,6 +365,7 @@ impl SessionSummary {
             origin: header.origin,
             superseded_by: header.superseded_by,
             last_activity: header.last_activity,
+            ttl_secs: header.ttl_secs,
             curation_requested: header.curation_requested,
         }
     }
@@ -378,6 +385,7 @@ mod tests {
         assert!(header.origin.is_none());
         assert!(header.routed_by.is_none() && header.superseded_by.is_none());
         assert!(header.last_activity.is_none());
+        assert!(header.ttl_secs.is_none());
         assert!(!header.curation_requested);
         // 缺省字段不被序列化
         let out = serde_json::to_string(&JsonlRecord::Header(header)).unwrap();
@@ -387,6 +395,7 @@ mod tests {
             "routed_by",
             "superseded_by",
             "last_activity",
+            "ttl_secs",
             "curation_requested",
         ] {
             assert!(!out.contains(key), "{key} 不应被序列化");

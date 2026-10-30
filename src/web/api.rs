@@ -1233,6 +1233,7 @@ mod tests {
             origin: None,
             superseded_by: None,
             last_activity: None,
+            ttl_secs: None,
             curation_requested: false,
         };
         let running = SessionSummary {

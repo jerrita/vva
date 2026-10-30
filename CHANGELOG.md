@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.0] - 2026-10-30
+
+### 改进
+
+- Agent Space 默认续接当前 focus；路由模型只判断是否新建，并独立选择是否切换 focus 与 3h／12h 空闲 TTL。
+- 新建会话的响应首行以 Markdown 引用显示 decision、focus 切换状态与 session ID；会话 TTL 持久化，rollover 时继承。
+- 定时任务新建会话的空闲 TTL 调整为 12h。
+
+### 修复
+
+- Patch 新建文件与移动文件时自动创建缺失的父目录。
+
 ## [1.10.4] - 2026-10-30
 
 ### 修复

@@ -8,7 +8,7 @@
 2. **session 管理透明**：每次对话都是普通 vva JSONL session，TUI / Web 可见、可接管，路由决策可追溯；
 3. **自动知识沉淀**：curator 将对话整理为可审阅、有版本的记忆与 skill。
 
-成本控制的关键是**小模型 router**：仅凭元数据选择 session，不读历史。
+成本控制的关键是**小模型 router**：仅凭当前 focus 的元数据判断是否新建，不读历史。
 
 ```
 IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
@@ -45,32 +45,32 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | 层级 | 触发 | 成本 |
 |---|---|---|
 | L0 | reply 命中 `message_index`；`/switch`；零 session 时直接创建 | 0 token |
-| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions / OpenCode System One API（`decisions.rs`：`action` / `session` choice 题 + `guide` noul 题，回填为同一 `RouteDecision`） |
+| L1 | 其余 | 一次小模型调用（`settings.small_model`），或 `settings.agent.router.decisions` 声明的 OpenRouter Decisions / OpenCode System One API（`decisions.rs`：`action` / `focus` / `ttl` choice 题，回填为同一 `RouteDecision`） |
 | L2 | 小模型失败 / 非法输出 | 显式报错，附引用回复或 `/new <消息>` 指引 |
 
 ### 3.2 L1 输入输出
 
-候选表只含 `id`、`title`（小模型生成的会话标题，首轮完成前为占位标题）、`running`、`focus`，按 id 排序（前缀稳定）；另含用户文字、被 reply 消息片段（`reply_to_text`）、待附件文件名与类型。不含历史正文。
+模型输入只含当前 focus 的 `id`、`title`（首轮完成前为占位标题）、`running`、`focus`；无 focus 时为 null。另含用户文字、被 reply 消息片段与待附件文件名、类型，不含其他会话或历史正文。
 
-输出强类型 `RouteDecision`：`action: existing | new`、`session_id`、`running_intent: none | guide_existing`、`reason`，使用供应商原生结构化输出。
+输出强类型 `RouteDecision`：`action: existing | new`、`focus: bool`、`ttl: 3h | 12h | null`、`reason`，使用供应商原生结构化输出。
 
-规则优先级：`guide_existing`（对运行中 session 补充 / 修正）→ existing（承接、追问、无法判断）→ new（明确无关的独立话题或任务）。
-
-- 难以判断时续接当前 focus；Decisions 的 `action` 或 `session` 置信度低于 `min_confidence` 时由 Router 执行同一规则，focus 正在运行则以 `guide_existing` 投递；无 focus 时提示 `/switch` 设置后重发，或 `/new <消息>` 新建；
-- 调用失败、缺失字段、非法取值保持显式报错；明确选择 running session 却非 `guide_existing` 时拒绝；
+- 默认 `existing`，续接当前 focus；其运行中时由 Router 生成 guide 路由，空闲时开始新轮次。此时决策 `focus=false`、`ttl=null`；
+- 明确与 focus 无关的独立话题或任务选择 `new`。新建时独立判断是否切换 focus 与空闲 TTL：预期持续讨论的话题切换 focus，oneshot 一次性任务保留原 focus；一次性、短期价值任务选择 3h，正常会话选择 12h；
+- Decisions 的 `action` / `focus` / `ttl` 置信度低于 `min_confidence` 时续接当前 focus；无 focus 时提示 `/switch` 设置后重发，或 `/new <消息>` 新建；
+- 调用失败、缺失字段、非法取值保持显式报错；
 - 每次决策追加一行 `router.jsonl`（输入摘要、决策、reason、小模型 usage），session header 记录 `routed_by`。
 
 ### 3.3 路由结果
 
-- **new**：新建 `kind=topic` session（跟随主 agent 模型），进入候选并设为当前 focus，支持后续追问，按常规 TTL 清理；
-- **existing / guide_existing**：经 Steer 投递，运行中在下次模型调用前注入（完整工具批次结束后），最后一次模型响应期间到达也继续在本轮处理；空闲则触发新轮次。reply 直达遵循相同规则；session 被 stop / 删除时清空程序化投递队列，失败或中止向投递者返回错误；
+- **new**：新建 `kind=topic` session（跟随主 agent 模型），按决策设置 TTL，并选择切换或保留 focus。响应首行为 `> decision: new, focus, sess_…`，保留原 focus 时省略 `focus`。零会话、`/new` 与引用目标已清理时直接创建并切换 focus，TTL 为 12h；
+- **existing / guide**：经 Steer 投递，运行中在下次模型调用前注入（完整工具批次结束后），最后一次模型响应期间到达也继续在本轮处理；空闲则触发新轮次。reply 直达遵循相同规则；session 被 stop / 删除时清空程序化投递队列，失败或中止向投递者返回错误；
 - **reply 目标已清理**：`message_index` 仅保存 `消息 id → session id`（键带 channel 前缀 `qq:<id>`）。目标不存在时 warning 用户，新建 session，以入站自带的 `reply_to_text` 作为首条上下文并处理当前消息；命中范围外会话时显式拒绝续接，提示发送新消息或 `/new <消息>`（home 聊天引用其他来源会话的通知时同样适用）。
 
 ## 4. Session 生命周期
 
 ### 4.1 TTL 清理
 
-空闲超过 TTL → 按[沉淀标记](#43-curator知识沉淀)决定是否整理 → 删除。沉淀失败则保留 session 并告警，按指数退避重试；撤销标记后下次扫描直接清理，跳过沉淀失败退避。运行中或有排队消息的 session 不清理；候选表按 LRU 取前 N 个，超出者走同一清理流程；重启后状态从 header 恢复。
+会话 TTL 持久化于 header 的 `ttl_secs`，缺省使用 `settings.agent.ttl_secs`；rollover 接替会话继承该值。空闲超过 TTL → 按[沉淀标记](#43-curator知识沉淀)决定是否整理 → 删除。沉淀失败则保留 session 并告警，按指数退避重试；撤销标记后下次扫描直接清理，跳过沉淀失败退避。运行中或有排队消息的 session 不清理；候选表按 LRU 取前 N 个，超出者走同一清理流程；重启后状态从 header 恢复。
 
 ### 4.2 rollover
 
@@ -166,7 +166,7 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
   ] }
   ```
 - **触发**：`cron` 为 5 字段（本地时区，`*`、数字、列表、范围、步长；日与周都受限取并集；周日 0 或 7）；`at` 为一次性本地时刻（`YYYY-MM-DDTHH:MM`），执行后自动停用，已过时刻拒绝创建；`every` 为 `30m / 2h / 1d`（分钟精度），**从上次完成起算**，天然不重叠。cron 到点时同一任务仍在执行则跳过本次。
-- **执行目标**：`session` 指定时在该会话内执行（保留上下文；会话被 TTL 清理后任务永久失败）；否则在 `bindings[0]` 新建普通 topic 会话执行（无历史，prompt 须自足），进入路由候选并支持后续追问，后台创建不切换 focus；周期任务应走后者。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道。
+- **执行目标**：`session` 指定时在该会话内执行（保留上下文；会话被 TTL 清理后任务永久失败）；否则在 `bindings[0]` 新建普通 topic 会话执行（无历史，prompt 须自足），进入路由候选并支持后续追问，后台创建不切换 focus，TTL 为 12h；指定已有会话时沿用其 TTL。周期任务应走后者。当前 channel 实例唯一（QQ），`bindings` 须同属该渠道。
 - **通知**：一次触发只执行一次，最终回复与执行进度发往全部 home bindings，并登记 `message_index`；引用按当前聊天范围校验（已清理则按 §3.3 处理）。`bindings` 仅作执行来源配置，不决定通知目标。
 - **静默**：触发 reminder 告知模型「无需通知用户时只回复 `[SILENT]`」，Runtime 对精确匹配的回复不发消息（历史照常保留）。
 - **失败**：单次失败通知 home 聊天但任务继续；连续失败达 `task_max_failures` 自动停用；永久性错误（目标会话不存在、binding 非法）与一次性任务失败立即停用，并提示 `/schedule resume`；成功清零计数。单次执行超过 `task_timeout_secs` 中止并计为失败。
@@ -184,7 +184,7 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
 ## 10. 验收要点
 
 - **入站**：白名单外丢弃；各 chat 类型 binding 隔离；断线 resume 不重复不丢；无文字文件只缓冲；多附件保序；超长回复分段并标注。
-- **路由**：reply 命中直达且零模型调用；reply 目标已清理 → warning + 新 session 带引用；`/switch` 歧义拒绝；零 session 直接创建；候选表只含四字段；非法决策显式报错；running 且非 guide 拒绝；每次决策落 `router.jsonl`。
+- **路由**：reply 命中直达且零模型调用；reply 目标已清理 → warning + 新 session 带引用；`/switch` 歧义拒绝；零 session 直接创建；续接始终跟随 focus；新建可独立选择 focus 与 TTL；响应首行提示决策与 session id；非法决策显式报错；每次决策落 `router.jsonl`。
 - **guide**：经 Steer 在安全边界注入；并行工具结果完整配对；末次响应期间的插话继续在本轮处理；空闲时直接新起轮次；stop 清空队列。
 - **生命周期**：TTL 到期按标记沉淀后删除；沉淀失败保留；运行中不清理；重启恢复。
 - **rollover**：达到预留线回合结束触发；旧 session 内容仅追加；新 session `continued_from` 正确且 `parent` 为空；binding 切换；旧 session 被 router 排除；失败不改变 session；压缩调用不触发工具；第二轮起重新命中前缀。

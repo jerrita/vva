@@ -1,4 +1,4 @@
-//! OpenRouter Decisions / OpenCode System One 路由后端：把候选表映射为 choice / noul 题目，
+//! OpenRouter Decisions / OpenCode System One 路由后端：判断是否新建、切换 focus 与 TTL，
 //! 答案回填为 `RouteDecision`，其后的校验与日志与小模型后端共用。
 
 use async_trait::async_trait;
@@ -8,17 +8,12 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::router::{
-    Action, DecisionError, ModelReply, Prompt, RouteDecision, RouteInput, RouteModel, RunningIntent,
+    Action, DecisionError, ModelReply, Prompt, RouteDecision, RouteInput, RouteModel, SessionTtl,
 };
 use crate::config::DecisionsRouterConfig;
 use crate::model::TokenUsage;
 use crate::provider::common::header_value;
 use crate::provider::http::post_json;
-
-/// 空标题候选在选项说明中的占位
-const UNTITLED: &str = "(无标题)";
-/// `guide` noul 答案不低于该值视为插话
-const GUIDE_THRESHOLD: f64 = 0.5;
 
 pub struct DecisionsRouteModel {
     config: DecisionsRouterConfig,
@@ -47,44 +42,34 @@ impl RouteModel for DecisionsRouteModel {
     }
 }
 
-/// 请求体：`state` 与小模型提示词同构（候选表按 id 排序，用户消息置尾）
+/// 请求体：只提供当前 focus，所有决策均使用 choice 题。
 fn build_request(model: &str, input: &RouteInput) -> Value {
-    let state = Prompt::new(input);
-    let sessions: serde_json::Map<String, Value> = state
-        .candidates
-        .iter()
-        .map(|c| {
-            let title = if c.title.is_empty() {
-                UNTITLED
-            } else {
-                &c.title
-            };
-            (c.id.clone(), json!(title))
-        })
-        .collect();
     json!({
         "model": model,
-        "state": state,
+        "state": Prompt::new(input),
         "questions": {
             "action": {
                 "type": "choice",
-                "instructions": "判断 user_text 应如何路由。不要回答用户的问题。有疑问时选 existing，续接 focus=true 的会话。",
+                "instructions": "判断 user_text 是否需要新建会话。不要回答用户的问题。默认 existing，始终续接当前 focus，运行状态由程序处理。",
                 "criteria": {
                     "existing": "承接、追问、改写、继续前文、索取先前的结果或文件，或无法判断是否新话题",
-                    "new": "明确开启与所有候选会话主题完全无关的独立话题或任务"
+                    "new": "明确开启与当前 focus 无关的独立话题或任务"
                 }
             },
-            "session": {
+            "focus": {
                 "type": "choice",
-                "instructions": "若承接已有会话，user_text 属于哪个会话（值为会话标题）。难以判断时选 focus=true 的会话；title 明显指向其他会话时选那个。",
-                "criteria": sessions
-            },
-            "guide": {
-                "type": "noul",
-                "instructions": "user_text 是否是对某个 running=true 会话的补充、修正、打断或改变方向",
+                "instructions": "仅在 action=new 时判断是否把默认续接目标切换到新会话。",
                 "criteria": {
-                    "true": "是对正在生成的会话的补充、修正、打断或改变方向",
-                    "false": "不是"
+                    "switch": "预期后续持续讨论的新话题，切换 focus 到新会话",
+                    "keep": "oneshot 一次性任务，保留原 focus"
+                }
+            },
+            "ttl": {
+                "type": "choice",
+                "instructions": "仅在 action=new 时选择新会话的空闲 TTL，与是否切换 focus 分开判断。",
+                "criteria": {
+                    "3h": "一次性、短期价值的任务，空闲 3 小时后清理",
+                    "12h": "正常会话，空闲 12 小时后清理"
                 }
             }
         }
@@ -103,17 +88,12 @@ struct ChoiceAnswer {
     confidence: Option<f64>,
 }
 
-#[derive(Deserialize)]
-struct NoulAnswer {
-    noul: f64,
-}
-
-/// `session` / `guide` 仅在 `action=existing` 时参与，故延迟解析
+/// `focus` / `ttl` 仅在 `action=new` 时参与，故延迟解析。
 #[derive(Deserialize)]
 struct Answers {
     action: Value,
-    session: Value,
-    guide: Value,
+    focus: Value,
+    ttl: Value,
 }
 
 #[derive(Deserialize)]
@@ -182,23 +162,29 @@ fn decide(answers: Answers, min_confidence: f64) -> Result<RouteDecision, Decisi
         other => return Err(format!("Decisions 返回未知 action: {other}").into()),
     };
     require_confidence("action", &choice, confidence, min_confidence)?;
-    let (session_id, running_intent) = if action == Action::Existing {
-        let (session, confidence) = choice_answer("session", answers.session)?;
-        require_confidence("session", &session, confidence, min_confidence)?;
-        let guide: NoulAnswer = answer("guide", answers.guide)?;
-        let intent = if guide.noul >= GUIDE_THRESHOLD {
-            RunningIntent::GuideExisting
-        } else {
-            RunningIntent::None
+    let (focus, ttl) = if action == Action::New {
+        let (focus, confidence) = choice_answer("focus", answers.focus)?;
+        let focus_value = match focus.as_str() {
+            "switch" => true,
+            "keep" => false,
+            other => return Err(format!("Decisions 返回未知 focus: {other}").into()),
         };
-        (Some(session), intent)
+        require_confidence("focus", &focus, confidence, min_confidence)?;
+        let (ttl, confidence) = choice_answer("ttl", answers.ttl)?;
+        let ttl_value = match ttl.as_str() {
+            "3h" => SessionTtl::Short,
+            "12h" => SessionTtl::Normal,
+            other => return Err(format!("Decisions 返回未知 ttl: {other}").into()),
+        };
+        require_confidence("ttl", &ttl, confidence, min_confidence)?;
+        (focus_value, Some(ttl_value))
     } else {
-        (None, RunningIntent::None)
+        (false, None)
     };
     Ok(RouteDecision {
         action,
-        session_id,
-        running_intent,
+        focus,
+        ttl,
         reason: format!("decisions: action={choice} ({confidence:.2})"),
     })
 }
@@ -231,15 +217,16 @@ mod tests {
         }
     }
 
-    fn response(action: &str, conf: f64, session: &str, guide: f64) -> Value {
+    fn response(action: &str, conf: f64, focus: &str, ttl: &str) -> Value {
         json!({
             "model": "typesafe/jev-1.13-20260917",
             "answers": {
                 "action": {"type": "choice", "choice": action, "confidence": conf,
                            "probabilities": {"existing": 1, "new": 0}},
-                "session": {"type": "choice", "choice": session, "confidence": 1,
-                            "probabilities": {"sess_a": 1, "sess_b": 0}},
-                "guide": {"type": "noul", "noul": guide}
+                "focus": {"type": "choice", "choice": focus, "confidence": 1,
+                          "probabilities": {"keep": 1, "switch": 0}},
+                "ttl": {"type": "choice", "choice": ttl, "confidence": 1,
+                        "probabilities": {"3h": 1, "12h": 0}}
             },
             "usage": {"input_tokens": 522, "output_tokens": 70, "cost": 0.000021924},
             "id": "gen-dec-1", "provider": "TypeSafe"
@@ -251,130 +238,98 @@ mod tests {
     }
 
     #[test]
-    fn request_maps_candidates_to_choices() {
+    fn request_only_exposes_focus_and_asks_creation_options() {
         let body = build_request("typesafe/jev-1.13", &input());
-        let sessions = body["questions"]["session"]["criteria"]
-            .as_object()
-            .unwrap();
-        assert_eq!(sessions["sess_a"], "整理笔记");
-        assert_eq!(sessions["sess_b"], UNTITLED);
-        // 候选按 id 排序，用户消息在 state 末尾
-        assert_eq!(body["state"]["candidates"][0]["id"], "sess_a");
+        let questions = body["questions"].as_object().unwrap();
+        assert_eq!(questions.len(), 3);
+        assert!(questions.contains_key("action"));
+        assert!(questions.contains_key("focus"));
+        assert!(questions.contains_key("ttl"));
+        assert_eq!(body["state"]["focus"]["id"], "sess_a");
+        assert!(!body["state"].to_string().contains("sess_b"));
         assert_eq!(body["state"]["user_text"], "再看看");
     }
 
     #[test]
-    fn answers_map_to_decision() {
-        let r = parse_response(response("existing", 0.95, "sess_a", 0.1), 0.6).unwrap();
-        assert_eq!(r.usage.unwrap().total_tokens, 592);
-        let d = r.decision.unwrap();
+    fn answers_map_to_independent_creation_options() {
+        for (focus, want_focus) in [("keep", false), ("switch", true)] {
+            for (ttl, want_ttl) in [("3h", SessionTtl::Short), ("12h", SessionTtl::Normal)] {
+                let r = parse_response(response("new", 0.95, focus, ttl), 0.6).unwrap();
+                assert_eq!(r.usage.unwrap().total_tokens, 592);
+                let d = r.decision.unwrap();
+                assert_eq!(d.action, Action::New);
+                assert_eq!(d.focus, want_focus);
+                assert_eq!(d.ttl, Some(want_ttl));
+            }
+        }
+        // 续接只解析 action；新建选项不参与。
+        let mut v = response("existing", 0.9, "keep", "3h");
+        v["answers"]["focus"] = Value::Null;
+        v["answers"]["ttl"] = Value::Null;
+        let d = decision(v).unwrap();
         assert_eq!(d.action, Action::Existing);
-        assert_eq!(d.session_id.as_deref(), Some("sess_a"));
-        assert_eq!(d.running_intent, RunningIntent::None);
-
-        let g = decision(response("existing", 0.9, "sess_b", 0.96)).unwrap();
-        assert_eq!(g.running_intent, RunningIntent::GuideExisting);
-
-        // 非 existing 时忽略 session / guide 答案
-        let n = decision(response("new", 0.9, "sess_a", 0.9)).unwrap();
-        assert_eq!(
-            (n.session_id, n.running_intent),
-            (None, RunningIntent::None)
-        );
+        assert!(!d.focus);
+        assert_eq!(d.ttl, None);
     }
 
-    /// OpenCode 直通 System One 响应，无 OpenRouter 的 id / provider / cost 外层字段。
-    /// 协议参考：https://docs.typesafe.ai/introduction/quickstart#call-it-the-api
+    /// System One 直通响应无需 OpenRouter 的 id / provider / cost 外层字段。
     #[test]
     fn system_one_response_maps_answers_and_usage() {
-        let r = parse_response(
-            json!({
-                "model": "jev-1.13.0",
-                "answers": {
-                    "action": {"type": "choice", "choice": "existing", "confidence": 1.0,
-                        "probabilities": {"existing": 1.0, "new": 0.0}},
-                    "session": {"type": "choice", "choice": "sess_b", "confidence": 1.0,
-                        "probabilities": {"sess_a": 0.0, "sess_b": 1.0}},
-                    "guide": {"type": "noul", "noul": 0.99}
-                },
-                "usage": {"input_tokens": 428, "output_tokens": 73}
-            }),
-            0.6,
-        )
-        .unwrap();
+        let mut v = response("new", 1.0, "switch", "12h");
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("id");
+        obj.remove("provider");
+        v["model"] = json!("jev-1.13.0");
+        v["usage"] = json!({"input_tokens": 428, "output_tokens": 73});
+        let r = parse_response(v, 0.6).unwrap();
         let d = r.decision.unwrap();
-        assert_eq!(d.action, Action::Existing);
-        assert_eq!(d.session_id.as_deref(), Some("sess_b"));
-        assert_eq!(d.running_intent, RunningIntent::GuideExisting);
-        let usage = r.usage.unwrap();
-        assert_eq!(
-            (
-                usage.prompt_tokens,
-                usage.completion_tokens,
-                usage.total_tokens
-            ),
-            (428, 73, 501)
-        );
+        assert_eq!(d.action, Action::New);
+        assert!(d.focus);
+        assert_eq!(d.ttl, Some(SessionTtl::Normal));
+        assert_eq!(r.usage.unwrap().total_tokens, 501);
     }
 
     #[test]
     fn low_confidence_is_uncertain_and_missing_confidence_is_invalid() {
-        // 答案不合格时 usage 仍带回
-        let r = parse_response(response("existing", 0.4, "sess_a", 0.0), 0.6).unwrap();
-        assert!(r.usage.is_some());
-        let e = r.decision.unwrap_err();
-        assert!(
-            matches!(
-                e,
-                DecisionError::LowConfidence {
-                    question: "action",
-                    ..
-                }
-            ),
-            "{e}"
-        );
-        let mut v = response("existing", 1.0, "sess_a", 0.0);
-        v["answers"]["action"]
-            .as_object_mut()
-            .unwrap()
-            .remove("confidence");
-        assert!(
-            matches!(decision(v).unwrap_err(), DecisionError::Invalid(e) if e.contains("缺少 confidence"))
-        );
+        for question in ["action", "focus", "ttl"] {
+            let mut v = response("new", 1.0, "keep", "3h");
+            v["answers"][question]["confidence"] = json!(0.4);
+            let r = parse_response(v, 0.6).unwrap();
+            assert!(r.usage.is_some());
+            assert!(
+                matches!(r.decision, Err(DecisionError::LowConfidence { question: q, .. }) if q == question)
+            );
+
+            let mut v = response("new", 1.0, "keep", "3h");
+            v["answers"][question]
+                .as_object_mut()
+                .unwrap()
+                .remove("confidence");
+            assert!(
+                matches!(decision(v), Err(DecisionError::Invalid(e)) if e.contains("缺少 confidence"))
+            );
+        }
     }
 
     #[test]
-    fn unknown_action_and_malformed_rejected() {
-        assert!(
-            decision(response("casual", 1.0, "sess_a", 0.0))
-                .unwrap_err()
-                .to_string()
-                .contains("未知 action")
-        );
-        assert!(parse_response(json!({"answers": {}}), 0.6).is_err());
-    }
-
-    #[test]
-    fn low_session_confidence_is_uncertain_and_invalid_scores_are_rejected() {
-        let mut v = response("existing", 0.9, "sess_b", 0.0);
-        v["answers"]["session"]["confidence"] = json!(0.2);
-        assert!(matches!(
-            decision(v).unwrap_err(),
-            DecisionError::LowConfidence {
-                question: "session",
-                ..
-            }
-        ));
-
-        for confidence in [-0.1, 1.1] {
+    fn unknown_choices_and_invalid_scores_are_rejected() {
+        for (action, focus, ttl) in [
+            ("unknown", "keep", "3h"),
+            ("new", "unknown", "3h"),
+            ("new", "keep", "0h"),
+        ] {
             assert!(matches!(
-                decision(response("existing", confidence, "sess_a", 0.0)).unwrap_err(),
-                DecisionError::Invalid(_)
+                decision(response(action, 1.0, focus, ttl)),
+                Err(DecisionError::Invalid(_))
             ));
         }
-        assert!(matches!(
-            decision(response("unknown", 0.2, "sess_a", 0.0)).unwrap_err(),
-            DecisionError::Invalid(_)
-        ));
+        for question in ["action", "focus", "ttl"] {
+            for confidence in [-0.1, 1.1] {
+                let mut v = response("new", 1.0, "keep", "3h");
+                v["answers"][question]["confidence"] = json!(confidence);
+                assert!(matches!(decision(v), Err(DecisionError::Invalid(_))));
+            }
+        }
+        assert!(parse_response(json!({"answers": {}}), 0.6).is_err());
     }
 }

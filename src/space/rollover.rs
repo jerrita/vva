@@ -234,6 +234,7 @@ fn successor_session(old: &Session, before: usize, summary: &str, memory: Option
     session.header.kind = header.kind;
     session.header.origin = header.origin.clone();
     session.header.routed_by = header.routed_by.clone();
+    session.header.ttl_secs = header.ttl_secs;
     session.header.last_activity = Some(chrono::Utc::now());
 
     for turn in &turns[..prefix] {
@@ -401,9 +402,11 @@ mod tests {
         let mut old = prefixed(vec![tool_round("r1", "c1"), tool_round("r2", "c2")]);
         let before = old.turns.len();
         old.header.curation_requested = true;
+        old.header.ttl_secs = Some(10_800);
         let new = successor_session(&old, before, "SUMMARY", None);
         assert!(old.header.curation_requested);
         assert!(!new.header.curation_requested);
+        assert_eq!(new.header.ttl_secs, old.header.ttl_secs);
 
         assert_eq!(
             new.header.continued_from.as_deref(),
