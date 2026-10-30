@@ -209,6 +209,18 @@ fn inbound(id: &str, text: &str) -> Inbound {
 }
 
 impl Fixture {
+    async fn persisted_topic(&self, binding: &str) -> Arc<ManagedSession> {
+        let mut session = Session::with_model(
+            &self.dir,
+            None,
+            "p/m",
+            None,
+            crate::model::SessionToggles::default(),
+        );
+        session.header.origin = Some(self.runtime.origin(binding).unwrap());
+        self.manager.adopt_session(session).await.unwrap()
+    }
+
     async fn topic(&self, binding: &str) -> Arc<ManagedSession> {
         let handle = self
             .runtime
@@ -460,6 +472,139 @@ async fn switch_resolves_prefix_and_rejects_ambiguity() {
         ids.iter()
             .all(|id| { sent[4].text.contains(&crate::space::markdown::text(id)) })
     );
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn sessions_show_idle_ttl_and_remaining_time() {
+    let f = fixture_with_config(AgentSpaceConfig {
+        ttl_secs: 7200,
+        ..Default::default()
+    })
+    .await;
+    let now = Utc::now();
+    for (title, ttl, last_activity) in [
+        (
+            "active",
+            Some(10_800),
+            Some(now - chrono::Duration::minutes(90)),
+        ),
+        ("expired", Some(43_200), None),
+        ("default", None, Some(now + chrono::Duration::minutes(1))),
+    ] {
+        let handle = f.topic(BINDING).await;
+        let mut session = handle.snapshot().session.as_ref().clone();
+        session.header.title = Some(title.into());
+        session.header.created_at = now - chrono::Duration::hours(24);
+        session.header.ttl_secs = ttl;
+        session.header.last_activity = last_activity;
+        f.manager.store().save_header(&session).await.unwrap();
+    }
+    f.runtime
+        .command(&inbound("ttl", ""), Command::Sessions)
+        .await
+        .unwrap();
+    let sent = f.channel.wait(1).await;
+    let table = &sent[0].text;
+    assert!(table.contains("| 空闲 TTL | 剩余时间 |"), "{table}");
+    let active = table
+        .lines()
+        .find(|line| line.contains("| active |"))
+        .unwrap();
+    assert!(active.contains("| 3h | 1h "), "{active}");
+    let expired = table
+        .lines()
+        .find(|line| line.contains("| expired |"))
+        .unwrap();
+    assert!(expired.ends_with("| 12h | 0s |"), "{expired}");
+    let default = table
+        .lines()
+        .find(|line| line.contains("| default |"))
+        .unwrap();
+    assert!(default.ends_with("| 2h | 2h |"), "{default}");
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn clear_moves_focus_to_recent_activity_within_chat_scope() {
+    let f = fixture().await;
+    let now = Utc::now();
+    let older = f.persisted_topic(BINDING).await;
+    let recent = f.persisted_topic("fake:c2c:u2").await;
+    let current = f.persisted_topic(BINDING).await;
+    let foreign = f.persisted_topic("fake:group:other").await;
+    for (handle, created_hours, activity_hours) in [
+        (&older, 3, None),
+        (&recent, 5, Some(2)),
+        (&current, 1, None),
+        (&foreign, 0, None),
+    ] {
+        let mut session = handle.snapshot().session.as_ref().clone();
+        session.header.created_at = now - chrono::Duration::hours(created_hours);
+        session.header.last_activity = activity_hours.map(|h| now - chrono::Duration::hours(h));
+        f.manager.store().save_header(&session).await.unwrap();
+    }
+    {
+        let mut state = f.runtime.state.lock().await;
+        state
+            .bindings
+            .set_focus(BINDING, Some(current.id.clone()))
+            .unwrap();
+        state
+            .bindings
+            .set_focus("fake:c2c:u2", Some(current.id.clone()))
+            .unwrap();
+        state.bindings.set_home(BINDING, true).unwrap();
+    }
+    f.runtime
+        .command(&inbound("clear", ""), Command::Clear(String::new()))
+        .await
+        .unwrap();
+    assert_eq!(f.focus().await.as_deref(), Some(recent.id.as_str()));
+    assert_eq!(
+        f.runtime.state.lock().await.bindings.focus("fake:c2c:u2"),
+        Some(recent.id.as_str())
+    );
+    assert!(f.runtime.state.lock().await.bindings.is_home(BINDING));
+    let reloaded = BindingStore::load(&f.dir).unwrap();
+    assert_eq!(reloaded.focus(BINDING), Some(recent.id.as_str()));
+
+    // 删除其他会话保持 focus，删除最后一个范围内会话后清空。
+    f.runtime
+        .command(&inbound("other", ""), Command::Clear(older.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(f.focus().await.as_deref(), Some(recent.id.as_str()));
+    f.runtime
+        .command(&inbound("last", ""), Command::Clear(String::new()))
+        .await
+        .unwrap();
+    assert_eq!(f.focus().await, None);
+    assert_eq!(f.session_ids().await, vec![foreign.id.clone()]);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
+async fn delete_moves_focus_after_background_removal() {
+    let f = fixture().await;
+    let next = f.persisted_topic(BINDING).await;
+    let current = f.persisted_topic(BINDING).await;
+    {
+        let mut state = f.runtime.state.lock().await;
+        state.bindings.set_home(BINDING, true).unwrap();
+        state
+            .bindings
+            .set_focus(BINDING, Some(current.id.clone()))
+            .unwrap();
+    }
+    f.runtime
+        .command(&inbound("delete", ""), Command::Delete(String::new()))
+        .await
+        .unwrap();
+    let sent = f.channel.wait(2).await;
+    assert!(sent.iter().any(|text| text.text.contains("✅ 已删除会话")));
+    assert_eq!(f.focus().await.as_deref(), Some(next.id.as_str()));
+    assert_eq!(f.session_ids().await, vec![next.id.clone()]);
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 

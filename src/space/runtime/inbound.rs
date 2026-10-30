@@ -6,7 +6,7 @@ use chrono::Utc;
 
 use super::Runtime;
 use crate::harness::ManagedSession;
-use crate::model::{SessionKind, SessionToggles};
+use crate::model::{SessionKind, SessionSummary, SessionToggles};
 use crate::space::binding::{AttachedFile, FileKind, in_chat_scope};
 use crate::space::channel::Inbound;
 use crate::space::channel::files::{sanitize_filename, unique_dest};
@@ -229,10 +229,12 @@ impl Runtime {
             .map_err(|e| e.to_string())
     }
 
-    /// router 候选：排除 curator / 已 superseded 与非 agent space 会话；
-    /// 按聊天范围过滤，并清理已不存在或范围外的 focus
-    pub(super) async fn candidates(&self, binding: &str) -> Result<Vec<Candidate>, String> {
-        let summaries: Vec<_> = self
+    /// 当前聊天范围内未被接替的 topic 会话。
+    pub(super) async fn scoped_sessions(
+        &self,
+        binding: &str,
+    ) -> Result<Vec<SessionSummary>, String> {
+        Ok(self
             .manager
             .store()
             .list_sessions()
@@ -244,17 +246,29 @@ impl Runtime {
                     && s.kind == SessionKind::Topic
                     && in_chat_scope(binding, s.origin.as_ref())
             })
-            .collect();
-        let focus = {
-            let mut state = self.state.lock().await;
-            match state.bindings.focus(binding).map(str::to_string) {
-                Some(f) if !summaries.iter().any(|s| s.id == f) => {
-                    state.bindings.set_focus(binding, None)?;
-                    None
-                }
-                focus => focus,
+            .collect())
+    }
+
+    /// 清理已不存在或范围外的 focus。
+    pub(super) async fn scoped_focus(
+        &self,
+        binding: &str,
+        summaries: &[SessionSummary],
+    ) -> Result<Option<String>, String> {
+        let mut state = self.state.lock().await;
+        match state.bindings.focus(binding).map(str::to_string) {
+            Some(f) if !summaries.iter().any(|s| s.id == f) => {
+                state.bindings.set_focus(binding, None)?;
+                Ok(None)
             }
-        };
+            focus => Ok(focus),
+        }
+    }
+
+    /// router 候选：按聊天范围过滤，并清理已不存在或范围外的 focus。
+    pub(super) async fn candidates(&self, binding: &str) -> Result<Vec<Candidate>, String> {
+        let summaries = self.scoped_sessions(binding).await?;
+        let focus = self.scoped_focus(binding, &summaries).await?;
         let mut candidates = Vec::new();
         for s in summaries {
             let running = self

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
+
 use super::mode_model::check_mode_model;
 use super::{DeliveryTarget, Runtime};
 use crate::harness::ManagedSession;
@@ -67,7 +69,7 @@ impl Runtime {
             Command::Delete(prefix) => self.delete(binding, &prefix).await?,
             Command::Clear(prefix) => {
                 let handle = self.target_handle(binding, &prefix).await?;
-                self.remove(&handle).await?;
+                self.remove(binding, &handle).await?;
                 format!("✅ 已删除会话 **{}**。", markdown::text(&handle.id))
             }
             Command::Help => command::help(group),
@@ -129,38 +131,66 @@ impl Runtime {
     }
 
     async fn list_sessions(&self, binding: &str) -> Result<String, String> {
-        let mut candidates = self.candidates(binding).await?;
-        if candidates.is_empty() {
+        let mut summaries = self.scoped_sessions(binding).await?;
+        let focus = self.scoped_focus(binding, &summaries).await?;
+        if summaries.is_empty() {
             return Ok(
                 "### 💬 会话列表\n\n暂无会话。直接发送消息，或使用 `/new <消息>` 新建。".into(),
             );
         }
-        candidates.sort_by(|a, b| a.id.cmp(&b.id));
+        summaries.sort_by(|a, b| a.id.cmp(&b.id));
+        let now = Utc::now();
+        let mut rows = Vec::new();
+        for s in summaries {
+            let running = self
+                .manager
+                .live(&s.id)
+                .await
+                .is_some_and(|h| h.is_running());
+            let ttl = s.ttl_secs.unwrap_or(self.config.ttl_secs);
+            let idle = (now - s.last_activity.unwrap_or(s.created_at))
+                .num_seconds()
+                .max(0) as u64;
+            let current = focus.as_deref() == Some(s.id.as_str());
+            rows.push([
+                s.id,
+                s.title.unwrap_or_default(),
+                if running { "运行中" } else { "空闲" }.into(),
+                if current { "📌 当前" } else { "—" }.into(),
+                duration_label(ttl),
+                duration_label(ttl.saturating_sub(idle)),
+            ]);
+        }
         let mut out = markdown::table(
             "💬 会话列表",
-            ["会话 ID", "标题", "状态", "默认"],
-            candidates.iter().map(|c| {
-                [
-                    c.id.clone(),
-                    c.title.clone(),
-                    if c.running { "运行中" } else { "空闲" }.into(),
-                    if c.focus { "📌 当前" } else { "—" }.into(),
-                ]
-            }),
+            ["会话 ID", "标题", "状态", "默认", "空闲 TTL", "剩余时间"],
+            rows,
         );
         out.push_str("\n\n💡 使用 `/switch <前缀>` 切换默认会话。");
         Ok(out)
     }
 
-    /// 删除会话并清理游标与 focus（不经 curator）
-    async fn remove(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
+    /// 删除会话并清理游标，将受影响的 focus 切到范围内最近活跃的会话。
+    async fn remove(&self, binding: &str, handle: &Arc<ManagedSession>) -> Result<(), String> {
+        let next = self
+            .scoped_sessions(binding)
+            .await?
+            .into_iter()
+            .filter(|s| s.id != handle.id)
+            .max_by(|a, b| {
+                a.last_activity
+                    .unwrap_or(a.created_at)
+                    .cmp(&b.last_activity.unwrap_or(b.created_at))
+                    .then_with(|| a.id.cmp(&b.id))
+            })
+            .map(|s| s.id);
         self.manager.delete_session(handle).await?;
         self.curator.forget(&handle.id).await?;
         self.state
             .lock()
             .await
             .bindings
-            .replace_focus(&handle.id, None)
+            .replace_focus(&handle.id, next.as_deref())
     }
 
     /// 整理记忆后删除：整理耗时较长，后台执行并回报；整理失败则保留会话
@@ -174,9 +204,10 @@ impl Runtime {
             markdown::text(&handle.id)
         );
         let this = self.clone();
+        let binding = binding.to_string();
         tokio::spawn(async move {
             let id = &handle.id;
-            let reply = match this.curate_then_remove(&handle).await {
+            let reply = match this.curate_then_remove(&binding, &handle).await {
                 Ok(()) => format!("✅ 已删除会话 **{}**。", markdown::text(id)),
                 Err(error) => format!(
                     "⚠️ 删除失败，会话 **{}** 已保留。\n\n{}",
@@ -189,7 +220,11 @@ impl Runtime {
         Ok(reply)
     }
 
-    async fn curate_then_remove(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
+    async fn curate_then_remove(
+        &self,
+        binding: &str,
+        handle: &Arc<ManagedSession>,
+    ) -> Result<(), String> {
         let seen_turns = handle.turn_seq();
         let result = self.curator.curate(&handle.id).await;
         let failed = (result.status == CuratorStatus::Failed).then(|| result.summary.clone());
@@ -206,7 +241,7 @@ impl Runtime {
         if handle.is_running() || handle.turn_seq() != seen_turns {
             return Err("整理期间会话又有活动".into());
         }
-        self.remove(handle).await
+        self.remove(binding, handle).await
     }
 
     async fn rename(&self, binding: &str, title: &str) -> Result<String, String> {
@@ -557,6 +592,24 @@ impl Runtime {
 
 fn spec_label(model: &str, variant: Option<&str>) -> String {
     variant.map_or(model.to_string(), |v| format!("{model} ({v})"))
+}
+
+fn duration_label(seconds: u64) -> String {
+    let mut parts = Vec::new();
+    for (value, unit) in [
+        (seconds / 3600, "h"),
+        (seconds % 3600 / 60, "m"),
+        (seconds % 60, "s"),
+    ] {
+        if value > 0 {
+            parts.push(format!("{value}{unit}"));
+        }
+    }
+    if parts.is_empty() {
+        "0s".into()
+    } else {
+        parts.join(" ")
+    }
 }
 
 /// 描述预览：压平空白，超过 200 个字符时以省略号明确截断。
