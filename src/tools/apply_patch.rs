@@ -358,6 +358,11 @@ fn add_file(working_dir: &Path, path: &str, contents: &str) -> Result<String, St
                 path.display()
             ));
         }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("Failed to create directory {}: {error}", parent.display())
+            })?;
+        }
         write_new_file(&path, contents)?;
         Ok(format!("Created file {}", path.display()))
     })
@@ -409,6 +414,11 @@ fn update_file(
             return Err("Unsupported binary file".into());
         }
         let updated = apply(&content)?;
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("Failed to create directory {}: {error}", parent.display())
+            })?;
+        }
         write_new_file(&dest, &updated)?;
         fs::remove_file(&src).map_err(|e| format!("Failed to remove {}: {e}", src.display()))?;
         let plan = EditPlan::from_replacement(&content, updated);
@@ -593,6 +603,38 @@ mod tests {
             "alpha\nbeta\nmid\n"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn apply_add_creates_parent_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let tool = ApplyPatchTool::new(root.path());
+        let patch = patch_input("*** Add File: nested/deep/new.txt\n+hello\n");
+        tool.execute(&patch).await.unwrap();
+        let dest = root.path().join("nested/deep/new.txt");
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "hello\n");
+        assert!(tool.execute(&patch).await.is_err());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "hello\n");
+    }
+
+    #[tokio::test]
+    async fn apply_move_creates_parent_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let src = root.path().join("source.txt");
+        fs::write(&src, "hello\n").unwrap();
+        let tool = ApplyPatchTool::new(root.path());
+        let patch = patch_input(
+            "*** Update File: source.txt\n*** Move to: nested/deep/moved.txt\n@@\n-hello\n+updated\n",
+        );
+        tool.execute(&patch).await.unwrap();
+        let dest = root.path().join("nested/deep/moved.txt");
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "updated\n");
+        assert!(!src.exists());
+
+        fs::write(&src, "hello\n").unwrap();
+        assert!(tool.execute(&patch).await.is_err());
+        assert_eq!(fs::read_to_string(&src).unwrap(), "hello\n");
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "updated\n");
     }
 
     #[tokio::test]
