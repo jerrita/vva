@@ -2,7 +2,7 @@
 //!
 //! 路由与会话创建在入站循环内顺序完成（保证同一 binding 的决策有序），
 //! 轮次执行与回复在独立任务中进行，因此运行中的 session 仍可接收插话。
-//! 本期只回最终文本，不做流式增量发送。
+//! 最终回答整段发送；进度汇报按渠道能力更新同一条消息。
 
 mod commands;
 mod inbound;
@@ -161,6 +161,7 @@ impl Runtime {
                 DeliveryTarget::Chat(&binding),
                 &prompt,
                 InputMode::Steer,
+                Some(&reply_to),
             )
             .await;
         let (prompt_tokens, completion_tokens, cached_tokens) =
@@ -198,6 +199,7 @@ impl Runtime {
         target: DeliveryTarget<'_>,
         prompt: &str,
         mode: InputMode,
+        reply_to: Option<&str>,
     ) -> Result<SubagentReport, String> {
         let interval = Duration::from_secs(self.config.progress_interval_secs);
         let delivered = async {
@@ -220,15 +222,46 @@ impl Runtime {
             reporting: &self.reporting,
             id: &handle.id,
         };
-        progress::with_progress(
+        let stream = match (target, reply_to) {
+            (DeliveryTarget::Chat(binding), Some(reply_to)) => {
+                match self.channel.progress_stream(binding, reply_to) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!("创建进度流失败: session={} {error}", handle.id);
+                        return delivered.await;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let stream = Mutex::new(stream);
+        let result = progress::with_progress(
             delivered,
             interval,
             || handle.snapshot().session.clone(),
-            |text| async move {
-                self.send_report(target, &text, Some(&handle.id)).await;
+            |text| {
+                let stream = &stream;
+                async move {
+                    if let Some(stream) = stream.lock().await.as_mut() {
+                        self.index_progress(stream.append(&text).await, &handle.id)
+                            .await;
+                    } else {
+                        self.send_report(target, &text, Some(&handle.id)).await;
+                    }
+                }
             },
         )
-        .await
+        .await;
+        if let Some(mut stream) = stream.into_inner() {
+            let status = if result.is_ok() {
+                "本轮处理完成。"
+            } else {
+                "本轮处理结束：执行失败或已中止。"
+            };
+            self.index_progress(stream.finish(status).await, &handle.id)
+                .await;
+        }
+        result
     }
 
     async fn after_turn(&self, handle: &Arc<ManagedSession>, target: DeliveryTarget<'_>) {
@@ -280,6 +313,18 @@ impl Runtime {
     /// 发送会话产出的文本，并把出站消息 id 记入消息索引（用户 reply 可直达 `session`）
     async fn say_indexed(&self, binding: &str, reply_to: Option<&str>, text: &str, session: &str) {
         let ids = self.say(binding, reply_to, text).await;
+        self.index_messages(ids, session).await;
+    }
+
+    async fn index_progress(&self, result: super::channel::Result<Option<String>>, session: &str) {
+        match result {
+            Ok(Some(id)) => self.index_messages(vec![id], session).await,
+            Ok(None) => {}
+            Err(error) => tracing::warn!("更新进度流失败: session={session} {error}"),
+        }
+    }
+
+    async fn index_messages(&self, ids: Vec<String>, session: &str) {
         let mut state = self.state.lock().await;
         for id in ids {
             if let Err(e) = state.index.record(&self.key(&id), session) {

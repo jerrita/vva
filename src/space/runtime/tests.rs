@@ -8,7 +8,7 @@ use super::mode_model::MODE_MODEL_FILE;
 use super::*;
 use crate::config::model::ModelLimitConfig;
 use crate::config::{ModelConfig, ProviderConfig, ProviderType};
-use crate::space::channel::{self, FileSource, InboundFile};
+use crate::space::channel::{self, FileSource, InboundFile, ProgressStream};
 use crate::space::command::Command;
 use crate::space::curator::CuratorResult;
 use crate::space::router::{Action, ModelReply, RouteDecision, RouteInput, RouteModel, SessionTtl};
@@ -20,6 +20,31 @@ use crate::storage::jsonl::JsonlSessionStore;
 struct FakeChannel {
     sent: StdMutex<Vec<OutboundText>>,
     fail_binding: StdMutex<Option<String>>,
+    progress: StdMutex<Option<ProgressLog>>,
+}
+
+type ProgressLog = Arc<StdMutex<Vec<(bool, String)>>>;
+
+struct FakeProgress {
+    log: ProgressLog,
+    started: bool,
+}
+
+#[async_trait::async_trait]
+impl ProgressStream for FakeProgress {
+    async fn append(&mut self, text: &str) -> channel::Result<Option<String>> {
+        self.log.lock().unwrap().push((false, text.to_string()));
+        let first = !self.started;
+        self.started = true;
+        Ok(first.then(|| "progress".into()))
+    }
+
+    async fn finish(&mut self, status: &str) -> channel::Result<Option<String>> {
+        if self.started {
+            self.log.lock().unwrap().push((true, status.to_string()));
+        }
+        Ok(None)
+    }
 }
 
 #[async_trait::async_trait]
@@ -37,6 +62,20 @@ impl Channel for FakeChannel {
         let mut sent = self.sent.lock().unwrap();
         sent.push(text);
         Ok(vec![format!("out{}", sent.len())])
+    }
+    fn progress_stream(
+        &self,
+        binding: &str,
+        reply_to: &str,
+    ) -> channel::Result<Option<Box<dyn ProgressStream>>> {
+        Ok(self.progress.lock().unwrap().as_ref().map(|log| {
+            assert_eq!(binding, BINDING);
+            assert_eq!(reply_to, "work");
+            Box::new(FakeProgress {
+                log: log.clone(),
+                started: false,
+            }) as Box<dyn ProgressStream>
+        }))
     }
     async fn run(self: Arc<Self>, _inbound: mpsc::Sender<Inbound>) -> channel::Result<()> {
         Ok(())
@@ -81,7 +120,7 @@ impl FileSource for BytesSource {
 }
 
 /// 按 Anthropic Messages 流式规范应答固定文本的本地端点
-async fn mock_anthropic() -> String {
+async fn mock_anthropic(delay: Duration) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move {
@@ -106,6 +145,7 @@ async fn mock_anthropic() -> String {
                 ];
                 let body: String = events.iter().map(|e| format!("data: {e}\n\n")).collect();
                 let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
+                tokio::time::sleep(delay).await;
                 let _ = conn.write_all(format!("{head}{body}").as_bytes()).await;
             });
         }
@@ -142,6 +182,10 @@ async fn fixture() -> Fixture {
 }
 
 async fn fixture_with_config(config: AgentSpaceConfig) -> Fixture {
+    fixture_with_delay(config, Duration::ZERO).await
+}
+
+async fn fixture_with_delay(config: AgentSpaceConfig, delay: Duration) -> Fixture {
     let dir = std::env::temp_dir().join(format!("vva-runtime-{}", uuid::Uuid::new_v4()));
     let mut app = crate::config::AppConfig::default();
     app.settings.default = "p/m".into();
@@ -149,7 +193,7 @@ async fn fixture_with_config(config: AgentSpaceConfig) -> Fixture {
         "p".into(),
         ProviderConfig {
             api_key: "k".into(),
-            base_url: mock_anthropic().await,
+            base_url: mock_anthropic(delay).await,
             provider_type: Some(ProviderType::Anthropic),
             models: ["m", "other"]
                 .into_iter()
@@ -257,6 +301,71 @@ impl Fixture {
             .bindings
             .focus(BINDING)
             .map(str::to_string)
+    }
+}
+
+#[tokio::test]
+async fn progress_stream_is_indexed_and_closed_before_final_reply_on_completion_or_abort() {
+    for abort in [false, true] {
+        let f = fixture_with_delay(
+            AgentSpaceConfig {
+                progress_interval_secs: 1,
+                ..Default::default()
+            },
+            Duration::from_millis(2200),
+        )
+        .await;
+        let log: ProgressLog = Arc::default();
+        *f.channel.progress.lock().unwrap() = Some(log.clone());
+        f.runtime.handle(inbound("work", "检查示例配置")).await;
+        let id = f.focus().await.unwrap();
+        if abort {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while log.lock().unwrap().is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            f.manager
+                .live(&id)
+                .await
+                .unwrap()
+                .abort_current()
+                .await
+                .unwrap();
+        }
+        let sent = f.channel.wait(1).await;
+        assert_eq!(sent.len(), 1, "只有最终回答走普通消息发送");
+        assert_eq!(sent[0].reply_to.as_deref(), Some("work"));
+        if abort {
+            assert!(sent[0].text.contains("本轮执行失败"));
+        } else {
+            assert!(sent[0].text.ends_with("pong"));
+        }
+        {
+            let log = log.lock().unwrap();
+            assert!(log.len() >= if abort { 2 } else { 3 });
+            assert!(log[..log.len() - 1].iter().all(|(finished, _)| !finished));
+            assert_eq!(
+                log.last().unwrap(),
+                &(
+                    true,
+                    if abort {
+                        "本轮处理结束：执行失败或已中止。"
+                    } else {
+                        "本轮处理完成。"
+                    }
+                    .into()
+                )
+            );
+        }
+        assert_eq!(
+            f.runtime.state.lock().await.index.get("fake:progress"),
+            Some(id.as_str())
+        );
+        assert!(f.runtime.reporting.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&f.dir);
     }
 }
 

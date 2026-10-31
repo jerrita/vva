@@ -76,7 +76,13 @@ impl Runtime {
         let limit = Duration::from_secs(self.config.task_timeout_secs);
         let report = match tokio::time::timeout(
             limit,
-            self.deliver_reporting(&handle, DeliveryTarget::Homes, &prompt, InputMode::After),
+            self.deliver_reporting(
+                &handle,
+                DeliveryTarget::Homes,
+                &prompt,
+                InputMode::After,
+                None,
+            ),
         )
         .await
         {

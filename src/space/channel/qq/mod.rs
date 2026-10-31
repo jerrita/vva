@@ -3,6 +3,7 @@
 mod api;
 mod event;
 mod gateway;
+mod progress;
 mod text;
 
 use std::collections::VecDeque;
@@ -12,12 +13,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use self::api::{MediaType, QqApi, Target};
+use self::api::{MediaType, MsgType, QqApi, Target};
 use self::event::{Attachment, MessageEvent};
 use self::gateway::Gateway;
+use self::progress::QqProgress;
 use super::files::{UrlSource, normalize_url, sanitize_filename};
 use super::{
-    Channel, ChannelError, Inbound, InboundFile, Outbound, OutboundFile, OutboundText, Result,
+    Channel, ChannelError, Inbound, InboundFile, Outbound, OutboundFile, OutboundText,
+    ProgressStream, Result,
 };
 
 /// 事件去重窗口：QQ 偶发重复推送同一 msg_id。
@@ -190,6 +193,22 @@ impl Channel for QqChannel {
         }
     }
 
+    fn progress_stream(
+        &self,
+        binding: &str,
+        reply_to: &str,
+    ) -> Result<Option<Box<dyn ProgressStream>>> {
+        let target = Target::from_binding(binding)?;
+        if target.msg_type != MsgType::C2c {
+            return Ok(None);
+        }
+        Ok(Some(Box::new(QqProgress::new(
+            self.api.clone(),
+            target.chat_id,
+            reply_to.to_string(),
+        ))))
+    }
+
     async fn run(self: Arc<Self>, inbound: mpsc::Sender<Inbound>) -> Result<()> {
         let (tx, mut rx) = mpsc::channel(64);
         let gateway = tokio::spawn(Gateway::new(self.api.clone(), tx).run());
@@ -229,6 +248,16 @@ mod tests {
             secret: "secret".into(),
             allowed_users: allowed.iter().map(|s| s.to_string()).collect(),
         })
+    }
+
+    #[test]
+    fn progress_stream_is_available_only_for_c2c() {
+        let ch = channel(&[]);
+        assert!(ch.progress_stream("qq:c2c:user", "in").unwrap().is_some());
+        for binding in ["qq:group:group", "qq:guild:channel", "qq:dm:guild"] {
+            assert!(ch.progress_stream(binding, "in").unwrap().is_none());
+        }
+        assert!(ch.progress_stream("qq:c2c:", "in").is_err());
     }
 
     fn group_event(member: &str, content: &str, attachments: serde_json::Value) -> MessageEvent {
