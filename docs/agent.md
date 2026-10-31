@@ -115,10 +115,10 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ## 6. Channel
 
-- `Channel` trait：`run(inbound_tx)` + `send(OutboundMessage)`。首发 QQ（gateway identify / resume / heartbeat 按官方规范），其后 Telegram；
+- `Channel` trait：`run(inbound_tx)` + `send(OutboundMessage)`，可通过 `progress_stream` 提供[进度汇报](#8-进度汇报)能力。首发 QQ（gateway identify / resume / heartbeat 按官方规范），其后 Telegram；
 - 白名单外用户静默丢弃并记日志；
 - 入站循环顺序完成路由与建会话，轮次在独立任务执行，运行中的 session 仍可被 reply / guide 插话；
-- 出站只发最终文本（`deliver_wait` 的结果），不做流式增量；渲染器负责分段（超限时在末段明确标注截断）与 markdown 失败降级纯文本；失败 / 中止显式回复错误文本；
+- 最终回答在轮次结束后整段发送；渲染器负责分段（超限时在末段明确标注截断）与 markdown 失败降级纯文本；失败 / 中止显式回复错误文本；
 - **命令排版**：斜杠命令输出统一 Markdown；帮助、会话、模型、技能与状态以带标题的表格展示，定时任务逐项两列表格；反馈与错误使用少量 emoji 并附后续操作提示；动态文本压平空白并转义 Markdown 标记，截断处明确显示省略号；
 - **通知目标**：自动整理更新 / 失败、后台删除完成、定时任务结果 / 进度 / 失败 / 错过、rollover 提示统一发往全部 home bindings，每次发送查询最新集合，单个目标失败不影响其他目标；无 home 时执行照常继续，跳过推送并记录日志。普通回答、命令反馈、对话进度与附件反馈发往发起聊天；
 - **文件**：无文字 → 进入待附件缓冲，不触发模型，回复「已收到」；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本，多附件保序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；
@@ -178,6 +178,8 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
 ## 8. 进度汇报
 
 `progress.rs`：轮次（含定时任务）超过 `progress_interval_secs` 未结束时，每隔该时长向聊天推送一段摘要，直到轮次结束。摘要由已完成的轮次**确定性**提炼，不调用模型：新建 / 修改的文件（按各编辑协议提取路径）、Shell 的 `intent`（不展示命令原文）、读取 / 检索与其他工具调用次数、工具报错次数、最近几条助手文字；本段无新动作时发「仍在处理」。同一会话只有一个汇报者，汇报消息计入 `message_index`，用户 reply 它会直达该会话；最终回复照旧在轮次结束时发送。
+
+QQ C2C 用户触发的轮次使用官方 `stream_messages`：首次汇报创建一条进度消息，后续摘要在同一条消息内追加，保留已下发的正文前缀；每帧沿用 `msg_seq`，递增 `index`，并携带服务端返回的流式消息 id。轮次成功、失败或中止时追加结束状态，以 `input_state=10` 收尾。未到汇报时间即结束的轮次不创建进度消息。流式发送失败后停止追加，已创建的流仍尝试收尾，错误记入日志。群聊、频道及定时任务沿用逐条摘要发送。
 
 ## 9. 状态文件
 

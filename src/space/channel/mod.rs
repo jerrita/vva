@@ -109,6 +109,14 @@ pub enum Outbound {
     File(OutboundFile),
 }
 
+/// 一轮工作的进度消息；每次追加均更新同一条渠道消息。
+/// 返回新出现的引用 id，供调用方关联会话；未创建消息时结束不发送。
+#[async_trait]
+pub trait ProgressStream: Send {
+    async fn append(&mut self, text: &str) -> Result<Option<String>>;
+    async fn finish(&mut self, status: &str) -> Result<Option<String>>;
+}
+
 #[async_trait]
 pub trait Channel: Send + Sync + 'static {
     /// 渠道名，同时是 binding 前缀。
@@ -116,6 +124,16 @@ pub trait Channel: Send + Sync + 'static {
 
     /// 发送出站消息，返回已发出消息的 id（后续入站 `reply_to.message_id` 引用的即此 id）。
     async fn send(&self, msg: Outbound) -> Result<Vec<String>>;
+
+    /// 为被动回复创建进度流；不支持的聊天类型返回 `None`。
+    /// 实际消息在首次追加时创建。
+    fn progress_stream(
+        &self,
+        _binding: &str,
+        _reply_to: &str,
+    ) -> Result<Option<Box<dyn ProgressStream>>> {
+        Ok(None)
+    }
 
     /// 收消息主循环（含断线重连）；入站接收端关闭时正常返回。
     async fn run(self: Arc<Self>, inbound: mpsc::Sender<Inbound>) -> Result<()>;

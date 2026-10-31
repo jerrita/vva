@@ -164,8 +164,8 @@ struct GatewayResponse {
 }
 
 #[derive(Deserialize)]
-struct SentMessage {
-    id: String,
+pub(super) struct SentMessage {
+    pub id: String,
     ext_info: Option<ExtInfo>,
 }
 
@@ -176,9 +176,19 @@ struct ExtInfo {
 
 impl SentMessage {
     /// 用户后续引用该消息时入站携带的 id：v2 接口为 `ext_info.ref_idx`，其余为消息 id。
-    fn quote_id(self) -> String {
+    pub(super) fn quote_id(self) -> String {
         self.ext_info.and_then(|e| e.ref_idx).unwrap_or(self.id)
     }
+}
+
+/// QQ C2C 流式消息帧；正文为完整累计文本，已下发前缀保持不变。
+pub(super) struct ProgressFrame<'a> {
+    pub text: &'a str,
+    pub reply_to: &'a str,
+    pub stream_id: Option<&'a str>,
+    pub seq: u32,
+    pub index: u32,
+    pub finished: bool,
 }
 
 pub struct QqApi {
@@ -320,8 +330,39 @@ impl QqApi {
         Ok(sent.quote_id())
     }
 
-    fn next_seq(&self) -> u32 {
+    pub(super) fn next_seq(&self) -> u32 {
         self.seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    pub(super) async fn send_progress(
+        &self,
+        openid: &str,
+        frame: ProgressFrame<'_>,
+    ) -> Result<SentMessage> {
+        let mut payload = json!({
+            "input_mode": "replace",
+            "input_state": if frame.finished { 10 } else { 1 },
+            "content_type": "markdown",
+            "content_raw": frame.text,
+            "msg_id": frame.reply_to,
+            "msg_seq": frame.seq,
+            "index": frame.index,
+        });
+        if let Some(id) = frame.stream_id {
+            payload["stream_msg_id"] = json!(id);
+        }
+        let sent: SentMessage = self
+            .request(
+                Method::POST,
+                &format!("/v2/users/{openid}/stream_messages"),
+                Some(&payload),
+                REQUEST_TIMEOUT,
+            )
+            .await?;
+        if sent.id.is_empty() {
+            return Err(ChannelError::Protocol("QQ 流式消息返回空 id".into()));
+        }
+        Ok(sent)
     }
 
     /// 分段发送 Markdown 文本；Markdown 被拒（非认证 / 限流 / 服务端错误）时该段降级纯文本。
@@ -432,6 +473,8 @@ mod tests {
     use axum::http::{StatusCode, Uri};
 
     use super::*;
+    use crate::space::channel::ProgressStream;
+    use crate::space::channel::qq::progress::QqProgress;
 
     #[test]
     fn binding_roundtrip() {
@@ -519,6 +562,18 @@ mod tests {
                     r#"{"access_token":"tok","expires_in":"7200"}"#.into(),
                 );
             }
+            if uri.path().ends_with("/stream_messages") {
+                if body["index"] == 1 && md != 200 {
+                    return (
+                        StatusCode::from_u16(md).unwrap(),
+                        r#"{"message":"rejected","code":50001}"#.into(),
+                    );
+                }
+                return (
+                    StatusCode::OK,
+                    r#"{"id":"stream-1","timestamp":"2026-01-01T00:00:00Z","ext_info":{"ref_idx":"REFIDX_stream"}}"#.into(),
+                );
+            }
             if body.get("markdown").is_some() && md != 200 {
                 return (
                     StatusCode::from_u16(md).unwrap(),
@@ -545,6 +600,90 @@ mod tests {
             msg_type: MsgType::C2c,
             chat_id: "u1".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn progress_updates_one_message_and_finishes_with_preserved_prefix() {
+        let (api, log) = stub(200).await;
+        let api = Arc::new(api);
+        // 短任务没有汇报时，结束不创建进度消息。
+        let mut unused = QqProgress::new(api.clone(), "u1".into(), "in1".into());
+        assert_eq!(unused.finish("完成").await.unwrap(), None);
+        assert_eq!(unused.append("迟到的进度").await.unwrap(), None);
+        assert!(log.lock().unwrap().is_empty());
+        let mut stream = QqProgress::new(api.clone(), "u1".into(), "in1".into());
+        assert_eq!(
+            stream.append("正在检查配置").await.unwrap().as_deref(),
+            Some("REFIDX_stream")
+        );
+        assert_eq!(stream.append("正在核对结果").await.unwrap(), None);
+        assert_eq!(stream.finish("处理完成").await.unwrap(), None);
+        assert_eq!(stream.append("迟到的进度").await.unwrap(), None);
+        assert_eq!(stream.finish("处理完成").await.unwrap(), None);
+        api.send_text(&c2c(), "最终回答", Some("in1"))
+            .await
+            .unwrap();
+
+        let log = log.lock().unwrap();
+        let frames: Vec<_> = log
+            .iter()
+            .filter(|(path, _)| path.ends_with("/stream_messages"))
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(frames.len(), 3);
+        assert!(frames[0].get("stream_msg_id").is_none());
+        for (i, frame) in frames.iter().enumerate() {
+            assert_eq!(frame["msg_id"], "in1");
+            assert_eq!(frame["msg_seq"], frames[0]["msg_seq"]);
+            assert_eq!(frame["index"], i);
+            assert_eq!(frame["input_mode"], "replace");
+            assert_eq!(frame["content_type"], "markdown");
+            assert_eq!(frame["input_state"], if i == 2 { 10 } else { 1 });
+            if i > 0 {
+                assert_eq!(frame["stream_msg_id"], "stream-1");
+                assert!(
+                    frame["content_raw"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with(frames[i - 1]["content_raw"].as_str().unwrap())
+                );
+            }
+        }
+        assert_eq!(
+            frames[2]["content_raw"],
+            "正在检查配置\n\n正在核对结果\n\n处理完成"
+        );
+        let final_message = log
+            .iter()
+            .find(|(path, _)| path.ends_with("/messages"))
+            .unwrap();
+        assert_ne!(final_message.1["msg_seq"], frames[0]["msg_seq"]);
+    }
+
+    #[tokio::test]
+    async fn failed_progress_update_stops_reports_and_closes_accepted_text() {
+        let (api, log) = stub(500).await;
+        let mut stream = QqProgress::new(Arc::new(api), "u1".into(), "in1".into());
+        stream.append("正在检查配置").await.unwrap();
+        assert!(matches!(
+            stream.append("新的进展").await,
+            Err(ChannelError::Api { status: 500, .. })
+        ));
+        assert_eq!(stream.append("后续进展").await.unwrap(), None);
+        stream.finish("处理结束").await.unwrap();
+
+        let log = log.lock().unwrap();
+        let frames: Vec<_> = log.iter().filter(|(path, _)| path != "/token").collect();
+        assert_eq!(frames.len(), 3);
+        assert!(
+            frames
+                .iter()
+                .all(|(path, _)| path.ends_with("/stream_messages"))
+        );
+        assert_eq!(frames[2].1["stream_msg_id"], "stream-1");
+        assert_eq!(frames[2].1["index"], 2);
+        assert_eq!(frames[2].1["input_state"], 10);
+        assert_eq!(frames[2].1["content_raw"], "正在检查配置\n\n处理结束");
     }
 
     #[tokio::test]
