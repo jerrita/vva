@@ -210,7 +210,7 @@ impl Default for AgentSpaceConfig {
             pending_files_ttl_secs: 600,
             task_timeout_secs: 600,
             task_max_failures: 3,
-            progress_interval_secs: 180,
+            progress_interval_secs: 300,
             router: RouterConfig::default(),
             channels: AgentChannels::default(),
         }
