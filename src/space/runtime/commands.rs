@@ -155,6 +155,7 @@ impl Runtime {
             rows.push([
                 s.id,
                 s.title.unwrap_or_default(),
+                s.current_model,
                 if running { "运行中" } else { "空闲" }.into(),
                 if current { "📌 当前" } else { "—" }.into(),
                 duration_label(ttl),
@@ -163,7 +164,15 @@ impl Runtime {
         }
         let mut out = markdown::table(
             "💬 会话列表",
-            ["会话 ID", "标题", "状态", "默认", "空闲 TTL", "剩余时间"],
+            [
+                "会话 ID",
+                "标题",
+                "模型",
+                "状态",
+                "默认",
+                "空闲 TTL",
+                "剩余时间",
+            ],
             rows,
         );
         out.push_str("\n\n💡 使用 `/switch <前缀>` 切换默认会话。");
