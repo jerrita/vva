@@ -135,7 +135,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 |---|---|
 | `/new <消息>` | 强制新建 topic，必须带文字 |
 | `/switch <前缀>` | 设置 focus（歧义列候选并拒绝），后续消息仍经 router |
-| `/sessions` | 列出会话、空闲 TTL 与剩余时间；剩余时间按最后活动时间（尚无活动时取创建时间）计算，到期显示 0s，实际清理遵循 [TTL 清理规则](#41-ttl-清理) |
+| `/sessions` | 列出会话、使用的模型、空闲 TTL 与剩余时间；剩余时间按最后活动时间（尚无活动时取创建时间）计算，到期显示 0s，实际清理遵循 [TTL 清理规则](#41-ttl-清理) |
 | `/stop` | 中止 focus |
 | `/status`（`/stat`） | 会话、模型、上下文占比、cache 命中率、待附件数、当前聊天是否为 home |
 | `/rename <标题>` | 覆盖标题并取消尚未回写的自动标题 |
