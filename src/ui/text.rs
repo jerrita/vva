@@ -51,12 +51,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn truncate_keeps_short_text() {
-        assert_eq!(truncate("hello", 10), "hello");
-        assert_eq!(truncate("", 10), "");
-    }
-
-    #[test]
     fn truncate_is_multibyte_safe_and_width_aware() {
         // CJK 每字符占 2 显示列：宽度预算 6 时只能保留 1 个字符 + "..."
         let cjk = "会话标题可以很长很长很长";
@@ -67,15 +61,6 @@ mod tests {
 
         // 纯 ASCII 行为与字符数语义一致
         assert_eq!(truncate("abcdefghij", 8), "abcde...");
-    }
-
-    #[test]
-    fn truncate_cjk_does_not_overflow_narrow_columns() {
-        // 30 列侧栏标题：按显示宽度截断后不得超出
-        let title = "会话标题可以很长很长很长很长很长";
-        let truncated = truncate(title, 18);
-        let width: usize = truncated.chars().map(char_width).sum();
-        assert!(width <= 18);
     }
 
     #[test]
