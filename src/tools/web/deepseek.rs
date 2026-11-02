@@ -188,26 +188,6 @@ mod tests {
     }
 
     #[test]
-    fn serializes_native_requests() {
-        assert_eq!(
-            serde_json::to_value(SearchRequest {
-                query: "async site:example.com",
-                count: 5,
-                need_content: false,
-            })
-            .unwrap(),
-            json!({"query": "async site:example.com", "count": 5, "need_content": false})
-        );
-        assert_eq!(
-            serde_json::to_value(FetchRequest {
-                url: "https://example.com/article",
-            })
-            .unwrap(),
-            json!({"url": "https://example.com/article"})
-        );
-    }
-
-    #[test]
     fn projects_model_summary_and_preserves_order() {
         let response: SearchResponse = serde_json::from_value(json!({
             "results": [

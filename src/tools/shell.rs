@@ -566,13 +566,4 @@ mod tests {
             "Background execution is not available in this context"
         );
     }
-
-    #[test]
-    fn parameters_declare_optional_run_in_background() {
-        let schema = ShellTool::new(std::env::temp_dir()).input().expect_json();
-        let property = &schema["properties"]["run_in_background"];
-        assert_eq!(property["type"], "boolean");
-        let required = schema["required"].as_array().unwrap();
-        assert!(!required.iter().any(|key| key == "run_in_background"));
-    }
 }

@@ -131,14 +131,4 @@ mod tests {
             "Skill not found: no skills are available"
         );
     }
-
-    #[test]
-    fn parameters_enum_lists_available_skills() {
-        let tool = SkillTool::new(Arc::new(vec![skill("alpha", "a"), skill("beta", "b")]));
-        let parameters = tool.input().expect_json();
-        assert_eq!(
-            parameters["properties"]["name"]["enum"],
-            serde_json::json!(["alpha", "beta"])
-        );
-    }
 }

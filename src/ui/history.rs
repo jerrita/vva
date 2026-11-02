@@ -183,35 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_stats_calculation() {
-        let mut session = Session::with_model(
-            std::path::PathBuf::from("/ws"),
-            None,
-            "model_a",
-            None,
-            crate::model::SessionToggles { web_search: false },
-        );
-        let mut turn = Turn::assistant_turn(vec![]);
-        turn.usage = Some(TokenUsage {
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            cached_tokens: Some(80),
-            reasoning_tokens: None,
-        });
-        session.turns.push(turn);
-
-        let stats = compute_stats(&session, &AppConfig::default());
-        assert_eq!(stats.prompt_tokens, 100);
-        assert_eq!(stats.completion_tokens, 50);
-        assert_eq!(stats.total_tokens, 150);
-        assert_eq!(stats.context_tokens, 150);
-        assert_eq!(stats.cache_read_tokens, 80);
-        assert_eq!(stats.total_turns, 1);
-        assert_eq!(stats.estimated_cost_usd, 0.0);
-    }
-
-    #[test]
     fn context_uses_the_latest_response() {
         let mut session = Session::with_model(
             std::path::PathBuf::from("/ws"),

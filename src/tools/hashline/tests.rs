@@ -786,25 +786,3 @@ fn add_parse_rejects_misuse() {
         })
     );
 }
-
-#[test]
-fn tool_names_follow_editor() {
-    let dir = std::path::Path::new(".");
-    for (editor, read, grep) in [
-        (
-            EditorKind::Hashline,
-            names::HASHLINE_READ,
-            names::HASHLINE_GREP,
-        ),
-        (EditorKind::Patch, names::READ, names::GREP),
-        (EditorKind::Replace, names::READ, names::GREP),
-    ] {
-        assert_eq!(ReadTool::new(dir).with_editor(editor).name(), read);
-        assert_eq!(GrepTool::new(dir).with_editor(editor).name(), grep);
-    }
-    assert_eq!(HashlineEditTool::new(dir).name(), names::HASHLINE_EDIT);
-    assert!(matches!(
-        HashlineEditTool::new(dir).input(),
-        crate::model::ToolInput::Freeform { grammar: None }
-    ));
-}

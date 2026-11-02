@@ -69,10 +69,3 @@ export function changedLines(content: string, diffs: FileDiff[]): Set<number> {
   }
   return marks
 }
-
-/** 首个改动行号；无改动返回 null。 */
-export function firstChangedLine(marks: Set<number>): number | null {
-  let min: number | null = null
-  for (const n of marks) if (min === null || n < min) min = n
-  return min
-}

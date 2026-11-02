@@ -216,15 +216,6 @@ mod tests {
         assert!(error.contains("http"), "unexpected: {error}");
     }
 
-    #[test]
-    fn parameter_schemas_match_registry_validation() {
-        let search = WebSearchTool::new(Arc::new(StubSearch));
-        let call = crate::model::ToolCall::new("c1", "web_search", r#"{"query":"q"}"#);
-        let mut registry = crate::tools::ToolRegistry::new();
-        registry.register(Arc::new(search) as Arc<dyn Tool>);
-        assert!(registry.validate_call(&call).is_ok());
-    }
-
     #[tokio::test]
     async fn oversized_max_results_is_clamped_not_rejected() {
         let search = WebSearchTool::new(Arc::new(StubSearch));

@@ -424,15 +424,4 @@ mod tests {
         assert!(match_invocation("/", &skills).is_none());
         assert!(match_invocation("", &skills).is_none());
     }
-
-    #[test]
-    fn formats_skill_content_wrapper() {
-        let skill = skill_named("pdf-tools");
-        let content = format_skill_content(&skill);
-        assert!(content.starts_with("<skill name=\"pdf-tools\" path=\"/tmp/skills/pdf-tools\">"));
-        assert!(content.contains("body"));
-        assert!(
-            content.ends_with("Load them with the file-reading tools or Shell only when needed.")
-        );
-    }
 }

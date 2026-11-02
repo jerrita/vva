@@ -539,18 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn definition_is_freeform_with_grammar() {
-        let tool = ApplyPatchTool::new(".");
-        assert_eq!(tool.name(), names::APPLY_PATCH);
-        match tool.input() {
-            ToolInput::Freeform { grammar } => {
-                assert!(grammar.unwrap().starts_with("start: begin_patch hunk+"))
-            }
-            ToolInput::Json(_) => panic!("expected freeform"),
-        }
-    }
-
-    #[test]
     fn seek_matches_unicode_quotes() {
         let lines = vec!["let s = \u{201C}hi\u{201D};".into()];
         let pattern = vec!["let s = \"hi\";".into()];

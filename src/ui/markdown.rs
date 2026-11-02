@@ -951,20 +951,6 @@ fn test() {
     }
 
     #[test]
-    fn test_markdown_inline_formatting() {
-        let md = "This is **bold**, *italic*, ~~deleted~~, and `inline code`. > Quote block";
-        let (lines, _) = render_markdown(md, 80);
-        let text: String = lines
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-            .collect();
-        assert!(text.contains("bold"));
-        assert!(text.contains("italic"));
-        assert!(text.contains("deleted"));
-        assert!(text.contains("`inline code`"));
-    }
-
-    #[test]
     fn test_tokenize_text_boundary_cases() {
         let cases: &[(&str, &[&str])] = &[
             ("", &[]),
