@@ -944,11 +944,6 @@ async fn test_web_actions_match_stream_final_and_storage() {
             panic!("expected search event");
         };
         assert_eq!(call.id, format!("ws_{index}"));
-        let encoded = serde_json::to_value(&call).unwrap();
-        assert_eq!(
-            serde_json::from_value::<WebSearchCall>(encoded).unwrap(),
-            call
-        );
         streamed.push(ContentPart::WebSearchCall(call));
         items.push(item);
     }

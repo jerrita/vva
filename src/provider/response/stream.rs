@@ -96,11 +96,7 @@ impl SseEventHandler for ResponseStreamHandler<'_> {
             }
             "response.failed" => {
                 let resp_obj = require_value(&json, "response")?;
-                let err_msg = resp_obj
-                    .get("error")
-                    .and_then(|e| e.get("message"))
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("Response generation failed");
+                let err_msg = require_str(require_value(resp_obj, "error")?, "message")?;
                 Err(ProviderError::Protocol(format!(
                     "Response generation failed: {err_msg}"
                 )))
