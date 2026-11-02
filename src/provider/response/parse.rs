@@ -30,11 +30,7 @@ impl ResponseProvider {
         let status = require_str(&json, "status")?.to_string();
 
         if status == "failed" {
-            let err_msg = json
-                .get("error")
-                .and_then(|e| e.get("message"))
-                .and_then(|m| m.as_str())
-                .unwrap_or("Response status is failed");
+            let err_msg = require_str(require_value(&json, "error")?, "message")?;
             return Err(ProviderError::Protocol(format!(
                 "Response failed: {err_msg}"
             )));
