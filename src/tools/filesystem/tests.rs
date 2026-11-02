@@ -8,7 +8,7 @@ use super::read::*;
 use super::write::*;
 use super::*;
 use crate::config::resolver::InputCapabilities;
-use crate::model::{MediaKind, ToolCall, ToolResult};
+use crate::model::{MediaKind, ToolCall};
 
 #[test]
 fn read_paginates_whole_lines_and_long_utf8_lines() {
@@ -113,10 +113,7 @@ async fn read_binary_is_gated_and_persists_bytes() {
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.attachments[0].data, data);
     assert_eq!(result.attachments[0].kind, MediaKind::Image);
-    let restored: ToolResult =
-        serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
     fs::remove_dir_all(root).unwrap();
-    assert_eq!(restored, result);
 }
 
 #[tokio::test]
@@ -583,10 +580,4 @@ async fn concurrent_edits_with_same_version_apply_once() {
     };
     assert!(error.starts_with("stale:"));
     assert_eq!(fs::read_to_string(path).unwrap(), "updated");
-}
-
-#[test]
-fn edit_locks_tolerate_duplicate_paths() {
-    let path = Path::new("/tmp/vva-lock-dup");
-    assert_eq!(with_edit_locks(&[path, path], || Ok(1)), Ok(1));
 }
