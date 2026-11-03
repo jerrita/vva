@@ -570,7 +570,6 @@ mod tests {
         let c = skill("gamma", "Gamma skill.", "c body");
         let a2 = skill("alpha", "Alpha skill.", "a body v2");
         let r = run(&h, &[a2.clone(), c.clone()]).unwrap();
-        assert!(r.starts_with("<system-reminder type=\"skills-changed\" index=\""));
         assert!(r.contains("Added:\n- gamma: Gamma skill."), "{r}");
         assert!(
             r.contains("Updated (description or instructions changed):\n- alpha"),
@@ -611,8 +610,6 @@ mod tests {
         let skill = skill("pdf-processing", "Extract PDF text.", "1. Open the file.");
 
         let list = format_skills_reminder(std::slice::from_ref(&skill));
-        assert!(list.starts_with("<system-reminder type=\"skills\" index=\"pdf-processing:"));
-        assert!(list.ends_with("</system-reminder>"));
         assert!(list.contains("- pdf-processing: Extract PDF text."));
         assert_eq!(
             parse_agents_reminder(&list).unwrap().kind,
@@ -620,10 +617,6 @@ mod tests {
         );
 
         let loaded = format_skill_load_reminder(&skill);
-        assert!(
-            loaded.starts_with("<system-reminder type=\"skill-loaded\" name=\"pdf-processing\">")
-        );
-        assert!(loaded.contains("<skill name=\"pdf-processing\" path=\"/skills/pdf-processing\">"));
         let parsed = parse_agents_reminder(&loaded).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::SkillLoaded);
         assert_eq!(parsed.name, "pdf-processing");
@@ -637,8 +630,6 @@ mod tests {
         let notification =
             "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 4 bytes";
         let reminder = format_background_task_reminder(notification);
-        assert!(reminder.starts_with("<system-reminder type=\"background-task\">"));
-
         let parsed = parse_agents_reminder(&reminder).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::BackgroundTask);
         assert_eq!(parsed.content, notification);

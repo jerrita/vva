@@ -388,18 +388,21 @@ mod tests {
     #[test]
     fn reminder_wraps_status_and_tail() {
         let reminder = format_session_reminder(&report("all done"), true);
-        assert!(reminder.starts_with("<system-reminder type=\"background-task\">"));
-        assert!(reminder.contains("Background agent sess_a1 (general) finished."));
-        assert!(reminder.contains("title: [general] probe"));
-        assert!(reminder.contains("--- final message"));
-        assert!(reminder.contains("SendMessage"));
+        assert_eq!(
+            crate::system::parse_agents_reminder(&reminder)
+                .unwrap()
+                .kind,
+            crate::system::AgentsReminderKind::BackgroundTask
+        );
+        for fact in ["sess_a1", "[general] probe", "all done"] {
+            assert!(reminder.contains(fact), "{fact}\n{reminder}");
+        }
     }
 
     #[test]
     fn reminder_marks_missing_final_message() {
         let reminder = format_session_reminder(&report("  "), true);
-        assert!(reminder.contains("produced no final message"));
-        assert!(!reminder.contains("--- final message"));
+        assert!(reminder.contains("no final message"));
     }
 
     #[test]

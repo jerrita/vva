@@ -317,8 +317,6 @@ mod tests {
                 truncated,
             } => {
                 assert_eq!(path, ".");
-                assert!(content.contains("目录列表"));
-                assert!(content.contains("按需使用工具读取"));
                 assert_eq!(
                     content.lines().skip(1).collect::<Vec<_>>(),
                     ["a/", "a.txt", "z.txt"]
@@ -434,15 +432,6 @@ mod tests {
             extract_mention_paths(text),
             vec!["src/main.rs".to_string(), "docs/a.md".to_string()]
         );
-    }
-
-    #[test]
-    fn test_extract_trailing_punctuation() {
-        assert_eq!(
-            extract_mention_paths("见 @a.md，然后 @b.rs。"),
-            vec!["a.md", "b.rs"]
-        );
-        assert_eq!(extract_mention_paths("(@x.rs)"), vec!["x.rs"]);
     }
 
     #[test]

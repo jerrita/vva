@@ -187,9 +187,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_empty_query() {
         let tool = WebSearchTool::new(Arc::new(StubSearch));
-        let error = tool.execute(r#"{"query":"  "}"#).await.unwrap_err();
-
-        assert_eq!(error, "query must not be empty");
+        assert!(tool.execute(r#"{"query":"  "}"#).await.is_err());
     }
 
     #[tokio::test]

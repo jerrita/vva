@@ -397,41 +397,32 @@ fn test_anthropic_web_search_parse_and_native_echo() {
 /// annotation 关闭 web_fetch：仅声明 web_search，
 /// 保住会被未接线 web_fetch 的中转端点整组丢弃的原生搜索
 #[test]
-fn test_anthropic_web_fetch_declaration_disabled_by_annotation() {
+fn test_anthropic_web_search_and_fetch_declared_independently() {
     let provider = AnthropicProvider::new("test-key");
     let session = Session::new(PathBuf::from("/tmp"), None);
-    let options = CompletionOptions {
-        model: "claude-haiku-4-5".into(),
-        enable_web_search: true,
-        enable_web_fetch: false,
-        ..Default::default()
-    };
-    let body = provider
-        .build_request_body(&session, &[], &options)
-        .expect("build body");
-    let tools = body["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["type"], "web_search_20260318");
-    assert_eq!(tools[0]["name"], "web_search");
-}
-
-#[test]
-fn web_fetch_can_be_declared_without_web_search() {
-    let provider = AnthropicProvider::new("test-key");
-    let session = Session::new(PathBuf::from("/tmp"), None);
-    let options = CompletionOptions {
-        model: "claude-haiku-4-5".into(),
-        enable_web_search: false,
-        enable_web_fetch: true,
-        ..Default::default()
-    };
-    let body = provider
-        .build_request_body(&session, &[], &options)
-        .unwrap();
-    let tools = body["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "web_fetch");
-    assert_eq!(tools[0]["type"], "web_fetch_20260318");
+    for (search, fetch, expected) in [
+        (true, false, ("web_search", "web_search_20260318")),
+        (false, true, ("web_fetch", "web_fetch_20260318")),
+    ] {
+        let options = CompletionOptions {
+            model: "claude-haiku-4-5".into(),
+            enable_web_search: search,
+            enable_web_fetch: fetch,
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .expect("build body");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(
+            (
+                tools[0]["name"].as_str().unwrap(),
+                tools[0]["type"].as_str().unwrap()
+            ),
+            expected
+        );
+    }
 }
 
 /// 官方 web fetch 响应样例：调用对投影为 OpenPage，document 内容块回传保真

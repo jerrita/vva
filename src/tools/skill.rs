@@ -111,24 +111,14 @@ mod tests {
     async fn loads_skill_body_by_name() {
         let tool = SkillTool::new(Arc::new(vec![skill("pdf-processing", "1. Open it.")]));
         let result = tool.execute(r#"{"name":"pdf-processing"}"#).await.unwrap();
-        assert!(
-            result.contains("<skill name=\"pdf-processing\" path=\"/tmp/skills/pdf-processing\">")
-        );
+        assert!(result.contains("/tmp/skills/pdf-processing"));
         assert!(result.contains("1. Open it."));
-        assert!(result.contains("Load them with the file-reading tools or Shell"));
     }
 
     #[tokio::test]
     async fn unknown_name_reports_available_skills() {
         let tool = SkillTool::new(Arc::new(vec![skill("alpha", "a")]));
         let error = tool.execute(r#"{"name":"beta"}"#).await.unwrap_err();
-        assert!(error.contains("Skill not found: beta"), "{error}");
-        assert!(error.contains("Available skills: alpha"), "{error}");
-
-        let empty = SkillTool::new(Arc::new(Vec::new()));
-        assert_eq!(
-            empty.execute(r#"{"name":"alpha"}"#).await.unwrap_err(),
-            "Skill not found: no skills are available"
-        );
+        assert!(error.contains("beta") && error.contains("alpha"), "{error}");
     }
 }

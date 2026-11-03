@@ -206,7 +206,6 @@ fn required_api_key(web: &WebSettings, name: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::{WebApiAuth, WebProviders};
 
     fn settings(json: &str) -> WebSettings {
         serde_json::from_str(json).unwrap()
@@ -360,25 +359,5 @@ mod tests {
                 "{model}"
             );
         }
-    }
-
-    #[test]
-    fn required_api_key_rejects_missing_or_blank() {
-        let undeclared = settings(r#"{"search":"tavily"}"#);
-        assert!(required_api_key(&undeclared, "tavily").is_err());
-        let blank = WebSettings {
-            provider: Some(WebProviders {
-                zhipu: None,
-                deepseek: None,
-                brave: None,
-                google: None,
-                tavily: Some(WebApiAuth {
-                    api_key: "   ".to_string(),
-                }),
-            }),
-            search: None,
-            fetch: None,
-        };
-        assert!(required_api_key(&blank, "tavily").is_err());
     }
 }

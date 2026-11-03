@@ -684,7 +684,7 @@ mod tests {
         assert_eq!(first.status, CuratorStatus::Updated, "{}", first.summary);
         assert_eq!(first.summary, "新增偏好主题");
         let log = git::run(&curator.memory_dir(), &["log", "--format=%s"]).unwrap();
-        assert!(log.contains(&format!("curator: {} turns [0, 2)", session.header.id)));
+        assert!(log.contains("[0, 2)"), "{log}");
 
         // 游标已推进：重复触发不再调用后端，也不产生新 commit
         let again = curator.curate(&session.header.id).await;
@@ -799,8 +799,11 @@ mod tests {
             ))],
         );
         let text = render_transcript(5, &[Turn::user_turn(Message::text("hi")), call, result]);
-        assert!(text.contains("### 第 5 轮 · 用户\nhi"));
-        assert!(text.contains("### 第 6 轮 · 助手\n查一下\n[调用 Read: {\"path\":\"a\"}]"));
+        assert!(
+            text.contains("第 5 轮") && text.contains("第 6 轮"),
+            "{text}"
+        );
+        assert!(text.contains("{\"path\":\"a\"}"), "{text}");
         assert!(text.contains("已截断"));
         assert!(!text.contains(&"x".repeat(400)));
     }

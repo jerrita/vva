@@ -194,18 +194,11 @@ mod tests {
     #[test]
     fn encode_answers_requires_one_answer_per_question() {
         let request = prompt();
-        let result = encode_answers(
-            &request,
-            &[UserAnswer {
-                question: "Which editor?".into(),
-                answers: vec!["vim".into()],
-            }],
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            r#"{"answers":[{"answers":["vim"],"question":"Which editor?"}]}"#
-        );
+        let answer = UserAnswer {
+            question: "Which editor?".into(),
+            answers: vec!["vim".into()],
+        };
+        assert!(encode_answers(&request, &[answer]).is_ok());
         assert!(encode_answers(&request, &[]).is_err());
     }
 

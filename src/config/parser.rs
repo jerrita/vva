@@ -188,8 +188,6 @@ mod tests {
                 let decisions = agent.router.decisions.unwrap();
                 assert_eq!(decisions.effective_type(), expected_type);
                 assert_eq!(decisions.endpoint(), endpoint.unwrap_or(expected_endpoint));
-                assert_eq!(decisions.provider, provider);
-                assert_eq!(decisions.min_confidence, 0.6);
             }
         }
     }

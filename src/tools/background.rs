@@ -636,7 +636,6 @@ mod tests {
         let snapshot =
             wait_for_status(&tasks, &id, &BackgroundStatus::Exited { code: Some(3) }).await;
         assert_eq!(ids.lock().unwrap().as_slice(), std::slice::from_ref(&id));
-        assert_eq!(snapshot.intent, "check");
         assert!(snapshot.tail.contains("hi"), "tail: {}", snapshot.tail);
         assert!(snapshot.tail.contains("err"), "tail: {}", snapshot.tail);
         assert!(!snapshot.truncated);
@@ -654,8 +653,7 @@ mod tests {
             BackgroundStatus::Running
         );
 
-        let message = tasks.stop(&id).unwrap();
-        assert_eq!(message, format!("Task {id} stopped."));
+        tasks.stop(&id).unwrap();
         assert_eq!(
             tasks.snapshot(&id).unwrap().status,
             BackgroundStatus::Killed

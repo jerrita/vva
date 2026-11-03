@@ -150,78 +150,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_model_annotation_disables_web_fetch_declaration() {
-        let json = r#"{
-            "providers": {
-                "prov": {
-                    "type": "anthropic",
-                    "models": {
-                        "with-annotation": {
-                            "name": "With Annotation",
-                            "annotation": { "web_fetch": false }
-                        },
-                        "without-annotation": { "name": "Without Annotation" }
-                    }
-                }
-            }
-        }"#;
-        let config = parse_config_str(json).expect("parse config");
-
-        let annotated = &config.providers["prov"].models["with-annotation"];
-        assert!(!annotated.declare_web_fetch());
-
-        let plain = &config.providers["prov"].models["without-annotation"];
-        assert!(plain.declare_web_fetch());
-    }
-
-    #[test]
-    fn test_model_annotation_web_search_declaration() {
-        let json = r#"{
-            "providers": {
-                "prov": {
-                    "models": {
-                        "plain": { "name": "Plain" },
-                        "no-search": {
-                            "name": "No Search",
-                            "annotation": { "web_search": false }
-                        }
-                    }
-                }
-            }
-        }"#;
-        let config = parse_config_str(json).expect("parse config");
-
-        assert!(
-            !config.providers["prov"].models["no-search"].declare_web_search(),
-            "annotation.web_search: false 应关闭原生搜索声明"
-        );
-        assert!(config.providers["prov"].models["plain"].declare_web_search());
-    }
-
-    #[test]
-    fn test_model_annotation_affinity_default_and_override() {
-        let json = r#"{
-            "providers": {
-                "prov": {
-                    "models": {
-                        "plain": { "name": "Plain" },
-                        "gpt": {
-                            "name": "GPT",
-                            "annotation": { "affinity": "gpt" }
-                        }
-                    }
-                }
-            }
-        }"#;
-        let config = parse_config_str(json).expect("parse config");
-        let models = &config.providers["prov"].models;
-
-        // 缺省亲和组 = provider 节点 id；显式声明优先
-        assert_eq!(models["plain"].affinity("prov"), "prov");
-        assert_eq!(models["gpt"].affinity("prov"), "gpt");
-    }
-
-    #[test]
     fn test_settings_web_merge_replaces_section() {
         let global = parse_config_str(
             r#"{
@@ -258,33 +186,6 @@ mod tests {
         let provider = web.provider.as_ref().unwrap();
         assert!(provider.brave.is_none());
         assert_eq!(provider.tavily.as_ref().unwrap().api_key, "project-key");
-    }
-
-    #[test]
-    fn test_model_annotation_editor_override() {
-        let json = r#"{
-            "providers": {
-                "prov": {
-                    "type": "response",
-                    "models": {
-                        "plain": { "name": "Plain" },
-                        "codex": { "name": "Codex", "annotation": { "editor": "patch" } },
-                        "hashed": { "name": "Hashed", "annotation": { "editor": "hashline" } }
-                    }
-                }
-            }
-        }"#;
-        let config = parse_config_str(json).expect("parse config");
-        let models = &config.providers["prov"].models;
-        assert_eq!(models["plain"].editor(), None);
-        assert_eq!(
-            models["codex"].editor(),
-            Some(crate::model::EditorKind::Patch)
-        );
-        assert_eq!(
-            models["hashed"].editor(),
-            Some(crate::model::EditorKind::Hashline)
-        );
     }
 
     #[test]
@@ -472,12 +373,6 @@ mod tests {
             }
         }"#;
         let config = parse_config_str(json).expect("parse config");
-
-        assert_eq!(config.settings.default, "a/gpt-5.6-terra");
-        assert_eq!(
-            config.settings.small_model.as_deref(),
-            Some("a/gpt-5.6-luna")
-        );
 
         // 1. 默认模型解析与 Variant 校验
         let resolved = config

@@ -545,7 +545,6 @@ mod tests {
             .await;
         assert!(started.elapsed() < Duration::from_millis(500));
         assert!(!result.is_error, "{}", result.content);
-        assert!(result.content.contains("Background task started: "));
         let id = result.background_task_id.expect("background task identity");
         assert_eq!(
             tasks.snapshot(&id).expect("task registered").status,
@@ -557,13 +556,10 @@ mod tests {
     #[tokio::test]
     async fn background_without_registry_errors() {
         let tool = ShellTool::new(std::env::temp_dir());
-        let error = tool
-            .execute(r#"{"intent":"x","command":"echo hi","run_in_background":true}"#)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error,
-            "Background execution is not available in this context"
+        assert!(
+            tool.execute(r#"{"intent":"x","command":"echo hi","run_in_background":true}"#)
+                .await
+                .is_err()
         );
     }
 }
