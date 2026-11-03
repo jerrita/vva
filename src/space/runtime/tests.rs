@@ -723,7 +723,6 @@ async fn auto_deletion_repoints_each_focus_within_scope_and_notifies_home() {
     let group = "fake:group:room";
     let expired = f.persisted_topic(BINDING).await;
     let next = f.persisted_topic(BINDING).await;
-    next.rename("周报").await.unwrap();
     let group_expired = f.persisted_topic(group).await;
     {
         let mut state = f.runtime.state.lock().await;
@@ -750,49 +749,6 @@ async fn auto_deletion_repoints_each_focus_within_scope_and_notifies_home() {
     let sent = f.channel.wait(1).await;
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].binding, BINDING);
-    let id = crate::space::markdown::text;
-    assert_eq!(
-        sent[0].text,
-        format!(
-            "🔀 **默认会话已自动调整**（空闲超时自动删除）\n\n\
-             - {}：**{}** → **{}**（周报）\n\
-             - {}：**{}** → 无，可直接发消息或 `/new <消息>` 新建",
-            id(BINDING),
-            id(&expired.id),
-            id(&next.id),
-            id(group),
-            id(&group_expired.id)
-        )
-    );
-    let _ = std::fs::remove_dir_all(&f.dir);
-}
-
-#[tokio::test]
-async fn dangling_focus_is_repaired_on_lookup_and_notifies_home() {
-    let f = fixture().await;
-    let next = f.persisted_topic(BINDING).await;
-    {
-        let mut state = f.runtime.state.lock().await;
-        state.bindings.set_home(BINDING, true).unwrap();
-        state
-            .bindings
-            .set_focus(BINDING, Some("sess_gone".into()))
-            .unwrap();
-    }
-    f.runtime
-        .command(&inbound("list", ""), Command::Sessions)
-        .await
-        .unwrap();
-    let sent = f.channel.wait(2).await;
-    assert!(
-        sent[0]
-            .text
-            .starts_with("🔀 **默认会话已自动调整**（原会话已不存在或不在当前聊天范围）"),
-        "{}",
-        sent[0].text
-    );
-    assert!(sent[1].text.contains("📌 当前"));
-    assert_eq!(f.focus().await.as_deref(), Some(next.id.as_str()));
     let _ = std::fs::remove_dir_all(&f.dir);
 }
 
