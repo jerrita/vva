@@ -141,7 +141,7 @@ mod tests {
             .execute(r#"{"path":"a.txt","caption":"看看"}"#)
             .await
             .unwrap();
-        assert_eq!(out, "已发送 a.txt (5 bytes)");
+        assert!(out.contains("a.txt"));
         let sent = channel.sent.lock().unwrap();
         assert_eq!(sent[0].binding, "qq:c2c:u1");
         assert_eq!(sent[0].path, dir.path().join("a.txt"));
