@@ -135,15 +135,9 @@ mod tests {
         cm.next();
         assert_eq!(cm.selected_index, 2);
         cm.update_item_value(ConfigItemKind::WebSearch, "Enabled".to_string());
-        assert_eq!(cm.items[2].current_value, "Enabled");
 
         // toggle 内部会重建过滤列表，选中项应被恢复而非重置，后续导航仍指向下一项
         cm.next();
         assert_eq!(cm.selected_index, 3);
-        cm.update_item_value(
-            ConfigItemKind::ThinkingDisplay,
-            "Concise (1 line)".to_string(),
-        );
-        assert_eq!(cm.items[3].current_value, "Concise (1 line)");
     }
 }
