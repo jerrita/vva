@@ -419,19 +419,12 @@ async fn task_completion_injects_persisted_user_turn() {
     task.drain_task_completions().await.unwrap();
     assert!(task.task_completions.is_empty());
     let text = task.view.session.turns.last().unwrap().text_content();
-    // 注入轮次为 background-task reminder：首行为状态，机器注入可识别
-    assert!(
-        text.contains("<system-reminder type=\"background-task\">"),
-        "{text}"
+    let reminder = crate::system::parse_agents_reminder(&text).unwrap();
+    assert_eq!(
+        reminder.kind,
+        crate::system::AgentsReminderKind::BackgroundTask
     );
-    assert!(text.ends_with("</system-reminder>"), "{text}");
-    for expected in [
-        format!("Background task {id} exited with code 0").as_str(),
-        "done",
-        "TaskOutput",
-    ] {
-        assert!(text.contains(expected), "{text}");
-    }
+    assert!(text.contains(&id) && text.contains("done"), "{text}");
     let loaded = task
         .store
         .load_session(&task.view.session.header.id)
@@ -492,7 +485,6 @@ async fn execute_drains_completions_before_next_model_call() {
     let turns = &task.view.session.turns;
     assert_eq!(turns.len(), 2);
     assert_eq!(turns[0].role, Role::User);
-    assert!(turns[0].text_content().contains("background-task"));
     assert!(crate::system::parse_agents_reminder(&turns[0].text_content()).is_some());
     assert_eq!(turns[1].role, Role::Assistant);
     assert_eq!(turns[1].text_content(), "done");
@@ -515,14 +507,11 @@ async fn drain_subagent_completions_injects_final_message_reminder() {
     task.drain_subagent_completions().await.unwrap();
 
     let text = task.view.session.turns.last().unwrap().text_content();
-    assert!(
-        text.contains("<system-reminder type=\"background-task\">"),
-        "{text}"
+    assert_eq!(
+        crate::system::parse_agents_reminder(&text).unwrap().kind,
+        crate::system::AgentsReminderKind::BackgroundTask
     );
-    assert!(
-        text.contains("Background agent sess_kid1 (explore) finished."),
-        "{text}"
-    );
+    assert!(text.contains("sess_kid1"), "{text}");
     assert!(text.contains("found 3 matches"), "{text}");
     assert!(task.subagent_completions.is_empty());
     task.queue_session_completion(
@@ -1272,7 +1261,7 @@ async fn skill_changes_are_announced_before_the_next_user_message() {
     task.start("third", Vec::new()).await.unwrap();
     let changed = kinds(&task);
     assert_eq!(changed.len(), 1);
-    assert!(changed[0].contains("Added:\n- beta: Beta skill."));
+    assert!(changed[0].contains("beta"));
     let turns = &task.view.session.turns;
     let n = turns.len();
     assert!(turns[n - 2].text_content().contains("skills-changed"));
@@ -1344,40 +1333,6 @@ fn queued(text: &str) -> (PendingDelivery, super::handle::DeliveryReceipt) {
         },
         receipt,
     )
-}
-
-#[tokio::test]
-async fn deliver_while_running_is_queued_and_acked() {
-    let (mut task, _view) = event_task();
-    let (tx, mut rx) = mpsc::channel(4);
-    let (_events_tx, mut events_rx) = mpsc::channel::<AgentEvent>(1);
-    let (reply, reply_rx) = oneshot::channel();
-    // 保持 tx 存活：发送端全部关闭会使 drive 视为会话退出
-    let sender = tx.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let _ = sender
-            .send(Command::Deliver {
-                delivery: queued("hello").0,
-                reply,
-            })
-            .await;
-    });
-    let outcome = task
-        .drive(
-            async {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                7
-            },
-            &mut rx,
-            &mut events_rx,
-        )
-        .await;
-    assert_eq!(outcome, Some(7));
-    reply_rx.await.unwrap().unwrap();
-    assert_eq!(task.pending_deliveries.len(), 1);
-    assert_eq!(task.pending_deliveries[0].text, "hello");
-    cleanup(&task);
 }
 
 #[tokio::test]

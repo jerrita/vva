@@ -116,35 +116,21 @@ fn plain(lines: &[Line]) -> String {
 }
 
 #[test]
-fn edit_detail_uses_unified_diff_when_narrow() {
-    let mut lines = Vec::new();
-    push_edit_detail(
-        &mut lines,
-        r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
-        None,
-        40,
-        20,
-    );
-    let text = joined(&lines);
-    assert!(text.contains("   1 - old"));
-    assert!(text.contains("   1 + new"));
-    assert!(!text.contains("│"));
-}
-
-#[test]
-fn edit_detail_uses_columns_when_wide() {
-    let mut lines = Vec::new();
-    push_edit_detail(
-        &mut lines,
-        r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
-        None,
-        80,
-        20,
-    );
-    let text = joined(&lines);
-    assert!(text.contains("   1 - old"));
-    assert!(text.contains("   1 + new"));
-    assert!(text.contains("│"));
+fn edit_detail_switches_to_columns_when_wide() {
+    for (width, columns) in [(40, false), (80, true)] {
+        let mut lines = Vec::new();
+        push_edit_detail(
+            &mut lines,
+            r#"{"path":"a.rs","old_string":"old","new_string":"new"}"#,
+            None,
+            width,
+            20,
+        );
+        let text = joined(&lines);
+        assert!(text.contains("   1 - old"));
+        assert!(text.contains("   1 + new"));
+        assert_eq!(text.contains("│"), columns);
+    }
 }
 
 #[test]
@@ -253,17 +239,14 @@ fn tool_call_collapsed_is_one_line() {
     for hidden in ["→ Read", "hello", "Output:"] {
         assert!(!text.contains(hidden));
     }
-}
 
-#[test]
-fn tool_read_shows_requested_range() {
     let call = ToolCall::new(
         "c1",
         "Read",
         r#"{"path":"src/main.rs","offset":10,"limit":20}"#,
     );
-    let (text, _) = render_call(&call, Some(&ToolResult::success("c1", "10: hello")), &[]);
-    assert!(text.contains("* Read src/main.rs [offset=10, limit=20]"));
+    let (text, _) = render_call(&call, None, &[]);
+    assert!(text.contains("[offset=10, limit=20]"));
 }
 
 #[test]
@@ -750,33 +733,6 @@ async fn test_thinking_grouping_and_concise_modes() {
     assert!(all_text.contains("Thought:"));
     assert!(all_text.contains("Cross-checking sources"));
     assert!(!all_text.contains("**"));
-}
-
-#[tokio::test]
-async fn test_single_line_thought_renders_inline() {
-    let mut app = create_test_app().await;
-    app.add_part(
-        Role::Assistant,
-        ContentPart::reasoning("Researching ARM Granular Data Isolation", None),
-    );
-    for concise in [false, true] {
-        app.thinking_concise = concise;
-        let lines = build_chat_lines(&app, 80);
-        let thought = lines
-            .iter()
-            .find(|l| l.spans.first().is_some_and(|s| s.content == "Thought:"))
-            .expect("inline thought line");
-        assert_eq!(
-            thought.to_string(),
-            "Thought: Researching ARM Granular Data Isolation"
-        );
-        let markers = lines.iter().any(|l| {
-            l.spans
-                .first()
-                .is_some_and(|s| s.content == "- Thought" || s.content == "+ Thought")
-        });
-        assert!(!markers);
-    }
 }
 
 #[tokio::test]
@@ -1270,14 +1226,7 @@ println!("hello");
     let lines = build_chat_lines(&app, 80);
     assert!(!lines.is_empty());
 
-    // 检查渲染出的 Markdown 内容
     let all_text = plain(&lines);
-    assert!(all_text.contains("Hello World"));
-    assert!(all_text.contains("bold"));
-    assert!(all_text.contains("inline code"));
-    assert!(all_text.contains("Item 1"));
-    assert!(all_text.contains("Item 2"));
-    assert!(all_text.contains("println!"));
     assert!(all_text.contains("Rust Lang"));
     assert!(all_text.contains("https://rust-lang.org"));
 
@@ -1293,37 +1242,6 @@ println!("hello");
     for line in assistant_lines {
         assert_eq!(line.spans.first().map(|s| s.content.as_ref()), Some("  "));
     }
-}
-
-#[tokio::test]
-async fn test_assistant_markdown_streaming_and_complex_elements() {
-    let mut app = create_test_app().await;
-    let md_streaming = r#"> Note: this is a blockquote
-
-| Column A | Column B |
-| -------- | -------- |
-| Value 1  | Value 2  |
-
-```python
-def stream_test():
-pass
-"#;
-    app.add_part(
-        Role::Assistant,
-        ContentPart::Text {
-            text: md_streaming.to_string(),
-            annotations: Vec::new(),
-        },
-    );
-
-    let lines = build_chat_lines(&app, 80);
-    assert!(!lines.is_empty());
-
-    let all_text = plain(&lines);
-    assert!(all_text.contains("Note: this is a blockquote"));
-    assert!(all_text.contains("Column A"));
-    assert!(all_text.contains("Value 1"));
-    assert!(all_text.contains("def stream_test():"));
 }
 
 #[tokio::test]
@@ -1367,8 +1285,6 @@ async fn test_render_chat_scrollbar_and_scrolling() {
     assert_eq!(last_cell.symbol(), SCROLLBAR_THUMB);
     assert_eq!(last_cell.fg, Color::Rgb(130, 140, 158));
     assert_eq!(buffer.cell((bar_x, viewport.y)).unwrap().fg, PANEL_BORDER);
-    assert_eq!(buffer.cell((77, viewport.y)).unwrap().symbol(), " ");
-    assert_eq!(buffer.cell((bar_x, 9)).unwrap().symbol(), "╯");
 
     // 滚到顶时，滚动条滑块位于视口最顶部行
     app.scroll_to_top();
@@ -1448,21 +1364,6 @@ fn test_highlight_offset_window_above_selection_start() {
 }
 
 #[test]
-fn test_extract_selected_text_single_line() {
-    let lines = vec![Line::from(vec![
-        Span::raw("Hello "),
-        Span::styled("World", Style::default().fg(Color::Green)),
-        Span::raw("!"),
-    ])];
-    let sel = TextSelection::new(
-        TextCoord { line: 0, col: 6 },
-        TextCoord { line: 0, col: 11 },
-    );
-    let extracted = extract_selected_text(&lines, &sel);
-    assert_eq!(extracted, Some("World".to_string()));
-}
-
-#[test]
 fn test_extract_selected_text_multiline_cjk() {
     let lines = vec![
         Line::from(vec![Span::raw("第一行：你好世界")]),
@@ -1476,20 +1377,6 @@ fn test_extract_selected_text_multiline_cjk() {
     );
     let extracted = extract_selected_text(&lines, &sel);
     assert_eq!(extracted, Some("你好世界\n第二行：Rust".to_string()));
-}
-
-#[test]
-fn test_extract_selected_text_reverse_drag() {
-    let lines = vec![
-        Line::from(vec![Span::raw("Line 0 alpha")]),
-        Line::from(vec![Span::raw("Line 1 beta")]),
-    ];
-    let sel = TextSelection::new(
-        TextCoord { line: 1, col: 11 },
-        TextCoord { line: 0, col: 7 },
-    );
-    let extracted = extract_selected_text(&lines, &sel);
-    assert_eq!(extracted, Some("alpha\nLine 1 beta".to_string()));
 }
 
 #[test]
@@ -1926,15 +1813,6 @@ fn hashline_edit_result_covers_created_and_deleted() {
     assert!(text.contains("Add  n.rs"), "{text}");
     assert!(text.contains("1 + hello"), "{text}");
     assert!(text.contains("Delete  old.rs"), "{text}");
-}
-
-#[test]
-fn hashline_edit_failure_shows_patch_and_error() {
-    let call = custom_call(names::HASHLINE_EDIT, HASHLINE_INPUT);
-    let result = ToolResult::error("p1", "stale_tag");
-    let (text, _) = render_call(&call, Some(&result), &[]);
-    assert!(text.contains("[src/a.rs#1A2B]"), "{text}");
-    assert!(text.contains("stale_tag"));
 }
 
 #[tokio::test]

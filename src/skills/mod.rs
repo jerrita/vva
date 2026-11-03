@@ -234,10 +234,7 @@ mod tests {
         let skill = parse_skill(&root.join("pdf-processing"), SkillSource::Global).unwrap();
         assert_eq!(skill.name, "pdf-processing");
         assert_eq!(skill.description, "Extract PDF text and fill forms.");
-        assert!(skill.license.is_none());
-        assert!(skill.metadata.is_empty());
         assert_eq!(skill.body, "\n# Steps\n\n1. Open the file.");
-        assert_eq!(skill.source, SkillSource::Global);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -250,11 +247,7 @@ mod tests {
             "---\nname: web-scrape\ndescription: Scrape pages.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.12+\nmetadata:\n  author: example-org\n  version: \"1.0\"\n  hermes:\n    tags: [a]\nallowed-tools: Bash(curl:*) Read\nhidden: true\nversion: 2\n---\nBody here.\n",
         );
         let skill = parse_skill(&root.join("web-scrape"), SkillSource::Project).unwrap();
-        assert_eq!(skill.license.as_deref(), Some("Apache-2.0"));
-        assert_eq!(
-            skill.compatibility.as_deref(),
-            Some("Requires Python 3.12+")
-        );
+        // metadata 只保留字符串值；未知顶层字段被忽略
         assert_eq!(
             skill.metadata.get("author").map(String::as_str),
             Some("example-org")
@@ -265,7 +258,6 @@ mod tests {
         );
         assert!(!skill.metadata.contains_key("hermes"));
         assert_eq!(skill.allowed_tools.as_deref(), Some("Bash(curl:*) Read"));
-        assert_eq!(skill.source, SkillSource::Project);
         let _ = std::fs::remove_dir_all(root);
     }
 

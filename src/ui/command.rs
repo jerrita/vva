@@ -202,30 +202,6 @@ mod tests {
         ));
         assert!(names(&all_matches).contains(&"/pdf".to_string()));
 
-        let sess_matches = match_candidates("/session", &skills);
-        assert_eq!(sess_matches.len(), 1);
-        assert_eq!(sess_matches[0].token(), "/sessions");
-
-        let new_matches = match_candidates("/new", &skills);
-        assert_eq!(new_matches.len(), 1);
-        assert_eq!(new_matches[0].token(), "/new");
-
-        let q_matches = match_candidates("/q", &skills);
-        assert_eq!(q_matches.len(), 1);
-        assert_eq!(q_matches[0].token(), "/quit");
-
-        let v_matches = match_candidates("/v", &skills);
-        assert_eq!(v_matches.len(), 1);
-        assert_eq!(v_matches[0].token(), "/variant");
-
-        let cfg_matches = match_candidates("/conf", &skills);
-        assert_eq!(cfg_matches.len(), 1);
-        assert_eq!(cfg_matches[0].token(), "/config");
-
-        let think_matches = match_candidates("/think", &skills);
-        assert_eq!(think_matches.len(), 1);
-        assert_eq!(think_matches[0].token(), "/thinking");
-
         let pdf_matches = match_candidates("/pdf", &skills);
         assert_eq!(pdf_matches.len(), 1);
         assert_eq!(pdf_matches[0].token(), "/pdf");

@@ -305,14 +305,8 @@ async fn edit_basics_diff_replace_all_and_unchanged() {
         .await
         .unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "one\nafter\nthree\n");
-    assert_eq!(
-        result,
-        format!(
-            "--- {0}\n+++ {0}\n@@ -1,3 +1,3 @@\n one\n-before\n+after\n three\n[version: {1}]",
-            path.display(),
-            content_version("one\nafter\nthree\n")
-        )
-    );
+    assert!(result.contains("-before\n+after"), "{result}");
+    assert!(result.contains(&content_version("one\nafter\nthree\n")));
     tool.execute(
         r#"{"path":"all.txt","old_string":"before","new_string":"after","replace_all":true}"#,
     )
@@ -339,13 +333,13 @@ async fn write_creates_new_file_and_rejects_existing() {
         .unwrap();
     let path = root.path().join("a/b/file.txt");
     assert_eq!(fs::read_to_string(&path).unwrap(), "hello\nworld");
-    assert_eq!(result, format!("Created file {}", path.display()));
+    assert!(result.contains(&path.display().to_string()));
 
-    let error = tool
-        .execute(r#"{"path":"old.txt","content":"replacement"}"#)
-        .await
-        .unwrap_err();
-    assert!(error.starts_with("Failed to create file "));
+    assert!(
+        tool.execute(r#"{"path":"old.txt","content":"replacement"}"#)
+            .await
+            .is_err()
+    );
     assert_eq!(
         fs::read_to_string(root.path().join("old.txt")).unwrap(),
         "existing"

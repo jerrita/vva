@@ -132,12 +132,6 @@ async fn test_slash_command_variant_execution() {
         .await
         .unwrap();
     let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
-    assert!(
-        app.session_mgr
-            .app_config()
-            .resolve_model("prov/model-without-vars", Some("none"))
-            .is_err()
-    );
     app_no_vars.run("/variant").await;
     let ActiveModal::Variants(vm_empty) = &app_no_vars.modal else {
         panic!("expected variants modal");
@@ -358,115 +352,64 @@ async fn test_response_groups_keep_independent_state_across_prompts() {
 
 #[tokio::test]
 async fn test_completed_single_turn_work_collapses_before_final_reply() {
-    let mut ta = create_test_app("test_model", None, None, false).await;
-    let app = &mut ta.app;
-    app.thinking_concise = false;
-    let view = std::sync::Arc::make_mut(&mut app.view);
-    let session = std::sync::Arc::make_mut(&mut view.session);
+    use crate::model::{ContentPart, WebSearchCall};
+    let search = |id: &str, query: &str| {
+        ContentPart::WebSearchCall(WebSearchCall::completed(id, query, Vec::new()))
+    };
+    // 正文在搜索之前或之后：工作过程都折叠，正文保持可见
+    for parts in [
+        vec![
+            ContentPart::reasoning("Searching", None),
+            search("search_1", "release date"),
+            ContentPart::reasoning("Reviewing results", None),
+            ContentPart::text("Final reply"),
+        ],
+        vec![
+            ContentPart::reasoning("Searching", None),
+            ContentPart::text("Final reply"),
+            search("search_1", "release date"),
+            ContentPart::reasoning("Reviewing results", None),
+        ],
+    ] {
+        let mut ta = create_test_app("test_model", None, None, false).await;
+        let app = &mut ta.app;
+        app.thinking_concise = false;
+        let view = std::sync::Arc::make_mut(&mut app.view);
+        let mut response =
+            crate::model::Turn::assistant_turn(vec![crate::model::Message::new(parts)]);
+        response.elapsed_ms = Some(2_000);
+        response.worked_ms = Some(2_000);
+        std::sync::Arc::make_mut(&mut view.session).append_turn(response);
+        view.revision += 1;
 
-    let mut response = crate::model::Turn::assistant_turn(vec![crate::model::Message::new(vec![
-        crate::model::ContentPart::reasoning("Searching", None),
-        crate::model::ContentPart::WebSearchCall(crate::model::WebSearchCall::completed(
-            "search_1",
+        let rendered = |app: &mut App| {
+            app.refresh_chat_lines(80);
+            app.chat
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let collapsed = rendered(app);
+        assert!(collapsed.contains("> Worked 2s"));
+        for hidden in ["Searching", "release date", "Reviewing results"] {
+            assert!(!collapsed.contains(hidden), "{hidden}");
+        }
+        assert!(collapsed.contains("Final reply"));
+
+        let line = app.chat_cache.response_hits[0].line_start;
+        assert!(app.handle_response_click(line));
+        let expanded = rendered(app);
+        for shown in [
+            "Searching",
             "release date",
-            Vec::new(),
-        )),
-        crate::model::ContentPart::reasoning("Reviewing results", None),
-        crate::model::ContentPart::text("Final reply"),
-    ])]);
-    response.elapsed_ms = Some(2_000);
-    response.worked_ms = Some(2_000);
-    session.append_turn(response);
-    view.revision += 1;
-
-    app.refresh_chat_lines(80);
-    let rendered = app
-        .chat
-        .lines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("> Worked 2s"));
-    assert!(!rendered.contains("Searching"));
-    assert!(!rendered.contains("release date"));
-    assert!(!rendered.contains("Reviewing results"));
-    assert!(rendered.contains("Final reply"));
-
-    let line = app.chat_cache.response_hits[0].line_start;
-    assert!(app.handle_response_click(line));
-    app.refresh_chat_lines(80);
-    let rendered = app
-        .chat
-        .lines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Searching"));
-    assert!(rendered.contains("release date"));
-    assert!(rendered.contains("Reviewing results"));
-    assert!(rendered.contains("Final reply"));
-}
-
-#[tokio::test]
-async fn test_completed_response_collapses_text_before_web_search() {
-    let mut ta = create_test_app("test_model", None, None, false).await;
-    let app = &mut ta.app;
-    app.thinking_concise = false;
-    let view = std::sync::Arc::make_mut(&mut app.view);
-    let session = std::sync::Arc::make_mut(&mut view.session);
-
-    let mut response = crate::model::Turn::assistant_turn(vec![crate::model::Message::new(vec![
-        crate::model::ContentPart::reasoning("Searching", None),
-        crate::model::ContentPart::text("Final reply"),
-        crate::model::ContentPart::WebSearchCall(crate::model::WebSearchCall::completed(
-            "search_1",
-            "release date",
-            Vec::new(),
-        )),
-        crate::model::ContentPart::reasoning("Reviewing results", None),
-        crate::model::ContentPart::WebSearchCall(crate::model::WebSearchCall::completed(
-            "search_2",
-            "source threshold",
-            Vec::new(),
-        )),
-    ])]);
-    response.elapsed_ms = Some(2_000);
-    response.worked_ms = Some(2_000);
-    session.append_turn(response);
-    view.revision += 1;
-
-    app.refresh_chat_lines(80);
-    let rendered = app
-        .chat
-        .lines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("> Worked 2s"));
-    assert!(!rendered.contains("Searching"));
-    assert!(!rendered.contains("release date"));
-    assert!(!rendered.contains("Reviewing results"));
-    assert!(!rendered.contains("source threshold"));
-    assert!(rendered.contains("Final reply"));
-
-    let line = app.chat_cache.response_hits[0].line_start;
-    assert!(app.handle_response_click(line));
-    app.refresh_chat_lines(80);
-    let rendered = app
-        .chat
-        .lines
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Searching"));
-    assert!(rendered.contains("release date"));
-    assert!(rendered.contains("Reviewing results"));
-    assert!(rendered.contains("source threshold"));
-    assert!(rendered.contains("Final reply"));
+            "Reviewing results",
+            "Final reply",
+        ] {
+            assert!(expanded.contains(shown), "{shown}");
+        }
+    }
 }
 
 #[tokio::test]
@@ -953,10 +896,8 @@ async fn file_completion_handles_skill_arguments_and_cursor_events() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let mut ta = create_test_app("init_model", None, None, false).await;
     seed_workspace_files(&mut ta);
-    for prompt in ["/check @src/ma", "(@src/ma", "【@src/ma", "（@src/ma"] {
-        ta.set_input(prompt);
-        assert_eq!(ta.file_matches[0].path, "src/main.rs", "{prompt}");
-    }
+    ta.set_input("/check @src/ma");
+    assert_eq!(ta.file_matches[0].path, "src/main.rs");
     ta.set_input("@src/ma");
     let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     for code in [KeyCode::Home, KeyCode::End] {

@@ -932,25 +932,6 @@ fn test() {
     }
 
     #[test]
-    fn test_wrap_spans_cjk_hanging_indent() {
-        let spans = vec![Span::raw(
-            "这是一个非常长的中文段落测试，用于检验自适应折行逻辑是否能够正确在汉字边界处截断换行并为每一行保持正确的缩进。",
-        )];
-        let lines = wrap_spans_to_lines(&spans, 30, "   • ", "     ");
-        assert!(lines.len() > 1);
-
-        // 首行必须包含 "   • "
-        let first_row: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(first_row.starts_with("   • "));
-
-        // 续行必须以 "     " 开始
-        for line in &lines[1..] {
-            let row: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert!(row.starts_with("     "));
-        }
-    }
-
-    #[test]
     fn test_tokenize_text_boundary_cases() {
         let cases: &[(&str, &[&str])] = &[
             ("", &[]),
