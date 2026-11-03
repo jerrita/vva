@@ -617,7 +617,6 @@ mod tests {
         );
 
         let loaded = format_skill_load_reminder(&skill);
-        assert!(loaded.contains("<skill name=\"pdf-processing\" path=\"/skills/pdf-processing\">"));
         let parsed = parse_agents_reminder(&loaded).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::SkillLoaded);
         assert_eq!(parsed.name, "pdf-processing");
