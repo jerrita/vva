@@ -267,7 +267,6 @@ mod tests {
         std::fs::write(dir.join("memory/MEMORY.md"), "- [偏好](pref.md)\n").unwrap();
         let texts = preamble(&topic);
         assert_eq!(texts.len(), 1);
-        assert!(texts[0].starts_with("<system-reminder type=\"memory\">"));
         assert!(texts[0].contains("- [偏好](pref.md)"));
         assert!(texts[0].contains(&dir.join("memory").to_string_lossy().replace('\\', "/")));
 

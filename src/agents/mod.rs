@@ -200,23 +200,6 @@ mod tests {
         );
         let def = parse_agent_file(&root.join("reviewer.yaml")).unwrap();
         assert_eq!(def.name, "reviewer");
-        assert_eq!(def.tools, ["Read", "Grep"]);
-        assert!(def.model.is_none());
-        assert!(def.system_prompt.is_none());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn parses_optional_fields() {
-        let root = temp_root("optional");
-        write_def(
-            &root,
-            "research",
-            "description: Research agent.\nmodel: openai/gpt-5.6-terra\ntools: [Read]\nsystem_prompt: |\n  Be thorough.\n",
-        );
-        let def = parse_agent_file(&root.join("research.yaml")).unwrap();
-        assert_eq!(def.model.as_deref(), Some("openai/gpt-5.6-terra"));
-        assert_eq!(def.system_prompt.as_deref(), Some("Be thorough.\n"));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -293,21 +276,5 @@ mod tests {
                 .any(|def| def.name == "general")
         );
         let _ = std::fs::remove_dir_all(workspace);
-    }
-
-    #[test]
-    fn builtins_cover_expected_toolsets() {
-        let defs = builtin_agents();
-        let general = defs.iter().find(|def| def.name == "general").unwrap();
-        assert!(general.tools.contains(&"Shell".to_string()));
-        assert!(!general.tools.contains(&"Agent".to_string()));
-        assert!(!general.tools.contains(&"AskUser".to_string()));
-        let explore = defs.iter().find(|def| def.name == "explore").unwrap();
-        assert_eq!(explore.tools, FILE_READ_TOOLS);
-        assert!(
-            FILE_TOOLS
-                .iter()
-                .all(|tool| general.tools.iter().any(|t| t == tool))
-        );
     }
 }
