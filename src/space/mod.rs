@@ -208,11 +208,19 @@ impl AgentSpace {
                 tokio::spawn(async move { runtime.push_curator(report).await });
             })
         };
+        let on_deleted = {
+            let runtime = runtime.clone();
+            Arc::new(move |deleted| {
+                let runtime = runtime.clone();
+                tokio::spawn(async move { runtime.after_auto_delete(deleted).await });
+            })
+        };
         let lifecycle = Arc::new(Lifecycle::new(
             self.manager.clone(),
             curator,
             self.config.clone(),
             notify,
+            on_deleted,
         ))
         .spawn(SWEEP_PERIOD);
 

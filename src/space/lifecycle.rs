@@ -31,11 +31,15 @@ struct Failure {
 /// 每次整理完成（含失败）的回调，上层据 `origin` 推送摘要到 IM
 pub type CuratorNotify = Arc<dyn Fn(CuratorReport) + Send + Sync>;
 
+/// 每次扫描删除会话后的回调，参数为本次删除的会话 id；上层据此修复 focus
+pub type DeletedNotify = Arc<dyn Fn(Vec<String>) + Send + Sync>;
+
 pub struct Lifecycle {
     manager: Arc<SessionManager>,
     curator: Arc<Curator>,
     config: AgentSpaceConfig,
     notify: CuratorNotify,
+    on_deleted: DeletedNotify,
     failures: Mutex<HashMap<String, Failure>>,
 }
 
@@ -45,12 +49,14 @@ impl Lifecycle {
         curator: Arc<Curator>,
         config: AgentSpaceConfig,
         notify: CuratorNotify,
+        on_deleted: DeletedNotify,
     ) -> Self {
         Self {
             manager,
             curator,
             config,
             notify,
+            on_deleted,
             failures: Mutex::new(HashMap::new()),
         }
     }
@@ -155,6 +161,9 @@ impl Lifecycle {
             "生命周期扫描: 候选 {candidates} 个, 到期 {due} 个, 删除 {} 个",
             deleted.len()
         );
+        if !deleted.is_empty() {
+            (self.on_deleted)(deleted.clone());
+        }
         Ok(deleted)
     }
 
@@ -216,6 +225,7 @@ mod tests {
         stub: Arc<Stub>,
         lifecycle: Lifecycle,
         reports: Arc<Mutex<Vec<CuratorReport>>>,
+        deleted: Arc<Mutex<Vec<String>>>,
     }
 
     impl Fixture {
@@ -275,6 +285,8 @@ mod tests {
         ));
         let reports = Arc::new(Mutex::new(Vec::new()));
         let sink = reports.clone();
+        let deleted = Arc::new(Mutex::new(Vec::new()));
+        let deleted_sink = deleted.clone();
         let config = AgentSpaceConfig {
             ttl_secs: 3600,
             ..Default::default()
@@ -284,6 +296,7 @@ mod tests {
             curator,
             config,
             Arc::new(move |report| sink.lock().unwrap().push(report)),
+            Arc::new(move |ids| deleted_sink.lock().unwrap().extend(ids)),
         );
         Fixture {
             dir,
@@ -291,6 +304,7 @@ mod tests {
             stub,
             lifecycle,
             reports,
+            deleted,
         }
     }
 
@@ -314,6 +328,7 @@ mod tests {
             vec![session.header.id.clone()]
         );
         assert!(!f.exists(&session.header.id).await);
+        assert_eq!(*f.deleted.lock().unwrap(), [session.header.id.clone()]);
         assert_eq!(f.runs(), 0);
         let _ = std::fs::remove_dir_all(&f.dir);
     }

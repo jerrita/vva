@@ -22,6 +22,7 @@ use self::mode_model::{ModeModel, load_mode_model};
 use super::binding::{BindingStore, MessageIndex, PendingFiles};
 use super::channel::{Channel, Inbound, Outbound, OutboundText};
 use super::curator::{self, Curator, CuratorReport, CuratorStatus, ModelSource};
+use super::markdown;
 use super::progress;
 use super::rollover::maybe_rollover;
 use super::router::Router;
@@ -41,6 +42,13 @@ const EMPTY_REPLY: &str = "（本轮没有文本输出）";
 enum DeliveryTarget<'a> {
     Chat(&'a str),
     Homes,
+}
+
+/// focus 自动补位结果：`new` 为 None 表示范围内已无会话
+pub(super) struct FocusChange {
+    binding: String,
+    old: String,
+    new: Option<SessionSummary>,
 }
 
 struct State {
@@ -377,6 +385,54 @@ impl Runtime {
         if report.result.status == CuratorStatus::Updated {
             self.broadcast_memory_update(&report).await;
         }
+        self.send_report(DeliveryTarget::Homes, &text, None).await;
+    }
+
+    /// Lifecycle 自动删除回调：以被删会话为 focus 的 binding 补位并通知 home
+    pub async fn after_auto_delete(&self, deleted: Vec<String>) {
+        match self.repoint_deleted(&deleted).await {
+            Ok(changes) => {
+                self.report_focus_changes("空闲超时自动删除", &changes)
+                    .await
+            }
+            Err(error) => tracing::warn!("自动删除后补位 focus 失败: {error}"),
+        }
+    }
+
+    /// focus 自动变更通知 home；无变更不推送
+    async fn report_focus_changes(&self, reason: &str, changes: &[FocusChange]) {
+        if changes.is_empty() {
+            return;
+        }
+        let lines: Vec<_> = changes
+            .iter()
+            .map(|c| {
+                let new = match &c.new {
+                    Some(s) => format!(
+                        "**{}**{}",
+                        markdown::text(&s.id),
+                        s.title
+                            .as_deref()
+                            .map(|t| format!("（{}）", markdown::text(t)))
+                            .unwrap_or_default()
+                    ),
+                    None => "无，可直接发消息或 `/new <消息>` 新建".into(),
+                };
+                format!(
+                    "- {}：**{}** → {new}",
+                    markdown::text(&c.binding),
+                    markdown::text(&c.old)
+                )
+            })
+            .collect();
+        let text = format!(
+            "🔀 **默认会话已自动调整**（{reason}）\n\n{}",
+            lines.join("\n")
+        );
+        tracing::info!(
+            "focus 自动补位: {} 个 binding, 原因={reason}",
+            changes.len()
+        );
         self.send_report(DeliveryTarget::Homes, &text, None).await;
     }
 

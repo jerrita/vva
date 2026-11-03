@@ -718,6 +718,41 @@ async fn delete_moves_focus_after_background_removal() {
 }
 
 #[tokio::test]
+async fn auto_deletion_repoints_each_focus_within_scope_and_notifies_home() {
+    let f = fixture().await;
+    let group = "fake:group:room";
+    let expired = f.persisted_topic(BINDING).await;
+    let next = f.persisted_topic(BINDING).await;
+    let group_expired = f.persisted_topic(group).await;
+    {
+        let mut state = f.runtime.state.lock().await;
+        state.bindings.set_home(BINDING, true).unwrap();
+        state
+            .bindings
+            .set_focus(BINDING, Some(expired.id.clone()))
+            .unwrap();
+        state
+            .bindings
+            .set_focus(group, Some(group_expired.id.clone()))
+            .unwrap();
+    }
+    for handle in [&expired, &group_expired] {
+        f.manager.delete_session(handle).await.unwrap();
+    }
+    f.runtime
+        .after_auto_delete(vec![expired.id.clone(), group_expired.id.clone()])
+        .await;
+
+    let reloaded = BindingStore::load(&f.dir).unwrap();
+    assert_eq!(reloaded.focus(BINDING), Some(next.id.as_str()));
+    assert_eq!(reloaded.focus(group), None);
+    let sent = f.channel.wait(1).await;
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].binding, BINDING);
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
 async fn rename_unknown_and_clear_commands() {
     let f = fixture().await;
     f.runtime.handle(inbound("m1", "/new 第一个")).await;
@@ -1047,7 +1082,7 @@ async fn memory_update_broadcast_notes_eligible_sessions_without_a_turn() {
 }
 
 #[tokio::test]
-async fn group_scope_filters_lists_switches_and_clears_legacy_focus() {
+async fn group_scope_filters_lists_switches_and_repairs_legacy_focus() {
     let f = fixture().await;
     let personal = f.topic(BINDING).await;
     let second = f.topic("fake:c2c:u2").await;
@@ -1096,16 +1131,9 @@ async fn group_scope_filters_lists_switches_and_clears_legacy_focus() {
     f.runtime.command(&msg, Command::Status).await.unwrap();
     assert_eq!(
         f.runtime.state.lock().await.bindings.focus(&msg.binding),
-        None
+        Some(group.id.as_str())
     );
     assert_eq!(f.focus().await.as_deref(), Some(personal.id.as_str()));
-    assert!(f.runtime.command(&msg, Command::Stop).await.is_err());
-    assert!(
-        f.runtime
-            .command(&msg, Command::Clear(String::new()))
-            .await
-            .is_err()
-    );
     for cmd in [
         Command::Model(String::new()),
         Command::Schedule(String::new()),
