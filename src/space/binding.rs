@@ -85,7 +85,19 @@ impl BindingStore {
         self.save()
     }
 
-    /// session 被删除或被取代时，清除或改指所有以它为 focus 的 binding
+    /// 以 `ids` 中任一会话为 focus 的 binding 及其 focus
+    pub fn focused_on(&self, ids: &[String]) -> Vec<(String, String)> {
+        self.bindings
+            .iter()
+            .filter_map(|(binding, state)| {
+                let focus = state.focus.as_ref()?;
+                ids.contains(focus)
+                    .then(|| (binding.clone(), focus.clone()))
+            })
+            .collect()
+    }
+
+    /// session 被取代时，改指所有以它为 focus 的 binding
     pub fn replace_focus(&mut self, old: &str, new: Option<&str>) -> Result<(), String> {
         for state in self.bindings.values_mut() {
             if state.focus.as_deref() == Some(old) {
