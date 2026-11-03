@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 
-use super::Runtime;
+use super::{FocusChange, Runtime, State};
 use crate::harness::ManagedSession;
 use crate::model::{SessionKind, SessionSummary, SessionToggles};
 use crate::space::binding::{AttachedFile, FileKind, in_chat_scope};
@@ -241,31 +241,82 @@ impl Runtime {
             .await
             .map_err(|e| e.to_string())?
             .into_iter()
-            .filter(|s| {
-                self.is_active_space_session(s)
-                    && s.kind == SessionKind::Topic
-                    && in_chat_scope(binding, s.origin.as_ref())
-            })
+            .filter(|s| self.in_scope(binding, s))
             .collect())
     }
 
-    /// 清理已不存在或范围外的 focus。
+    fn in_scope(&self, binding: &str, s: &SessionSummary) -> bool {
+        self.is_active_space_session(s)
+            && s.kind == SessionKind::Topic
+            && in_chat_scope(binding, s.origin.as_ref())
+    }
+
+    /// focus 失效时的补位：binding 范围内最近活跃的会话；范围内无会话时为 None
+    fn repoint(
+        &self,
+        state: &mut State,
+        binding: String,
+        old: String,
+        summaries: &[SessionSummary],
+    ) -> Result<FocusChange, String> {
+        let new = summaries
+            .iter()
+            .filter(|s| self.in_scope(&binding, s))
+            .max_by(|a, b| {
+                a.last_activity
+                    .unwrap_or(a.created_at)
+                    .cmp(&b.last_activity.unwrap_or(b.created_at))
+                    .then_with(|| a.id.cmp(&b.id))
+            })
+            .cloned();
+        state
+            .bindings
+            .set_focus(&binding, new.as_ref().map(|s| s.id.clone()))?;
+        Ok(FocusChange { binding, old, new })
+    }
+
+    /// 会话删除后，以其为 focus 的 binding 各自补位。
+    pub(super) async fn repoint_deleted(
+        &self,
+        deleted: &[String],
+    ) -> Result<Vec<FocusChange>, String> {
+        let summaries = self
+            .manager
+            .store()
+            .list_sessions()
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut state = self.state.lock().await;
+        state
+            .bindings
+            .focused_on(deleted)
+            .into_iter()
+            .map(|(binding, old)| self.repoint(&mut state, binding, old, &summaries))
+            .collect()
+    }
+
+    /// focus 已不存在或在范围外时补位，并通知 home。
     pub(super) async fn scoped_focus(
         &self,
         binding: &str,
         summaries: &[SessionSummary],
     ) -> Result<Option<String>, String> {
-        let mut state = self.state.lock().await;
-        match state.bindings.focus(binding).map(str::to_string) {
-            Some(f) if !summaries.iter().any(|s| s.id == f) => {
-                state.bindings.set_focus(binding, None)?;
-                Ok(None)
+        let change = {
+            let mut state = self.state.lock().await;
+            match state.bindings.focus(binding).map(str::to_string) {
+                Some(old) if !summaries.iter().any(|s| s.id == old) => {
+                    self.repoint(&mut state, binding.to_string(), old, summaries)?
+                }
+                focus => return Ok(focus),
             }
-            focus => Ok(focus),
-        }
+        };
+        let focus = change.new.as_ref().map(|s| s.id.clone());
+        self.report_focus_changes("原会话已不存在或不在当前聊天范围", &[change])
+            .await;
+        Ok(focus)
     }
 
-    /// router 候选：按聊天范围过滤，并清理已不存在或范围外的 focus。
+    /// router 候选：按聊天范围过滤，并修复已不存在或范围外的 focus。
     pub(super) async fn candidates(&self, binding: &str) -> Result<Vec<Candidate>, String> {
         let summaries = self.scoped_sessions(binding).await?;
         let focus = self.scoped_focus(binding, &summaries).await?;

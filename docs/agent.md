@@ -32,10 +32,10 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 ## 2. 概念
 
 - **binding**：`channel:chat_id`（QQ 为 `qq:<msg_type>:<chat_id>`）；
-- **focus**：每个 binding 一个默认续写指针；
+- **focus**：每个 binding 一个默认续写指针。focus 所指会话被删除（`/clear`、`/delete`、TTL 清理）或读取时已失效（不存在、已被接替、在范围外）时，该 binding 改指自身会话范围内最近活跃的会话（尚无活动时取创建时间），范围内无会话则清空；TTL 清理与读取时修复引起的变更推送到 home，列出 binding、原会话与新 focus；
 - **running**：session 是否正在生成；
 - **待附件缓冲**：binding 级，收到无文字文件时暂存；
-- **会话范围**：QQ 群聊仅使用 `origin.binding()` 等于当前群 binding 的会话；个人聊天共享排除群来源的个人会话池。路由候选（当前范围内未被接替的 Topic 会话）、`/sessions` 与会话命令统一使用该范围。范围外或已失效的 focus 读取时清除，跨范围引用显式报错；
+- **会话范围**：QQ 群聊仅使用 `origin.binding()` 等于当前群 binding 的会话；个人聊天共享排除群来源的个人会话池。路由候选（当前范围内未被接替的 Topic 会话）、`/sessions` 与会话命令统一使用该范围。范围外或已失效的 focus 读取时按 focus 补位规则改指，跨范围引用显式报错；
 - **home bindings**：后台通知的接收集合，独立于 focus 与 session 来源。`/sethome` 加入当前聊天，`/unsethome` 移出，支持多个、幂等、沿用渠道白名单准入；`bindings.json` 每项带 `home` 布尔字段（缺省 `false`），重启保留。home 可为群，该群将接收全空间后台通知；home 标记不授予跨范围会话访问能力，记忆注入与文件 / 工具工作区仍共享。
 
 ## 3. Router
@@ -120,7 +120,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - 入站循环顺序完成路由与建会话，轮次在独立任务执行，运行中的 session 仍可被 reply / guide 插话；
 - 最终回答在轮次结束后整段发送；渲染器负责分段（超限时在末段明确标注截断）与 markdown 失败降级纯文本；失败 / 中止显式回复错误文本；
 - **命令排版**：斜杠命令输出统一 Markdown；帮助、会话、模型、技能与状态以带标题的表格展示，定时任务逐项两列表格；反馈与错误使用少量 emoji 并附后续操作提示；动态文本压平空白并转义 Markdown 标记，截断处明确显示省略号；
-- **通知目标**：自动整理更新 / 失败、后台删除完成、定时任务结果 / 进度 / 失败 / 错过、rollover 提示统一发往全部 home bindings，每次发送查询最新集合，单个目标失败不影响其他目标；无 home 时执行照常继续，跳过推送并记录日志。普通回答、命令反馈、对话进度与附件反馈发往发起聊天；
+- **通知目标**：自动整理更新 / 失败、后台删除完成、focus 自动补位、定时任务结果 / 进度 / 失败 / 错过、rollover 提示统一发往全部 home bindings，每次发送查询最新集合，单个目标失败不影响其他目标；无 home 时执行照常继续，跳过推送并记录日志。普通回答、命令反馈、对话进度与附件反馈发往发起聊天；
 - **文件**：无文字 → 进入待附件缓冲，不触发模型，回复「已收到」；有文字（含 caption）→ 一次路由，文件随之进入目标 session；落盘 `files/`，历史只记绝对路径文本，多附件保序；缓冲超时（`pending_files_ttl_secs`）明确提示并清理缓冲（文件保留在磁盘）；
 - **工具**：
   - `SendFile`（`send_file.rs`）：渠道绑定，经 `SessionManager::with_tool_factory` 按会话 header 运行期注入（仅带 origin 的顶层会话）；参数 `path`（工作区相对 / 绝对 / `~`）与可选 `caption`；文件缺失或非普通文件显式报错，渠道错误原样作为工具错误由模型转述；
@@ -148,7 +148,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 agent 模式模型决定新会话的模型（curator 未配置独立模型时每次整理取当前值），落盘于 `~/.vva/space/model.json` 并优先于配置文件。
 
-`/clear`、`/delete` 成功删除 focus 会话后，所有指向它的 binding 自动改指当前聊天范围内最近活跃的会话（尚无活动时取创建时间）；范围内无剩余会话则清空 focus。删除其他会话保留现有 focus。
+`/clear`、`/delete` 成功删除 focus 会话后，所有指向它的 binding 按 [focus 补位规则](#2-概念)改指；删除其他会话保留现有 focus。
 
 群内开放 `/new`、`/switch`、`/sessions`、`/stop`、`/status`、`/rename`、`/clear`、`/sethome`、`/unsethome`、`/help`；其余个人管理命令提示在私聊使用，帮助只列当前可用命令。
 

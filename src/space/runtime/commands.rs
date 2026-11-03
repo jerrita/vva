@@ -69,7 +69,7 @@ impl Runtime {
             Command::Delete(prefix) => self.delete(binding, &prefix).await?,
             Command::Clear(prefix) => {
                 let handle = self.target_handle(binding, &prefix).await?;
-                self.remove(binding, &handle).await?;
+                self.remove(&handle).await?;
                 format!("✅ 已删除会话 **{}**。", markdown::text(&handle.id))
             }
             Command::Help => command::help(group),
@@ -179,27 +179,13 @@ impl Runtime {
         Ok(out)
     }
 
-    /// 删除会话并清理游标，将受影响的 focus 切到范围内最近活跃的会话。
-    async fn remove(&self, binding: &str, handle: &Arc<ManagedSession>) -> Result<(), String> {
-        let next = self
-            .scoped_sessions(binding)
-            .await?
-            .into_iter()
-            .filter(|s| s.id != handle.id)
-            .max_by(|a, b| {
-                a.last_activity
-                    .unwrap_or(a.created_at)
-                    .cmp(&b.last_activity.unwrap_or(b.created_at))
-                    .then_with(|| a.id.cmp(&b.id))
-            })
-            .map(|s| s.id);
+    /// 删除会话并清理游标，受影响的 focus 按各自聊天范围补位。
+    async fn remove(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
         self.manager.delete_session(handle).await?;
         self.curator.forget(&handle.id).await?;
-        self.state
-            .lock()
+        self.repoint_deleted(std::slice::from_ref(&handle.id))
             .await
-            .bindings
-            .replace_focus(&handle.id, next.as_deref())
+            .map(drop)
     }
 
     /// 整理记忆后删除：整理耗时较长，后台执行并回报；整理失败则保留会话
@@ -213,10 +199,9 @@ impl Runtime {
             markdown::text(&handle.id)
         );
         let this = self.clone();
-        let binding = binding.to_string();
         tokio::spawn(async move {
             let id = &handle.id;
-            let reply = match this.curate_then_remove(&binding, &handle).await {
+            let reply = match this.curate_then_remove(&handle).await {
                 Ok(()) => format!("✅ 已删除会话 **{}**。", markdown::text(id)),
                 Err(error) => format!(
                     "⚠️ 删除失败，会话 **{}** 已保留。\n\n{}",
@@ -229,11 +214,7 @@ impl Runtime {
         Ok(reply)
     }
 
-    async fn curate_then_remove(
-        &self,
-        binding: &str,
-        handle: &Arc<ManagedSession>,
-    ) -> Result<(), String> {
+    async fn curate_then_remove(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
         let seen_turns = handle.turn_seq();
         let result = self.curator.curate(&handle.id).await;
         let failed = (result.status == CuratorStatus::Failed).then(|| result.summary.clone());
@@ -250,7 +231,7 @@ impl Runtime {
         if handle.is_running() || handle.turn_seq() != seen_turns {
             return Err("整理期间会话又有活动".into());
         }
-        self.remove(binding, handle).await
+        self.remove(handle).await
     }
 
     async fn rename(&self, binding: &str, title: &str) -> Result<String, String> {
