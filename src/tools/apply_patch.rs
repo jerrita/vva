@@ -594,7 +594,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_add_creates_parent_directories() {
+    async fn apply_add_creates_parent_directories_and_delete_removes() {
         let root = tempfile::tempdir().unwrap();
         let tool = ApplyPatchTool::new(root.path());
         let patch = patch_input("*** Add File: nested/deep/new.txt\n+hello\n");
@@ -603,6 +603,10 @@ mod tests {
         assert_eq!(fs::read_to_string(&dest).unwrap(), "hello\n");
         assert!(tool.execute(&patch).await.is_err());
         assert_eq!(fs::read_to_string(&dest).unwrap(), "hello\n");
+        tool.execute(&patch_input("*** Delete File: nested/deep/new.txt\n"))
+            .await
+            .unwrap();
+        assert!(!dest.exists());
     }
 
     #[tokio::test]
@@ -623,21 +627,5 @@ mod tests {
         assert!(tool.execute(&patch).await.is_err());
         assert_eq!(fs::read_to_string(&src).unwrap(), "hello\n");
         assert_eq!(fs::read_to_string(&dest).unwrap(), "updated\n");
-    }
-
-    #[tokio::test]
-    async fn apply_add_and_delete() {
-        let root = std::env::temp_dir().join(format!("vva-patch-ad-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&root).unwrap();
-        let tool = ApplyPatchTool::new(&root);
-        tool.execute(&patch_input("*** Add File: new.txt\n+hello\n"))
-            .await
-            .unwrap();
-        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "hello\n");
-        tool.execute(&patch_input("*** Delete File: new.txt\n"))
-            .await
-            .unwrap();
-        assert!(!root.join("new.txt").exists());
-        let _ = fs::remove_dir_all(root);
     }
 }
