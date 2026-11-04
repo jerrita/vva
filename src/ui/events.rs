@@ -85,6 +85,10 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            let selecting = app.modal.is_none()
+                && (app.is_selecting_input
+                    || app.chat.selection.is_selecting()
+                    || app.sidebar.selection.is_selecting());
             // 单击（非拖拽出非空选区）：按命中组件分发，未命中组件时尝试打开消息操作
             let user_click = if app.modal.is_none()
                 && app.chat.selection.is_selecting()
@@ -96,6 +100,9 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             };
             app.is_dragging_scrollbar = false;
             app.finish_selections();
+            if selecting {
+                app.copy_active_selection();
+            }
             if let Some(line) = user_click
                 && !app.handle_tool_click(line)
                 && !app.handle_thought_click(line)
@@ -105,25 +112,20 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 app.open_message_action_at_line(line);
             }
         }
-        MouseEventKind::Down(MouseButton::Right) => {
-            if app.copy_active_selection() {
-                return;
-            }
-            if app.modal.is_none() {
-                if app.chat.hit(mouse.column, mouse.row) {
-                    let (row_offset, _) = app.chat.offsets(mouse.column, mouse.row);
-                    if app.handle_response_right_click(app.chat_scroll() + row_offset) {
-                        return;
-                    }
-                }
-                // 右键档位标签：循环切换推理档位。
-                if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
-                    app.cycle_variant().await;
+        MouseEventKind::Down(MouseButton::Right) if app.modal.is_none() => {
+            if app.chat.hit(mouse.column, mouse.row) {
+                let (row_offset, _) = app.chat.offsets(mouse.column, mouse.row);
+                if app.handle_response_right_click(app.chat_scroll() + row_offset) {
                     return;
                 }
-                if rect_hit(app.input_inner_area, mouse.column, mouse.row) {
-                    app.paste_from_clipboard();
-                }
+            }
+            // 右键档位标签：循环切换推理档位。
+            if rect_hit(app.variant_selector_area, mouse.column, mouse.row) {
+                app.cycle_variant().await;
+                return;
+            }
+            if rect_hit(app.input_inner_area, mouse.column, mouse.row) {
+                app.paste_from_clipboard();
             }
         }
         _ => {}
@@ -620,6 +622,7 @@ fn escape_clear(app: &mut App) {
 /// Ctrl+C 级联：复制活跃选区 → 清空输入 → 中止当前轮 → 退出应用
 async fn handle_abort_or_quit(app: &mut App) {
     if app.copy_active_selection() {
+        app.clear_selections();
         return;
     }
     if !app.input.is_empty() || !app.input_attachments.is_empty() {

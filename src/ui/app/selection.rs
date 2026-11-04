@@ -123,13 +123,15 @@ impl App {
             .filter(|text| !text.is_empty())
     }
 
-    /// 复制首个存在的选区到剪贴板并清除该选区，无选区时返回 false
+    /// 复制首个存在的选区到剪贴板并反馈结果，无选区时返回 false
     pub fn copy_active_selection(&mut self) -> bool {
         let Some(text) = self.active_selection_text() else {
             return false;
         };
-        let _ = set_clipboard_text(&text);
-        self.clear_selections();
+        match set_clipboard_text(&text) {
+            Ok(()) => self.feedback.push("已复制".into()),
+            Err(error) => self.feedback.push(error),
+        }
         true
     }
 
