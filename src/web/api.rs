@@ -1231,6 +1231,7 @@ mod tests {
             agent: None,
             kind: Default::default(),
             origin: None,
+            routed_by: None,
             superseded_by: None,
             last_activity: None,
             ttl_secs: None,

@@ -32,7 +32,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 ## 2. 概念
 
 - **binding**：`channel:chat_id`（QQ 为 `qq:<msg_type>:<chat_id>`）；
-- **focus**：每个 binding 一个默认续写指针。focus 所指会话被删除（`/clear`、`/delete`、TTL 清理）或读取时已失效（不存在、已被接替、在范围外）时，该 binding 改指自身会话范围内最近活跃的会话（尚无活动时取创建时间），范围内无会话则清空；TTL 清理与读取时修复引起的变更推送到 home，列出 binding、原会话与新 focus；
+- **focus**：每个 binding 一个默认续写指针。focus 所指会话被删除（`/clear`、`/delete`、TTL 清理）或读取时已失效（不存在、已被接替、在范围外）时，该 binding 改指自身会话范围内最近活跃的非定时会话（尚无活动时取创建时间），无候选则清空；定时任务创建的会话以持久化的 `routed_by=scheduled` 识别，仍可通过 `/switch` 显式切换；TTL 清理与读取时修复引起的变更推送到 home，列出 binding、原会话与新 focus；
 - **running**：session 是否正在生成；
 - **待附件缓冲**：binding 级，收到无文字文件时暂存；
 - **会话范围**：QQ 群聊仅使用 `origin.binding()` 等于当前群 binding 的会话；个人聊天共享排除群来源的个人会话池。路由候选（当前范围内未被接替的 Topic 会话）、`/sessions` 与会话命令统一使用该范围。范围外或已失效的 focus 读取时按 focus 补位规则改指，跨范围引用显式报错；

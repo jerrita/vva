@@ -753,6 +753,36 @@ async fn auto_deletion_repoints_each_focus_within_scope_and_notifies_home() {
 }
 
 #[tokio::test]
+async fn auto_deletion_skips_recent_scheduled_session_when_repointing_focus() {
+    let f = fixture().await;
+    let normal = f.persisted_topic(BINDING).await;
+    let scheduled = f
+        .runtime
+        .create(BINDING, SessionKind::Topic, "scheduled", None)
+        .await
+        .unwrap();
+    let expired = f.persisted_topic(BINDING).await;
+    let now = Utc::now();
+    for (handle, hours) in [(&normal, 2), (&scheduled, 1)] {
+        let mut session = handle.snapshot().session.as_ref().clone();
+        session.header.last_activity = Some(now - chrono::Duration::hours(hours));
+        f.manager.store().save_header(&session).await.unwrap();
+    }
+    f.runtime
+        .state
+        .lock()
+        .await
+        .bindings
+        .set_focus(BINDING, Some(expired.id.clone()))
+        .unwrap();
+    f.manager.delete_session(&expired).await.unwrap();
+    f.runtime.after_auto_delete(vec![expired.id.clone()]).await;
+
+    assert_eq!(f.focus().await.as_deref(), Some(normal.id.as_str()));
+    let _ = std::fs::remove_dir_all(&f.dir);
+}
+
+#[tokio::test]
 async fn rename_unknown_and_clear_commands() {
     let f = fixture().await;
     f.runtime.handle(inbound("m1", "/new 第一个")).await;
