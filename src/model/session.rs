@@ -332,6 +332,8 @@ pub struct SessionSummary {
     pub kind: SessionKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<Origin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -363,6 +365,7 @@ impl SessionSummary {
             agent: header.agent,
             kind: header.kind,
             origin: header.origin,
+            routed_by: header.routed_by,
             superseded_by: header.superseded_by,
             last_activity: header.last_activity,
             ttl_secs: header.ttl_secs,

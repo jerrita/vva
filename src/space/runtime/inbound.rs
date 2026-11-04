@@ -251,7 +251,7 @@ impl Runtime {
             && in_chat_scope(binding, s.origin.as_ref())
     }
 
-    /// focus 失效时的补位：binding 范围内最近活跃的会话；范围内无会话时为 None
+    /// focus 失效时的补位：binding 范围内最近活跃的非定时会话；无候选时为 None
     fn repoint(
         &self,
         state: &mut State,
@@ -261,7 +261,7 @@ impl Runtime {
     ) -> Result<FocusChange, String> {
         let new = summaries
             .iter()
-            .filter(|s| self.in_scope(&binding, s))
+            .filter(|s| self.in_scope(&binding, s) && s.routed_by.as_deref() != Some("scheduled"))
             .max_by(|a, b| {
                 a.last_activity
                     .unwrap_or(a.created_at)
