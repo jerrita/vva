@@ -10,6 +10,7 @@ pub mod models_modal;
 pub mod sessions_modal;
 pub mod sidebar;
 pub mod skills_modal;
+pub mod toast;
 pub mod variants_modal;
 
 use ratatui::style::{Color, Modifier, Style};

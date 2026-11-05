@@ -67,6 +67,13 @@ pub(super) async fn handle_crossterm_event(
 
 /// 鼠标事件分发：无弹窗时驱动滚动/选区/命中测试，弹窗内转发给列表导航
 async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
+    if rect_hit(app.toast_area, mouse.column, mouse.row) {
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+            app.is_dragging_scrollbar = false;
+            app.finish_selections();
+        }
+        return;
+    }
     match mouse.kind {
         MouseEventKind::ScrollUp if app.modal.is_none() => app.scroll_up(3),
         MouseEventKind::ScrollUp => app.modal.apply_input(ModalInput::NavigateUp),
@@ -501,7 +508,7 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
         ModalAction::SwitchSession(id) => {
             app.modal = ActiveModal::None;
             if let Err(error) = app.switch_to_session(&id).await {
-                app.feedback.push(error);
+                app.feedback.error(error);
             }
         }
         ModalAction::DeleteSession(id) => {
@@ -517,9 +524,9 @@ async fn apply_modal_action(app: &mut App, action: ModalAction) {
                             state.remove_session(&id);
                         }
                     }
-                    Err(error) => app.feedback.push(error),
+                    Err(error) => app.feedback.error(error),
                 },
-                Err(error) => app.feedback.push(error),
+                Err(error) => app.feedback.error(error),
             }
         }
         ModalAction::SwitchModel(spec) => {
@@ -600,7 +607,7 @@ async fn handle_escape(app: &mut App) {
                 .collect::<Vec<_>>();
             for id in ids {
                 if let Err(error) = app.active_session.dismiss_notice(id).await {
-                    app.feedback.push(error);
+                    app.feedback.error(error);
                 }
             }
             app.refresh_view();
@@ -629,7 +636,7 @@ async fn handle_abort_or_quit(app: &mut App) {
         app.clear_input();
     } else if app.active_session.is_running() {
         if let Err(error) = app.active_session.abort_current().await {
-            app.feedback.push(error);
+            app.feedback.error(error);
         }
     } else {
         app.should_quit = true;

@@ -38,12 +38,15 @@ impl Hyperlinks {
         pane: &TextPane,
         scroll: usize,
         enabled: bool,
+        covered: Rect,
     ) -> Vec<LinkUpdate> {
-        let current = if enabled {
+        let mut current = if enabled {
             linked_cells(buffer, pane, scroll)
         } else {
             BTreeMap::new()
         };
+
+        current.retain(|&(y, x), _| !covered.contains((x, y).into()));
 
         let force_repaint = self.previous_area != Some(buffer.area);
         self.previous_area = Some(buffer.area);
@@ -178,7 +181,7 @@ mod tests {
     #[test]
     fn osc8_output_preserves_wide_cells_style_and_hides_cursor() {
         let (buffer, pane) = fixture();
-        let updates = Hyperlinks::default().prepare(&buffer, &pane, 10, true);
+        let updates = Hyperlinks::default().prepare(&buffer, &pane, 10, true, Rect::default());
         assert_eq!(
             updates.iter().map(|u| u.x).collect::<Vec<_>>(),
             [13, 15, 17, 18, 19, 20]
@@ -198,33 +201,41 @@ mod tests {
     fn unchanged_labels_update_targets_and_clear_for_modals() {
         let (buffer, mut pane) = fixture();
         let mut links = Hyperlinks::default();
-        links.prepare(&buffer, &pane, 10, true);
-        assert!(links.prepare(&buffer, &pane, 10, true).is_empty());
+        links.prepare(&buffer, &pane, 10, true, Rect::default());
+        assert!(
+            links
+                .prepare(&buffer, &pane, 10, true, Rect::default())
+                .is_empty()
+        );
         pane.links[0].url = "https://example.com/second".into();
-        let updates = links.prepare(&buffer, &pane, 10, true);
+        let updates = links.prepare(&buffer, &pane, 10, true, Rect::default());
         assert!(
             updates
                 .iter()
                 .all(|u| u.url.as_deref() == Some("https://example.com/second"))
         );
-        let updates = links.prepare(&buffer, &pane, 10, false);
+        let updates = links.prepare(&buffer, &pane, 10, false, Rect::default());
         assert!(!updates.is_empty());
         assert!(updates.iter().all(|u| u.url.is_none()));
         let mut output = Vec::new();
         let mut backend = CrosstermBackend::new(&mut output);
         write_updates(&mut backend, &updates).unwrap();
         assert!(!String::from_utf8(output).unwrap().contains("https://"));
-        assert!(links.prepare(&buffer, &pane, 10, false).is_empty());
         assert!(
             links
-                .prepare(&buffer, &pane, 10, true)
+                .prepare(&buffer, &pane, 10, false, Rect::default())
+                .is_empty()
+        );
+        assert!(
+            links
+                .prepare(&buffer, &pane, 10, true, Rect::default())
                 .iter()
                 .all(|u| u.url.is_some())
         );
         pane.reset();
         assert!(
             links
-                .prepare(&buffer, &pane, 10, true)
+                .prepare(&buffer, &pane, 10, true, Rect::default())
                 .iter()
                 .all(|u| u.url.is_none())
         );
@@ -234,14 +245,14 @@ mod tests {
     fn scrolling_and_resizing_clear_old_positions() {
         let (buffer, pane) = fixture();
         let mut links = Hyperlinks::default();
-        links.prepare(&buffer, &pane, 10, true);
-        let updates = links.prepare(&buffer, &pane, 11, true);
+        links.prepare(&buffer, &pane, 10, true, Rect::default());
+        let updates = links.prepare(&buffer, &pane, 11, true, Rect::default());
         assert!(updates.iter().any(|u| u.y == 6 && u.url.is_some()));
         assert!(updates.iter().filter(|u| u.y == 7).all(|u| u.url.is_none()));
         let small = Buffer::empty(Rect::new(0, 0, 15, 7));
-        let updates = links.prepare(&small, &pane, 11, true);
+        let updates = links.prepare(&small, &pane, 11, true, Rect::default());
         assert!(updates.iter().all(|u| u.x < 15 && u.y < 7));
-        let updates = links.prepare(&small, &pane, 20, true);
+        let updates = links.prepare(&small, &pane, 20, true, Rect::default());
         assert!(updates.iter().all(|u| u.url.is_none()));
     }
 
@@ -251,10 +262,13 @@ mod tests {
         pane.links[0].columns = 4..5;
         buffer.set_string(13, 7, "ab", Style::default());
         let mut links = Hyperlinks::default();
-        assert_eq!(links.prepare(&buffer, &pane, 10, true)[0].x, 14);
+        assert_eq!(
+            links.prepare(&buffer, &pane, 10, true, Rect::default())[0].x,
+            14
+        );
         buffer.set_string(13, 7, "中", Style::default());
         pane.links.clear();
-        let updates = links.prepare(&buffer, &pane, 10, true);
+        let updates = links.prepare(&buffer, &pane, 10, true, Rect::default());
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].x, 13);
         assert_eq!(updates[0].cell.symbol(), "中");
@@ -273,7 +287,7 @@ mod tests {
             pane.links[0].url = url.into();
             assert!(
                 Hyperlinks::default()
-                    .prepare(&buffer, &pane, 10, true)
+                    .prepare(&buffer, &pane, 10, true, Rect::default())
                     .is_empty()
             );
         }

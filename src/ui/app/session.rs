@@ -26,6 +26,12 @@ impl App {
         if !std::sync::Arc::ptr_eq(&view.session, &self.view.session) {
             self.stats = compute_stats(&view.session, &self.session_mgr.app_config());
         }
+        let previous = if self.view.session.header.id == view.session.header.id {
+            &self.view.notices[..]
+        } else {
+            &[]
+        };
+        self.feedback.sync_notices(previous, &view.notices);
         self.view = view;
         if let Some(request) = &self.view.pending_user_question {
             let same = matches!(&self.modal, ActiveModal::AskUser(state) if state.request.id == request.id);
@@ -78,11 +84,11 @@ impl App {
     /// 删除当前会话并以原配置新建（/clear 命令与会话弹窗删除共用）
     pub async fn delete_and_recreate_session(&mut self) {
         if let Err(error) = self.session_mgr.delete_session(&self.active_session).await {
-            self.feedback.push(error);
+            self.feedback.error(error);
             return;
         }
         if let Err(error) = self.new_session().await {
-            self.feedback.push(error);
+            self.feedback.error(error);
         }
     }
 
@@ -94,7 +100,7 @@ impl App {
                     self.session_mgr.workspace(),
                 ));
             }
-            Err(error) => self.feedback.push(error.to_string()),
+            Err(error) => self.feedback.error(error.to_string()),
         }
     }
 
@@ -145,7 +151,7 @@ impl App {
         let variant = match resolved {
             Ok(model) => model.selected_variant,
             Err(error) => {
-                self.feedback.push(error.to_string());
+                self.feedback.error(error.to_string());
                 return;
             }
         };
@@ -155,7 +161,7 @@ impl App {
             .await
         {
             Ok(()) => self.refresh_view(),
-            Err(error) => self.feedback.push(error),
+            Err(error) => self.feedback.error(error),
         }
     }
 
@@ -222,7 +228,7 @@ impl App {
             .await
         {
             Ok(()) => self.refresh_view(),
-            Err(error) => self.feedback.push(error),
+            Err(error) => self.feedback.error(error),
         }
     }
 
@@ -243,7 +249,7 @@ impl App {
     ) {
         self.modal = ActiveModal::None;
         if let Err(error) = self.active_session.answer_user(request_id, answers).await {
-            self.feedback.push(error);
+            self.feedback.error(error);
         }
         self.refresh_view();
     }
@@ -392,7 +398,7 @@ impl App {
                 self.set_input(&prompt);
                 self.scroll_to_bottom();
             }
-            Err(error) => self.feedback.push(error),
+            Err(error) => self.feedback.error(error),
         }
     }
 
@@ -416,7 +422,7 @@ impl App {
             .await
         {
             Ok(handle) => self.attach_session(handle),
-            Err(error) => self.feedback.push(error),
+            Err(error) => self.feedback.error(error),
         }
     }
 }

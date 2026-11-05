@@ -43,7 +43,7 @@ impl App {
             .set_input_mode(id, InputMode::Steer)
             .await
         {
-            self.feedback.push(error);
+            self.feedback.error(error);
         }
         self.refresh_view();
     }
@@ -59,7 +59,7 @@ impl App {
                 .set_input_mode(input.id.clone(), InputMode::After)
                 .await
             {
-                self.feedback.push(error);
+                self.feedback.error(error);
             }
         } else {
             let previous = index
@@ -78,7 +78,7 @@ impl App {
                     self.history_index = None;
                     self.selected_input = previous;
                 }
-                Err(error) => self.feedback.push(error),
+                Err(error) => self.feedback.error(error),
             }
         }
         self.refresh_view();

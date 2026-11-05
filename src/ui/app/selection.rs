@@ -129,8 +129,10 @@ impl App {
             return false;
         };
         match set_clipboard_text(&text) {
-            Ok(()) => self.feedback.push("已复制".into()),
-            Err(error) => self.feedback.push(error),
+            Ok(()) => self
+                .feedback
+                .show("已复制".into(), super::toast::ToastLevel::Success),
+            Err(error) => self.feedback.error(error),
         }
         true
     }
