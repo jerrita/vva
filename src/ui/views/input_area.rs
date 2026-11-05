@@ -325,8 +325,8 @@ fn render_file_palette(app: &App, frame: &mut Frame, input_rect: Rect) {
     frame.render_widget(p, popup_rect);
 }
 
-/// 提示区读取会话快照与本地反馈，不参与聊天历史缓存。
-pub(crate) fn feedback_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+/// 待发队列与草稿附件提示，保留在输入框上方。
+pub(crate) fn input_status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(selected) = app.selected_input_index() {
         let start = selected.saturating_sub(3);
@@ -376,24 +376,6 @@ pub(crate) fn feedback_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             "{} attachments in draft",
             app.input_attachments.len()
         )));
-    }
-    for text in app
-        .view
-        .notices
-        .iter()
-        .filter(|notice| notice.is_banner())
-        .map(|notice| &notice.text)
-        .chain(app.feedback.iter())
-    {
-        for line in text.lines() {
-            let spans = [Span::styled(line.to_owned(), fg(Color::Yellow))];
-            lines.extend(crate::ui::markdown::wrap_spans_to_lines(
-                &spans,
-                width.max(1),
-                " ",
-                " ",
-            ));
-        }
     }
     lines
 }

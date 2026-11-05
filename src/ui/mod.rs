@@ -39,12 +39,13 @@ use views::ask_user_modal::render_ask_user_modal;
 use views::chat::render_chat;
 use views::config_modal::render_config_modal;
 use views::help_modal::render_help_modal;
-use views::input_area::{feedback_lines, render_input_area};
+use views::input_area::{input_status_lines, render_input_area};
 use views::message_modal::{render_fork_title_modal, render_message_action_modal};
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
 use views::sidebar::{SidebarInfo, render_sidebar};
 use views::skills_modal::render_skills_modal;
+use views::toast::render_toast;
 use views::variants_modal::render_variants_modal;
 
 /// 启动 Ratatui 交互式终端 UI
@@ -137,6 +138,7 @@ async fn run_app_loop(
             &app.chat,
             app.chat_scroll(),
             app.modal.is_none(),
+            app.toast_area,
         );
         hyperlinks::write_updates(terminal.backend_mut(), &updates)?;
 
@@ -147,7 +149,8 @@ async fn run_app_loop(
         loop {
             tokio::select! {
                 _ = tick_interval.tick() => {
-                    if app.poll_file_index() {
+                    let expired = app.feedback.expire();
+                    if app.poll_file_index() || expired {
                         break;
                     }
                     if app.active_session.is_running() {
@@ -175,7 +178,7 @@ async fn run_app_loop(
     Ok(())
 }
 
-/// 绘制一帧：聊天区 / 反馈行 / 输入区 / 侧边栏，最后叠加当前弹窗
+/// 绘制一帧：聊天区 / 待发队列 / 输入区 / 侧边栏，最后叠加弹窗与 toast
 fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
     let header = &view.session.header;
     let model = &header.current_model;
@@ -187,14 +190,14 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
     let max_text_rows = (size.height.saturating_sub(8) / 2).clamp(1, 12) as usize;
     let input_area_height = app.input.line_count().clamp(1, max_text_rows) as u16 + 3;
 
-    let feedback = feedback_lines(app, size.width as usize);
-    let feedback_height =
-        (feedback.len() as u16).min(size.height.saturating_sub(input_area_height + 5));
+    let status = input_status_lines(app, size.width as usize);
+    let status_height =
+        (status.len() as u16).min(size.height.saturating_sub(input_area_height + 5));
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(5),
-            Constraint::Length(feedback_height),
+            Constraint::Length(status_height),
             Constraint::Length(input_area_height),
         ])
         .split(size);
@@ -213,9 +216,9 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
 
     render_chat(app, frame, chat_area);
 
-    let feedback_skip = feedback.len().saturating_sub(feedback_height as usize);
+    let status_skip = status.len().saturating_sub(status_height as usize);
     frame.render_widget(
-        ratatui::widgets::Paragraph::new(feedback).scroll((feedback_skip as u16, 0)),
+        ratatui::widgets::Paragraph::new(status).scroll((status_skip as u16, 0)),
         rows[1],
     );
     render_input_area(app, frame, rows[2], model, variant, &workspace);
@@ -255,4 +258,5 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
         }
         ActiveModal::None => Rect::default(),
     };
+    app.toast_area = render_toast(app, frame);
 }
