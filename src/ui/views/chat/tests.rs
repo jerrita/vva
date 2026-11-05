@@ -531,7 +531,7 @@ async fn test_chat_cache_preserves_history_and_layout() {
         check(app, 80);
         assert_eq!(history_text(app), history);
     }
-    app.feedback.push("Local notice".into());
+    app.feedback.error("Local notice".into());
     check(app, 80);
     app.feedback.clear();
     check(app, 80);
@@ -1516,27 +1516,23 @@ fn external_web_fetch_renders_native_open_page_row() {
 }
 
 #[tokio::test]
-async fn feedback_stays_outside_transcript_and_replaces_equal_length_content() {
-    use crate::harness::{Notice, NoticeKind};
+async fn toast_does_not_change_layout_areas() {
+    use ratatui::{Terminal, backend::TestBackend};
+
     let mut app = create_test_app().await;
-    app.feedback.push("Local feedback".into());
-    Arc::make_mut(&mut app.view).notices.push(Notice::new(
-        "First capability".into(),
-        NoticeKind::Capability,
-    ));
-    app.refresh_chat_lines(80);
-    assert!(!joined(&app.chat.lines).contains("capability"));
-    assert!(!joined(&app.chat.lines).contains("Local feedback"));
-    let panel = crate::ui::views::input_area::feedback_lines(&app, 80);
-    assert!(joined(&panel).contains("First capability"));
-    Arc::make_mut(&mut app.view).notices[0].text = "Other capability".into();
-    let panel = joined(&crate::ui::views::input_area::feedback_lines(&app, 80));
-    assert!(panel.contains("Other capability"));
-    assert!(!panel.contains("First capability"));
-    Arc::make_mut(&mut app.view).notices.clear();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let view = app.view.clone();
+    terminal
+        .draw(|frame| crate::ui::draw(&mut app, frame, &view))
+        .unwrap();
+    let layout = (app.chat.area, app.sidebar.area, app.input_inner_area);
+    app.feedback.error("Local feedback".into());
+    terminal
+        .draw(|frame| crate::ui::draw(&mut app, frame, &view))
+        .unwrap();
     assert_eq!(
-        joined(&crate::ui::views::input_area::feedback_lines(&app, 80)).trim(),
-        "Local feedback"
+        (app.chat.area, app.sidebar.area, app.input_inner_area),
+        layout
     );
 }
 

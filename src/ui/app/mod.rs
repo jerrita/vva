@@ -25,6 +25,7 @@ pub mod pane;
 pub mod scroll;
 pub mod selection;
 pub mod session;
+pub mod toast;
 
 #[cfg(test)]
 mod tests;
@@ -35,8 +36,9 @@ pub struct App {
     pub active_session: Arc<ManagedSession>,
     pub view_rx: watch::Receiver<Arc<SessionView>>,
     pub view: Arc<SessionView>,
-    /// 本地操作反馈，下次提交或关闭时清理。
-    pub feedback: Vec<String>,
+    /// 本地反馈与会话通知，依次展示为限时 toast。
+    pub feedback: toast::Toasts,
+    pub toast_area: Rect,
     pub input: InputBuffer,
     pub selected_input: Option<String>,
     pub input_attachments: Vec<crate::model::ContentPart>,
@@ -105,12 +107,15 @@ impl App {
             let (candidates, _) = crate::find::walk_workspace_entries(&workspace_root, true, true);
             let _ = file_index_tx.send(Arc::new(candidates));
         });
+        let mut feedback = toast::Toasts::default();
+        feedback.sync_notices(&[], &view.notices);
         Self {
             session_mgr,
             active_session: initial_session,
             view_rx,
             view,
-            feedback: Vec::new(),
+            feedback,
+            toast_area: Rect::default(),
             input: InputBuffer::new(),
             selected_input: None,
             input_attachments: Vec::new(),

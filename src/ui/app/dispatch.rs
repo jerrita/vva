@@ -65,7 +65,7 @@ impl App {
                 .await
         };
         if let Err(e) = &result {
-            self.feedback.push(format!("Error: {e}"));
+            self.feedback.error(format!("Error: {e}"));
         }
         self.refresh_view();
         result.is_ok()
@@ -78,7 +78,7 @@ impl App {
             web_search: Some(enabled),
         };
         if let Err(error) = self.active_session.configure(None, None, overrides).await {
-            self.feedback.push(error);
+            self.feedback.error(error);
             return;
         }
         self.refresh_view();
@@ -124,7 +124,7 @@ impl App {
             }
             "/new" => {
                 if let Err(error) = self.new_session().await {
-                    self.feedback.push(error);
+                    self.feedback.error(error);
                 }
             }
             "/model" | "/m" => {
@@ -169,7 +169,7 @@ impl App {
                 if crate::skills::match_invocation(cmd_line, &self.skills).is_some() {
                     self.submit_prompt(cmd_line).await;
                 } else {
-                    self.feedback.push(format!(
+                    self.feedback.error(format!(
                         "Unknown command '{cmd}'. Type /help for available commands."
                     ));
                 }
