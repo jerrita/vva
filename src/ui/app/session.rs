@@ -50,6 +50,7 @@ impl App {
         self.view_rx = self.active_session.subscribe();
         self.clear_selections();
         self.chat.lines.clear();
+        self.chat_focus = None;
         self.tool_expand.clear();
         self.response_expand.clear();
         self.feedback.clear();
@@ -255,7 +256,7 @@ impl App {
     }
 
     /// 读取工具块的生效展示档位（覆盖值优先，缺省按工具类别）
-    fn tool_expand_at(&self, id: &str, full_only: bool) -> ToolExpand {
+    pub(crate) fn tool_expand_at(&self, id: &str, full_only: bool) -> ToolExpand {
         self.tool_expand
             .get(id)
             .copied()
@@ -293,15 +294,20 @@ impl App {
             return false;
         }
         let id = hit.id.clone();
-        let next = match self.tool_expand_at(&id, hit.full_only) {
-            ToolExpand::Full if !hit.full_only => Some(ToolExpand::Preview),
+        let full_only = hit.full_only;
+        self.collapse_tool(&id, full_only);
+        true
+    }
+
+    pub(crate) fn collapse_tool(&mut self, id: &str, full_only: bool) {
+        let next = match self.tool_expand_at(id, full_only) {
+            ToolExpand::Full if !full_only => Some(ToolExpand::Preview),
             ToolExpand::Full | ToolExpand::Preview => Some(ToolExpand::Hidden),
             ToolExpand::Hidden => None,
         };
         if let Some(next) = next {
-            self.tool_expand.insert(id, next);
+            self.tool_expand.insert(id.to_owned(), next);
         }
-        true
     }
 
     /// 单击思考分组标题行切换该组展开/折叠；覆盖值与全局默认一致时移除条目。

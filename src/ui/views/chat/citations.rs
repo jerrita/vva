@@ -83,11 +83,7 @@ pub(crate) fn push_citations_block(
             bold(Color::Cyan),
         ),
     ]));
-    render.citations_hits.push(CitationsHit {
-        id,
-        header_start,
-        header_end: render.lines.len(),
-    });
+    let header_end = render.lines.len();
     if expanded {
         for (i, (title, url)) in citations.iter().enumerate() {
             let spans = vec![
@@ -100,4 +96,10 @@ pub(crate) fn push_citations_block(
             render.lines.extend(wrapped);
         }
     }
+    render.citations_hits.push(CitationsHit {
+        id,
+        header_start,
+        header_end,
+        block_end: render.lines.len(),
+    });
 }
