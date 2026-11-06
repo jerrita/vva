@@ -37,6 +37,66 @@ async fn variants_app() -> crate::ui::test_support::TestApp {
 }
 
 #[tokio::test]
+async fn blur_toggle_covers_frame_and_overlays_and_restores_transparency() {
+    use ratatui::{Terminal, backend::TestBackend, style::Color};
+
+    let mut ta = create_test_app("init_model", None, None, false).await;
+    let app = &mut ta.app;
+    app.add_part(
+        crate::model::Role::User,
+        crate::model::ContentPart::text("Hello"),
+    );
+    let view = app.view.clone();
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let transparent = terminal
+        .draw(|frame| crate::ui::draw(app, frame, &view))
+        .unwrap()
+        .buffer
+        .clone();
+
+    app.run("/blur").await;
+    assert!(app.feedback.current().is_some());
+    let solid = terminal
+        .draw(|frame| crate::ui::draw(app, frame, &view))
+        .unwrap();
+    assert!(
+        solid
+            .buffer
+            .content
+            .iter()
+            .all(|cell| cell.bg != Color::Reset)
+    );
+    for (before, after) in transparent.content.iter().zip(&solid.buffer.content) {
+        if before.bg != Color::Reset {
+            assert_eq!(before.bg, after.bg);
+        }
+    }
+
+    app.run("/help").await;
+    let modal = terminal
+        .draw(|frame| crate::ui::draw(app, frame, &view))
+        .unwrap();
+    assert!(
+        modal
+            .buffer
+            .content
+            .iter()
+            .all(|cell| cell.bg != Color::Reset)
+    );
+
+    app.modal = ActiveModal::None;
+    app.run("/blur").await;
+    assert!(app.feedback.current().is_some());
+    app.feedback.clear();
+    let restored = terminal
+        .draw(|frame| crate::ui::draw(app, frame, &view))
+        .unwrap();
+    for (before, after) in transparent.content.iter().zip(&restored.buffer.content) {
+        assert_eq!(before.bg, after.bg);
+    }
+}
+
+#[tokio::test]
 async fn test_slash_command_model_execution() {
     let mut ta = create_test_app("init_model", None, None, false).await;
     let app = &mut ta.app;
