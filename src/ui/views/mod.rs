@@ -19,6 +19,9 @@ use ratatui::widgets::{Block, BorderType};
 /// 三大面板共用的圆角边框色
 pub const PANEL_BORDER: Color = Color::Rgb(78, 82, 92);
 
+/// 不透明模式的深灰蓝底色，低于用户消息块与 toast 的亮度。
+pub const FRAME_BACKGROUND: Color = Color::Rgb(20, 23, 29);
+
 pub fn panel_block() -> Block<'static> {
     Block::bordered()
         .border_type(BorderType::Rounded)

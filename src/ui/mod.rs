@@ -26,6 +26,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::Color;
 use ratatui::{Frame, Terminal};
 use std::io::{self, stdout};
 use std::sync::Arc;
@@ -259,4 +260,13 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
         ActiveModal::None => Rect::default(),
     };
     app.toast_area = render_toast(app, frame);
+
+    // 在浮层 Clear 之后补齐终端默认背景，保留选区、代码块等显式底色。
+    if !app.blur {
+        for cell in &mut frame.buffer_mut().content {
+            if cell.bg == Color::Reset {
+                cell.set_bg(views::FRAME_BACKGROUND);
+            }
+        }
+    }
 }

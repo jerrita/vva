@@ -94,6 +94,11 @@ pub static COMMANDS: &[SlashCommand] = &[
         description: "Toggle the right sidebar details panel",
     },
     SlashCommand {
+        name: "/blur",
+        aliases: &[],
+        description: "Toggle background transparency (default: on)",
+    },
+    SlashCommand {
         name: "/help",
         aliases: &["/h", "/?"],
         description: "Show command and keyboard shortcuts help",
