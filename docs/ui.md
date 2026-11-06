@@ -109,3 +109,13 @@
 ## 5. 后台工具块
 
 后台 Shell / Agent 的生命周期和结果在原调用位置展示，详见 [background_tasks](background_tasks.md)。TUI 与 Web 共用 `SessionView.background_tasks` 结构化状态源。
+
+右侧 Details 在会话基本信息之后显示 `Background Tasks` 分组，无任务时隐藏：
+
+- 当前会话在本进程启动的后台 Shell 命令和脱离执行的 Agent 子代理共用此分组；短描述分别来自 Shell 的 `intent` 与 Agent 的 `description`，下一行显示 Shell / Agent、running / finished / failed 状态与耗时，停止和中断保留 stopped / interrupted 状态；
+- 运行任务优先，各组按启动顺序排列；最多展示 3 项，超出时显示剩余数量。有限高度下优先展示基本信息与任务，后续详情按视口裁剪；
+- 启动快照携带强类型 `BackgroundTaskActivity`（名称、类型、单调时钟起点），后续 `BackgroundTaskUpdated` 保留它，首次终态固定完成时刻。终态保留 5 秒后从侧栏移除，原工具块仍按领域生命周期保留；完成早于启动回执时只补齐展示信息，不回退运行态；
+- 沿用 100ms tick / 重绘循环，主助手空闲时同样更新计时并清理到期展示；切换会话后计时继续。活动元信息仅驻留内存，不改变 JSONL 或 Web 协议，重启后历史任务不重新进入侧栏；
+- Scheduler 属于 Agent Space daemon，未接入 TUI 的独立运行时；`SendMessage` 沿用跨会话交互与回复展示，不创建独立后台任务项。
+
+分组与弱化元信息的样式参考 [OpenCode 侧栏](https://github.com/anomalyco/opencode/blob/dev/packages/tui/src/routes/session/sidebar.tsx)，Shell / 子代理集中查看的方式参考 [Claude Code 后台任务界面](https://code.claude.com/docs/en/interactive-mode)。
