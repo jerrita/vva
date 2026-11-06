@@ -126,6 +126,7 @@ pub struct CitationsHit {
     pub id: String,
     pub header_start: usize,
     pub header_end: usize,
+    pub block_end: usize,
 }
 
 impl CitationsHit {
@@ -575,6 +576,7 @@ impl ChatCache {
         for hit in &mut self.citations_hits {
             shift_line(&mut hit.header_start, from, change);
             shift_line(&mut hit.header_end, from, change);
+            shift_line(&mut hit.block_end, from, change);
         }
         for hit in &mut self.user_hits {
             shift_line(&mut hit.line_start, from, change);

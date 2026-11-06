@@ -28,6 +28,11 @@ pub fn render_input_area(
         .split(area);
 
     let block = panel_block()
+        .title(if app.chat_focus.is_some() {
+            " Chat: ↑↓ select · → open · ← fold · y copy · Esc edit "
+        } else {
+            ""
+        })
         .border_style(Style::default().fg(if is_running {
             Color::Yellow
         } else {
@@ -94,7 +99,8 @@ pub fn render_input_area(
     frame.render_widget(input_p, text);
 
     // 绘制光标 (基于行号和列显示宽度定位，正确支持多行、视口滚动及全角 CJK 字符)
-    if inner_height > 0
+    if app.chat_focus.is_none()
+        && inner_height > 0
         && inner_width > 0
         && cursor_row >= scroll_y
         && cursor_row < scroll_y + inner_height

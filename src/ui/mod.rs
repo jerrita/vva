@@ -238,7 +238,7 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
     }
 
     // 弹窗视图回写列表区几何，供鼠标命中测试
-    app.modal_list_area = match &app.modal {
+    app.modal_list_area = match &mut app.modal {
         ActiveModal::Sessions(state) => render_sessions_modal(state, frame, size),
         ActiveModal::Models(state) => render_models_modal(state, model, frame, size),
         ActiveModal::Variants(state) => render_variants_modal(state, frame, size),
@@ -253,8 +253,8 @@ fn draw(app: &mut App, frame: &mut Frame, view: &SessionView) {
             render_ask_user_modal(state, frame, size);
             Rect::default()
         }
-        ActiveModal::Help => {
-            render_help_modal(frame, size);
+        ActiveModal::Help { scroll } => {
+            render_help_modal(frame, size, scroll);
             Rect::default()
         }
         ActiveModal::None => Rect::default(),

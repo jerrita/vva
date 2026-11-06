@@ -57,18 +57,43 @@
 
 ### 3.2 事件路由与状态条（`events.rs`、`views/input_area.rs`）
 
-输入分发顺序：弹窗独占 → 补全选单 → 普通编辑。
+输入分发顺序：弹窗独占 → 全局聊天浏览/档位/粘贴快捷键 → 聊天浏览 → 补全选单 → 普通编辑。
 
 - 状态条回写 `model_selector_area` / `variant_selector_area` / `web_toggle_area` 命中矩形，鼠标按下按命中派发弹窗或开关；
 - 输入框、聊天流与侧边栏的鼠标拖拽在释放时自动复制非空选区，保留选区，并通过 toast 显示“已复制”或剪贴板错误；普通单击保持组件原有动作，Ctrl+C 仍复制活跃选区并清除选区；
-- 右键级联：命中聊天流工具或历史响应时收折内容 → 命中档位标签时循环切换档位（`App::cycle_variant`，按模型声明顺序，越过末位回 default）→ 命中输入框时粘贴；
+- 右键仍保留鼠标入口；每种动作及其他鼠标交互的键盘入口见下表；
 - 档位清单由 `App::variant_options` 统一构造（default 置首），与 `/variant` 弹窗同源。
 
 运行中的待发消息展示在输入框上方，选择态由 `App.selected_input` 按消息 ID 维护；
 队列及模式由 `SessionTask` 管理，并经 `SessionView.pending_inputs` 发布。
 按键语义见[运行中发送消息](usage.md#运行中发送消息)。
 
-### 3.3 `@` 文件引用
+### 3.3 键盘聊天浏览与鼠标操作对照
+
+`Ctrl+O` 在编辑与聊天浏览间切换，初次定位最新的已渲染块（可在屏幕外）；以青色 `▶` 标记焦点标题，输入框边框展示浏览键位。浏览时草稿、光标和待发消息保持不变，普通字符不写入草稿；弹窗仍独占输入。焦点按用户轮次、响应或组件 ID 保存，重排和流式追加后继续定位同一块；目标消失或切换会话时退出浏览。移动焦点或展开/收折会将标题滚入视口并暂停自动吸底，PgUp/PgDn 可继续阅读长块；退出后 End（输入为空时）回到底部并恢复自动跟随。
+
+| 上下文 / 快捷键 | 行为 | 对应鼠标操作 |
+|---|---|---|
+| 无弹窗：Ctrl+O | 进入/退出聊天浏览，Esc 也可退出 | 无需鼠标定位消息/块 |
+| 浏览：↑/↓、k/j、Shift+Tab/Tab | 上一个/下一个用户消息、响应、工具、思考或引用块；边界停止 | 移动鼠标定位组件 |
+| 浏览：Home/End | 第一/最后一个块 | 滚动后定位 |
+| 浏览：Enter、Space、→、l | 展开响应/思考/引用；工具隐藏→默认展示，截断预览→全文；用户消息打开 Revert/Fork 菜单（会话空闲时） | 左键展开组件、点击历史用户消息 |
+| 浏览：←、h | 收折当前响应/思考/引用；Shell 全文→预览→隐藏，Edit/Write 全文→隐藏 | 右键收折工具正文、思考正文或历史响应；引用原为左键切换 |
+| 浏览：y / Shift+Y | 复制当前块已渲染文本（含屏幕外行）/侧栏全文；收折内容需先展开再复制 | 拖拽聊天/侧栏文字后释放复制 |
+| 无弹窗：Ctrl+T | 按模型声明顺序循环推理档位，末位回 default | 右键档位标签 |
+| 无弹窗：Ctrl+V、Ctrl+Shift+V、Shift+Insert | 粘贴系统剪贴板到输入框；浏览时自动回到编辑 | 右键输入框 |
+| 无弹窗：终端 Paste（macOS 通常 Cmd+V） | 终端发送 bracketed paste，整段插入并归一化换行，不提交；浏览时回到编辑 | 终端粘贴菜单 |
+| 编辑或浏览：PgUp/PgDn；编辑且输入为空：Home/End | 翻页、到顶/到底 | 滚轮与滚动条拖拽 |
+| /model、/variant、/search、/thinking | 模型/档位弹窗、联网/思考展示开关 | 左键状态条标签 |
+| 弹窗：↑/↓、Enter | 选择并确认条目 | 点击列表条目 |
+
+输入框用方向键定位光标；任意字符范围的鼠标拖选仍可使用，键盘复制提供整块/侧栏全文粒度。终端 OSC 8 链接的打开手势归终端管理，可复制包含 URL 的展开块后使用。`Cmd` 由终端处理，TUI 不绑定它；新增键位不需要 Option-as-Meta 或扩展键盘协议。现有 Ctrl+A/E、Ctrl+K/U、Ctrl+C 与补全键位保留；Ctrl+C 在浏览时仍遵循复制选区→清空输入→中止→退出的级联。
+
+设计参考：[Claude Code](https://code.claude.com/docs/en/interactive-mode) 用 Ctrl+O 进入 transcript viewer；[OpenCode](https://opencode.ai/docs/keybinds/) 用 Ctrl+T 循环档位，并以 Ctrl+X leader 组织多种消息操作。vva 没有既有 leader，使用独立浏览状态，使单字母操作只在浏览时生效。
+
+`/help` 列出完整键位，↑/↓、j/k、PgUp/PgDn、Home/End 滚动，Esc/q 关闭，小终端中也可查看全部条目。
+
+### 3.4 `@` 文件引用
 
 [`app/editor.rs`](../src/ui/app/editor.rs) · [`harness/mention.rs`](../src/harness/mention.rs) · [`find.rs`](../src/find.rs)
 

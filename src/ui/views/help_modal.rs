@@ -2,14 +2,14 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::ui::command::{COMMANDS, command_row};
 use crate::ui::views::modal_shell::{ModalShellSpec, render_modal_shell};
 use crate::ui::views::{bold, fg};
 
 /// 渲染帮助与快捷键弹窗
-pub fn render_help_modal(frame: &mut Frame, area: Rect) {
+pub fn render_help_modal(frame: &mut Frame, area: Rect, scroll: &mut usize) {
     let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
         "Available Slash Commands:",
@@ -32,63 +32,61 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
         "Keyboard Shortcuts:",
         bold(Color::Yellow),
     )));
-    lines.push(Line::from(vec![
-        Span::styled("  Enter        ", fg(Color::Green)),
-        Span::styled(
-            "- Send / queue prompt / promote pending message to steer",
-            fg(Color::White),
+    for (key, description) in [
+        (
+            "Ctrl+O",
+            "Enter / leave chat browsing (starts at latest block)",
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  Ctrl+Enter   ", fg(Color::Green)),
-        Span::styled(
-            "- Insert newline in input (also Shift+Enter / Alt+Enter)",
-            fg(Color::White),
+        ("Ctrl+T", "Cycle reasoning variant, including default"),
+        (
+            "Ctrl+V / Ctrl+Shift+V / Shift+Insert",
+            "Paste clipboard into input; terminal paste also works",
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  Tab          ", fg(Color::Green)),
-        Span::styled(
-            "- Autocomplete command in input / toggle project scope in /sessions",
-            fg(Color::White),
+        (
+            "Chat browsing:",
+            "Draft stays intact; Esc returns to editing",
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  Up / Down    ", fg(Color::Green)),
-        Span::styled(
-            "- Move cursor / select pending messages / navigate suggestions",
-            fg(Color::White),
+        (
+            "Up/Down · k/j · Shift+Tab/Tab",
+            "Previous / next message or block",
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  PgUp / PgDn  ", fg(Color::Green)),
-        Span::styled(
-            "- Scroll conversation history up and down",
-            fg(Color::White),
+        ("Home / End", "First / last block"),
+        (
+            "Enter / Space / Right / l",
+            "Expand block; user message opens Revert / Fork",
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  Esc          ", fg(Color::Green)),
-        Span::styled(
-            "- Close popup / steer → after → edit pending message",
-            fg(Color::White),
+        ("Left / h", "Fold block; tool full → preview → hidden"),
+        ("y / Shift+Y", "Copy displayed block / entire sidebar"),
+        ("PgUp / PgDn", "Scroll conversation (also while editing)"),
+        ("Input:", ""),
+        (
+            "Enter",
+            "Send / queue prompt / promote pending message to steer",
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("  Ctrl+C       ", fg(Color::Green)),
-        Span::styled(
-            "- Abort current agent run / quit application",
-            fg(Color::White),
+        (
+            "Ctrl+Enter / Shift+Enter / Alt+Enter / Ctrl+J",
+            "Insert newline",
         ),
-    ]));
+        ("Tab", "Autocomplete; toggle project scope in /sessions"),
+        (
+            "Up / Down",
+            "Move cursor / history / pending messages / suggestions",
+        ),
+        ("Ctrl+A / Ctrl+E", "Move input cursor to start / end"),
+        ("Ctrl+K / Ctrl+U", "Clear input"),
+        ("Esc", "Close popup / steer → after → edit pending message"),
+        ("Ctrl+C", "Copy selection → clear input → abort run → quit"),
+    ] {
+        lines.push(Line::from(Span::styled(
+            format!("  {key}"),
+            fg(Color::Green),
+        )));
+        if !description.is_empty() {
+            lines.push(Line::from(format!("    {description}")));
+        }
+    }
 
-    let footer = Line::from(vec![
-        Span::styled(" Press ", fg(Color::DarkGray)),
-        Span::styled("[Esc]", bold(Color::Yellow)),
-        Span::styled(" or ", fg(Color::DarkGray)),
-        Span::styled("[q]", bold(Color::Yellow)),
-        Span::styled(" to close this dialog", fg(Color::DarkGray)),
-    ]);
+    let footer = Line::from(" ↑↓/PgUp/PgDn scroll · Home/End · Esc/q close ");
 
     let content_area = render_modal_shell(
         frame,
@@ -96,12 +94,18 @@ pub fn render_help_modal(frame: &mut Frame, area: Rect) {
         ModalShellSpec {
             title: " Help & Keyboard Shortcuts ",
             accent: Color::Cyan,
-            width: 74,
-            height: 22,
+            width: 88,
+            height: 38,
             header_height: 0,
         },
         Vec::new(),
         footer,
     );
-    frame.render_widget(Paragraph::new(lines), content_area);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    *scroll = (*scroll).min(
+        paragraph
+            .line_count(content_area.width)
+            .saturating_sub(content_area.height as usize),
+    );
+    frame.render_widget(paragraph.scroll((*scroll as u16, 0)), content_area);
 }
