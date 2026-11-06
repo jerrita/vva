@@ -1,4 +1,5 @@
 use super::App;
+use super::toast::ToastLevel;
 use crate::model::ToggleOverrides;
 use crate::ui::modals::{ActiveModal, ConfigItemKind};
 
@@ -152,6 +153,18 @@ impl App {
             }
             "/sidebar" | "/sb" => {
                 self.show_sidebar = !self.show_sidebar;
+            }
+            "/blur" => {
+                self.blur = !self.blur;
+                self.feedback.show(
+                    if self.blur {
+                        "Blur on: transparent background"
+                    } else {
+                        "Blur off: solid background"
+                    }
+                    .into(),
+                    ToastLevel::Info,
+                );
             }
             "/clear" | "/c" => {
                 self.delete_and_recreate_session().await;
