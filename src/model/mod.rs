@@ -8,7 +8,8 @@ pub mod tool;
 pub mod turn;
 
 pub use background::{
-    BackgroundTask, BackgroundTaskStatus, background_tasks, update_background_task,
+    BackgroundTask, BackgroundTaskActivity, BackgroundTaskKind, BackgroundTaskStatus,
+    background_tasks, update_background_task,
 };
 pub use content::{
     Annotation, ContentPart, ImageGenerationCall, ImageGenerationStatus, MediaSource, SearchStatus,
