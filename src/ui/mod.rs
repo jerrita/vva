@@ -44,7 +44,7 @@ use views::input_area::{input_status_lines, render_input_area};
 use views::message_modal::{render_fork_title_modal, render_message_action_modal};
 use views::models_modal::render_models_modal;
 use views::sessions_modal::render_sessions_modal;
-use views::sidebar::{SidebarInfo, render_sidebar};
+use views::sidebar::{DETAILS_LINE_COUNT, SidebarInfo, render_sidebar};
 use views::skills_modal::render_skills_modal;
 use views::toast::render_toast;
 use views::variants_modal::render_variants_modal;
@@ -154,7 +154,14 @@ async fn run_app_loop(
                     if app.poll_file_index() || expired {
                         break;
                     }
-                    if app.active_session.is_running() {
+                    if app.active_session.is_running()
+                        // 保留到最后一帧重绘，以移除刚过展示期的终态任务。
+                        || app.sidebar.lines.len() > DETAILS_LINE_COUNT
+                        || app.view.background_tasks.values().any(|task| {
+                            task.activity.is_some()
+                                && task.status == crate::model::BackgroundTaskStatus::Running
+                        })
+                    {
                         app.tick();
                         break;
                     }

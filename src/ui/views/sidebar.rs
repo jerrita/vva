@@ -1,13 +1,16 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::Paragraph;
 
+use crate::model::{BackgroundTaskKind, BackgroundTaskStatus};
 use crate::ui::app::App;
 use crate::ui::text::truncate;
 use crate::ui::views::chat::apply_selection_highlight;
 use crate::ui::views::{bold, fg};
+
+pub const DETAILS_LINE_COUNT: usize = 21;
 
 /// 右侧边栏所需的会话元信息
 pub struct SidebarInfo<'a> {
@@ -96,7 +99,7 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         "$0.0000".to_string()
     };
 
-    let mut lines = vec![Line::from(""); 21];
+    let mut lines = vec![Line::from(""); DETAILS_LINE_COUNT];
     lines[0] = label_value("Session", short_id, fg(Color::Cyan));
     lines[1] = label_value("Workspace", ws_display.to_string(), fg(Color::White));
     lines[2] = label_value(
@@ -148,6 +151,76 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         fg(Color::LightBlue),
     );
     lines[18] = label_value("Est. Cost", cost_str, bold(Color::Green));
+
+    let mut tasks: Vec<_> = app
+        .view
+        .background_tasks
+        .values()
+        .filter(|task| {
+            task.finished_at
+                .is_none_or(|finished| finished.elapsed().as_secs() < 5)
+        })
+        .filter_map(|task| task.activity.as_ref().map(|activity| (task, activity)))
+        .collect();
+    tasks.sort_by_key(|(task, activity)| {
+        (
+            task.status != BackgroundTaskStatus::Running,
+            activity.started_at,
+        )
+    });
+    if !tasks.is_empty() {
+        let mut task_lines = vec![Line::from(Span::styled(
+            format!(" Background Tasks ({})", tasks.len()),
+            bold(Color::DarkGray),
+        ))];
+        for (task, activity) in tasks.iter().take(3) {
+            let kind = match activity.kind {
+                BackgroundTaskKind::Shell => "Shell",
+                BackgroundTaskKind::Agent => "Agent",
+            };
+            let (status, color) = match task.status {
+                BackgroundTaskStatus::Running => ("running", Color::Cyan),
+                BackgroundTaskStatus::Completed => ("finished", Color::Green),
+                BackgroundTaskStatus::Failed => ("failed", Color::Red),
+                BackgroundTaskStatus::Stopped => ("stopped", Color::Yellow),
+                BackgroundTaskStatus::Interrupted => ("interrupted", Color::Yellow),
+            };
+            let elapsed = match task.finished_at {
+                Some(finished) => finished.duration_since(activity.started_at),
+                None => activity.started_at.elapsed(),
+            }
+            .as_secs();
+            let elapsed = if elapsed >= 3600 {
+                format!("{}h {}m", elapsed / 3600, elapsed % 3600 / 60)
+            } else if elapsed >= 60 {
+                format!("{}m {}s", elapsed / 60, elapsed % 60)
+            } else {
+                format!("{elapsed}s")
+            };
+            let name = activity
+                .name
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            task_lines.push(Line::from(Span::styled(
+                format!(" {}", truncate(&name, 26)),
+                fg(Color::White),
+            )));
+            task_lines.push(Line::from(vec![
+                Span::styled(format!(" {kind} · "), fg(Color::DarkGray)),
+                Span::styled(status, fg(color)),
+                Span::styled(format!(" · {elapsed}"), fg(Color::DarkGray)),
+            ]));
+        }
+        if tasks.len() > 3 {
+            task_lines.push(Line::from(Span::styled(
+                format!(" +{} more", tasks.len() - 3),
+                fg(Color::DarkGray),
+            )));
+        }
+        task_lines.push(Line::from(""));
+        lines.splice(4..4, task_lines);
+    }
     lines
 }
 
@@ -157,72 +230,37 @@ pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &Sideb
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    app.sidebar.area = Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: inner.height.min(22),
-    };
-
     if inner.width < 15 || inner.height < 10 {
         app.sidebar.reset();
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Min(0),
-        ])
-        .split(inner);
-
     let (_context_limit, ratio, percent) = context_usage(&app.stats);
     let mut lines = build_sidebar_lines(app, info);
+    let task_height = lines.len() - DETAILS_LINE_COUNT;
+    lines[11 + task_height] = context_gauge_line(inner.width, ratio, percent);
+    app.sidebar.area = Rect {
+        height: inner.height.min(lines.len() as u16 + 1),
+        ..inner
+    };
     if let Some(selection) = app.sidebar.selection.get() {
         apply_selection_highlight(&mut lines, selection);
     }
     app.sidebar.lines = lines.clone();
 
-    let separator = || {
-        Block::default()
-            .borders(Borders::BOTTOM)
-            .border_style(fg(Color::Rgb(40, 40, 45)))
-    };
-
-    frame.render_widget(
-        Paragraph::new(lines[0..3].to_vec()).block(separator()),
-        chunks[0],
-    );
-    frame.render_widget(
-        Paragraph::new(lines[4..8].to_vec()).block(separator()),
-        chunks[1],
-    );
-
-    let token_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(chunks[2]);
-    frame.render_widget(Paragraph::new(lines[9..11].to_vec()), token_chunks[0]);
-    frame.render_widget(
-        Paragraph::new(context_gauge_line(token_chunks[1].width, ratio, percent)),
-        token_chunks[1],
-    );
-    frame.render_widget(Paragraph::new(lines[12..14].to_vec()), token_chunks[2]);
-
-    frame.render_widget(
-        Paragraph::new(lines[14..17].to_vec()).block(separator()),
-        chunks[3],
-    );
-    frame.render_widget(Paragraph::new(lines[18..21].to_vec()), chunks[4]);
+    frame.render_widget(Paragraph::new(lines), inner);
+    let mut separators = vec![3, 8 + task_height, 17 + task_height];
+    if task_height > 0 {
+        separators.push(3 + task_height);
+    }
+    for row in separators {
+        if row < inner.height as usize {
+            frame.render_widget(
+                Paragraph::new("─".repeat(inner.width as usize)).style(fg(Color::Rgb(40, 40, 45))),
+                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+            );
+        }
+    }
 }
 
 #[cfg(test)]

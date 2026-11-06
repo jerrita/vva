@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,20 @@ pub enum BackgroundTaskStatus {
     Interrupted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundTaskKind {
+    Shell,
+    Agent,
+}
+
+/// 进程内的任务展示信息；历史结果不重新进入侧栏的短暂展示周期。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundTaskActivity {
+    pub name: String,
+    pub kind: BackgroundTaskKind,
+    pub started_at: Instant,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackgroundTask {
     pub task_id: String,
@@ -26,6 +41,11 @@ pub struct BackgroundTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_bytes: Option<u64>,
     pub truncated: bool,
+    /// 启动快照携带，后续状态快照沿用；不参与持久化与 Web 协议。
+    #[serde(skip)]
+    pub activity: Option<BackgroundTaskActivity>,
+    #[serde(skip)]
+    pub finished_at: Option<Instant>,
 }
 
 impl BackgroundTask {
@@ -38,6 +58,8 @@ impl BackgroundTask {
             exit_code: None,
             total_bytes: None,
             truncated: false,
+            activity: None,
+            finished_at: None,
         }
     }
 
@@ -59,11 +81,24 @@ pub fn update_background_task(
     tasks: &mut BTreeMap<String, BackgroundTask>,
     mut task: BackgroundTask,
 ) {
-    if let Some(previous) = tasks.get(&task.task_id)
+    if let Some(previous) = tasks.get_mut(&task.task_id)
         && previous.status != BackgroundTaskStatus::Running
         && task.status == BackgroundTaskStatus::Running
     {
+        // 完成可能早于启动回执；补齐展示信息但保留终态与完成时刻。
+        if previous.activity.is_none() {
+            previous.activity = task.activity;
+        }
+        if previous.activity.is_some() && previous.finished_at.is_none() {
+            previous.finished_at = Some(Instant::now());
+        }
         return;
+    }
+    if let Some(previous) = tasks.get(&task.task_id) {
+        if task.activity.is_none() {
+            task.activity.clone_from(&previous.activity);
+        }
+        task.finished_at = previous.finished_at;
     }
     if let Some(previous) = tasks.get(&task.task_id)
         && previous.status == BackgroundTaskStatus::Stopped
@@ -72,6 +107,12 @@ pub fn update_background_task(
         if task.output.is_empty() {
             task.output.clone_from(&previous.output);
         }
+    }
+    if task.status != BackgroundTaskStatus::Running
+        && task.activity.is_some()
+        && task.finished_at.is_none()
+    {
+        task.finished_at = Some(Instant::now());
     }
     tasks.insert(task.task_id.clone(), task);
 }
@@ -124,8 +165,24 @@ mod tests {
             ..BackgroundTask::running("task_sample".into())
         };
         update_background_task(&mut tasks, task.clone());
-        update_background_task(&mut tasks, BackgroundTask::running(task.task_id.clone()));
-        assert_eq!(tasks[&task.task_id], task);
+        let activity = BackgroundTaskActivity {
+            name: "build".into(),
+            kind: BackgroundTaskKind::Shell,
+            started_at: Instant::now(),
+        };
+        update_background_task(
+            &mut tasks,
+            BackgroundTask {
+                activity: Some(activity.clone()),
+                ..BackgroundTask::running(task.task_id.clone())
+            },
+        );
+        let completed = tasks[&task.task_id].clone();
+        assert_eq!(completed.status, BackgroundTaskStatus::Completed);
+        assert_eq!(completed.activity, Some(activity));
+        assert!(completed.finished_at.is_some());
+        update_background_task(&mut tasks, task.clone());
+        assert_eq!(tasks[&task.task_id], completed);
         update_background_task(
             &mut tasks,
             BackgroundTask {

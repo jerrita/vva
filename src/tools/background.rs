@@ -81,6 +81,7 @@ struct TaskInner {
 struct BackgroundTask {
     intent: String,
     command: String,
+    started_at: std::time::Instant,
     inner: Arc<Mutex<TaskInner>>,
     monitor: Option<tokio::task::JoinHandle<()>>,
 }
@@ -90,6 +91,7 @@ pub struct TaskSnapshot {
     pub id: String,
     pub intent: String,
     pub command: String,
+    pub started_at: std::time::Instant,
     pub status: BackgroundStatus,
     pub total_bytes: u64,
     pub truncated: bool,
@@ -118,6 +120,12 @@ impl TaskSnapshot {
             exit_code,
             total_bytes: Some(self.total_bytes),
             truncated: self.total_bytes > self.tail.len() as u64,
+            activity: Some(crate::model::BackgroundTaskActivity {
+                name: self.intent.clone(),
+                kind: crate::model::BackgroundTaskKind::Shell,
+                started_at: self.started_at,
+            }),
+            finished_at: None,
         }
     }
 }
@@ -185,6 +193,7 @@ impl BackgroundTasks {
                 BackgroundTask {
                     intent: intent.to_string(),
                     command: command.to_string(),
+                    started_at: std::time::Instant::now(),
                     inner: inner.clone(),
                     monitor: None,
                 },
@@ -246,12 +255,13 @@ impl BackgroundTasks {
     }
 
     pub fn snapshot(&self, id: &str) -> Option<TaskSnapshot> {
-        let (intent, command, inner) = {
+        let (intent, command, started_at, inner) = {
             let tasks = self.tasks.lock().expect("background tasks lock poisoned");
             let task = tasks.get(id)?;
             (
                 task.intent.clone(),
                 task.command.clone(),
+                task.started_at,
                 task.inner.clone(),
             )
         };
@@ -260,6 +270,7 @@ impl BackgroundTasks {
             id: id.to_string(),
             intent,
             command,
+            started_at,
             status: inner.status.clone(),
             total_bytes: inner.output.total,
             truncated: inner.output.truncated(),
@@ -693,6 +704,7 @@ mod tests {
                 BackgroundTask {
                     intent: "capture output".into(),
                     command: String::new(),
+                    started_at: std::time::Instant::now(),
                     inner,
                     monitor: Some(monitor),
                 },

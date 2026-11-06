@@ -178,17 +178,22 @@ impl Tool for AgentTool {
     }
 
     async fn execute_result(&self, call: &crate::model::ToolCall) -> crate::model::ToolResult {
-        let mut result = super::result_with_task(call, self.run(&call.arguments).await);
-        result.task = result
-            .background_task_id
-            .clone()
-            .map(crate::model::BackgroundTask::running);
-        result
+        match self.run(&call.arguments).await {
+            Ok((text, task)) => crate::model::ToolResult {
+                background_task_id: task.as_ref().map(|task| task.task_id.clone()),
+                task,
+                ..crate::model::ToolResult::success(&call.id, text)
+            },
+            Err(error) => crate::model::ToolResult::error(&call.id, error),
+        }
     }
 }
 
 impl AgentTool {
-    async fn run(&self, arguments: &str) -> Result<(String, Option<String>), String> {
+    async fn run(
+        &self,
+        arguments: &str,
+    ) -> Result<(String, Option<crate::model::BackgroundTask>), String> {
         let args: AgentArgs = parse_args(arguments, "Agent")?;
         let def = self
             .defs
@@ -201,6 +206,7 @@ impl AgentTool {
                     self.agent_enum().join(", ")
                 )
             })?;
+        let started_at = std::time::Instant::now();
         let launch = self
             .broker
             .spawn_subagent(
@@ -220,7 +226,14 @@ impl AgentTool {
                  your response; do not sleep or poll for completion.",
                     launch.session_id, def.name, args.description
                 ),
-                Some(launch.session_id),
+                Some(crate::model::BackgroundTask {
+                    activity: Some(crate::model::BackgroundTaskActivity {
+                        name: args.description,
+                        kind: crate::model::BackgroundTaskKind::Agent,
+                        started_at,
+                    }),
+                    ..crate::model::BackgroundTask::running(launch.session_id)
+                }),
             ));
         }
         let report = self
