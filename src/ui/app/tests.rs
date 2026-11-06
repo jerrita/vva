@@ -201,12 +201,19 @@ async fn test_slash_command_variant_execution() {
 
 #[tokio::test]
 async fn test_cycle_variant_wraps_through_declared_order() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let mut ta = variants_app().await;
     let app = &mut ta.app;
+    let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
 
     // default → none → low → high → 回到 default
     for expected in [Some("none"), Some("low"), Some("high"), None] {
-        app.cycle_variant().await;
+        crate::ui::events::handle_crossterm_event(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+            &mut events,
+        )
+        .await;
         assert_eq!(
             app.current_variant().as_deref(),
             expected,
@@ -228,6 +235,110 @@ async fn test_cycle_variant_wraps_through_declared_order() {
     let mut app_no_vars = App::new(app.session_mgr.clone(), session_no_vars).await;
     app_no_vars.cycle_variant().await;
     assert_eq!(app_no_vars.current_variant(), None);
+}
+
+#[tokio::test]
+async fn chat_keyboard_focus_survives_reflow_and_collapses_tools_in_order() {
+    use crate::model::{ContentPart, Message, Turn};
+    use crate::ui::app::chat_focus::ChatTarget;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    let view = std::sync::Arc::make_mut(&mut app.view);
+    let session = std::sync::Arc::make_mut(&mut view.session);
+    session.append_turn(Turn::user_turn(Message::text("Explain this output")));
+    let mut response = Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::reasoning("Inspect the output.\nVerify ordering.", None),
+        ContentPart::ToolCall(crate::model::ToolCall::new(
+            "shell",
+            "Shell",
+            r#"{"intent":"inspect","command":"seq 100"}"#,
+        )),
+        ContentPart::text("Final reply"),
+    ])]);
+    response.worked_ms = Some(1_000);
+    session.append_turn(response);
+    session.append_turn(Turn::new(
+        crate::model::Role::Tool,
+        vec![Message::new(vec![ContentPart::ToolResult(
+            crate::model::ToolResult::success(
+                "shell",
+                (0..100)
+                    .map(|i| format!("Output {i}\n"))
+                    .collect::<String>(),
+            ),
+        )])],
+    ));
+    view.revision += 1;
+    app.set_input("/model");
+    app.chat.area = Rect::new(2, 2, 81, 12);
+    app.refresh_chat_lines(80);
+    let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    for (code, modifiers) in [
+        (KeyCode::Char('o'), KeyModifiers::CONTROL),
+        (KeyCode::Right, KeyModifiers::NONE),
+        (KeyCode::Down, KeyModifiers::NONE),
+        (KeyCode::Down, KeyModifiers::NONE),
+        (KeyCode::Right, KeyModifiers::NONE),
+    ] {
+        crate::ui::events::handle_crossterm_event(
+            app,
+            Event::Key(KeyEvent::new(code, modifiers)),
+            &mut events,
+        )
+        .await;
+    }
+    assert_eq!(app.chat_focus, Some(ChatTarget::Tool("shell".into())));
+    assert_eq!(app.tool_expand.get("shell"), Some(&ToolExpand::Full));
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(44, 14)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::views::chat::render_chat(app, frame, frame.area()))
+        .unwrap();
+    let line = app.focused_chat_item().unwrap().lines.start;
+    assert!((app.chat_scroll()..app.chat_scroll() + app.viewport_height).contains(&line));
+    for mode in [ToolExpand::Preview, ToolExpand::Hidden] {
+        crate::ui::events::handle_crossterm_event(
+            app,
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            &mut events,
+        )
+        .await;
+        assert_eq!(app.tool_expand.get("shell"), Some(&mode));
+        assert_eq!(app.chat_focus, Some(ChatTarget::Tool("shell".into())));
+    }
+    assert_eq!(app.input.as_str(), "/model");
+    for code in [KeyCode::Home, KeyCode::Enter] {
+        crate::ui::events::handle_crossterm_event(
+            app,
+            Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+            &mut events,
+        )
+        .await;
+    }
+    assert!(matches!(app.modal, ActiveModal::MessageAction(_)));
+}
+
+#[tokio::test]
+async fn bracketed_paste_leaves_chat_browsing_without_submitting() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    ta.add_part(
+        crate::model::Role::User,
+        crate::model::ContentPart::text("Earlier prompt"),
+    );
+    ta.refresh_chat_lines(80);
+    ta.set_input("/model ");
+    let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+    for event in [
+        Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+        Event::Paste("first\r\nsecond\rthird".into()),
+    ] {
+        crate::ui::events::handle_crossterm_event(&mut ta.app, event, &mut events).await;
+    }
+    assert!(ta.chat_focus.is_none());
+    assert_eq!(ta.input.as_str(), "/model first\nsecond\nthird");
+    assert!(ta.active_session.snapshot().session.turns.is_empty());
 }
 
 #[tokio::test]

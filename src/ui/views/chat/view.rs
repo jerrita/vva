@@ -29,6 +29,7 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
     } else {
         area
     };
+    app.chat_focus_needs_reveal |= app.chat.area != viewport;
     app.chat.area = viewport;
     app.scrollbar_area = Rect::new(
         area.right().saturating_sub(1),
@@ -44,6 +45,26 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
 
     app.update_viewport(max_scroll, viewport_height);
 
+    // 定位、组件变化和布局变化后显露标题；普通翻页不被拉回。
+    let focused_item = app.focused_chat_item();
+    if let Some(item) = &focused_item {
+        if app.chat_focus_needs_reveal {
+            let line = item.lines.start;
+            let scroll = app.chat_scroll();
+            app.scroll_offset = if line < scroll {
+                line
+            } else if line >= scroll + viewport_height {
+                line.saturating_sub(viewport_height.saturating_sub(1))
+            } else {
+                scroll
+            }
+            .min(max_scroll);
+            app.auto_scroll = false;
+        }
+    } else {
+        app.chat_focus = None;
+    }
+    app.chat_focus_needs_reveal = false;
     let scroll = app.chat_scroll();
     let start = scroll.min(total_lines);
     let end = (scroll + viewport_height).min(total_lines);
@@ -66,6 +87,20 @@ pub fn render_chat(app: &mut App, frame: &mut Frame, area: Rect) {
         if let Some(sel) = selection {
             overlay_selection(frame.buffer_mut(), viewport, window, &sel, scroll);
         }
+    }
+
+    if let Some(item) = focused_item
+        && (start..end).contains(&item.lines.start)
+    {
+        frame.render_widget(
+            Span::styled("▶", fg(Color::Cyan)),
+            Rect::new(
+                viewport.x.saturating_sub(1),
+                viewport.y + (item.lines.start - start) as u16,
+                1,
+                1,
+            ),
+        );
     }
 
     // 轨道与右边框重合，保留上下圆角。

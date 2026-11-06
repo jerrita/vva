@@ -17,6 +17,7 @@ pub use pane::{
 };
 pub use selection::{SelectionTracker, TextCoord, TextSelection, char_in_column_range};
 
+pub(crate) mod chat_focus;
 pub mod dispatch;
 pub mod draft;
 pub mod editor;
@@ -51,6 +52,8 @@ pub struct App {
     /// 聊天流面板：渲染与复制共用行缓冲，流式更新只重建历史前缀之后的内容
     pub chat: TextPane,
     pub chat_cache: ChatCache,
+    pub(crate) chat_focus: Option<chat_focus::ChatTarget>,
+    pub(crate) chat_focus_needs_reveal: bool,
     pub sidebar: TextPane,
     pub spinner_frame: usize,
     pub should_quit: bool,
@@ -128,6 +131,8 @@ impl App {
             scrollbar_area: Rect::default(),
             chat: TextPane::default(),
             chat_cache: ChatCache::default(),
+            chat_focus: None,
+            chat_focus_needs_reveal: false,
             sidebar: TextPane::default(),
             spinner_frame: 0,
             should_quit: false,

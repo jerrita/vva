@@ -143,7 +143,9 @@ pub enum ActiveModal {
     MessageAction(MessageActionState),
     ForkTitle(ForkTitleState),
     AskUser(AskUserModalState),
-    Help,
+    Help {
+        scroll: usize,
+    },
 }
 
 /// 弹窗中确认选中项后请求执行的动作
@@ -190,7 +192,7 @@ impl ActiveModal {
             Self::Config(state) => Some(state),
             Self::Skills(state) => Some(state),
             Self::MessageAction(state) => Some(state),
-            Self::None | Self::Help | Self::ForkTitle(_) | Self::AskUser(_) => None,
+            Self::None | Self::Help { .. } | Self::ForkTitle(_) | Self::AskUser(_) => None,
         }
     }
 
@@ -240,7 +242,7 @@ impl ActiveModal {
                     answers,
                 })
                 .unwrap_or(ModalAction::None),
-            Self::None | Self::Help | Self::Skills(_) => ModalAction::None,
+            Self::None | Self::Help { .. } | Self::Skills(_) => ModalAction::None,
         }
     }
 
@@ -255,7 +257,7 @@ impl ActiveModal {
             | Self::Variants(_)
             | Self::Config(_)
             | Self::Skills(_)
-            | Self::Help
+            | Self::Help { .. }
             | Self::MessageAction(_)
             | Self::ForkTitle(_)
             | Self::AskUser(_) => ModalAction::None,
@@ -271,7 +273,12 @@ impl ActiveModal {
             Self::Config(state) => input.apply(state),
             Self::Skills(state) => input.apply(state),
             Self::MessageAction(state) => input.apply(state),
-            Self::None | Self::Help | Self::ForkTitle(_) | Self::AskUser(_) => {}
+            Self::Help { scroll } => match input {
+                ModalInput::NavigateUp => *scroll = scroll.saturating_sub(1),
+                ModalInput::NavigateDown => *scroll = scroll.saturating_add(1),
+                _ => {}
+            },
+            Self::None | Self::ForkTitle(_) | Self::AskUser(_) => {}
         }
     }
 }

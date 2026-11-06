@@ -51,6 +51,7 @@ pub(super) async fn handle_crossterm_event(
         CrosstermEvent::Mouse(mouse) => handle_mouse_event(app, mouse).await,
         CrosstermEvent::Paste(text) => {
             if app.modal.is_none() {
+                app.chat_focus = None;
                 app.insert_str(&text);
             }
         }
@@ -132,6 +133,7 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 return;
             }
             if rect_hit(app.input_inner_area, mouse.column, mouse.row) {
+                app.chat_focus = None;
                 app.paste_from_clipboard();
             }
         }
@@ -139,11 +141,45 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     }
 }
 
-/// 常规按键分发：弹窗独占 → 命令补全选单 → @ 文件补全选单 → 普通编辑按键
+/// 按键分发：弹窗独占 → 全局快捷键 → 聊天浏览 → 补全选单 → 普通编辑
 async fn handle_key_event(app: &mut App, key: KeyEvent, events: &mut EventRx) {
     // 弹窗打开时独占按键
     if !app.modal.is_none() {
         handle_modal_key(app, key.code).await;
+        return;
+    }
+
+    if is_ctrl_key(&key, 'o') {
+        if app.chat_focus.take().is_none() {
+            app.chat_focus = app.chat_items().pop().map(|item| item.target);
+            if app.chat_focus.is_some() {
+                app.chat_focus_needs_reveal = true;
+                app.clear_selections();
+                app.dismiss_completion();
+                app.dismiss_file_completion();
+            } else {
+                app.feedback.show(
+                    "暂无可浏览的消息".into(),
+                    super::app::toast::ToastLevel::Info,
+                );
+            }
+        }
+        return;
+    }
+    if is_ctrl_key(&key, 't') {
+        app.cycle_variant().await;
+        return;
+    }
+    // 粘贴始终回到输入框，不让浏览状态或补全选单消费它。
+    if is_ctrl_key(&key, 'v')
+        || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        app.chat_focus = None;
+        app.paste_from_clipboard();
+        return;
+    }
+    if app.chat_focus.is_some() {
+        handle_chat_key(app, key).await;
         return;
     }
 
@@ -158,6 +194,58 @@ async fn handle_key_event(app: &mut App, key: KeyEvent, events: &mut EventRx) {
     }
 
     handle_normal_key(app, key, events).await;
+}
+
+async fn handle_chat_key(app: &mut App, key: KeyEvent) {
+    // 连续到达的按键可能尚未经过下一帧绘制，先更新组件命中区。
+    app.refresh_chat_lines(app.chat.area.width.saturating_sub(1) as usize);
+    let Some(item) = app.focused_chat_item() else {
+        app.chat_focus = None;
+        return;
+    };
+    match key.code {
+        KeyCode::Esc => app.chat_focus = None,
+        KeyCode::Char(_) if is_ctrl_key(&key, 'c') => handle_abort_or_quit(app).await,
+        KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') => app.move_chat_focus(false),
+        KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => app.move_chat_focus(true),
+        KeyCode::Home => {
+            app.chat_focus = app.chat_items().first().map(|item| item.target.clone());
+            app.chat_focus_needs_reveal = true;
+        }
+        KeyCode::End => {
+            app.chat_focus = app.chat_items().pop().map(|item| item.target);
+            app.chat_focus_needs_reveal = true;
+        }
+        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') => {
+            app.activate_chat_item(&item, false);
+            app.chat_focus_needs_reveal = true;
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.activate_chat_item(&item, true);
+            app.chat_focus_needs_reveal = true;
+        }
+        KeyCode::PageUp => app.scroll_up(app.viewport_height.saturating_sub(2).max(5)),
+        KeyCode::PageDown => app.scroll_down(app.viewport_height.saturating_sub(2).max(5)),
+        KeyCode::Char('y') => {
+            app.clear_selections();
+            app.chat.selection.start(item.lines.start, 0);
+            app.chat.selection.update(item.lines.end - 1, usize::MAX);
+            app.chat.selection.finish();
+            app.copy_active_selection();
+            app.chat.selection.clear();
+        }
+        KeyCode::Char('Y') if !app.sidebar.lines.is_empty() => {
+            app.clear_selections();
+            app.sidebar.selection.start(0, 0);
+            app.sidebar
+                .selection
+                .update(app.sidebar.lines.len() - 1, usize::MAX);
+            app.sidebar.selection.finish();
+            app.copy_active_selection();
+            app.sidebar.selection.clear();
+        }
+        _ => {}
+    }
 }
 
 /// 补全选单激活时的按键处理；返回 true 表示按键已被选单消费
@@ -246,11 +334,6 @@ async fn handle_normal_key(app: &mut App, key: KeyEvent, events: &mut EventRx) {
         // Ctrl+K / Ctrl+U 清空输入框内容
         KeyCode::Char(_) if is_ctrl_key(&key, 'k') || is_ctrl_key(&key, 'u') => {
             app.clear_input();
-        }
-        // 剪贴板粘贴快捷键 (Ctrl+V / Ctrl+Shift+V / Shift+Insert / ASCII 0x16)
-        KeyCode::Char(_) if is_ctrl_key(&key, 'v') => app.paste_from_clipboard(),
-        KeyCode::Insert if key.modifiers.contains(KeyModifiers::SHIFT) => {
-            app.paste_from_clipboard();
         }
         KeyCode::Enter => {
             if is_newline_enter(&key) {
@@ -400,9 +483,16 @@ async fn handle_modal_click(app: &mut App, mouse: MouseEvent) {
 /// 弹窗按键：归一化 → 关闭 / 确认动作 / 交给状态机
 async fn handle_modal_key(app: &mut App, code: KeyCode) {
     let input = match &mut app.modal {
-        ActiveModal::Help => {
-            if matches!(code, KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter) {
-                app.modal = ActiveModal::None;
+        ActiveModal::Help { scroll } => {
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => app.modal = ActiveModal::None,
+                KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => *scroll = scroll.saturating_add(1),
+                KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+                KeyCode::Home => *scroll = 0,
+                KeyCode::End => *scroll = usize::MAX,
+                _ => {}
             }
             return;
         }
@@ -577,7 +667,7 @@ fn is_newline_enter(key: &KeyEvent) -> bool {
 fn is_ctrl_key(key: &KeyEvent, canonical: char) -> bool {
     match key.code {
         KeyCode::Char(c) => {
-            (c == canonical && key.modifiers.contains(KeyModifiers::CONTROL))
+            (c.eq_ignore_ascii_case(&canonical) && key.modifiers.contains(KeyModifiers::CONTROL))
                 || c == (canonical as u8 & 0x1f) as char
         }
         _ => false,
@@ -666,6 +756,7 @@ async fn handle_mouse_left_down(app: &mut App, mouse: MouseEvent) {
 
     // 1. 输入框：定位光标并启动输入选区
     if rect_hit(app.input_inner_area, column, row) {
+        app.chat_focus = None;
         let rel_row = (row - app.input_inner_area.y) as usize + app.input.scroll_y.get();
         let rel_col = (column - app.input_inner_area.x) as usize + app.input.scroll_x.get();
         let char_pos = app.input.set_cursor_from_visual_coord(rel_row, rel_col);

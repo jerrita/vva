@@ -170,7 +170,7 @@ impl App {
                 self.delete_and_recreate_session().await;
             }
             "/help" | "/h" | "/?" => {
-                self.modal = ActiveModal::Help;
+                self.modal = ActiveModal::Help { scroll: 0 };
             }
             "/quit" | "/exit" | "/q" => {
                 self.should_quit = true;
