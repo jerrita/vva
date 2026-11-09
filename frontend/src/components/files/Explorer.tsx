@@ -1,14 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { api, toError } from '../../api'
 import { useFileTree } from '../../hooks/useFileTree'
 import type { FileFocus } from '../../hooks/usePanelLayout'
+import { usePersistentFlag } from '../../hooks/usePersistentState'
 import type { FsEntry, FsFindEntry, RelatedFile } from '../../types'
 import { parentDir } from '../../utils/highlight'
 import { IconChevronRight, IconSearch } from '../icons'
 import { cleanPath, relativePath } from '../trace/describe'
-
-/** 会话文件默认展示条数，其余折叠 */
-const SESSION_PREVIEW = 8
 
 export function isChanged(file: RelatedFile): boolean {
   return file.actions.includes('edit') || file.actions.includes('write')
@@ -27,7 +25,7 @@ export function isMac(): boolean {
 /** 行内上下方向键在同一容器的可聚焦行之间移动 */
 function moveRowFocus(event: KeyboardEvent<HTMLElement>, selector: string) {
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false
-  const container = event.currentTarget.closest('.explorer')
+  const container = event.currentTarget.closest('.explorer-section-scroll')
   if (!container) return false
   const rows = [...container.querySelectorAll<HTMLElement>(selector)]
   const index = rows.indexOf(event.target as HTMLElement)
@@ -96,6 +94,47 @@ function SearchResults({
   )
 }
 
+function ExplorerSection({
+  view,
+  label,
+  count,
+  title,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  view: 'project' | 'session'
+  label: string
+  count?: number
+  title?: string
+  collapsed: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  const id = useId()
+  return (
+    <section className={`explorer-section explorer-${view}${collapsed ? ' collapsed' : ''}`}>
+      <h3 className="explorer-label">
+        <button
+          type="button"
+          className="explorer-toggle"
+          aria-expanded={!collapsed}
+          aria-controls={id}
+          title={title}
+          onClick={onToggle}
+        >
+          <IconChevronRight size={12} strokeWidth={2} />
+          <span>{label}</span>
+          {count != null && <span className="explorer-count">{count}</span>}
+        </button>
+      </h3>
+      <div id={id} className="explorer-section-content" inert={collapsed} aria-hidden={collapsed}>
+        <div className="explorer-section-scroll">{children}</div>
+      </div>
+    </section>
+  )
+}
+
 function SessionFiles({
   files,
   activeRel,
@@ -105,14 +144,9 @@ function SessionFiles({
   activeRel: string | null
   onOpen: (file: RelatedFile) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const shown = expanded ? files : files.slice(0, SESSION_PREVIEW)
   return (
-    <section className="explorer-section">
-      <h3 className="explorer-label">
-        本次会话 <span className="explorer-count">{files.length}</span>
-      </h3>
-      {shown.map(file => (
+    <>
+      {files.map(file => (
         <button
           key={file.rel}
           type="button"
@@ -140,12 +174,7 @@ function SessionFiles({
           </span>
         </button>
       ))}
-      {files.length > SESSION_PREVIEW && (
-        <button type="button" className="explorer-more" onClick={() => setExpanded(value => !value)}>
-          {expanded ? '收起' : `显示全部 ${files.length} 个`}
-        </button>
-      )}
-    </section>
+    </>
   )
 }
 
@@ -224,7 +253,8 @@ function TreeRows({ entries, depth, ctx }: { entries: FsEntry[]; depth: number; 
 }
 
 /**
- * 文件浏览：跳转搜索（后端模糊匹配）→ 本次会话涉及的文件 → 工程目录树。
+ * 文件浏览：跳转搜索（后端模糊匹配）→ 工程目录树 → 底部会话文件。
+ * 两个分区独立滚动，折叠状态持久化。
  * 标记沿用工作轨迹的字形语言：● 本会话修改、○ 仅读取。
  */
 export function Explorer({
@@ -255,8 +285,11 @@ export function Explorer({
   const [results, setResults] = useState<FsFindEntry[] | null>(null)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [selected, setSelected] = useState(0)
+  const [projectCollapsed, setProjectCollapsed] = usePersistentFlag('vva.explorer-project-collapsed')
+  const [sessionCollapsed, setSessionCollapsed] = usePersistentFlag('vva.explorer-session-collapsed')
   const inputRef = useRef<HTMLInputElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const revealedSeq = useRef<number | null>(null)
 
   const activeRel = activePath ? relativePath(cleanPath(activePath), workspace) : null
   const marks = useMemo(() => new Map(files.map(file => [file.rel, file])), [files])
@@ -315,21 +348,33 @@ export function Explorer({
   }, [activeRel, revealPath])
 
   useEffect(() => {
-    if (!activeRel) return
+    if (!activeRel || projectCollapsed) return
     const row = bodyRef.current?.querySelector<HTMLElement>(`.tree-row[data-path="${CSS.escape(activeRel)}"]`)
     row?.scrollIntoView({ block: 'nearest' })
-  }, [activeRel, dirChildren])
+  }, [activeRel, dirChildren, projectCollapsed])
 
   useEffect(() => {
     if (!revealDir) return
+    setProjectCollapsed(false)
     revealPath(`${revealDir.path}/_`)
     expandDir(revealDir.path)
-    requestAnimationFrame(() => {
-      const row = bodyRef.current?.querySelector<HTMLElement>(`.tree-row[data-path="${CSS.escape(revealDir.path)}"]`)
-      row?.scrollIntoView({ block: 'start' })
-      row?.focus()
+  }, [revealDir, revealPath, expandDir, setProjectCollapsed])
+
+  useEffect(() => {
+    if (!revealDir || projectCollapsed || revealedSeq.current === revealDir.seq) return
+    // 先绘制展开样式，再聚焦，避免浏览器丢弃对尚不可见内容的聚焦。
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        const row = bodyRef.current?.querySelector<HTMLElement>(`.tree-row[data-path="${CSS.escape(revealDir.path)}"]`)
+        if (row) {
+          row.scrollIntoView({ block: 'start' })
+          row.focus()
+          revealedSeq.current = revealDir.seq
+        }
+      })
     })
-  }, [revealDir, revealPath, expandDir])
+    return () => cancelAnimationFrame(frame)
+  }, [revealDir, projectCollapsed, dirChildren])
 
   const openResult = (entry: FsFindEntry) => {
     setQuery('')
@@ -347,7 +392,7 @@ export function Explorer({
     if (!results || results.length === 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()
-        bodyRef.current?.querySelector<HTMLElement>('.x-row, .tree-row')?.focus()
+        bodyRef.current?.querySelector<HTMLElement>('.explorer-toggle')?.focus()
       }
       return
     }
@@ -396,7 +441,7 @@ export function Explorer({
         />
         {!query && <kbd>{isMac() ? '⌘P' : 'Ctrl P'}</kbd>}
       </div>
-      <div className="explorer-body" ref={bodyRef}>
+      <div className={`explorer-body${query.trim() ? ' searching' : ''}`} ref={bodyRef}>
         {query.trim() ? (
           searchError ? (
             <p className="explorer-note error">搜索失败：{searchError}</p>
@@ -409,13 +454,13 @@ export function Explorer({
           )
         ) : (
           <>
-            {files.length > 0 && (
-              <SessionFiles files={files} activeRel={activeRel} onOpen={file => onOpen(file.path, sessionFileFocus(file))} />
-            )}
-            <section className="explorer-section">
-              <h3 className="explorer-label" title={workspace}>
-                工程目录
-              </h3>
+            <ExplorerSection
+              view="project"
+              label="工程目录"
+              title={workspace}
+              collapsed={projectCollapsed}
+              onToggle={() => setProjectCollapsed(value => !value)}
+            >
               {rootLoading ? (
                 <p className="explorer-note">正在读取目录…</p>
               ) : rootError ? (
@@ -427,7 +472,20 @@ export function Explorer({
                   <TreeRows entries={rootEntries} depth={0} ctx={ctx} />
                 </div>
               )}
-            </section>
+            </ExplorerSection>
+            <ExplorerSection
+              view="session"
+              label="本次会话"
+              count={files.length}
+              collapsed={sessionCollapsed}
+              onToggle={() => setSessionCollapsed(value => !value)}
+            >
+              {files.length > 0 ? (
+                <SessionFiles files={files} activeRel={activeRel} onOpen={file => onOpen(file.path, sessionFileFocus(file))} />
+              ) : (
+                <p className="explorer-note">本次会话尚未涉及文件</p>
+              )}
+            </ExplorerSection>
           </>
         )}
       </div>
