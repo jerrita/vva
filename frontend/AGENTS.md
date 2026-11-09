@@ -43,13 +43,14 @@ vva Web 界面的设计方向为 **Terminal Editorial**：终端基因 + 编辑�
 - **工作台**：桌面端 `.app` 以 `--workbench-gap`（6px）作窗口内边距；列间为同宽 `.sash` 分隔柱（整列可拖，中点三点、无胶囊外壳），侧栏 / 主区 / 文件抽屉各自为 `--radius-pane`（14px）圆角面板，坐落在 `--bg` 底板上。窄屏满铺，抽屉仍为 overlay。
 - **内容列**：聊天与输入框 `max-width: 760px` 居中；聊天区背景为 22px 网格点阵（`--dot`）。
 - **侧栏**：宽度可拖拽（200–420px，经右侧 `.sash` 分隔柱，Pointer Capture 实现），宽度与收起状态持久化于 localStorage；收起仅作用于桌面断点，窄屏保持抽屉式。页脚为「设置」入口（`.sidebar-foot` 齿轮图标 + 文字按钮），打开全局配置弹窗。项目分组默认仅展示最新 6 条顶层会话，其余折叠为 `.group-more`「还有 N 条」行（展开集合持久化于 `vva.projects-expanded`），当前会话、生成中与未读会话始终可见；切换会话后当前条目自动滚入可视区。会话条目右侧以 mono `.session-time` 展示相对创建时间（`now`/`12m`/`3h`/`5d`，超 30 天为月-日），悬停/聚焦时让位于删除按钮。会话条目与分组标签为 `role=button` 可聚焦元素，Enter/空格激活。会话条目：生成中为 `--rose` 脉冲点（`--rose` 仅限此状态点与聊天 `status-chip`）；生成结束且当前未打开为 `--accent` 实心未读点（打开即清，集合持久化于 `vva.sessions-unread`）。subagent 会话按 `parent` 嵌套在父会话之下（缩进 + `.session-fork` 分支标记，父不在列表则保持顶层），点击切换会话；会话清单定期刷新（有生成中会话 4s，全部空闲 15s 兜底），使引擎侧派生的子会话与运行状态及时呈现，服务端已消失的会话（含级联删除的子会话）随之移除。删除会话级联删除其全部子会话（后端 `delete_session` 递归）。顶部 Notice 横幅中的会话、轮次反馈带关闭按钮，能力提示随配置更新（`.notice-dismiss` 靠左，避开顶栏右侧按钮；`POST /api/sessions/{id}/notices/dismiss` 按稳定 ID 移除，SSE 同步全部订阅者）。
-- **文件区（两种布局）**：`components/files/` 下 `Explorer`（跳转搜索 → 本次会话 → 工程目录树）与 `Viewer`（面包屑 → 元信息/改动导航 → 代码）为共用部件，`Workspace.tsx` 组装为两种布局；样式在 `src/styles/files.css`。
+- **文件区（两种布局）**：`components/files/` 下 `Explorer`（跳转搜索 → 工程目录树 → 底部本次会话）与 `Viewer`（面包屑 → 元信息/改动导航 → 代码）为共用部件，`Workspace.tsx` 组装为两种布局；样式在 `src/styles/files.css`。
+  - **Explorer 分区**：工程目录占据剩余高度、本次会话固定底部，两区独立滚动，标题整行按钮带旋转箭头、悬停与键盘聚焦反馈；折叠状态通过现有 `usePersistentFlag` 保存于 `vva.explorer-project-collapsed` / `vva.explorer-session-collapsed`。会话区最高占可用高度的 40%（上限 320px），目录收起后会话区可铺满；会话区收起后目录铺满，两区皆收起时会话标题仍贴底。会话文件全部列出，无二级「显示全部」；空会话保留标题与空态。折叠内容保留 DOM，但退出键盘导航与辅助技术；分区高度、箭头与透明度使用短过渡，尊重 `prefers-reduced-motion`。搜索时展示独立结果列表，退出后恢复分区状态。
   - **对话模式**（默认）：右侧单列抽屉（`.file-sidebar`，300–1000px 可拖拽），在「浏览」与「文件」两视图间切换，两视图常驻 DOM（返回时目录展开与搜索词保持）；Esc / 返回键回浏览；手机满屏。
   - **IDE 模式**（仅桌面，`vva.layout-mode` 持久化）：文件（`.explorer-pane`）| 编辑区（`.editor-pane`，标签最多 12 个、中键关闭）| 对话（`.main`，`--ai-panel-width` 360–720px），会话列表改为左侧浮层（顶栏菜单键呼出）。对话栏内工作轨迹经容器查询（`.chat-scroll` `container-type`）收窄。
   - **快捷键**：`⌘/Ctrl+P` 聚焦文件搜索（后端 `GET /api/fs/find` 模糊匹配，命中字符高亮，↑↓ 选择、Enter 打开）；`⌘/Ctrl+\` 切换两种布局；顶栏与抽屉头部亦有切换按钮。
   - **标记语言**：沿用工作轨迹字形——● 本会话修改（带 `+N −M`）、○ 仅读取；目录树中含改动的祖先目录带弱紫点；树缩进参考线对齐上级展开箭头。本次会话文件按「有改动在前、各自按新近度」排序（`utils/relatedFiles.ts`，覆盖 replace / patch / hashline 三种编辑器）。
   - **定位**：聊天中 Read 行打开时高亮读取区间（`--warning` 底色）并滚入视区；Edit 的「在侧栏打开」与本会话改动文件定位到首处改动。改动行 = 本会话 diff 新增块在当前内容中的落点（`utils/changeMarks.ts`：块匹配，replace 片段按首行后缀/末行前缀，块被打散时回落为唯一行），以行号栏紫色竖条标记，元信息行提供「N 处」上一处/下一处跳转。
-  - **Viewer 工具**：面包屑目录段点击在文件树中定位；Markdown 预览/源码切换；自动换行开关（`vva.viewer-wrap`）；复制、下载；行号横向滚动时吸附。
+  - **Viewer 工具**：面包屑目录段点击在文件树中定位（工程区折叠时先展开，再滚动并聚焦目录）；Markdown 预览/源码切换；自动换行开关（`vva.viewer-wrap`）；复制、下载；行号横向滚动时吸附。
   - **媒体预览**：PDF 使用浏览器内置阅读器，音频使用原生播放器；两者经 `/api/fs/preview` 或 `/api/sessions/{id}/preview` 流式读取，支持 Range / HEAD，无大小限制；文件元信息接口返回空 `content`。文本与图片保留 10MB 预览上限。
 - **项目分组**：标签用文件夹图标表达折叠状态（展开=打开文件夹/收起=闭合文件夹），图标按项目名哈希着紫罗兰系色；mono 加粗标签 + 会话数胶囊徽章 + 悬停显示新建与隐藏按钮（新建预选该项目 workspace 并回空态，会话在首条消息发送时创建）。折叠状态与隐藏列表均持久化于 localStorage（`vva.projects-collapsed` / `vva.projects-hidden`）；打开或新建位于隐藏项目的会话时该项目自动恢复显示。
 - **新建项目目录点选**：新建模式为多级目录点选（`GET /api/fs/dirs` 列一级子目录，含上一级按钮），路径文本保持原始大小写（父级 uppercase 需显式覆盖）。

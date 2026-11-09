@@ -1,5 +1,5 @@
 /* ============================================================
-   文件区：Explorer（跳转搜索 / 本次会话 / 目录树）与 Viewer（面包屑 / 改动导航 / 代码）
+   文件区：Explorer（跳转搜索 / 目录树 / 底部会话文件）与 Viewer（面包屑 / 改动导航 / 代码）
    两种布局共用：对话模式为右侧单列抽屉，IDE 模式为 文件 | 编辑区 | 对话 三栏。
    标记沿用工作轨迹字形（trace.css .glyph）：● 本会话修改  ○ 仅读取
    ============================================================ */
@@ -94,7 +94,7 @@ kbd {
   align-items: center;
   gap: 8px;
   height: 34px;
-  margin: 10px 10px 4px;
+  margin: 10px;
   padding: 0 8px 0 11px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -133,29 +133,128 @@ kbd {
 .explorer-body {
   flex: 1;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.explorer-body.searching {
+  display: block;
   overflow: auto;
   padding: 2px 6px 20px;
 }
 
-.explorer-section + .explorer-section {
-  margin-top: 14px;
+.explorer-section {
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr);
+  min-height: 34px;
+  overflow: hidden;
+  transition: grid-template-rows 0.18s ease, flex-grow 0.18s ease, flex-basis 0.18s ease;
+}
+
+.explorer-project {
+  flex: 1 1 0;
+}
+
+.explorer-project.collapsed {
+  flex: 0 0 34px;
+}
+
+.explorer-session {
+  flex: 0 1 auto;
+  max-height: min(40%, 320px);
+  border-top: 1px solid var(--border-soft);
+}
+
+.explorer-project.collapsed + .explorer-session {
+  flex: 1 1 0;
+  max-height: none;
+}
+
+.explorer-section.collapsed {
+  grid-template-rows: 34px minmax(0, 0fr);
+}
+
+.explorer-project.collapsed + .explorer-session.collapsed {
+  flex-grow: 0;
+  flex-basis: auto;
+  margin-top: auto;
 }
 
 .explorer-label {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin: 10px 8px 4px;
+  margin: 0;
+  min-height: 0;
   font-size: 12px;
   font-weight: 600;
+}
+
+.explorer-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  height: 100%;
+  padding: 0 14px 0 10px;
+  text-align: left;
   color: var(--muted);
+  background: var(--panel-2);
+  user-select: none;
+  transition: color 0.15s, background 0.15s;
+}
+
+.explorer-toggle:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.explorer-toggle:focus-visible {
+  outline-offset: -2px;
+}
+
+.explorer-toggle > svg {
+  flex-shrink: 0;
+  transform: rotate(90deg);
+  transition: transform 0.18s ease;
+}
+
+.collapsed .explorer-toggle > svg {
+  transform: rotate(0deg);
 }
 
 .explorer-count {
+  margin-left: auto;
+  min-width: 20px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--accent-soft);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
-  color: var(--faint);
+  line-height: 20px;
+  text-align: center;
+  color: var(--accent);
+}
+
+.explorer-section-content {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.15s, visibility 0.18s;
+}
+
+.collapsed .explorer-section-content {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.explorer-section-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 4px 6px 8px;
 }
 
 .explorer-note {
@@ -169,16 +268,13 @@ kbd {
   color: var(--danger);
 }
 
-.explorer-more {
-  margin: 2px 0 0 27px;
-  padding: 2px 4px;
-  border-radius: 5px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.explorer-more:hover {
-  color: var(--accent);
+@media (prefers-reduced-motion: reduce) {
+  .explorer-section,
+  .explorer-section-content,
+  .explorer-toggle,
+  .explorer-toggle > svg {
+    transition: none;
+  }
 }
 
 /* 文件行：字形 | 名称 | 目录（弱化 mono）| 结果 */
