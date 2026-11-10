@@ -45,7 +45,7 @@ classDiagram
 
 ### 1.1 Session（会话根实体）
 
-[`src/model/session.rs`](../src/model/session.rs)。会话的历史上下文边界，`SessionHeader` 持久化以下字段：
+[`crates/vva-core/src/model/session.rs`](../crates/vva-core/src/model/session.rs)。会话的历史上下文边界，`SessionHeader` 持久化以下字段：
 
 | 字段 | 说明 |
 |---|---|
@@ -59,7 +59,7 @@ classDiagram
 
 `SessionSummary` 仅带出 `kind` / `origin` / `superseded_by` 等列表所需字段。
 
-**编辑协议与文件工具集**（工具名常量见 [`src/tools/names.rs`](../src/tools/names.rs)，各协议注册的名字互不重叠）：
+**编辑协议与文件工具集**（工具名常量见 [`crates/vva-core/src/tools/names.rs`](../crates/vva-core/src/tools/names.rs)，各协议注册的名字互不重叠）：
 
 | 协议 | 工具 |
 |---|---|
@@ -69,7 +69,7 @@ classDiagram
 
 ### 1.2 Turn（轮次）
 
-[`src/model/turn.rs`](../src/model/turn.rs)。交互与计费结算锚点，身份与元数据的唯一归属层：
+[`crates/vva-core/src/model/turn.rs`](../crates/vva-core/src/model/turn.rs)。交互与计费结算锚点，身份与元数据的唯一归属层：
 
 - `role: Role`（`User` / `Assistant` / `Tool` / `System`）；
 - `steering: bool`：用户在当前执行中插入的引导，缺省 `false` 且省略序列化；展示时延续当前运行段；
@@ -78,11 +78,11 @@ classDiagram
 
 ### 1.3 Message（内容分组）
 
-[`src/model/message.rs`](../src/model/message.rs)。值对象，只持有 `parts: Vec<ContentPart>`。角色由所属 `Turn` 确定，供应商原生条目 ID 归 `TurnMeta`，同一事实只有一处表示。
+[`crates/vva-core/src/model/message.rs`](../crates/vva-core/src/model/message.rs)。值对象，只持有 `parts: Vec<ContentPart>`。角色由所属 `Turn` 确定，供应商原生条目 ID 归 `TurnMeta`，同一事实只有一处表示。
 
 ## 2. ContentPart
 
-[`src/model/content.rs`](../src/model/content.rs)。多模态与工具交互均为一等公民：
+[`crates/vva-core/src/model/content.rs`](../crates/vva-core/src/model/content.rs)。多模态与工具交互均为一等公民：
 
 | 变体 | 字段 | 说明 |
 |---|---|---|
@@ -109,7 +109,7 @@ Gemini 的 `groundingChunks` / `groundingSupports` 在适配器层计算字符�
 
 ## 3. 强类型供应商元数据
 
-[`src/model/meta.rs`](../src/model/meta.rs)。元数据只存在于轮次级：通用内容供调度与展示，强类型原生数据供对应供应商回传。
+[`crates/vva-core/src/model/meta.rs`](../crates/vva-core/src/model/meta.rs)。元数据只存在于轮次级：通用内容供调度与展示，强类型原生数据供对应供应商回传。
 
 | 类型 | 字段 |
 |---|---|

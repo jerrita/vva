@@ -196,7 +196,7 @@ fn build_engine_with_agents(
                 .cloned()
                 .collect(),
             agents,
-            broker: Arc::new(crate::harness::testing::StubBroker(None)),
+            broker: Arc::new(crate::test_support::broker::StubBroker(None)),
             extra_tools: Vec::new(),
             interactive: !session.header.agent_managed(),
         },
@@ -237,7 +237,9 @@ async fn engine_registers_subagent_tools_for_top_level_sessions() {
     assert!(engine.tools.get("SendMessage").is_some());
     // agent 参数 enum 来自发现结果（含内置定义）
     let agent = engine.tools.get("Agent").unwrap();
-    let parameters = agent.input().expect_json();
+    let crate::model::ToolInput::Json(parameters) = agent.input() else {
+        panic!("expected JSON input");
+    };
     let names: Vec<_> = parameters["properties"]["agent"]["enum"]
         .as_array()
         .unwrap()
@@ -425,11 +427,10 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
         assert!(!engine.tools.is_server_tool("web_search"));
         assert!(engine.external_web.is_empty());
         let tool = engine.tools.get("web_search").unwrap();
-        assert!(
-            tool.input().expect_json()["properties"]
-                .get("max_results")
-                .is_none()
-        );
+        let crate::model::ToolInput::Json(input) = tool.input() else {
+            panic!("expected JSON input");
+        };
+        assert!(input["properties"].get("max_results").is_none());
         assert!(tool.execute(r#"{"query":" "}"#).await.is_err());
         let disabled = build_engine(&config, &session_for("p/search-model", false)).unwrap();
         assert!(disabled.tools.get("web_search").is_none());

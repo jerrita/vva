@@ -6,7 +6,7 @@
 
 ## 1. 会话视图订阅
 
-[`src/harness/session/`](../src/harness/session/) · [`src/ui/app/session.rs`](../src/ui/app/session.rs)
+[`crates/vva-core/src/harness/session/`](../crates/vva-core/src/harness/session/) · [`src/ui/app/session.rs`](../src/ui/app/session.rs)
 
 - 会话读写归属 `SessionTask`，UI 只持有 `ManagedSession` 句柄，经命令信道提交请求；
 - 前后台解耦：切换会话后后台任务继续运行，已完成轮次与流式草稿写入 `watch::Sender<Arc<SessionView>>`；切回时订阅 `watch::Receiver`，读到的快照即完整状态，无需回放事件；

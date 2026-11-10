@@ -23,7 +23,7 @@
 
 ### 2.2 强类型供应商元数据
 
-用强类型结构体，不用松散的 `HashMap<String, serde_json::Value>`。`ResponseTurnMeta` / `AnthropicTurnMeta` / `GeminiTurnMeta` 定义见 [docs/domain_model.md §3](docs/domain_model.md#3-强类型供应商元数据)，源码 `src/model/meta.rs`。
+用强类型结构体，不用松散的 `HashMap<String, serde_json::Value>`。`ResponseTurnMeta` / `AnthropicTurnMeta` / `GeminiTurnMeta` 定义见 [docs/domain_model.md §3](docs/domain_model.md#3-强类型供应商元数据)，源码 `crates/vva-core/src/model/meta.rs`。
 
 ## 3. 文档
 
@@ -48,9 +48,9 @@
 ## 4. 开发指南
 
 1. **新增供应商**：
-   - `src/model/meta.rs` 定义强类型元数据并接入 `TurnMeta`；
-   - `src/config/model.rs`、`src/config/resolver.rs` 注册 ProviderType 路由；
-   - `src/provider/` 实现 `Provider` trait，`capabilities()` 声明原生能力；
+   - `crates/vva-core/src/model/meta.rs` 定义强类型元数据并接入 `TurnMeta`；
+   - `crates/vva-core/src/provider/input.rs` 定义 ProviderType，`src/config/model.rs`、`src/config/resolver.rs` 注册应用路由；
+   - `crates/vva-core/src/provider/` 实现 `Provider` trait，`capabilities()` 声明原生能力；
    - 单测验证 cache、signature、response_id、reasoning_effort 等专属特性的双向转换保真。
 2. **多模态**：图片 / 音视频用 `MediaSource::Path` 或 `MediaSource::Base64`，适配器转为目标 API 的 Payload（Gemini `inline_data`、Anthropic `base64` image source 等）。
 3. **测试**：改动核心模型、解析器、适配器或 UI 状态后运行 `cargo test`，保持 `cargo clippy -- -D warnings` 零告警。
