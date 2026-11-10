@@ -17,9 +17,9 @@ use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeFile;
 
+use crate::app::stats::{SidebarStats, compute_stats};
 use crate::harness::ManagedSession;
 use crate::model::{ContentPart, MediaSource, SessionSummary, UserAnswer};
-use crate::ui::history::{SidebarStats, compute_stats};
 
 use super::server::AppState;
 use super::sync::{SessionDelta, SessionSnapshot};

@@ -1,7 +1,6 @@
 pub mod app;
 pub mod command;
 pub(crate) mod events;
-pub mod history;
 mod hyperlinks;
 pub mod input;
 pub mod markdown;
@@ -52,7 +51,7 @@ use views::variants_modal::render_variants_modal;
 
 /// 启动 Ratatui 交互式终端 UI
 pub async fn run_tui(
-    store: Arc<dyn SessionStore>,
+    store: Arc<SessionStore>,
     app_config: AppConfig,
     initial_session_id: Option<String>,
     workspace: std::path::PathBuf,

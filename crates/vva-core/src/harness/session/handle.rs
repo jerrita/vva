@@ -44,14 +44,9 @@ pub enum SharedCommand {
         id: String,
         reply: oneshot::Sender<Result<PendingInput, String>>,
     },
-    SetCuration {
-        enabled: bool,
-        reply: Reply,
-    },
     Configure {
         model: Option<String>,
         variant: Option<Option<String>>,
-        toggles: ToggleOverrides,
         reply: Reply,
     },
     AnswerUser {
@@ -134,6 +129,20 @@ pub struct ManagedSession {
 }
 
 impl ManagedSession {
+    pub async fn watch_delivery(
+        &self,
+        session_id: String,
+        receipt: DeliveryReceipt,
+        background: bool,
+    ) -> Result<(), String> {
+        self.request(|reply| Command::WatchSession {
+            session_id,
+            receipt,
+            background,
+            reply,
+        })
+        .await
+    }
     pub async fn set_input_mode(&self, id: String, mode: InputMode) -> Result<(), String> {
         self.request(|reply| Command::Shared(SharedCommand::SetInputMode { id, mode, reply }))
             .await
@@ -232,7 +241,11 @@ impl ManagedSession {
         self.deliver_input(text, InputMode::After).await
     }
 
-    async fn deliver_input(&self, text: &str, mode: InputMode) -> Result<DeliveryReceipt, String> {
+    pub async fn deliver_input(
+        &self,
+        text: &str,
+        mode: InputMode,
+    ) -> Result<DeliveryReceipt, String> {
         let (completion, receipt) = oneshot::channel();
         self.request(|reply| Command::Deliver {
             delivery: PendingDelivery {
@@ -315,13 +328,11 @@ impl ManagedSession {
         &self,
         model: Option<String>,
         variant: Option<Option<String>>,
-        toggles: ToggleOverrides,
     ) -> Result<(), String> {
         self.request(|reply| {
             Command::Shared(SharedCommand::Configure {
                 model,
                 variant,
-                toggles,
                 reply,
             })
         })

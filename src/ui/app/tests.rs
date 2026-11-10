@@ -1,6 +1,5 @@
 use super::*;
 use crate::harness::ManagedSession;
-use crate::storage::SessionStore;
 use crate::ui::test_support::create_test_app;
 
 /// 等待会话后台轮次结束，避免 App::new 的 try_read 与引擎写锁产生调度竞争

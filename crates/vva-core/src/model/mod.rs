@@ -26,8 +26,8 @@ pub use meta::{
     TurnMeta,
 };
 pub use session::{
-    EditorKind, JsonlRecord, Origin, SESSION_VERSION, Session, SessionHeader, SessionKind,
-    SessionSummary, SessionToggles, ToggleOverrides, generate_session_id, provisional_title,
+    EditorKind, JsonlRecord, SESSION_VERSION, Session, SessionHeader, SessionSummary,
+    generate_session_id, provisional_title,
 };
 pub use shell::ShellOutput;
 pub use tool::{

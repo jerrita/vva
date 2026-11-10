@@ -1,4 +1,5 @@
 use super::*;
+use crate::model::Session;
 use crate::provider::{ProviderError, ProviderResponse};
 use crate::tools::names;
 
@@ -101,7 +102,7 @@ impl Provider for NoSearchProvider {
 
     async fn complete(
         &self,
-        _session: &Session,
+        _session: &vva_core::model::Session,
         _tools: &[crate::model::ToolDefinition],
         _options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
@@ -110,7 +111,7 @@ impl Provider for NoSearchProvider {
 
     async fn complete_stream(
         &self,
-        _session: &Session,
+        _session: &vva_core::model::Session,
         _tools: &[crate::model::ToolDefinition],
         _options: &CompletionOptions,
         _event_sender: Option<tokio::sync::mpsc::Sender<crate::event::AgentEvent>>,
@@ -178,7 +179,7 @@ fn build_engine_with_agents(
     let (tx, _rx) = mpsc::channel(1);
     VvaSessionSetup::assemble(
         config,
-        session,
+        &session.to_core(),
         EngineDeps {
             provider: Arc::default(),
             tool_outputs: std::env::temp_dir()
@@ -199,6 +200,10 @@ fn build_engine_with_agents(
             broker: Arc::new(crate::test_support::broker::StubBroker(None)),
             extra_tools: Vec::new(),
             interactive: !session.header.agent_managed(),
+            coding: crate::app::records::CodingSessionConfig {
+                editor: session.header.editor,
+                web_search: session.header.web_search,
+            },
         },
     )
 }

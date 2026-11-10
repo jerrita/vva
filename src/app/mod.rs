@@ -9,3 +9,12 @@ pub use setup::{SessionPreamble, SessionToolFactory, VvaSessionSetup};
 
 #[cfg(test)]
 mod session_tests;
+
+pub mod handle;
+pub mod migration;
+pub mod model;
+pub mod records;
+pub mod store;
+pub mod view;
+
+pub mod stats;

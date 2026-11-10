@@ -13,10 +13,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::{AppConfig, ResolvedModel};
-use crate::model::{Message, Role, Session, Turn};
 use crate::provider::{CompletionOptions, Provider};
 use crate::tools::{ToolRegistry, WorkspaceToolDeps};
 use tokio::sync::mpsc;
+use vva_core::model::{Message, Role, Session, Turn};
 
 /// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）。
 /// `external_search` 为真表示外置 web search 工具已接管，不再报"选项被忽略"。
@@ -97,6 +97,7 @@ pub(crate) struct EngineDeps {
     /// 工厂产出的会话专属工具，最后注册
     pub extra_tools: Vec<Arc<dyn crate::tools::Tool>>,
     pub interactive: bool,
+    pub coding: crate::app::records::CodingSessionConfig,
 }
 
 impl VvaSessionSetup {
@@ -112,6 +113,7 @@ impl VvaSessionSetup {
             )
             .map_err(|e| e.to_string())?;
         let inputs = resolved.input_capabilities();
+        let coding = deps.coding.clone();
         let agent_def = session
             .header
             .agent
@@ -148,7 +150,7 @@ impl VvaSessionSetup {
                     .map_err(|_| format!("Model output limit exceeds u32: {}", limit.output))
             })
             .transpose()?;
-        let web_declared = session.header.web_search && resolved.model_config.declare_web_search();
+        let web_declared = coding.web_search && resolved.model_config.declare_web_search();
         let standalone_search = web_declared
             && search_allowed
             && resolved.effective_type() == crate::provider::ProviderType::Anthropic
@@ -191,7 +193,7 @@ impl VvaSessionSetup {
         // 原生 web 能力缺位时以外置 provider 的客户端工具补全（配置错误在此显式报错）
         let mut external_web = Vec::new();
         let mut external_search = false;
-        if session.header.web_search && (search_allowed || fetch_allowed) {
+        if coding.web_search && (search_allowed || fetch_allowed) {
             let external = super::web::resolve(config)?;
             let native_search = standalone_search
                 || (options.enable_web_search && capabilities.supports_native_search);
@@ -251,7 +253,7 @@ impl VvaSessionSetup {
         let mut tools = ToolRegistry::with_workspace_tools(
             &session.header.workspace_root,
             Some(deps.tool_outputs),
-            session.header.editor,
+            deps.coding.editor,
             WorkspaceToolDeps {
                 hashline: deps.hashline,
                 inputs: inputs.clone(),
@@ -425,9 +427,13 @@ impl VvaSessionSetup {
         let workspace = session.header.workspace_root.clone();
         let scratch = self
             .store
-            .ensure_scratch(&workspace)
-            .await
-            .map_err(|e| e.to_string())?;
+            .slot(&session.header.id)
+            .map_err(|e| e.to_string())?
+            .borrow()
+            .resources
+            .scratch
+            .clone();
+        std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
         let (system, global_agents, project_agents) = tokio::task::spawn_blocking(move || {
             let system = crate::system::build_system_prompt(&workspace, &scratch);
             let global = crate::system::load_global_agents_md();
@@ -484,11 +490,19 @@ impl VvaSessionSetup {
             let reminder = crate::system::format_skills_reminder(skills);
             session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
         }
+        let header = crate::app::model::SessionHeader::from_core(
+            session.header.clone(),
+            &self
+                .store
+                .slot(&session.header.id)
+                .map_err(|e| e.to_string())?
+                .borrow(),
+        );
         // 会话前导（如记忆索引快照）：动态内容走 reminder 追加，不进 system prompt
         for text in self
             .preamble
             .as_ref()
-            .map(|preamble| preamble(&session.header))
+            .map(|preamble| preamble(&header))
             .unwrap_or_default()
         {
             session.append_turn(Turn::new(Role::User, vec![Message::text(text)]));
@@ -499,7 +513,7 @@ impl VvaSessionSetup {
 
 pub struct VvaSessionSetup {
     config: Arc<AppConfig>,
-    store: Arc<dyn crate::storage::SessionStore>,
+    store: Arc<crate::storage::SessionStore>,
     state_path: PathBuf,
     provider: Arc<SessionProvider>,
     broker: Arc<dyn crate::tools::agent::SessionBroker>,
@@ -512,7 +526,7 @@ pub struct VvaSessionSetup {
 impl VvaSessionSetup {
     pub fn new(
         config: Arc<AppConfig>,
-        store: Arc<dyn crate::storage::SessionStore>,
+        store: Arc<crate::storage::SessionStore>,
         state_path: PathBuf,
         broker: Arc<dyn crate::tools::agent::SessionBroker>,
         tool_factory: Option<SessionToolFactory>,
@@ -559,13 +573,26 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
         session: &Session,
         services: &crate::harness::SessionServices,
     ) -> Result<ExecutionPlan, String> {
+        let record = self
+            .store
+            .slot(&session.header.id)
+            .map_err(|e| e.to_string())?
+            .borrow()
+            .clone();
+        std::fs::create_dir_all(&record.resources.tool_outputs).map_err(|e| e.to_string())?;
+        let header = crate::app::model::SessionHeader::from_core(session.header.clone(), &record);
         let mut extra_tools = self
             .tool_factory
             .as_ref()
-            .map(|factory| factory(&session.header))
+            .map(|factory| factory(&header))
             .unwrap_or_default();
-        if session.header.supports_curation() {
-            extra_tools.push(services.curation_tool.clone());
+        if header.supports_curation() {
+            extra_tools.push(Arc::new(
+                crate::space::curation_tool::SetSessionCuration::new(
+                    self.store.clone(),
+                    session.header.id.clone(),
+                ),
+            ));
         }
         let agents = self.agents(&session.header.workspace_root);
         let subagents = agents
@@ -583,11 +610,7 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
             session,
             EngineDeps {
                 provider: self.provider.clone(),
-                tool_outputs: self
-                    .store
-                    .ensure_tool_outputs(&session.header.workspace_root)
-                    .await
-                    .map_err(|e| e.to_string())?,
+                tool_outputs: record.resources.tool_outputs,
                 hashline: services.hashline.clone(),
                 ask_user_requests: services.ask_user_requests.clone(),
                 background: services.background.clone(),
@@ -598,6 +621,7 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
                 broker: self.broker.clone(),
                 extra_tools,
                 interactive: self.interactive,
+                coding: record.coding,
             },
         )
     }
@@ -710,14 +734,22 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
         Ok(())
     }
 
-    fn selection_saved(&self, session: &Session) {
-        if !session.header.agent_managed() {
+    fn selection_saved(&self, session: &Session) -> Result<(), String> {
+        if matches!(
+            self.store
+                .slot(&session.header.id)
+                .map_err(|e| e.to_string())?
+                .borrow()
+                .application,
+            crate::app::records::Application::Coding
+        ) {
             crate::config::AppState::persist_selection(
                 &self.state_path,
                 &session.header.current_model,
                 session.header.current_variant.as_deref(),
             );
         }
+        Ok(())
     }
 
     async fn title(&self, session: &Session, prompt: &str) -> Result<Option<String>, String> {

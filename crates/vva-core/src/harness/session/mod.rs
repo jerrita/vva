@@ -1,6 +1,5 @@
 //! 会话运行时：句柄表（manager）、RPC 句柄（handle）、执行任务（task）与发布视图（view）。
 
-mod curation;
 #[doc(hidden)]
 pub mod handle;
 mod input;
@@ -30,9 +29,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
 use super::ExecutionPlan;
 use crate::event::AgentEvent;
-use crate::model::{
-    ContentPart, Message, Role, Session, ToggleOverrides, Turn, UserAnswer, UserQuestionRequest,
-};
+use crate::model::{ContentPart, Message, Role, Session, Turn, UserAnswer, UserQuestionRequest};
 use crate::storage::SessionStore;
 
 /// 运行中拒绝新提示的统一错误文案

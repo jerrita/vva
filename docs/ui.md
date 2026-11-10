@@ -27,7 +27,7 @@
 
 ### 2.2 聊天流（`views/chat/`）
 
-已完成轮次与流式草稿同源渲染，直接读 `SessionView` 中的 `Turn` 与 `draft: Vec<ContentPart>`，不做二次建模。`history.rs` 的 `compute_stats` 为侧栏投影 Token、缓存命中 / 写入量与按模型单价估算的花费。
+已完成轮次与流式草稿同源渲染，直接读 `SessionView` 中的 `Turn` 与 `draft: Vec<ContentPart>`，不做二次建模。应用共用 `app/stats.rs` 的 `compute_stats` 为侧栏投影 Token、缓存命中 / 写入量与按模型单价估算的花费。
 
 ### 2.3 Markdown（`markdown.rs`）
 

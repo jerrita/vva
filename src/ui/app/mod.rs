@@ -10,9 +10,9 @@ use crate::harness::SessionView;
 use crate::skills::Skill;
 use crate::ui::command::{CompletionCandidate, FileCandidate};
 
-pub use super::history::{SidebarStats, compute_stats};
 pub use super::input::InputBuffer;
 pub use super::modals::*;
+pub use crate::app::stats::{SidebarStats, compute_stats};
 pub use pane::{
     ChatCache, CitationsHit, ResponseHit, TextPane, ThoughtHit, ToolExpand, ToolHit, UserMessageHit,
 };
