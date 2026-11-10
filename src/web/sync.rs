@@ -1,5 +1,6 @@
 //! Web 传输投影：首帧快照，后续相对该连接已发送版本的增量。
 
+use crate::app::view::RunStateDisplay;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -318,19 +319,11 @@ mod tests {
     use serde_json::{Value, json};
 
     fn view() -> SessionView {
-        SessionView {
-            revision: 1,
-            session: Arc::new(Session::new("/synthetic", None)),
-            draft: vec![Arc::new(ContentPart::text("起点🙂"))],
-            notices: Vec::new(),
-            background_tasks: Default::default(),
-            shell_outputs: Default::default(),
-            external_web: Vec::new(),
-            state: RunState::Responding,
-            persisted: true,
-            pending_user_question: None,
-            pending_inputs: Arc::default(),
-        }
+        let mut view = SessionView::new(Session::new("/synthetic", None), true);
+        view.revision = 1;
+        view.draft = vec![Arc::new(ContentPart::text("起点🙂"))];
+        view.state = RunState::Responding;
+        view
     }
 
     fn delta(before: &SessionView, after: &SessionView) -> Value {

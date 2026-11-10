@@ -80,47 +80,43 @@ fn unreachable_config() -> AppConfig {
 
 #[tokio::test]
 async fn curation_tool_persists_running_session_flag_and_reports_write_failure() {
-    let (mut task, view) = event_task();
+    let root = tmp("curation-record");
+    let store = Arc::new(JsonlSessionStore::new(&root).unwrap());
+    let mut session = Session::with_model(
+        &root,
+        Some("fixture".into()),
+        "p/m",
+        None,
+        Default::default(),
+    );
+    session.header.origin = Some(crate::model::Origin {
+        channel: "test".into(),
+        chat_id: "chat".into(),
+    });
+    store.save_header(&session).await.unwrap();
+    let (mut task, _) = task_with(session.clone(), store.clone());
     task.setup = setup_for(
         &task.view.session,
         task.store.clone(),
         Arc::new(unreachable_config()),
         None,
     );
-    let session = Arc::make_mut(&mut task.view.session);
-    session.set_model("p/m", None);
-    session.header.title = Some("fixture".into());
-    session.header.origin = Some(crate::model::Origin {
-        channel: "test".into(),
-        chat_id: "chat".into(),
-    });
-    let (commands, mut rx) = mpsc::channel(4);
-    task.commands = commands.downgrade();
-    let runtime = task.start("fixture", Vec::new()).await.unwrap();
-    let tool = runtime.tools.get("SetSessionCuration").unwrap();
-    let (_events_tx, mut events_rx) = mpsc::channel(4);
+    let plan = task.start("fixture", Vec::new()).await.unwrap();
+    let tool = plan.tools.get("SetSessionCuration").unwrap();
     let before = task.view.session.turns.clone();
-    let activity = task.view.session.header.last_activity;
+    let activity = store.slot(&session.header.id).unwrap().borrow().clone();
     for enabled in [true, true, false, false, true] {
-        let args = serde_json::json!({"enabled": enabled}).to_string();
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            task.drive(tool.execute(&args), &mut rx, &mut events_rx),
-        )
-        .await
-        .expect("tool must finish while session is running")
-        .unwrap();
-        result.unwrap();
-        assert_eq!(view.borrow().session.header.curation_requested, enabled);
-        let stored = task
-            .store
-            .load_session(&task.view.session.header.id)
+        tool.execute(&serde_json::json!({"enabled":enabled}).to_string())
+            .await
+            .unwrap();
+        let loaded = store
+            .load_session(&session.header.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(stored.header.curation_requested, enabled);
-        assert_eq!(stored.turns, before);
-        assert_eq!(stored.header.last_activity, activity);
+        assert_eq!(loaded.header.curation_requested, enabled);
+        assert_eq!(loaded.turns, before);
+        assert_eq!(loaded.header.last_activity, session.header.last_activity);
     }
     for args in [
         r#"{}"#,
@@ -128,41 +124,19 @@ async fn curation_tool_persists_running_session_flag_and_reports_write_failure()
         r#"{"enabled":false,"session_id":"other"}"#,
     ] {
         assert!(tool.execute(args).await.is_err());
-        assert!(task.view.session.header.curation_requested);
     }
-
-    // 后续轮次写入仍保留标记。
-    task.execute(engine(done_provider(), runtime.tools), &mut rx)
-        .await
-        .unwrap();
-    task.finish_turn(Ok(TurnOutcome::Completed)).await;
-    assert!(
-        task.store
-            .load_session(&task.view.session.header.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .header
-            .curation_requested
-    );
-
-    // 用普通文件占住存储目录，保证 header 写入失败，内存标记应保持原值。
-    let root = task.view.session.header.workspace_root.clone();
-    std::fs::remove_dir_all(&root).unwrap();
-    std::fs::write(&root, "blocked").unwrap();
-    let result = task
-        .drive(
-            tool.execute(r#"{"enabled":false}"#),
-            &mut rx,
-            &mut events_rx,
-        )
-        .await
-        .unwrap();
-    assert!(result.is_err());
-    assert!(view.borrow().session.header.curation_requested);
-    std::fs::remove_file(root).unwrap();
+    let record = store.slot(&session.header.id).unwrap();
+    std::fs::remove_dir_all(&store.records).unwrap();
+    std::fs::write(&store.records, "blocked").unwrap();
+    assert!(tool.execute(r#"{"enabled":false}"#).await.is_err());
+    let crate::app::records::Application::Space(space) = &record.borrow().application else {
+        panic!("expected Space record")
+    };
+    assert!(space.curation_requested);
+    assert_eq!(activity.coding, record.borrow().coding);
+    std::fs::remove_file(&store.records).unwrap();
+    let _ = std::fs::remove_dir_all(root);
 }
-
 #[tokio::test]
 async fn curation_tool_is_only_registered_for_managed_top_level_topics() {
     for (kind, origin, parent, expected) in [
@@ -176,24 +150,30 @@ async fn curation_tool_is_only_registered_for_managed_top_level_topics() {
         ),
         (crate::model::SessionKind::Curator, true, None, false),
     ] {
-        let (mut task, _view) = event_task();
-        task.setup = setup_for(
-            &task.view.session,
-            task.store.clone(),
-            Arc::new(unreachable_config()),
+        let root = tmp("curation-registration");
+        let store = Arc::new(JsonlSessionStore::new(&root).unwrap());
+        let mut session = Session::with_model(
+            &root,
+            Some("fixture".into()),
+            "p/m",
             None,
+            Default::default(),
         );
-        let session = Arc::make_mut(&mut task.view.session);
-        session.set_model("p/m", None);
-        session.header.title = Some("fixture".into());
         session.header.kind = kind;
         session.header.parent = parent;
         session.header.origin = origin.then(|| crate::model::Origin {
             channel: "test".into(),
             chat_id: "chat".into(),
         });
-        let engine = task.start("fixture", Vec::new()).await.unwrap();
-        assert_eq!(engine.tools.get("SetSessionCuration").is_some(), expected);
+        let (mut task, _) = task_with(session, store);
+        task.setup = setup_for(
+            &task.view.session,
+            task.store.clone(),
+            Arc::new(unreachable_config()),
+            None,
+        );
+        let plan = task.start("fixture", Vec::new()).await.unwrap();
+        assert_eq!(plan.tools.get("SetSessionCuration").is_some(), expected);
         cleanup(&task);
     }
 }
@@ -218,7 +198,7 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
     let before = task.view.session.clone();
     let revision = task.view.revision;
     let error = task
-        .configure(Some("test/text".into()), None, Default::default())
+        .configure(Some("test/text".into()), None)
         .await
         .unwrap_err();
     assert!(error.contains("does not support image input"));
@@ -235,7 +215,7 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
     );
     let stored = task.store.load_session(&id).await.unwrap().unwrap();
     assert_eq!(stored.header.current_model, "test/vision");
-    task.configure(Some("test/other".into()), None, Default::default())
+    task.configure(Some("test/other".into()), None)
         .await
         .unwrap();
     assert_eq!(task.view.session.header.current_model, "test/other");
@@ -1024,7 +1004,7 @@ async fn websocket_chain_survives_engine_rebuilds_between_user_turns() {
     });
     assert_eq!(outcome.unwrap(), TurnOutcome::Completed);
 
-    task.configure(Some("p/alternate".into()), None, Default::default())
+    task.configure(Some("p/alternate".into()), None)
         .await
         .unwrap();
     let engine = task.build_engine().await.unwrap();
@@ -1681,12 +1661,46 @@ async fn shell_exit_resumes_idle_session_for_success_and_failure() {
     .expect("shell exit did not resume the session");
 }
 
+fn task_with(
+    session: Session,
+    store: Arc<SessionStore>,
+) -> (
+    SessionTask,
+    tokio::sync::watch::Receiver<Arc<vva_core::harness::SessionView>>,
+) {
+    store.prepare(&session).unwrap();
+    crate::test_support::session::task_with(session.to_core(), store.core.clone())
+}
 fn setup_for(
-    session: &Session,
-    store: Arc<dyn SessionStore>,
+    session: &vva_core::model::Session,
+    core: Arc<dyn vva_core::storage::SessionStore>,
     config: Arc<AppConfig>,
     preamble: Option<super::SessionPreamble>,
 ) -> Arc<super::VvaSessionSetup> {
+    let base = session.header.workspace_root.clone();
+    let store = Arc::new(crate::app::store::AppSessionStore::with_core(core, base));
+    if !store
+        .records
+        .join(format!("{}.json", session.header.id))
+        .exists()
+    {
+        let mut app = Session::with_model(
+            &session.header.workspace_root,
+            session.header.title.clone(),
+            session.header.current_model.clone(),
+            session.header.current_variant.clone(),
+            Default::default(),
+        );
+        app.header.id = session.header.id.clone();
+        app.header.parent = session.header.parent.clone();
+        app.header.agent = session.header.agent.clone();
+        app.header.depth = session.header.depth;
+        store.prepare(&app).unwrap();
+    }
+    let managed = matches!(
+        store.slot(&session.header.id).unwrap().borrow().application,
+        crate::app::records::Application::Space(_)
+    );
     let setup = super::VvaSessionSetup::new(
         config,
         store,
@@ -1695,7 +1709,7 @@ fn setup_for(
         None,
         preamble,
     );
-    Arc::new(if session.header.agent_managed() {
+    Arc::new(if managed {
         crate::space::session_setup(setup)
     } else {
         setup

@@ -1,13 +1,14 @@
 use super::setup::{SessionPreamble, SessionToolFactory, VvaSessionSetup};
+use crate::app::view::RunStateDisplay;
 use crate::config::{AppConfig, AppState};
-use crate::harness::session::handle::Command;
-use crate::harness::{AgentAssembly, ManagedSession, SessionManager};
+use crate::harness::{AgentAssembly, ManagedSession};
 use crate::model::{Role, Session, SessionToggles, ToggleOverrides};
 use crate::storage::SessionStore;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
+use vva_core::harness::SessionManager;
 
 fn resolve_session_editor(
     model_config: &crate::config::ModelConfig,
@@ -22,6 +23,8 @@ fn resolve_session_editor(
 /// 只管理会话句柄；Session 的修改与存储由对应任务顺序执行。
 pub struct VvaSessionManager {
     core: Arc<SessionManager>,
+    store: Arc<SessionStore>,
+    sessions: Mutex<HashMap<String, Arc<ManagedSession>>>,
     /// 启动时加载的合并配置；Settings 保存后可整体热替换。
     /// 已运行的会话任务持有创建时的 Arc 快照，不受替换影响。
     config: RwLock<Arc<AppConfig>>,
@@ -39,13 +42,15 @@ pub struct VvaSessionManager {
 
 impl VvaSessionManager {
     pub fn new(
-        store: Arc<dyn SessionStore>,
+        store: Arc<SessionStore>,
         config: AppConfig,
         workspace: impl Into<PathBuf>,
         state_path: impl Into<PathBuf>,
     ) -> Self {
         Self {
-            core: Arc::new(SessionManager::new(store)),
+            core: Arc::new(SessionManager::new(store.core.clone())),
+            store,
+            sessions: Mutex::new(HashMap::new()),
             config: RwLock::new(Arc::new(config)),
             config_path: None,
             workspace: workspace.into(),
@@ -74,8 +79,8 @@ impl VvaSessionManager {
         self
     }
 
-    pub fn store(&self) -> &Arc<dyn SessionStore> {
-        self.core.store()
+    pub fn store(&self) -> &Arc<SessionStore> {
+        &self.store
     }
     pub fn app_config(&self) -> Arc<AppConfig> {
         self.config.read().expect("config lock poisoned").clone()
@@ -116,21 +121,50 @@ impl VvaSessionManager {
 
     #[cfg(test)]
     fn spawn(self: &Arc<Self>, session: Session, persisted: bool) -> Arc<ManagedSession> {
+        self.store.prepare(&session).unwrap();
         let setup = self.setup(&session);
-        self.core.spawn(AgentAssembly { session, setup }, persisted)
+        ManagedSession::new(
+            self.core.spawn(
+                AgentAssembly {
+                    session: session.to_core(),
+                    setup,
+                },
+                persisted,
+            ),
+            self.store.clone(),
+        )
+        .unwrap()
     }
-
     async fn spawn_registered(
         self: &Arc<Self>,
         session: Session,
         persisted: bool,
-    ) -> Arc<ManagedSession> {
+    ) -> Result<Arc<ManagedSession>, String> {
+        self.store.prepare(&session).map_err(|e| e.to_string())?;
         let setup = self.setup(&session);
-        self.core
-            .spawn_registered(AgentAssembly { session, setup }, persisted)
+        let core = self
+            .core
+            .spawn_registered(
+                AgentAssembly {
+                    session: session.to_core(),
+                    setup,
+                },
+                persisted,
+            )
+            .await;
+        let handle = ManagedSession::new(core, self.store.clone())?;
+        self.sessions
+            .lock()
             .await
+            .insert(handle.id.clone(), handle.clone());
+        Ok(handle)
     }
-
+    async fn unique_session_id(&self, session: &mut Session) -> Result<(), String> {
+        let mut core = session.to_core();
+        self.core.unique_session_id(&mut core).await?;
+        session.header.id = core.header.id;
+        Ok(())
+    }
     pub async fn get_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
         let handle = self.live_or_load(id).await?;
         self.remember_session(&handle.snapshot().session);
@@ -143,16 +177,61 @@ impl VvaSessionManager {
     }
 
     pub async fn live_or_load(self: &Arc<Self>, id: &str) -> Result<Arc<ManagedSession>, String> {
-        if let Some(handle) = self.core.live(id).await {
-            return Ok(handle);
+        let mut sessions = self.sessions.lock().await;
+        if let Some(handle) = sessions.get(id) {
+            return Ok(handle.clone());
         }
         let session = self
-            .store()
+            .store
             .load_session(id)
             .await
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Session not found: {id}"))?;
-        self.core.open(id, self.setup(&session)).await
+        let core = self.core.open(id, self.setup(&session)).await?;
+        let handle = ManagedSession::new(core, self.store.clone())?;
+        sessions.insert(id.into(), handle.clone());
+        Ok(handle)
+    }
+    pub async fn delete_session(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
+        let summaries = self
+            .store
+            .list_sessions()
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut ids = vec![handle.id.clone()];
+        let mut index = 0;
+        while index < ids.len() {
+            for summary in &summaries {
+                if summary.parent.as_ref() == Some(&ids[index]) {
+                    ids.push(summary.id.clone());
+                }
+            }
+            index += 1;
+        }
+        self.core.delete_session(&handle.core).await?;
+        for id in ids {
+            self.store.delete_record(&id).map_err(|e| e.to_string())?;
+            self.sessions.lock().await.remove(&id);
+        }
+        Ok(())
+    }
+    pub async fn live_run_states(&self) -> HashMap<String, String> {
+        self.sessions
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(id, handle)| {
+                let state = handle.snapshot().state.status();
+                (!state.is_empty()).then(|| (id.clone(), state))
+            })
+            .collect()
+    }
+    pub async fn submit_prompt(
+        &self,
+        handle: Arc<ManagedSession>,
+        prompt: &str,
+    ) -> Result<(), String> {
+        handle.submit(prompt, Vec::new(), None).await
     }
 
     pub async fn create_session(
@@ -205,7 +284,7 @@ impl VvaSessionManager {
         init(&mut session.header);
         self.unique_session_id(&mut session).await?;
         self.remember_session(&session);
-        Ok(self.spawn_registered(session, false).await)
+        self.spawn_registered(session, false).await
     }
 
     /// 接管一个已构造完毕且带历史轮次的会话（rollover 新会话）：落盘后登记，
@@ -219,7 +298,7 @@ impl VvaSessionManager {
             .save_header(&session)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(self.spawn_registered(session, true).await)
+        self.spawn_registered(session, true).await
     }
 
     pub async fn open_session(
@@ -320,7 +399,7 @@ impl VvaSessionManager {
             .await
             .map_err(|e| e.to_string())?;
         self.remember_session(&session);
-        Ok(self.spawn_registered(session, true).await)
+        self.spawn_registered(session, true).await
     }
 }
 
@@ -350,12 +429,8 @@ impl SessionBrokerHandle {
             .await
             .ok_or_else(|| "Calling session is closed".to_string())?;
         owner
-            .request(|reply| Command::WatchSession {
-                session_id,
-                receipt,
-                background,
-                reply,
-            })
+            .core
+            .watch_delivery(session_id, receipt, background)
             .await
     }
 
@@ -408,7 +483,13 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
             resolved.full_spec,
             parent.current_variant.clone(),
             SessionToggles {
-                web_search: parent.web_search,
+                web_search: manager
+                    .store
+                    .slot(&parent.parent_id)
+                    .map_err(|e| e.to_string())?
+                    .borrow()
+                    .coding
+                    .web_search,
             },
         );
         session.header.editor =
@@ -417,7 +498,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         session.header.agent = Some(def.name.clone());
         session.header.depth = parent.depth + 1;
         manager.unique_session_id(&mut session).await?;
-        let handle = manager.spawn_registered(session, false).await;
+        let handle = manager.spawn_registered(session, false).await?;
         let turn_seq = handle.turn_seq();
         if !background {
             manager
@@ -532,21 +613,15 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
     }
 }
 
-impl std::ops::Deref for VvaSessionManager {
-    type Target = SessionManager;
-    fn deref(&self) -> &Self::Target {
-        &self.core
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::session::handle::CompletedTurn;
-    use crate::harness::{RunState, SessionView};
+    use crate::harness::RunState;
+    use crate::harness::session::handle::{Command, CompletedTurn};
     use crate::storage::jsonl::JsonlSessionStore;
     use crate::tools::agent::{SessionBroker, SubagentReport};
     use tokio::sync::{mpsc, watch};
+    use vva_core::harness::{ManagedSession as CoreManagedSession, SessionView as CoreView};
 
     fn manager() -> (Arc<VvaSessionManager>, PathBuf) {
         let root = std::env::temp_dir().join(format!("vva-broker-{}", uuid::Uuid::new_v4()));
@@ -566,32 +641,41 @@ mod tests {
         let target = manager.spawn(Session::new(&root, None), false);
         let id = target.id.clone();
         let (commands, mut requests) = mpsc::channel(4);
-        let mut target_view = SessionView::new(Session::new(&root, None), false);
+        let mut target_view = CoreView::new(Session::new(&root, None).to_core(), false);
         target_view.state = RunState::Thinking;
         let (_, view) = watch::channel(Arc::new(target_view));
         let (_, turns) = watch::channel(CompletedTurn::default());
         manager.sessions.lock().await.insert(
             id.clone(),
-            Arc::new(ManagedSession {
-                id: id.clone(),
-                commands,
-                view,
-                turns,
-            }),
+            ManagedSession::new(
+                Arc::new(CoreManagedSession {
+                    id: id.clone(),
+                    commands,
+                    view,
+                    turns,
+                }),
+                manager.store.clone(),
+            )
+            .unwrap(),
         );
         let mut callers = Vec::new();
         for _ in 0..2 {
             let session = Session::new(&root, None);
             let owner_id = session.header.id.clone();
             let (commands, rx) = mpsc::channel(1);
-            let (_, view) = watch::channel(Arc::new(SessionView::new(session, false)));
+            manager.store.prepare(&session).unwrap();
+            let (_, view) = watch::channel(Arc::new(CoreView::new(session.to_core(), false)));
             let (_, turns) = watch::channel(CompletedTurn::default());
-            let handle = Arc::new(ManagedSession {
-                id: owner_id.clone(),
-                commands,
-                view,
-                turns,
-            });
+            let handle = ManagedSession::new(
+                Arc::new(CoreManagedSession {
+                    id: owner_id.clone(),
+                    commands,
+                    view,
+                    turns,
+                }),
+                manager.store.clone(),
+            )
+            .unwrap();
             manager
                 .sessions
                 .lock()

@@ -196,7 +196,7 @@ pub fn memory_reminder(workspace: &Path) -> Result<Option<String>, String> {
 
 pub struct Curator {
     runner: Arc<dyn CuratorRunner>,
-    store: Arc<dyn SessionStore>,
+    store: Arc<SessionStore>,
     /// agent 工作区：`memory/`、游标与输入暂存均在其下
     root: PathBuf,
     skills_dir: PathBuf,
@@ -207,7 +207,7 @@ pub struct Curator {
 impl Curator {
     pub(super) fn new(
         runner: Arc<dyn CuratorRunner>,
-        store: Arc<dyn SessionStore>,
+        store: Arc<SessionStore>,
         root: PathBuf,
         skills_dir: PathBuf,
     ) -> Self {

@@ -27,7 +27,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
   Scheduler：cron → Deliver
 ```
 
-复用 `SessionManager`、Steer / `Deliver`、skills、JSONL。所有 session 位于固定工作区 `~/.vva/space/`；TUI / Web 暂不接入 agent space 逻辑，新增 header 字段均有缺省，旧界面照常读取。
+复用 core 公开会话 API：装配、快照订阅、Steer / Deliver、完成回执与 note；Space 不直接操作 SessionTask / Command。所有 session 位于固定工作区 `~/.vva/space/`；应用投影关联独立记录，供 TUI / Web 展示和接管。
 
 ## 2. 概念
 
@@ -91,7 +91,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ### 4.3 Curator（知识沉淀）
 
-- **沉淀资格**：Agent Space 顶层 topic 会话通过 `SetSessionCuration({"enabled": true})` 请求整理，`false` 撤销；标记持久化于 header 的 `curation_requested`，新旧会话缺省均为 `false`。工具绑定当前会话，在运行中经会话命令通道更新 header，落盘成功后返回；重复设置幂等，不延长 TTL；
+- **沉淀资格**：Agent Space 顶层 topic 会话通过 `SetSessionCuration({"enabled": true})` 请求整理，`false` 撤销；标记持久化于 `SpaceSessionRecord.curation_requested`。工具属于 Space 装配，绑定当前 SessionId，串行更新独立应用记录，落盘成功后返回；重复设置幂等，不延长 TTL；
 - **主动标记**：模型发现稳定偏好、已确认的决策与约束、可复用经验时调用工具；临时进度、一次性查询和普通任务执行无需标记。标记覆盖本会话全部未处理内容及后续对话，curator 决定具体写入内容，允许无需更新；
 - 由系统在删除已标记会话前触发后台 session（`kind=curator`；TTL 周期扫描或 `/delete`），未标记会话直接删除。`Curator::curate` 统一检查资格与标记，跳过时返回 `Unchanged`，不创建整理输入或启动模型；curator 自身与子代理会话不参与；
 - `/clear` 与 rollover 本身不触发沉淀。rollover 旧会话保留标记，按 TTL 清理；新会话默认未标记。整理成功保留标记，整理期间新增内容仍可增量处理；
@@ -125,7 +125,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 - **工具**：
   - `SendFile`（`send_file.rs`）：渠道绑定，经 `SessionManager::with_tool_factory` 按会话 header 运行期注入（仅带 origin 的顶层会话）；参数 `path`（工作区相对 / 绝对 / `~`）与可选 `caption`；文件缺失或非普通文件显式报错，渠道错误原样作为工具错误由模型转述；
   - `Schedule`：见 §7，仅挂在带个人 IM 来源的顶层会话，群内不挂载；
-  - `AskUser` 不挂载：`SessionHeader::agent_managed()` 会话组装工具时不注册，工具定义一并缺席。
+  - `AskUser` 不挂载：Space 装配显式关闭交互；core 不判断 IM 身份。
 
 ### 6.1 命令
 
@@ -183,7 +183,9 @@ QQ C2C 用户触发的轮次使用官方 `stream_messages`：首次汇报创建�
 
 ## 9. 状态文件
 
-工作区 `~/.vva/space/` 下：`bindings.json`、`message_index.jsonl`、`router.jsonl`、`schedule.json`、`schedule_state.json`、`model.json`、`files/`、`memory/`。`SessionHeader` 的 agent space 字段见 [domain_model §1.1](domain_model.md#11-session会话根实体)。
+工作区 `~/.vva/space/` 下：`bindings.json`、`message_index.jsonl`、`router.jsonl`、`schedule.json`、`schedule_state.json`、`model.json`、`files/`、`memory/`。会话应用记录与会话存储并列，路径及迁移见 [storage](storage.md)。
+
+`SpaceSessionRecord` 保存 `origin{channel, chat_id}`、`kind`（Topic / Curator）、`routed_by`、`ttl_secs`、`last_activity`、`curation_requested`，以 SessionId 关联。完成回执（包括后台续跑完成或中止）后由 Space 更新活动时间；尚无活动时 TTL 以创建时间起算。coding 编辑协议和 web 开关独立保存在同一应用记录的 `coding` 配置。加载缺失关联记录明确报错，不推断为普通会话或自动补建；父子及续接关系仍由 core 保存。
 
 ## 10. 验收要点
 

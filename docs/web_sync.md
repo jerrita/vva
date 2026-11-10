@@ -2,7 +2,7 @@
 
 ## 问题与边界
 
-Harness 通过 `watch<Arc<SessionView>>` 发布进程内只读视图，流式文本按 33ms 节流。
+core Harness 通过 `watch<Arc<SessionView>>` 发布进程内只读视图，流式文本按 33ms 节流。应用投影将快照与按 SessionId 关联的必需应用记录合并，再生成 Web 协议；编辑协议、web 开关、Space 展示字段保持原有扁平形状。统计由应用共用 `app/stats.rs` 计算。
 将每次发布直接序列化为完整 SSE 快照，会重复传输历史、图片、工具结果和累计草稿。
 持续输出时带宽约为 `发布频率 × (历史大小 + 累计草稿大小)`，并随会话增长。
 

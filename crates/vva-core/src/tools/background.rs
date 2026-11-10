@@ -130,7 +130,6 @@ impl TaskSnapshot {
                 kind: crate::model::BackgroundTaskKind::Shell,
                 started_at: self.started_at,
             }),
-            finished_at: None,
         }
     }
 }

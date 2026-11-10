@@ -6,42 +6,7 @@ use uuid::Uuid;
 use super::message::Role;
 use super::turn::Turn;
 
-fn default_web_search() -> bool {
-    true
-}
-
-/// 会话功能开关：web 搜索
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionToggles {
-    pub web_search: bool,
-}
-
-impl Default for SessionToggles {
-    fn default() -> Self {
-        Self { web_search: true }
-    }
-}
-
-/// 会话功能开关的局部覆写：`None` 保持现值
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ToggleOverrides {
-    pub web_search: Option<bool>,
-}
-
-impl ToggleOverrides {
-    pub fn is_empty(&self) -> bool {
-        self.web_search.is_none()
-    }
-
-    /// 在既有开关上叠加覆写
-    pub fn apply(self, base: SessionToggles) -> SessionToggles {
-        SessionToggles {
-            web_search: self.web_search.unwrap_or(base.web_search),
-        }
-    }
-}
-
-/// 会话绑定的文件编辑协议；创建时从模型 `annotation.editor` 写入，之后不随换模改变。
+/// 文件工具采用的编辑协议；由宿主装配选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EditorKind {
@@ -68,7 +33,7 @@ pub fn provisional_title(prompt: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Session {
-    /// 持久化与投影的权威字段集：JSONL 首行、Web SessionInfo、SessionSummary 的唯一来源
+    /// 通用持久化字段：JSONL 首行与 SessionSummary 的来源
     pub header: SessionHeader,
     pub updated_at: DateTime<Utc>,
     pub turns: Vec<Turn>,
@@ -88,13 +53,7 @@ pub fn generate_session_id() -> String {
 
 impl Session {
     pub fn new(workspace_root: impl Into<PathBuf>, title: Option<String>) -> Self {
-        Self::with_model(
-            workspace_root,
-            title,
-            String::new(),
-            None,
-            SessionToggles::default(),
-        )
+        Self::with_model(workspace_root, title, String::new(), None)
     }
 
     pub fn with_model(
@@ -102,7 +61,6 @@ impl Session {
         title: Option<String>,
         current_model: impl Into<String>,
         current_variant: Option<String>,
-        toggles: SessionToggles,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -114,19 +72,11 @@ impl Session {
                 created_at: now,
                 current_model: current_model.into(),
                 current_variant,
-                web_search: toggles.web_search,
-                editor: EditorKind::default(),
                 parent: None,
                 agent: None,
                 depth: 0,
-                kind: SessionKind::default(),
-                origin: None,
-                routed_by: None,
                 continued_from: None,
                 superseded_by: None,
-                last_activity: None,
-                ttl_secs: None,
-                curation_requested: false,
             },
             updated_at: now,
             turns: Vec::new(),
@@ -148,17 +98,6 @@ impl Session {
     pub fn set_model(&mut self, model: impl Into<String>, variant: Option<String>) {
         self.header.current_model = model.into();
         self.header.current_variant = variant;
-        self.updated_at = Utc::now();
-    }
-
-    pub fn toggles(&self) -> SessionToggles {
-        SessionToggles {
-            web_search: self.header.web_search,
-        }
-    }
-
-    pub fn set_toggles(&mut self, toggles: SessionToggles) {
-        self.header.web_search = toggles.web_search;
         self.updated_at = Utc::now();
     }
 
@@ -196,10 +135,11 @@ impl Session {
 }
 
 /// 当前会话格式版本；其余版本的会话不解析（工具协议随版本整体变化，不做兼容转换）
-pub const SESSION_VERSION: u32 = 2;
+pub const SESSION_VERSION: u32 = 3;
 
 /// JSONL 持久化格式：首行 Header
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SessionHeader {
     pub version: u32,
     pub id: String,
@@ -211,88 +151,21 @@ pub struct SessionHeader {
     pub current_model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_variant: Option<String>,
-    #[serde(default = "default_web_search")]
-    pub web_search: bool,
-    pub editor: EditorKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_depth")]
     pub depth: u8,
-    /// agent space 会话类别；缺省 Topic 不序列化
-    #[serde(default, skip_serializing_if = "SessionKind::is_topic")]
-    pub kind: SessionKind,
-    /// 会话来源 IM 位置（agent space 创建的会话携带）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<Origin>,
-    /// 路由本会话的决策来源（如 `reply` / `switch` / `router`）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routed_by: Option<String>,
-    /// rollover 接替会话所承接的旧会话 id（与 subagent 的 `parent` 语义分离）
+    /// 续接会话承接的旧会话 id（与子会话的 `parent` 语义分离）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from: Option<String>,
-    /// rollover 后接替本会话的新会话 id；router 排除已被取代的会话
+    /// 接替本会话的新会话 id
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
-    /// 最近一次用户活动时刻，TTL 清理依据（重启后据此恢复）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_activity: Option<DateTime<Utc>>,
-    /// 会话空闲 TTL（秒）；未指定时使用 agent space 配置
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ttl_secs: Option<u64>,
-    /// 当前会话请求在清理前沉淀；缺省不整理
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub curation_requested: bool,
-}
-
-/// agent space 会话类别
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionKind {
-    /// 普通主题会话（含所有非 agent space 会话）
-    #[default]
-    Topic,
-    /// 知识沉淀后台会话
-    Curator,
-}
-
-impl SessionKind {
-    pub fn is_topic(&self) -> bool {
-        matches!(self, Self::Topic)
-    }
-}
-
-/// IM 来源位置：channel 名与 chat id
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Origin {
-    pub channel: String,
-    pub chat_id: String,
-}
-
-impl Origin {
-    /// binding 键 `channel:chat_id`
-    pub fn binding(&self) -> String {
-        format!("{}:{}", self.channel, self.chat_id)
-    }
-}
-
-/// agent space 会话携带 IM 来源或非 Topic 类别；TUI / Web 创建的普通会话两者皆无
-fn is_agent_managed(kind: SessionKind, origin: Option<&Origin>) -> bool {
-    origin.is_some() || !kind.is_topic()
 }
 
 impl SessionHeader {
-    /// 可主动请求沉淀的 agent space 顶层主题会话
-    pub fn supports_curation(&self) -> bool {
-        self.kind.is_topic() && self.agent_managed() && self.parent.is_none()
-    }
-
-    /// 是否为 agent space 管理的会话：仅此类会话维护 `last_activity`
-    pub fn agent_managed(&self) -> bool {
-        is_agent_managed(self.kind, self.origin.as_ref())
-    }
-
     /// 由持久化 Header 与已加载的轮次重建运行时会话（updated_at 以加载时刻计）
     pub fn into_session(self, turns: Vec<Turn>) -> Session {
         Session {
@@ -321,35 +194,17 @@ pub struct SessionSummary {
     pub turn_count: usize,
     pub current_model: String,
     pub current_variant: Option<String>,
-    pub web_search: bool,
     /// 父会话 id（subagent 会话指向派生它的会话；顶层会话为 None）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// 派生本会话的 agent 定义名（subagent 会话携带）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
-    #[serde(skip_serializing_if = "SessionKind::is_topic")]
-    pub kind: SessionKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub origin: Option<Origin>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routed_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_activity: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ttl_secs: Option<u64>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub curation_requested: bool,
 }
 
 impl SessionSummary {
-    /// 是否为 agent space 管理的会话（TTL 清理的作用域）
-    pub fn agent_managed(&self) -> bool {
-        is_agent_managed(self.kind, self.origin.as_ref())
-    }
-
     /// 由持久化 Header 与轮次条数构建列表摘要
     pub fn from_header(header: SessionHeader, turn_count: usize) -> Self {
         Self {
@@ -360,48 +215,9 @@ impl SessionSummary {
             turn_count,
             current_model: header.current_model,
             current_variant: header.current_variant,
-            web_search: header.web_search,
             parent: header.parent,
             agent: header.agent,
-            kind: header.kind,
-            origin: header.origin,
-            routed_by: header.routed_by,
             superseded_by: header.superseded_by,
-            last_activity: header.last_activity,
-            ttl_secs: header.ttl_secs,
-            curation_requested: header.curation_requested,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn minimal_header_loads_with_topic_defaults() {
-        let line = r#"{"type":"header","version":2,"id":"sess_a1b2c","workspace_root":"/w","created_at":"2026-01-01T00:00:00Z","current_model":"a/m","editor":"hashline"}"#;
-        let JsonlRecord::Header(header) = serde_json::from_str(line).unwrap() else {
-            panic!("expected header");
-        };
-        assert_eq!(header.kind, SessionKind::Topic);
-        assert!(header.origin.is_none());
-        assert!(header.routed_by.is_none() && header.superseded_by.is_none());
-        assert!(header.last_activity.is_none());
-        assert!(header.ttl_secs.is_none());
-        assert!(!header.curation_requested);
-        // 缺省字段不被序列化
-        let out = serde_json::to_string(&JsonlRecord::Header(header)).unwrap();
-        for key in [
-            "kind",
-            "origin",
-            "routed_by",
-            "superseded_by",
-            "last_activity",
-            "ttl_secs",
-            "curation_requested",
-        ] {
-            assert!(!out.contains(key), "{key} 不应被序列化");
         }
     }
 }

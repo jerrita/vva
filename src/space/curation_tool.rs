@@ -1,19 +1,21 @@
-//! 当前会话的沉淀标记工具，写入通过会话命令通道串行执行。
+//! 当前会话的沉淀标记工具，独立应用记录中的写入串行执行。
 
-use super::{Command, SharedCommand};
 use crate::model::ToolInput;
 use crate::tools::{Tool, parse_args};
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
 
-pub(super) struct SetSessionCuration {
-    commands: mpsc::WeakSender<Command>,
+pub(crate) struct SetSessionCuration {
+    store: std::sync::Arc<crate::app::store::AppSessionStore>,
+    session_id: String,
 }
 
 impl SetSessionCuration {
-    pub(super) fn new(commands: mpsc::WeakSender<Command>) -> Self {
-        Self { commands }
+    pub(crate) fn new(
+        store: std::sync::Arc<crate::app::store::AppSessionStore>,
+        session_id: String,
+    ) -> Self {
+        Self { store, session_id }
     }
 }
 
@@ -50,16 +52,15 @@ impl Tool for SetSessionCuration {
 
     async fn execute(&self, arguments: &str) -> Result<String, String> {
         let args: Arguments = parse_args(arguments, self.name())?;
-        let commands = self.commands.upgrade().ok_or("Session is closed")?;
-        let (reply, result) = oneshot::channel();
-        commands
-            .send(Command::Shared(SharedCommand::SetCuration {
-                enabled: args.enabled,
-                reply,
-            }))
-            .await
-            .map_err(|_| "Session is closed")?;
-        result.await.map_err(|_| "Session is closed")??;
+        self.store
+            .update_record(&self.session_id, |record| match &mut record.application {
+                crate::app::records::Application::Space(space) => {
+                    let changed = space.curation_requested != args.enabled;
+                    space.curation_requested = args.enabled;
+                    Ok(changed)
+                }
+                crate::app::records::Application::Coding => Err("当前会话不支持沉淀标记".into()),
+            })?;
         Ok(if args.enabled {
             "已标记当前会话，清理前将整理有长期价值的内容。"
         } else {

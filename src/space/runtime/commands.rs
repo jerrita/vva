@@ -6,6 +6,7 @@ use chrono::Utc;
 
 use super::mode_model::check_mode_model;
 use super::{DeliveryTarget, Runtime};
+use crate::app::stats::compute_stats;
 use crate::harness::ManagedSession;
 use crate::model::ToggleOverrides;
 use crate::space::binding::is_group_binding;
@@ -16,7 +17,6 @@ use crate::space::markdown;
 use crate::space::rollover::{cache_hit_rate, context_tokens};
 use crate::space::router::resolve_prefix;
 use crate::space::scheduler::{ScheduleStore, Task, TaskState, Trigger, format_time, now_minute};
-use crate::ui::history::compute_stats;
 
 const MODEL_USAGE: &str =
     "用法：/model [<规格>] [--variant <档位>] [--global]；/model list 查看可用模型";

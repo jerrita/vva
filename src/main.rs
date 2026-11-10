@@ -9,7 +9,6 @@ use vva::app::VvaSessionManager as SessionManager;
 use vva::config::{AppConfig, home_dir, load_config};
 use vva::harness::AgentEvent;
 use vva::model::{Annotation, ContentPart, Session, WebSearchAction, WebSearchCall};
-use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;
 use vva::ui::run_tui;
 
@@ -21,6 +20,9 @@ use vva::ui::run_tui;
     about = "Vendor-Versatile Agent Harness for Coding"
 )]
 struct Cli {
+    /// 会话目录；迁移后显式指定新目录
+    #[arg(long, global = true)]
+    sessions_dir: Option<PathBuf>,
     /// 配置文件路径 (.json 或 .jsonc)
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
@@ -94,6 +96,15 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum SessionAction {
+    /// 停写后将 v2 会话迁移到新目录，保留源文件与旧输出目录
+    Migrate {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        destination: PathBuf,
+        #[arg(long)]
+        stopped: bool,
+    },
     /// 列出所有会话记录
     List,
     /// 查看指定会话详情、轮次与元数据
@@ -332,11 +343,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let home_dir = home_dir().unwrap_or_else(|| PathBuf::from("."));
     let vva_dir = home_dir.join(".vva");
-    // 全局 env 在运行时启动前写入进程环境，已存在的变量不覆盖
-    for (key, value) in vva::config::env::load_env_file(&vva_dir.join("env"))? {
-        if std::env::var_os(&key).is_none() {
-            // SAFETY: tokio 运行时尚未构建，此时进程内只有主线程
-            unsafe { std::env::set_var(key, value) };
+    // 离线迁移不依赖应用配置与环境凭据。
+    if !matches!(
+        cli.command,
+        Some(Commands::Session {
+            action: SessionAction::Migrate { .. }
+        })
+    ) {
+        // 全局 env 在运行时启动前写入进程环境，已存在的变量不覆盖
+        for (key, value) in vva::config::env::load_env_file(&vva_dir.join("env"))? {
+            if std::env::var_os(&key).is_none() {
+                // SAFETY: tokio 运行时尚未构建，此时进程内只有主线程
+                unsafe { std::env::set_var(key, value) };
+            }
         }
     }
     tokio::runtime::Builder::new_multi_thread()
@@ -376,8 +395,23 @@ fn self_update() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let sessions_dir = vva_dir.join("sessions");
+    if let Some(Commands::Session {
+        action:
+            SessionAction::Migrate {
+                source,
+                destination,
+                stopped,
+            },
+    }) = &cli.command
+    {
+        let manifest = vva::app::migration::migrate(source, destination, *stopped).await?;
+        println!("{}", serde_json::to_string_pretty(&manifest)?);
+        return Ok(());
+    }
+    let sessions_dir = cli.sessions_dir.unwrap_or_else(|| vva_dir.join("sessions"));
     let store = Arc::new(JsonlSessionStore::new(&sessions_dir)?);
+    let _writer_lock = vva::app::migration::writer_lock(&sessions_dir.canonicalize()?, false)?;
+    store.list_sessions().await?;
 
     // 判断是否启动全屏 TUI 模式，避免 tracing 输出干扰终端屏幕
     // 无子命令等价于不带 prompt 的 run
@@ -497,6 +531,7 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
         Commands::Version | Commands::Update => unreachable!("已在加载配置前处理"),
 
         Commands::Session { action } => match action {
+            SessionAction::Migrate { .. } => unreachable!("migration handled before startup"),
             SessionAction::List => {
                 let sessions = store.list_sessions().await?;
                 println!(

@@ -1,5 +1,8 @@
 //! Agent Space：常驻、经 IM 触达的个人 agent（设计见 docs/agent.md）。
 
+pub(crate) mod activity;
+pub(crate) mod curation_tool;
+
 pub mod binding;
 pub mod channel;
 pub mod command;
@@ -108,7 +111,7 @@ pub struct AgentSpace {
 
 impl AgentSpace {
     pub fn new(
-        store: Arc<dyn SessionStore>,
+        store: Arc<SessionStore>,
         app_config: AppConfig,
         state_path: PathBuf,
     ) -> Result<Self, String> {

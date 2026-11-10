@@ -1,5 +1,5 @@
-pub(crate) fn media_tool_session() -> crate::model::Session {
-    use crate::model::*;
+pub(crate) fn media_tool_session() -> vva_core::model::Session {
+    use vva_core::model::*;
     let mut result = ToolResult::success("read_media", "Read sample.png");
     result.attachments.push(MediaContent {
         kind: MediaKind::Image,

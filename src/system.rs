@@ -476,7 +476,7 @@ pub fn find_directory_agents_md(workspace: &Path, file_path: &Path) -> Option<Pa
 }
 
 /// 检查会话轮次中是否已经加载过特定相对路径的 AGENTS.md
-pub fn session_contains_agents_md(session: &crate::model::Session, rel_path: &str) -> bool {
+pub fn session_contains_agents_md(session: &vva_core::model::Session, rel_path: &str) -> bool {
     let normalized = rel_path.replace('\\', "/");
     session
         .turns

@@ -10,8 +10,6 @@ classDiagram
         +PathBuf workspace_root
         +String current_model
         +Option~String~ current_variant
-        +bool web_search
-        +EditorKind editor
         +Vec~Turn~ turns
     }
     class Turn {
@@ -49,15 +47,16 @@ classDiagram
 
 | 字段 | 说明 |
 |---|---|
-| `version` | 会话格式版本（`SESSION_VERSION = 2`，必填）；版本不符的会话不解析 |
-| `current_model` / `current_variant` / `web_search` | 当前模型规格、推理档位、联网开关。切换或恢复会话时继承；新会话未指定模型时沿用 `state.json`（见 [config-reference §5.3](config-reference.md#53-档位记忆)） |
-| `editor` | 文件编辑协议 `EditorKind`，必填。创建时取模型 `annotation.editor` → `settings.editor` → `patch`，会话内换模不改写，保证工具协议与历史工具结果一致 |
+| `version` | 会话格式版本（`SESSION_VERSION = 3`，必填）；版本不符的会话不解析 |
+| `id` / `title` / `created_at` | 会话身份、标题和创建时间 |
+| `current_model` / `current_variant` | 当前模型规格与推理档位；模型偏好选择由应用维护，见 [config-reference §5.3](config-reference.md#53-档位记忆) |
 | `workspace_root` | 工作区路径，用于按工程过滤会话 |
-| agent space 字段（均可缺省） | `kind`（`Topic` 缺省不序列化 / `Curator`）、`origin{channel, chat_id}`、`routed_by`、`continued_from`（rollover 接替会话所承接的旧会话，不借用 subagent 的 `parent`）、`superseded_by`、`last_activity`（TTL 依据）、`ttl_secs`（会话空闲 TTL）；详见 [agent](agent.md) |
-| subagent 标记 | `parent` / `agent` / `depth` |
-| `curation_requested` | 沉淀请求标记，缺省 `false` 且省略序列化；工具与生命周期规则见 [agent §4.3](agent.md#43-curator知识沉淀) |
+| `parent` / `agent` / `depth` | 父子会话关系、agent 定义名及深度 |
+| `continued_from` / `superseded_by` | 通用续接关系；与父子关系分开，Space 用于 rollover |
 
-`SessionSummary` 仅带出 `kind` / `origin` / `superseded_by` 等列表所需字段。
+core 的 `SessionSummary` 只包含通用列表字段。`editor` / `web_search` 属于应用的 `CodingSessionConfig`，Space 身份、路由和生命周期属于 `SpaceSessionRecord`；按 SessionId 独立保存，详见 [存储](storage.md)。`agent_managed()` / `supports_curation()` 只存在于应用投影。应用 `SessionView` 将 core 快照与必需应用记录合并，保留 TUI/Web 所需的扁平展示字段；JSONL 不保存这份投影。
+
+编辑协议创建时取模型 `annotation.editor` → `settings.editor` → `patch`，会话内换模不改写；web 开关可单独更新应用配置。
 
 **编辑协议与文件工具集**（工具名常量见 [`crates/vva-core/src/tools/names.rs`](../crates/vva-core/src/tools/names.rs)，各协议注册的名字互不重叠）：
 
@@ -90,7 +89,7 @@ classDiagram
 | `Reasoning` | `content`, `signature` | 思考过程；`signature` 为 Anthropic 防篡改签名 |
 | `Image` | `source: MediaSource`, `mime_type` | URL / Base64 / Path |
 | `File` | `source`, `mime_type`, `filename` | 当前原生支持 PDF（Anthropic `document` / Gemini `inlineData` / Responses `input_file`） |
-| `FileRef` | `path`, `content`, `truncated` | 用户 `@path` 引用的本地文本，harness 提交时展开（提示词原文保留）；二进制 / 超限 / 模型不支持的媒体降级为文本注记；三家适配器经 `format_file_ref` 统一投影为文本块 |
+| `FileRef` | `path`, `content`, `truncated` | 用户 `@path` 引用的本地文本，应用 `VvaSessionSetup` 提交时展开（提示词原文保留）；二进制 / 超限 / 模型不支持的媒体降级为文本注记；三家适配器经 `format_file_ref` 统一投影为文本块 |
 | `ToolCall` | `id`, `name`, `arguments`, `kind` | `kind`：`Function`（arguments 为 JSON 文本，缺省不序列化）/ `Custom`（freeform，arguments 为原始输入文本） |
 | `ToolResult` | `tool_call_id`, `content`, `is_error` | 工具结果与错误 |
 | `WebSearchCall` | `id`, `query`, `status`, `sources` | 网络检索意图、状态与来源；与 `TurnMeta.output_items` 解耦：前者对齐流式条目完成快照，后者保存 completed 原生 output 供回传 |

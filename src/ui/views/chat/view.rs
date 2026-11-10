@@ -2,6 +2,7 @@
 
 use super::selection::*;
 use super::*;
+use crate::app::view::RunStateDisplay;
 use crate::ui::views::fg;
 
 pub(super) const SCROLLBAR_THUMB: &str = "│";

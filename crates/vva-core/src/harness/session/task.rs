@@ -350,18 +350,11 @@ impl SessionTask {
         &mut self,
         model: Option<String>,
         variant: Option<Option<String>>,
-        toggles: ToggleOverrides,
     ) -> Result<(), String> {
-        if model.is_none() && variant.is_none() && toggles.is_empty() {
-            return Ok(());
-        }
         let mut session = (*self.view.session).clone();
         let selection_changed = model.is_some() || variant.is_some();
         if selection_changed {
             self.setup.configure(&mut session, model, variant)?;
-        }
-        if !toggles.is_empty() {
-            session.set_toggles(toggles.apply(session.toggles()));
         }
         let engine = self.build_engine_for(&session).await?;
         if self.view.persisted {
@@ -371,7 +364,7 @@ impl SessionTask {
                 .map_err(|e| e.to_string())?;
         }
         if selection_changed {
-            self.setup.selection_saved(&session);
+            self.setup.selection_saved(&session)?;
         }
         self.replace_session(session);
         self.view.external_web = engine.external_web;
@@ -455,9 +448,6 @@ impl SessionTask {
             ask_user_requests: self.ask_user_tx.clone(),
             background: self.tasks.clone(),
             shell_outputs: self.shell_outputs.clone(),
-            curation_tool: Arc::new(super::curation::SetSessionCuration::new(
-                self.commands.clone(),
-            )),
         }
     }
 
@@ -799,24 +789,12 @@ impl SessionTask {
                 let result = self.take_input(&id);
                 let _ = reply.send(result);
             }
-            SharedCommand::SetCuration { enabled, reply } => {
-                let result = if !self.view.session.header.supports_curation() {
-                    Err("当前会话不支持沉淀标记".into())
-                } else if self.view.session.header.curation_requested == enabled {
-                    Ok(())
-                } else {
-                    self.update_header(|header| header.curation_requested = enabled)
-                        .await
-                };
-                let _ = reply.send(result);
-            }
             SharedCommand::Configure {
                 model,
                 variant,
-                toggles,
                 reply,
             } => {
-                let _ = reply.send(self.configure(model, variant, toggles).await);
+                let _ = reply.send(self.configure(model, variant).await);
             }
             SharedCommand::Title(title) => {
                 if let Err(error) = self.title(title).await {
@@ -1211,7 +1189,6 @@ impl SessionTask {
         if !self.auto_resume || self.pending_background() == 0 {
             self.cli = None;
         }
-        self.touch_activity().await;
         self.publish();
         // 已完成轮次计数递增，唤醒内部订阅者。
         let seq = self.turn_tx.borrow().seq + 1;
@@ -1235,21 +1212,6 @@ impl SessionTask {
             return self.stop(delete, reply).await;
         }
         false
-    }
-
-    /// agent space 会话每个轮次结束刷新 `last_activity`（TTL 清理依据）；
-    /// 重写 header 失败只告警，不影响轮次结果
-    async fn touch_activity(&mut self) {
-        if !self.view.persisted || !self.view.session.header.agent_managed() {
-            return;
-        }
-        let now = chrono::Utc::now();
-        if let Err(error) = self
-            .update_header(|header| header.last_activity = Some(now))
-            .await
-        {
-            tracing::warn!("Failed to persist last_activity: {error}");
-        }
     }
 
     fn cancel_deliveries(&mut self, error: &str) {
