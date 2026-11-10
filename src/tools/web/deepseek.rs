@@ -163,6 +163,7 @@ struct FetchResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::web::{WebFetchProvider, WebSearchProvider};
     use serde_json::json;
 
     #[test]
@@ -283,27 +284,12 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let config = serde_json::from_value(json!({
-            "settings": {
-                "web": {
-                    "provider": {
-                        "deepseek": {"api_key":"test-key","api_base":format!("{base}/proxy/")}
-                    },
-                    "search":"deepseek",
-                    "fetch":"deepseek"
-                }
-            }
-        }))
-        .unwrap();
-        let external = super::super::ExternalWeb::resolve(&config).unwrap();
-        let results = external.search.unwrap().search("async", 3).await.unwrap();
+        let api_base = format!("{base}/proxy/");
+        let search = DeepSeekSearchProvider::new("test-key".into(), Some(&api_base));
+        let fetch = DeepSeekFetchProvider::new("test-key".into(), Some(&api_base));
+        let results = search.search("async", 3).await.unwrap();
         assert!(results.is_empty());
-        let response = external
-            .fetch
-            .unwrap()
-            .fetch("https://example.com/article")
-            .await
-            .unwrap();
+        let response = fetch.fetch("https://example.com/article").await.unwrap();
         let request = FetchRequest {
             url: "https://example.com/article",
         };

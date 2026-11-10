@@ -1,8 +1,8 @@
 //! Read 工具：文本分页 / 媒体读取 / hashline 快照。
 
 use super::{Tool, resolve_path};
-use crate::config::resolver::InputCapabilities;
 use crate::model::{EditorKind, MediaContent, MediaKind, ToolCall, ToolResult};
+use crate::provider::InputCapabilities;
 use crate::tools::INLINE_OUTPUT_BUDGET;
 use crate::tools::{names, parse_args};
 use async_trait::async_trait;

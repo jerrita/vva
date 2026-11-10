@@ -2,182 +2,79 @@ use super::*;
 use crate::tools::names;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TurnOutcome {
+pub(crate) enum TurnOutcome {
     Completed,
     Aborted,
 }
 
 /// 会话任务的外部依赖
-pub(super) struct TaskDeps {
+pub(crate) struct TaskDeps {
     pub store: Arc<dyn SessionStore>,
-    pub config: Arc<AppConfig>,
-    pub state_path: PathBuf,
-    /// 会话编排接口（子代理派生与跨会话投递）
-    pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
-    /// 会话工具工厂（缺省不追加工具）
-    pub tool_factory: Option<SessionToolFactory>,
-    /// 会话前导（缺省不追加）
-    pub preamble: Option<SessionPreamble>,
+    pub setup: Arc<dyn crate::harness::SessionSetup>,
 }
 
-pub(super) struct PendingSubagentCompletion {
+pub(crate) struct PendingSubagentCompletion {
     task: Option<crate::model::BackgroundTask>,
     reminder: String,
 }
 
-pub(super) struct SessionTask {
-    provider: Arc<crate::harness::agent::SessionProvider>,
-    pub(super) hashline: Arc<crate::tools::hashline::HashlineSession>,
-    pub(super) view: SessionView,
-    pub(super) view_tx: watch::Sender<Arc<SessionView>>,
-    pub(super) store: Arc<dyn SessionStore>,
-    pub(super) config: Arc<AppConfig>,
-    pub(super) state_path: PathBuf,
-    pub(super) commands: mpsc::WeakSender<Command>,
+pub(crate) struct SessionTask {
+    pub(crate) hashline: Arc<crate::tools::hashline::HashlineSession>,
+    pub(crate) view: SessionView,
+    pub(crate) view_tx: watch::Sender<Arc<SessionView>>,
+    pub(crate) store: Arc<dyn SessionStore>,
+    pub(crate) setup: Arc<dyn crate::harness::SessionSetup>,
+    pub(crate) commands: mpsc::WeakSender<Command>,
     /// 流式增量只置脏，由 drive 的节流 tick 或结构性变化触发发布
-    pub(super) dirty: bool,
-    pub(super) cli: Option<mpsc::Sender<AgentEvent>>,
+    pub(crate) dirty: bool,
+    pub(crate) cli: Option<mpsc::Sender<AgentEvent>>,
     /// 待处理的停止请求 (是否删除, 应答)，当前轮次结束后执行
-    pub(super) stop_request: Option<(bool, Reply)>,
-    pub(super) title_task: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) stop_request: Option<(bool, Reply)>,
+    pub(crate) title_task: Option<tokio::task::JoinHandle<()>>,
     /// 响应内文本标识到草稿部件的映射，供增量与引用共同定位。
-    pub(super) text_parts: HashMap<String, usize>,
-    pub(super) ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
-    pub(super) ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
-    pub(super) pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
+    pub(crate) text_parts: HashMap<String, usize>,
+    pub(crate) ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
+    pub(crate) ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
+    pub(crate) pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
     /// 会话级 Shell 输出采集与合并唤醒。
-    pub(super) shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
+    pub(crate) shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
     output_pending: bool,
     last_output_publish: tokio::time::Instant,
-    pub(super) shell_calls: std::collections::HashSet<String>,
+    pub(crate) shell_calls: std::collections::HashSet<String>,
     /// 会话级后台任务注册表（Shell run_in_background），随会话结束回收
-    pub(super) tasks: Arc<crate::tools::background::BackgroundTasks>,
+    pub(crate) tasks: Arc<crate::tools::background::BackgroundTasks>,
     /// 已完成、尚未注入会话的后台任务 id（轮次间隙注入）
-    pub(super) task_completions: Vec<String>,
+    pub(crate) task_completions: Vec<String>,
     /// 已完成、尚未注入会话的后台子代理报告（捕获完成瞬间的最终消息）
-    pub(super) subagent_completions: Vec<PendingSubagentCompletion>,
+    pub(crate) subagent_completions: Vec<PendingSubagentCompletion>,
     /// 运行中到达的程序化消息及其独立完成回执
-    pub(super) pending_deliveries: Vec<PendingDelivery>,
+    pub(crate) pending_deliveries: Vec<PendingDelivery>,
     /// 已执行投递的回执，保留到异步工作及其续跑完成。
-    pub(super) active_deliveries: Vec<PendingDelivery>,
-    pub(super) async_count: usize,
-    pub(super) auto_resume: bool,
+    pub(crate) active_deliveries: Vec<PendingDelivery>,
+    pub(crate) async_count: usize,
+    pub(crate) auto_resume: bool,
     /// 已完成轮次计数通道：每次 finish_turn 递增，供外部等待轮次结束
-    pub(super) turn_tx: watch::Sender<CompletedTurn>,
-    pub(super) turn_start: usize,
-    /// 会话编排接口（子代理派生与跨会话投递）
-    pub(super) broker: Arc<dyn crate::tools::agent::SessionBroker>,
-    pub(super) tool_factory: Option<SessionToolFactory>,
-    pub(super) preamble: Option<SessionPreamble>,
+    pub(crate) turn_tx: watch::Sender<CompletedTurn>,
+    pub(crate) turn_start: usize,
     /// 运行中到达、待轮次间隙追加的提示（只追加，不触发轮次）
-    pub(super) pending_notes: Vec<String>,
-}
-
-/// 单个附件的输入能力校验：图片过输入能力（MIME 或模态声明），File 校验 MIME 一致性与 PDF 能力。
-/// 返回 Some(错误文案) 表示当前模型不能接收该附件。
-fn attachment_error(engine: &AgentEngine, part: &ContentPart) -> Option<String> {
-    if let ContentPart::Image { source, mime_type } = part {
-        let mime = match source {
-            MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
-            MediaSource::Url { .. } => mime_type.as_deref(),
-        };
-        return match mime {
-            Some(mime) => engine
-                .inputs
-                .require(crate::model::MediaKind::Image, mime)
-                .err(),
-            None => {
-                if engine
-                    .inputs
-                    .modalities
-                    .iter()
-                    .any(|input| input == "image")
-                {
-                    None
-                } else {
-                    Some(format!(
-                        "Model '{}' does not support image input",
-                        engine.inputs.model
-                    ))
-                }
-            }
-        };
-    }
-    if let ContentPart::File {
-        source: MediaSource::Base64 { mime_type, .. },
-        mime_type: declared_mime,
-        ..
-    } = part
-    {
-        if declared_mime != mime_type {
-            return Some("File MIME type does not match its source".into());
-        }
-        return engine
-            .inputs
-            .require(crate::model::MediaKind::Pdf, mime_type)
-            .err();
-    }
-    None
+    pub(crate) pending_notes: Vec<String>,
 }
 
 /// 提交前校验上传附件：避免不支持模态的模型留下无效轮次
-pub(super) fn validate_attachments(
-    engine: &AgentEngine,
+pub(crate) fn validate_attachments(
+    engine: &ExecutionPlan,
     parts: &[ContentPart],
 ) -> Result<(), String> {
-    parts
-        .iter()
-        .find_map(|part| attachment_error(engine, part))
-        .map_or(Ok(()), Err)
-}
-
-/// Read / hashline_read 命中工作空间内子目录 AGENTS.md 时返回待注入的 (路径, 正文)；
-/// 会话已载入同路径或本轮已排队的文件跳过。
-fn collect_on_demand_agents(
-    session: &Session,
-    call: &crate::model::ToolCall,
-    result: &crate::model::ToolResult,
-    pending: &[(PathBuf, String)],
-) -> Option<(PathBuf, String)> {
-    if !matches!(call.name.as_str(), names::READ | names::HASHLINE_READ) || result.is_error {
-        return None;
+    for part in parts {
+        engine.inputs.validate_part(part)?;
     }
-    let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;
-    let path_str = args.get("path").and_then(|p| p.as_str())?;
-    let file_path =
-        crate::tools::filesystem::resolve_path(&session.header.workspace_root, path_str);
-    let agents_path =
-        crate::system::find_directory_agents_md(&session.header.workspace_root, &file_path)?;
-    let ws_canonical = session
-        .header
-        .workspace_root
-        .canonicalize()
-        .unwrap_or_else(|_| session.header.workspace_root.clone());
-    let agents_canonical = agents_path
-        .canonicalize()
-        .unwrap_or_else(|_| agents_path.clone());
-    let rel_path = agents_canonical
-        .strip_prefix(&ws_canonical)
-        .unwrap_or(&agents_path)
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let already_in_session = crate::system::session_contains_agents_md(session, &rel_path);
-    let already_pending = pending.iter().any(|(p, _)| p == &agents_path);
-    if already_in_session || already_pending {
-        return None;
-    }
-    let content = std::fs::read_to_string(&agents_path).ok()?;
-    if content.trim().is_empty() {
-        return None;
-    }
-    Some((agents_path, content))
+    Ok(())
 }
 
 impl SessionTask {
     /// 构造任务及其发布通道：返回 (任务, 视图订阅, 已完成轮次订阅)；
     /// 后台任务完成经 `commands` 弱引用可靠回投；会话关闭后停止投递。
-    pub(super) fn new(
+    pub(crate) fn new(
         session: Session,
         persisted: bool,
         deps: TaskDeps,
@@ -202,7 +99,6 @@ impl SessionTask {
             },
         )));
         let task = Self {
-            provider: Arc::default(),
             shell_calls: shell_call_ids(&view.session),
             shell_outputs: Arc::default(),
             output_pending: false,
@@ -210,9 +106,8 @@ impl SessionTask {
             view,
             view_tx,
             store: deps.store,
-            config: deps.config,
+            setup: deps.setup,
             hashline: crate::tools::hashline::HashlineSession::new(),
-            state_path: deps.state_path,
             commands,
             dirty: false,
             cli: None,
@@ -231,9 +126,6 @@ impl SessionTask {
             auto_resume: true,
             turn_tx,
             turn_start: 0,
-            broker: deps.broker,
-            tool_factory: deps.tool_factory,
-            preamble: deps.preamble,
             pending_notes: Vec::new(),
         };
         (task, view_rx, turns)
@@ -257,7 +149,7 @@ impl SessionTask {
         }
     }
 
-    pub(super) fn publish(&mut self) {
+    pub(crate) fn publish(&mut self) {
         self.dirty = false;
         self.view.revision += 1;
         self.view_tx.send_replace(Arc::new(self.view.clone()));
@@ -268,7 +160,7 @@ impl SessionTask {
     }
 
     /// 流式增量期间累积改动，由节流点统一发布，避免每个 token 复制整份草稿
-    pub(super) fn publish_throttled(&mut self) {
+    pub(crate) fn publish_throttled(&mut self) {
         if self.dirty {
             self.publish();
         }
@@ -331,7 +223,7 @@ impl SessionTask {
         }
     }
 
-    pub(super) async fn event(&mut self, event: AgentEvent) {
+    pub(crate) async fn event(&mut self, event: AgentEvent) {
         // 文本与思考增量按节流发布，其余事件改变结构或状态，立即发布
         let is_delta = matches!(
             event,
@@ -429,7 +321,7 @@ impl SessionTask {
         }
     }
 
-    pub(super) async fn append(&mut self, turn: Turn) -> Result<(), String> {
+    pub(crate) async fn append(&mut self, turn: Turn) -> Result<(), String> {
         self.store
             .append_turn(&self.view.session.header.id, &turn)
             .await
@@ -455,7 +347,7 @@ impl SessionTask {
         Ok(())
     }
 
-    pub(super) async fn configure(
+    pub(crate) async fn configure(
         &mut self,
         model: Option<String>,
         variant: Option<Option<String>>,
@@ -467,33 +359,20 @@ impl SessionTask {
         let mut session = (*self.view.session).clone();
         let selection_changed = model.is_some() || variant.is_some();
         if selection_changed {
-            let target = model.as_deref().unwrap_or(&session.header.current_model);
-            let selected = variant.unwrap_or_else(|| session.header.current_variant.clone());
-            let resolved = self
-                .config
-                .resolve_model(target, selected.as_deref())
-                .map_err(|e| e.to_string())?;
-            resolved.input_capabilities().validate_session(&session)?;
-            session.set_model(resolved.full_spec, selected);
+            self.setup.configure(&mut session, model, variant)?;
         }
         if !toggles.is_empty() {
             session.set_toggles(toggles.apply(session.toggles()));
         }
-        let skills = crate::skills::discover_skills(&session.header.workspace_root);
-        let engine = self.build_engine_for(&session, skills).await?;
+        let engine = self.build_engine_for(&session).await?;
         if self.view.persisted {
             self.store
                 .save_header(&session)
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        // agent 会话的切换不应改写 TUI / Web 的「上次选用模型」偏好
-        if selection_changed && !session.header.agent_managed() {
-            AppState::persist_selection(
-                &self.state_path,
-                &session.header.current_model,
-                session.header.current_variant.as_deref(),
-            );
+        if selection_changed {
+            self.setup.selection_saved(&session);
         }
         self.replace_session(session);
         self.view.external_web = engine.external_web;
@@ -570,131 +449,93 @@ impl SessionTask {
         Ok(())
     }
 
-    /// 组装本轮流次的引擎：工具输出目录就绪后装配注册表与供应商
-    async fn build_engine_for(
-        &self,
-        session: &Session,
-        skills: Vec<crate::skills::Skill>,
-    ) -> Result<AgentEngine, String> {
-        let tool_outputs = self
-            .store
-            .ensure_tool_outputs(&session.header.workspace_root)
-            .await
-            .map_err(|e| e.to_string())?;
-        let agents = crate::agents::discover_agents(&session.header.workspace_root);
-        let mut extra_tools = self
-            .tool_factory
-            .as_ref()
-            .map(|factory| factory(&session.header))
-            .unwrap_or_default();
-        if session.header.supports_curation() {
-            extra_tools.push(Arc::new(super::curation::SetSessionCuration::new(
+    fn services(&self) -> crate::harness::SessionServices {
+        crate::harness::SessionServices {
+            hashline: self.hashline.clone(),
+            ask_user_requests: self.ask_user_tx.clone(),
+            background: self.tasks.clone(),
+            shell_outputs: self.shell_outputs.clone(),
+            curation_tool: Arc::new(super::curation::SetSessionCuration::new(
                 self.commands.clone(),
-            )));
+            )),
         }
-        AgentEngine::new(
-            &self.config,
-            session,
-            EngineDeps {
-                provider: self.provider.clone(),
-                tool_outputs,
-                hashline: self.hashline.clone(),
-                ask_user_requests: self.ask_user_tx.clone(),
-                background: self.tasks.clone(),
-                shell_outputs: self.shell_outputs.clone(),
-                skills,
-                agents,
-                broker: self.broker.clone(),
-                extra_tools,
-            },
-        )
     }
 
-    /// 以当前会话组装引擎 (重新发现技能)
-    pub(super) async fn build_engine(&self) -> Result<AgentEngine, String> {
-        let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
-        self.build_engine_for(&self.view.session, skills).await
+    async fn build_engine_for(&self, session: &Session) -> Result<ExecutionPlan, String> {
+        let plan = self.setup.plan(session, &self.services()).await?;
+        plan.inputs.validate_session(session)?;
+        Ok(plan)
     }
 
-    pub(super) async fn start(
+    pub(crate) async fn build_engine(&self) -> Result<ExecutionPlan, String> {
+        self.build_engine_for(&self.view.session).await
+    }
+
+    pub(crate) async fn start(
         &mut self,
         prompt: &str,
         images: Vec<ContentPart>,
-    ) -> Result<AgentEngine, String> {
+    ) -> Result<ExecutionPlan, String> {
         self.append_input(prompt, images, false).await
     }
 
-    pub(super) async fn append_input(
+    pub(crate) async fn append_input(
         &mut self,
         prompt: &str,
         images: Vec<ContentPart>,
         steering: bool,
-    ) -> Result<AgentEngine, String> {
-        let skills = crate::skills::discover_skills(&self.view.session.header.workspace_root);
-        let engine = self
-            .build_engine_for(&self.view.session, skills.clone())
+    ) -> Result<ExecutionPlan, String> {
+        let mut parts = images;
+        parts.push(ContentPart::text(prompt));
+        let prepared = self
+            .setup
+            .prepare_input(
+                &self.view.session,
+                Message::new(parts),
+                !self.view.persisted,
+            )
             .await?;
-        // @ 引用展开：文本文件转 FileRef，图片/PDF 转原生附件（模型不支持时降级为文本注记）；
-        // 路径不可读发 Notice 不阻断提交
-        let workspace = self.view.session.header.workspace_root.clone();
-        let mut mention_parts = Vec::new();
-        for token in crate::harness::mention::extract_mention_paths(prompt) {
-            match crate::harness::mention::load_mention(&workspace, &token).await {
-                Ok(part) => {
-                    let part = if attachment_error(&engine, &part).is_some() {
-                        crate::harness::mention::capability_note(&token)
-                    } else {
-                        part
-                    };
-                    mention_parts.push(part);
-                }
-                Err(reason) => {
-                    self.event(AgentEvent::Notice(format!("@{token}: {reason}")))
-                        .await;
-                }
-            }
+        let engine = self.build_engine().await?;
+        for message in prepared
+            .initial
+            .iter()
+            .flat_map(|turn| &turn.messages)
+            .chain(&prepared.before)
+            .chain(std::iter::once(&prepared.message))
+            .chain(&prepared.after)
+        {
+            validate_attachments(&engine, &message.parts)?;
         }
-        // 上传附件先经输入能力校验，再落盘，避免不支持模态的模型留下无效轮次
-        validate_attachments(&engine, &images)?;
+        for notice in prepared.notices {
+            self.event(AgentEvent::Notice(notice)).await;
+        }
         let generate = self.view.session.header.title.is_none();
         if !self.view.persisted {
-            self.persist_new_session(&skills, prompt, generate).await?;
+            let mut session = (*self.view.session).clone();
+            for turn in prepared.initial {
+                session.append_turn(turn);
+            }
+            if generate {
+                session.header.title = Some(crate::model::provisional_title(prompt));
+            }
+            self.store
+                .save_header(&session)
+                .await
+                .map_err(|e| e.to_string())?;
+            self.view.session = Arc::new(session);
+            self.view.persisted = true;
         }
         if !steering {
             self.view.draft.clear();
         }
-        let mut parts = images;
-        parts.push(ContentPart::text(prompt));
-        parts.extend(mention_parts);
-        // 技能变动提示：与历史中最近一次清单基线比对，有新增 / 更新 / 移除时置于用户消息之前
-        if self.view.session.header.agent.is_none() {
-            let changed = crate::system::skills_change_reminder(
-                self.view
-                    .session
-                    .turns
-                    .iter()
-                    .filter(|turn| turn.role == Role::User)
-                    .flat_map(|turn| &turn.messages)
-                    .flat_map(|message| &message.parts)
-                    .filter_map(|part| match part {
-                        ContentPart::Text { text, .. } => Some(text.as_str()),
-                        _ => None,
-                    }),
-                &skills,
-            );
-            if let Some(reminder) = changed {
-                self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
-                    .await?;
-            }
+        for message in prepared.before {
+            self.append(Turn::user_turn(message)).await?;
         }
-        let mut turn = Turn::user_turn(Message::new(parts));
+        let mut turn = Turn::user_turn(prepared.message);
         turn.steering = steering;
         self.append(turn).await?;
-        // /<skill_name> 斜杠调用：user turn 保留原文，技能正文以独立 reminder 轮次注入
-        if let Some(skill) = crate::skills::match_invocation(prompt, &skills) {
-            let reminder = crate::system::format_skill_load_reminder(skill);
-            self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
-                .await?;
+        for message in prepared.after {
+            self.append(Turn::user_turn(message)).await?;
         }
         if !steering {
             self.auto_resume = true;
@@ -707,117 +548,26 @@ impl SessionTask {
         Ok(engine)
     }
 
-    /// 首次落盘：组装 System Prompt / AGENTS.md / 技能清单轮次并写入 Header
-    async fn persist_new_session(
-        &mut self,
-        skills: &[crate::skills::Skill],
-        prompt: &str,
-        generate: bool,
-    ) -> Result<(), String> {
-        let mut session = (*self.view.session).clone();
-        let workspace = session.header.workspace_root.clone();
-        let scratch = self
-            .store
-            .ensure_scratch(&workspace)
-            .await
-            .map_err(|e| e.to_string())?;
-        let (system, global_agents, project_agents) = tokio::task::spawn_blocking(move || {
-            let system = crate::system::build_system_prompt(&workspace, &scratch);
-            let global = crate::system::load_global_agents_md();
-            let project = crate::system::load_project_agents_md(&workspace);
-            (system, global, project)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-        // 子代理会话：agent 定义的角色指令追加到基础 System Prompt
-        let agent_def = session
-            .header
-            .agent
-            .as_deref()
-            .map(|name| {
-                crate::agents::discover_agents(&session.header.workspace_root)
-                    .into_iter()
-                    .find(|def| def.name == name)
-                    .ok_or_else(|| format!("Agent definition '{name}' is unavailable"))
-            })
-            .transpose()?;
-        let system = match agent_def
-            .as_ref()
-            .and_then(|def| def.system_prompt.as_deref())
-        {
-            Some(extra) => format!("{system}\n\n{extra}"),
-            None => system,
-        };
-        session.append_turn(Turn::new(Role::System, vec![Message::text(system)]));
-
-        let mut loaded_canonical = Vec::new();
-        if let Some((path, content)) = global_agents {
-            if let Ok(c) = path.canonicalize() {
-                loaded_canonical.push(c);
-            }
-            let reminder = crate::system::format_global_agents_reminder(&path, &content);
-            session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
-        }
-        if let Some((path, content)) = project_agents {
-            let is_dup = path
-                .canonicalize()
-                .ok()
-                .is_some_and(|c| loaded_canonical.contains(&c));
-            if !is_dup {
-                let reminder = crate::system::format_project_agents_reminder(&path, &content);
-                session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
-            }
-        }
-        // 子代理工具白名单未含 Skill 时不注入技能清单（指令与能力保持一致）
-        let skill_allowed = agent_def
-            .as_ref()
-            .is_none_or(|def| def.tools.iter().any(|tool| tool == "Skill"));
-        if !skills.is_empty() && skill_allowed {
-            let reminder = crate::system::format_skills_reminder(skills);
-            session.append_turn(Turn::new(Role::User, vec![Message::text(reminder)]));
-        }
-        // 会话前导（如记忆索引快照）：动态内容走 reminder 追加，不进 system prompt
-        for text in self
-            .preamble
-            .as_ref()
-            .map(|preamble| preamble(&session.header))
-            .unwrap_or_default()
-        {
-            session.append_turn(Turn::new(Role::User, vec![Message::text(text)]));
-        }
-        if generate {
-            session.header.title = Some(crate::model::provisional_title(prompt));
-        }
-        self.store
-            .save_header(&session)
-            .await
-            .map_err(|e| e.to_string())?;
-        self.view.session = Arc::new(session);
-        self.view.persisted = true;
-        Ok(())
-    }
-
-    /// 后台小模型生成正式标题，完成后经 Title 命令回写会话
     fn spawn_title_task(&mut self, prompt: &str) {
-        let config = self.config.clone();
-        let model = self.view.session.header.current_model.clone();
+        let setup = self.setup.clone();
+        let session = self.view.session.clone();
         let prompt = prompt.to_string();
         let commands = self.commands.clone();
         self.title_task = Some(tokio::spawn(async move {
-            match generate_title(&config, &model, &prompt).await {
-                Ok(title) => {
+            match setup.title(&session, &prompt).await {
+                Ok(Some(title)) => {
                     if let Some(tx) = commands.upgrade() {
                         let _ = tx.send(Command::Shared(SharedCommand::Title(title))).await;
                     }
                 }
+                Ok(None) => {}
                 Err(error) => tracing::warn!("Title generation failed: {error}"),
             }
         }));
     }
 
     /// 后台任务完成：原位发布状态，id 入队等待安全轮隙持久化并投递模型。
-    pub(super) async fn queue_task_completion(&mut self, task_id: String) {
+    pub(crate) async fn queue_task_completion(&mut self, task_id: String) {
         self.flush_shell_outputs().await;
         if let Some(snapshot) = self.tasks.snapshot(&task_id) {
             self.event(AgentEvent::BackgroundTaskUpdated(snapshot.task()))
@@ -829,7 +579,7 @@ impl SessionTask {
     }
 
     /// 将已完成后台任务的完整通知作为用户轮次注入会话（下一次模型调用可见）
-    pub(super) async fn drain_task_completions(&mut self) -> Result<(), String> {
+    pub(crate) async fn drain_task_completions(&mut self) -> Result<(), String> {
         while let Some(task_id) = self.task_completions.first().cloned() {
             match self.tasks.snapshot(&task_id) {
                 Some(snapshot) => {
@@ -847,7 +597,7 @@ impl SessionTask {
     }
 
     /// 追加提示（只落盘，不起轮次）：空闲直接追加，运行中入队等轮次间隙
-    pub(super) async fn note(&mut self, text: String) -> Result<(), String> {
+    pub(crate) async fn note(&mut self, text: String) -> Result<(), String> {
         if !self.view.persisted {
             return Err("Session has no persisted history to append a note to".into());
         }
@@ -856,7 +606,7 @@ impl SessionTask {
     }
 
     /// 将运行中排队的提示依序追加到历史末尾
-    pub(super) async fn drain_notes(&mut self) -> Result<(), String> {
+    pub(crate) async fn drain_notes(&mut self) -> Result<(), String> {
         for text in std::mem::take(&mut self.pending_notes) {
             tracing::debug!("冲刷排队提示: {} 字符", text.chars().count());
             self.note(text).await?;
@@ -865,7 +615,7 @@ impl SessionTask {
     }
 
     /// 登记与 watcher 创建在会话内一起完成，工具取消不会留下无回投的计数。
-    pub(super) fn watch_session(
+    pub(crate) fn watch_session(
         &mut self,
         session_id: String,
         receipt: super::handle::DeliveryReceipt,
@@ -896,7 +646,7 @@ impl SessionTask {
     }
 
     /// 会话结果在投递时已经固定，首轮后台委派同时更新原工具块。
-    pub(super) async fn queue_session_completion(
+    pub(crate) async fn queue_session_completion(
         &mut self,
         report: crate::tools::agent::SubagentReport,
         background: bool,
@@ -925,7 +675,7 @@ impl SessionTask {
     }
 
     /// 在工具结果完整配对后追加会话结果，随后交给模型。
-    pub(super) async fn drain_subagent_completions(&mut self) -> Result<(), String> {
+    pub(crate) async fn drain_subagent_completions(&mut self) -> Result<(), String> {
         while let Some(pending) = self.subagent_completions.first() {
             let mut turn = Turn::new(Role::User, vec![Message::text(&pending.reminder)]);
             turn.background_task = pending.task.clone();
@@ -937,7 +687,7 @@ impl SessionTask {
 
     /// 网络与工具等待期间处理设置和取消；磁盘提交在本任务中顺序完成。
     /// 流式增量以 PUBLISH_INTERVAL 为节奏发布，慢于终端重绘频率即无可见差异。
-    pub(super) async fn drive<T>(
+    pub(crate) async fn drive<T>(
         &mut self,
         future: impl Future<Output = T>,
         commands: &mut mpsc::Receiver<Command>,
@@ -1113,7 +863,7 @@ impl SessionTask {
     }
 
     /// 通过稳定身份关闭提示；重复关闭保持幂等。
-    pub(super) fn dismiss_notice(&mut self, id: &str) {
+    pub(crate) fn dismiss_notice(&mut self, id: &str) {
         self.view
             .notices
             .retain(|notice| notice.id != id || matches!(notice.kind, NoticeKind::Capability));
@@ -1121,9 +871,9 @@ impl SessionTask {
     }
 
     /// 单个用户轮次：反复「模型响应 → 并行工具」直至模型不再调用工具
-    pub(super) async fn execute(
+    pub(crate) async fn execute(
         &mut self,
-        engine: AgentEngine,
+        engine: ExecutionPlan,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<TurnOutcome, String> {
         self.event(AgentEvent::Capabilities(engine.notices.clone()))
@@ -1201,19 +951,14 @@ impl SessionTask {
                     })
                     .collect();
                 self.commit_tool_results(calls, results).await?;
-                self.broker
+                self.setup
                     .abort_children(&self.view.session.header.id)
                     .await;
                 return Ok(TurnOutcome::Aborted);
             };
-            for (agents_path, content) in self.commit_tool_results(calls, results).await? {
-                let reminder = crate::system::format_directory_agents_reminder(
-                    &self.view.session.header.workspace_root,
-                    &agents_path,
-                    &content,
-                );
-                self.append(Turn::new(Role::User, vec![Message::text(reminder)]))
-                    .await?;
+            let batch = self.commit_tool_results(calls, results).await?;
+            for message in self.setup.after_tools(&self.view.session, &batch).await? {
+                self.append(Turn::user_turn(message)).await?;
             }
         }
     }
@@ -1221,7 +966,7 @@ impl SessionTask {
     /// 并行执行一批工具调用，结果按调用顺序返回；被 Stop 中断时返回 None
     async fn run_tools(
         &mut self,
-        engine: &AgentEngine,
+        engine: &ExecutionPlan,
         calls: &[crate::model::ToolCall],
         commands: &mut mpsc::Receiver<Command>,
         events: &mut mpsc::Receiver<AgentEvent>,
@@ -1262,13 +1007,13 @@ impl SessionTask {
     }
 
     /// 逐个提交工具结果：附件复验 → ToolFinished 事件 → Tool 轮次落盘，
-    /// 返回本轮待注入的子目录 AGENTS.md 清单。
+    /// 返回配对完成的执行记录，交给宿主处理工具后上下文。
     async fn commit_tool_results(
         &mut self,
         calls: Vec<crate::model::ToolCall>,
         results: Vec<crate::model::ToolResult>,
-    ) -> Result<Vec<(PathBuf, String)>, String> {
-        let mut on_demand_agents = Vec::new();
+    ) -> Result<Vec<crate::harness::ToolExecution>, String> {
+        let mut batch = Vec::new();
         for (call, mut result) in calls.into_iter().zip(results) {
             if call.name == names::SHELL
                 && result.background_task_id.is_none()
@@ -1282,11 +1027,7 @@ impl SessionTask {
             }
             // Configure can run while tools are reading; validate before committing their media.
             if !result.attachments.is_empty() {
-                let inputs = self
-                    .config
-                    .resolve_model(&self.view.session.header.current_model, None)
-                    .map_err(|error| error.to_string())?
-                    .input_capabilities();
+                let inputs = self.build_engine().await?.inputs;
                 if let Some(error) = result
                     .attachments
                     .iter()
@@ -1314,13 +1055,9 @@ impl SessionTask {
             ))
             .await?;
 
-            if let Some(agents) =
-                collect_on_demand_agents(&self.view.session, &call, &result, &on_demand_agents)
-            {
-                on_demand_agents.push(agents);
-            }
+            batch.push(crate::harness::ToolExecution { call, result });
         }
-        Ok(on_demand_agents)
+        Ok(batch)
     }
 
     async fn receive_user_question(&mut self, request: crate::tools::ask_user::AskUserRequest) {
@@ -1407,9 +1144,9 @@ impl SessionTask {
 
     /// 连续执行轮次：后台任务与后台子代理在轮次间隙完成时自动续跑，直到队列清空或轮次终止。
     /// 用户中止与供应商错误暂停自动续跑，完成结果仍持久化。
-    pub(super) async fn run_turns(
+    pub(crate) async fn run_turns(
         &mut self,
-        mut engine: AgentEngine,
+        mut engine: ExecutionPlan,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<TurnOutcome, String> {
         self.turn_start = self.view.session.turns.len();
@@ -1427,7 +1164,7 @@ impl SessionTask {
 
     /// 轮次收尾：状态复位、终态事件、CLI 通道释放与停止请求处理；
     /// 返回是否终止会话任务
-    pub(super) async fn finish_turn(&mut self, result: Result<TurnOutcome, String>) -> bool {
+    pub(crate) async fn finish_turn(&mut self, result: Result<TurnOutcome, String>) -> bool {
         let mut error = match &result {
             Ok(TurnOutcome::Completed) => None,
             Ok(TurnOutcome::Aborted) => Some("Turn aborted".to_string()),
@@ -1525,7 +1262,7 @@ impl SessionTask {
     }
 
     /// 同一轮次间隙的投递合并处理，每个投递者获得该轮固定的完成报告。
-    pub(super) async fn run_pending_deliveries(
+    pub(crate) async fn run_pending_deliveries(
         &mut self,
         commands: &mut mpsc::Receiver<Command>,
     ) -> bool {
@@ -1587,7 +1324,7 @@ impl SessionTask {
         }
     }
 
-    pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+    pub(crate) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         loop {
             let command = tokio::select! {
                 command = commands.recv() => match command { Some(command) => command, None => break },

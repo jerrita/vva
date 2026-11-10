@@ -1,7 +1,7 @@
 //! 测试共享基建：以临时 JSONL 存储构造 App 实例，消除跨文件重复的测试样板。
 
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::AppConfig;
-use crate::harness::SessionManager;
 use crate::storage::jsonl::JsonlSessionStore;
 use crate::ui::app::App;
 use std::path::PathBuf;

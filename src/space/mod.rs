@@ -28,8 +28,9 @@ use self::lifecycle::{Lifecycle, SWEEP_PERIOD};
 use self::router::{RouteModel, Router, SmallRouteModel};
 use self::runtime::Runtime;
 use self::scheduler::ScheduleStore;
+use crate::app::VvaSessionManager as SessionManager;
+use crate::app::{SessionPreamble, SessionToolFactory};
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
-use crate::harness::{SessionManager, SessionPreamble, SessionToolFactory};
 use crate::model::{SessionHeader, SessionKind};
 use crate::storage::SessionStore;
 
@@ -245,6 +246,13 @@ impl AgentSpace {
         channel_task.abort();
         outcome
     }
+}
+
+/// Space 无交互输入，并保留系统专用 curator 定义。
+pub(crate) fn session_setup(setup: crate::app::VvaSessionSetup) -> crate::app::VvaSessionSetup {
+    setup
+        .with_interaction(false)
+        .with_internal_agents(vec![curator::curator_agent()])
 }
 
 #[cfg(test)]

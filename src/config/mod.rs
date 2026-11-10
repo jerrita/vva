@@ -1,3 +1,4 @@
+use crate::provider::ProviderType;
 pub mod env;
 pub mod model;
 pub mod parser;
@@ -9,7 +10,7 @@ use std::path::{Path, PathBuf};
 pub use model::{
     AgentChannels, AgentSpaceConfig, AppConfig, DecisionsProviderType, DecisionsRouterConfig,
     GLM_CODING_PLAN_BASE_URL, GLM_CODING_PLAN_PROVIDER_ID, GlobalSettings, ModelConfig,
-    ProviderConfig, ProviderType, QqChannelConfig, RouterConfig,
+    ProviderConfig, QqChannelConfig, RouterConfig,
 };
 pub use parser::{ConfigError, load_config_file, parse_config_str, strip_jsonc_comments};
 pub use resolver::ResolvedModel;

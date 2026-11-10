@@ -7,8 +7,9 @@
 
 use std::sync::Arc;
 
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::{AgentSpaceConfig, AppConfig};
-use crate::harness::{ManagedSession, SessionManager};
+use crate::harness::ManagedSession;
 use crate::model::{ContentPart, Message, Role, Session, TokenUsage, Turn};
 
 /// 追加到旧会话末尾的压缩 prompt

@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use super::model::{AppConfig, ModelConfig, ProviderConfig, ProviderType};
+use super::model::{AppConfig, ModelConfig, ProviderConfig};
 use super::parser::ConfigError;
-use crate::model::{ContentPart, MediaKind, MediaSource, Session};
-use crate::provider::Provider;
+use crate::provider::InputCapabilities;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::response::ResponseProvider;
+use crate::provider::{Provider, ProviderType};
 
 pub struct ResolvedModel<'a> {
     pub provider_id: String,
@@ -122,70 +122,6 @@ impl AppConfig {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct InputCapabilities {
-    pub model: String,
-    pub modalities: Vec<String>,
-    pub protocol: ProviderType,
-}
-
-impl InputCapabilities {
-    pub fn require(&self, kind: MediaKind, mime_type: &str) -> Result<(), String> {
-        if !self.modalities.iter().any(|input| input == kind.as_str()) {
-            return Err(format!(
-                "Model '{}' does not support {} input",
-                self.model,
-                kind.as_str()
-            ));
-        }
-        self.protocol.require_media(kind, mime_type)
-    }
-
-    pub fn validate_session(&self, session: &Session) -> Result<(), String> {
-        for part in session
-            .turns
-            .iter()
-            .flat_map(|turn| &turn.messages)
-            .flat_map(|msg| &msg.parts)
-        {
-            match part {
-                ContentPart::Image { source, mime_type } => {
-                    if !self.modalities.iter().any(|input| input == "image") {
-                        return Err(format!(
-                            "Model '{}' does not support image input",
-                            self.model
-                        ));
-                    }
-                    let mime = match source {
-                        MediaSource::Base64 { mime_type, .. } => Some(mime_type.as_str()),
-                        MediaSource::Url { .. } => mime_type.as_deref(),
-                    };
-                    if let Some(mime) = mime {
-                        self.protocol.require_media(MediaKind::Image, mime)?;
-                    }
-                }
-                ContentPart::File {
-                    source: MediaSource::Base64 { mime_type, .. },
-                    mime_type: declared_mime,
-                    ..
-                } => {
-                    if declared_mime != mime_type {
-                        return Err("File MIME type does not match its source".into());
-                    }
-                    self.require(MediaKind::Pdf, mime_type)?;
-                }
-                ContentPart::ToolResult(result) => {
-                    for media in &result.attachments {
-                        self.require(media.kind, &media.mime_type)?;
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-}
-
 impl ResolvedModel<'_> {
     /// 会话级 Provider 绑定；凭据仅参与指纹计算，不进入日志。
     pub(crate) fn provider_identity(&self) -> [u8; 32] {
@@ -240,6 +176,7 @@ impl ResolvedModel<'_> {
                 });
                 Arc::new(
                     ResponseProvider::new(api_key)
+                        .with_headers(host_headers(&url))
                         .with_base_url(url)
                         .with_websocket(self.model_config.websocket()),
                 )
@@ -251,7 +188,11 @@ impl ResolvedModel<'_> {
                     "/v1beta",
                     &|u| u.ends_with("/v1beta") || u.ends_with("/v1") || u.contains("/models"),
                 );
-                Arc::new(GeminiProvider::new(api_key).with_base_url(url))
+                Arc::new(
+                    GeminiProvider::new(api_key)
+                        .with_headers(host_headers(&url))
+                        .with_base_url(url),
+                )
             }
         }
     }
@@ -260,7 +201,9 @@ impl ResolvedModel<'_> {
         let url = self.endpoint("https://api.anthropic.com/v1", "/v1", &|u| {
             u.ends_with("/v1") || u.ends_with("/messages")
         });
-        AnthropicProvider::new(self.provider_config.api_key.trim()).with_base_url(url)
+        AnthropicProvider::new(self.provider_config.api_key.trim())
+            .with_headers(host_headers(&url))
+            .with_base_url(url)
     }
 
     // 空值取官方默认端点；完整端点原样使用，其余补版本段。
@@ -273,5 +216,46 @@ impl ResolvedModel<'_> {
         } else {
             format!("{base}{version}")
         }
+    }
+}
+
+use reqwest::header::HeaderMap;
+/// OpenRouter 应用归属（https://openrouter.ai/docs/app-attribution）：
+/// 仅对 openrouter.ai 端点附加，不向其他供应商泄露
+fn add_app_attribution(url: &str, headers: &mut HeaderMap) {
+    let is_openrouter = reqwest::Url::parse(url).is_ok_and(|url| {
+        url.host_str()
+            .is_some_and(|host| host == "openrouter.ai" || host.ends_with(".openrouter.ai"))
+    });
+    if !is_openrouter {
+        return;
+    }
+    for (name, value) in [
+        ("http-referer", "https://github.com/jerrita/vva"),
+        ("x-openrouter-title", "vva"),
+        ("x-openrouter-categories", "cli-agent"),
+    ] {
+        headers.insert(name, reqwest::header::HeaderValue::from_static(value));
+    }
+}
+
+fn host_headers(url: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    add_app_attribution(url, &mut headers);
+    headers
+}
+#[cfg(test)]
+mod attribution_tests {
+    use super::*;
+
+    #[test]
+    fn attribution_only_for_openrouter() {
+        let mut h = HeaderMap::new();
+        add_app_attribution("https://openrouter.ai/api/v1/responses", &mut h);
+        assert_eq!(h["x-openrouter-title"], "vva");
+        assert!(h.contains_key("http-referer"));
+        let mut h = HeaderMap::new();
+        add_app_attribution("https://api.openai.com/v1/responses", &mut h);
+        assert!(h.is_empty());
     }
 }

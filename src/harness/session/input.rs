@@ -46,7 +46,7 @@ impl SessionTask {
         &mut self,
         index: usize,
         steering: bool,
-    ) -> Result<AgentEngine, String> {
+    ) -> Result<ExecutionPlan, String> {
         let input = Arc::make_mut(&mut self.view.pending_inputs).remove(index);
         let result = self
             .append_input(&input.prompt, input.attachments.clone(), steering)

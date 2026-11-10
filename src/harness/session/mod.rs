@@ -1,12 +1,12 @@
 //! 会话运行时：句柄表（manager）、RPC 句柄（handle）、执行任务（task）与发布视图（view）。
 
 mod curation;
-mod handle;
+pub(crate) mod handle;
 mod input;
 mod manager;
-mod task;
+pub(crate) mod task;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod view;
 
 pub use handle::ManagedSession;
@@ -17,23 +17,19 @@ pub use view::{InputMode, Notice, NoticeKind, PendingInput, RunState, SessionVie
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
 
-use super::agent::{AgentEngine, EngineDeps, generate_title};
-pub use super::agent::{SessionPreamble, SessionToolFactory};
-use crate::config::{AppConfig, AppState};
+use super::ExecutionPlan;
 use crate::event::AgentEvent;
 use crate::model::{
-    ContentPart, MediaSource, Message, Role, Session, SessionToggles, ToggleOverrides, Turn,
-    UserAnswer, UserQuestionRequest,
+    ContentPart, Message, Role, Session, ToggleOverrides, Turn, UserAnswer, UserQuestionRequest,
 };
 use crate::storage::SessionStore;
 
 /// 运行中拒绝新提示的统一错误文案
-const BUSY: &str = "Session is currently running another prompt";
+pub(crate) const BUSY: &str = "Session is currently running another prompt";
 
 type Reply = oneshot::Sender<Result<(), String>>;
 

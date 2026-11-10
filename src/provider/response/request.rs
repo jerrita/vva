@@ -1,11 +1,11 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use super::ResponseProvider;
-use crate::config::ProviderType;
 use crate::model::{
     ContentPart, MediaKind, MediaSource, Role, Session, ToolCall, ToolCallKind, ToolDefinition,
     ToolInput, WebSearchAction,
 };
+use crate::provider::ProviderType;
 use crate::provider::common::{WebCallSurface, header_value, web_call_surface};
 use crate::provider::{CompletionOptions, Provider, ProviderError};
 
@@ -23,7 +23,7 @@ fn web_search_action_json(action: &WebSearchAction, query: &str) -> serde_json::
 impl ResponseProvider {
     /// Bearer 鉴权与 JSON Content-Type 头
     pub(super) fn build_auth_headers(&self) -> Result<HeaderMap, ProviderError> {
-        let mut headers = HeaderMap::new();
+        let mut headers = self.headers.clone();
         headers.insert(
             AUTHORIZATION,
             header_value(&format!("Bearer {}", self.api_key))?,

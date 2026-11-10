@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::watch;
 
+use crate::app::VvaSessionManager as SessionManager;
 use crate::find::Candidate;
+use crate::harness::ManagedSession;
 use crate::harness::SessionView;
-use crate::harness::{ManagedSession, SessionManager};
 use crate::skills::Skill;
 use crate::ui::command::{CompletionCandidate, FileCandidate};
 
