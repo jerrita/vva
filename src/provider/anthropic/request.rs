@@ -1,9 +1,9 @@
 use super::{AnthropicProvider, DEFAULT_WEB_TOOL_VERSION};
-use crate::config::ProviderType;
 use crate::model::{
     ContentPart, MediaKind, MediaSource, Message, Role, Session, ToolDefinition, TurnMeta,
 };
 use crate::provider::Provider;
+use crate::provider::ProviderType;
 use crate::provider::common::{RoleBlockMerger, WebCallSurface, web_call_surface};
 use crate::provider::common::{function_parameters, replay_call_args};
 use crate::provider::{CompletionOptions, ProviderError};

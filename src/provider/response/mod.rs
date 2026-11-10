@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 pub struct ResponseProvider {
     api_key: String,
     base_url: String,
+    headers: reqwest::header::HeaderMap,
     websocket: bool,
     websocket_session: tokio::sync::Mutex<Option<websocket::WebSocketSession>>,
 }
@@ -31,10 +32,17 @@ impl ResponseProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
+            headers: reqwest::header::HeaderMap::new(),
             base_url: "https://api.openai.com/v1".into(),
             websocket: true,
             websocket_session: tokio::sync::Mutex::new(None),
         }
+    }
+
+    pub fn with_headers(mut self, headers: reqwest::header::HeaderMap) -> Self {
+        self.websocket_session.get_mut().take();
+        self.headers = headers;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {

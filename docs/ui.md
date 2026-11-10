@@ -95,7 +95,7 @@
 
 ### 3.4 `@` 文件引用
 
-[`app/editor.rs`](../src/ui/app/editor.rs) · [`harness/mention.rs`](../src/harness/mention.rs) · [`find.rs`](../src/find.rs)
+[`app/editor.rs`](../src/ui/app/editor.rs) · [`app/mention.rs`](../src/app/mention.rs) · [`find.rs`](../src/find.rs)
 
 - **触发**：光标处 `@` 位于行首或空白 / 开括号（含全角）之后，token 止于空白或 CJK 标点；不与 `user@host` 冲突；
 - **候选**：启动时后台线程 `walk_workspace`（遵循 .gitignore，与 Web go-to-file 共用）建索引，输入时 `rank_candidates` 取前 8 条（空查询按 mtime 降序）；浮层 ↑↓ / Ctrl-P/N 循环，Tab / Enter 插入 `@path `，Esc 关闭；

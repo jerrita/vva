@@ -150,7 +150,13 @@ impl BackgroundTasks {
     /// 后台启动命令，立即返回任务 id。子进程 kill_on_drop：
     /// monitor 中止（TaskStop / 会话回收）或运行时回收时兜底杀进程。
     pub fn spawn(&self, intent: &str, command: &str, working_dir: &Path) -> Result<String, String> {
-        self.spawn_captured(intent, command, working_dir, None)
+        self.spawn_captured(
+            intent,
+            command,
+            working_dir,
+            None,
+            &std::collections::HashMap::new(),
+        )
     }
 
     pub(crate) fn spawn_captured(
@@ -159,16 +165,17 @@ impl BackgroundTasks {
         command: &str,
         working_dir: &Path,
         capture: Option<OutputCapture>,
+        env: &std::collections::HashMap<String, String>,
     ) -> Result<String, String> {
-        let child = (|| {
-            let mut cmd = super::shell::workspace_shell_command(command, working_dir)?;
+        let child = {
+            let mut cmd = super::shell::workspace_shell_command(command, working_dir, env);
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
             cmd.spawn()
                 .map_err(|e| format!("Failed to run command: {e}"))
-        })();
+        };
         let mut child = match child {
             Ok(child) => child,
             Err(error) => {
@@ -384,7 +391,7 @@ pub fn format_notification(snapshot: &TaskSnapshot) -> String {
         "\nUse the TaskOutput tool with task_id \"{}\" to read more output.",
         snapshot.id
     ));
-    crate::system::format_background_task_reminder(&notification)
+    format_background_task_reminder(&notification)
 }
 
 #[derive(Deserialize)]
@@ -559,6 +566,14 @@ impl TaskStopTool {
             .ok_or_else(|| format!("Background task {} {NOT_FOUND}", args.task_id))?;
         Ok((text, task.task()))
     }
+}
+
+/// 后台执行完成后追加给模型的通用回执。
+pub fn format_background_task_reminder(notification: &str) -> String {
+    format!(
+        "<system-reminder type=\"background-task\">\n{}\n</system-reminder>",
+        notification.trim()
+    )
 }
 
 #[cfg(test)]

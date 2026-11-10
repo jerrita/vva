@@ -32,8 +32,9 @@ use std::io::{self, stdout};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::AppConfig;
-use crate::harness::{SessionManager, SessionView};
+use crate::harness::SessionView;
 use crate::storage::SessionStore;
 use app::{ActiveModal, App};
 use views::ask_user_modal::render_ask_user_modal;

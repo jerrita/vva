@@ -34,9 +34,10 @@ use std::sync::Arc;
 /// 工作空间工具装配依赖；hashline 快照与后台任务由会话持有。
 pub(crate) struct WorkspaceToolDeps {
     pub hashline: Arc<hashline::HashlineSession>,
-    pub inputs: crate::config::resolver::InputCapabilities,
+    pub inputs: crate::provider::InputCapabilities,
     pub background: Option<Arc<background::BackgroundTasks>>,
     pub shell_outputs: Option<Arc<shell_output::ShellOutputs>>,
+    pub env: std::collections::HashMap<String, String>,
 }
 
 impl Default for WorkspaceToolDeps {
@@ -46,6 +47,7 @@ impl Default for WorkspaceToolDeps {
             inputs: Default::default(),
             background: None,
             shell_outputs: None,
+            env: std::collections::HashMap::new(),
         }
     }
 }
@@ -192,7 +194,9 @@ impl ToolRegistry {
         registry.register(Arc::new(read));
         registry.register(Arc::new(crate::tools::filesystem::GlobTool::new(workspace)));
         registry.register(Arc::new(grep));
-        let mut shell = crate::tools::shell::ShellTool::new(workspace).with_file_tools(file_tools);
+        let mut shell = crate::tools::shell::ShellTool::new(workspace)
+            .with_env(deps.env)
+            .with_file_tools(file_tools);
         if let Some(background) = deps.background {
             shell = shell.with_background(background);
         }

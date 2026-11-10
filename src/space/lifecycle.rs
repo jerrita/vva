@@ -10,8 +10,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use super::curator::{Curator, CuratorReport, CuratorStatus};
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::AgentSpaceConfig;
-use crate::harness::SessionManager;
 use crate::model::{SessionKind, SessionSummary};
 
 /// 默认扫描周期

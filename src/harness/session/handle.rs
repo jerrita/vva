@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Default)]
-pub(super) struct CompletedTurn {
+pub(crate) struct CompletedTurn {
     pub seq: u64,
     pub text: String,
     pub error: Option<String>,
@@ -9,7 +9,7 @@ pub(super) struct CompletedTurn {
 }
 
 impl CompletedTurn {
-    pub(super) fn subagent_report(
+    pub(crate) fn subagent_report(
         &self,
         session_id: String,
         session: &Session,
@@ -25,10 +25,10 @@ impl CompletedTurn {
     }
 }
 
-pub(super) type DeliveryResult = Result<crate::tools::agent::SubagentReport, String>;
-pub(super) type DeliveryReceipt = oneshot::Receiver<DeliveryResult>;
+pub(crate) type DeliveryResult = Result<crate::tools::agent::SubagentReport, String>;
+pub type DeliveryReceipt = oneshot::Receiver<DeliveryResult>;
 
-pub(super) struct PendingDelivery {
+pub(crate) struct PendingDelivery {
     pub text: String,
     pub mode: InputMode,
     pub completion: oneshot::Sender<DeliveryResult>,
@@ -127,10 +127,10 @@ pub enum Command {
 
 pub struct ManagedSession {
     pub id: String,
-    pub(super) commands: mpsc::Sender<Command>,
-    pub(super) view: watch::Receiver<Arc<SessionView>>,
+    pub(crate) commands: mpsc::Sender<Command>,
+    pub(crate) view: watch::Receiver<Arc<SessionView>>,
     /// 已完成轮次计数（每次 finish_turn 递增），供外部等待轮次结束
-    pub(super) turns: watch::Receiver<CompletedTurn>,
+    pub(crate) turns: watch::Receiver<CompletedTurn>,
 }
 
 impl ManagedSession {
@@ -170,18 +170,18 @@ impl ManagedSession {
         self.turns.borrow().seq
     }
 
-    pub(super) fn turn_receiver(&self) -> watch::Receiver<CompletedTurn> {
+    pub(crate) fn turn_receiver(&self) -> watch::Receiver<CompletedTurn> {
         self.turns.clone()
     }
 
-    pub(super) fn report(&self) -> crate::tools::agent::SubagentReport {
+    pub fn report(&self) -> crate::tools::agent::SubagentReport {
         let view = self.snapshot();
         let completed = self.turns.borrow();
         completed.subagent_report(self.id.clone(), &view.session)
     }
 
     /// 等待当前执行及其派生的后台工作完成；期间不调用模型或计时轮询。
-    pub(super) fn settled_report(
+    pub fn settled_report(
         &self,
         seen_seq: u64,
     ) -> impl Future<Output = Result<crate::tools::agent::SubagentReport, String>> + Send + 'static
@@ -203,7 +203,7 @@ impl ManagedSession {
         }
     }
 
-    pub(super) async fn request(
+    pub(crate) async fn request(
         &self,
         command: impl FnOnce(Reply) -> Command,
     ) -> Result<(), String> {
@@ -231,7 +231,7 @@ impl ManagedSession {
     }
 
     /// 程序化消息投递：运行中排队，空闲即触发轮次
-    pub(super) async fn deliver(&self, text: &str) -> Result<DeliveryReceipt, String> {
+    pub async fn deliver(&self, text: &str) -> Result<DeliveryReceipt, String> {
         self.deliver_input(text, InputMode::After).await
     }
 
@@ -336,7 +336,7 @@ impl ManagedSession {
     }
 
     /// 停止会话任务并删除其存储记录
-    pub(super) async fn delete(&self) -> Result<(), String> {
+    pub(crate) async fn delete(&self) -> Result<(), String> {
         self.stop(true).await
     }
 

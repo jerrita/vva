@@ -7,8 +7,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{WebFetchContent, WebSearchResult};
-use crate::config::AppConfig;
-use crate::config::model::ProviderType;
 use crate::model::{ContentPart, Message, Session, Turn, WebSearchSource};
 use crate::provider::{CompletionOptions, Provider, ProviderResponse};
 
@@ -20,23 +18,6 @@ struct GoogleModel {
 }
 
 impl GoogleModel {
-    /// `spec` 为 `provider/model`，须解析为 Gemini 协议模型
-    fn new(config: &AppConfig, spec: &str) -> Result<Self, String> {
-        let resolved = config
-            .resolve_model(spec, None)
-            .map_err(|error| format!("settings.web.provider.google.model: {error}"))?;
-        if resolved.effective_type() != ProviderType::Gemini {
-            return Err(format!(
-                "settings.web.provider.google.model = {spec:?}: model must use the gemini protocol"
-            ));
-        }
-        Ok(Self {
-            provider: resolved.create_provider(),
-            model_id: resolved.model_id.clone(),
-            service_tier: resolved.model_config.service_tier().map(str::to_string),
-        })
-    }
-
     async fn ask(
         &self,
         prompt: String,
@@ -59,16 +40,32 @@ impl GoogleModel {
 pub struct GoogleSearchProvider(GoogleModel);
 
 impl GoogleSearchProvider {
-    pub fn new(config: &AppConfig, spec: &str) -> Result<Self, String> {
-        GoogleModel::new(config, spec).map(Self)
+    pub fn new(
+        provider: Arc<dyn Provider>,
+        model_id: String,
+        service_tier: Option<String>,
+    ) -> Self {
+        Self(GoogleModel {
+            provider,
+            model_id,
+            service_tier,
+        })
     }
 }
 
 pub struct GoogleFetchProvider(GoogleModel);
 
 impl GoogleFetchProvider {
-    pub fn new(config: &AppConfig, spec: &str) -> Result<Self, String> {
-        GoogleModel::new(config, spec).map(Self)
+    pub fn new(
+        provider: Arc<dyn Provider>,
+        model_id: String,
+        service_tier: Option<String>,
+    ) -> Self {
+        Self(GoogleModel {
+            provider,
+            model_id,
+            service_tier,
+        })
     }
 }
 

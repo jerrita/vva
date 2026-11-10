@@ -10,7 +10,7 @@ use axum::routing::{get, post};
 use axum::{Router, serve};
 use rust_embed::RustEmbed;
 
-use crate::harness::SessionManager;
+use crate::app::VvaSessionManager as SessionManager;
 
 use super::api;
 
