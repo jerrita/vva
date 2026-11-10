@@ -5,8 +5,10 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use super::{FocusChange, Runtime, State};
-use crate::harness::ManagedSession;
-use crate::model::{SessionKind, SessionSummary, SessionToggles};
+use crate::app::handle::ManagedSession;
+use crate::app::model::SessionSummary;
+use crate::app::records::SessionKind;
+use crate::app::records::SessionToggles;
 use crate::space::binding::{AttachedFile, FileKind, in_chat_scope};
 use crate::space::channel::Inbound;
 use crate::space::channel::files::{sanitize_filename, unique_dest};

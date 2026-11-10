@@ -6,10 +6,16 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::harness::{Notice, SessionView};
-use crate::model::{
-    ContentPart, Message, Role, Session, SessionHeader, TokenUsage, Turn, UserQuestionRequest,
-};
+use crate::app::model::Session;
+use crate::app::model::SessionHeader;
+use crate::app::view::SessionView;
+use vva_core::harness::Notice;
+use vva_core::model::ContentPart;
+use vva_core::model::Message;
+use vva_core::model::Role;
+use vva_core::model::TokenUsage;
+use vva_core::model::Turn;
+use vva_core::model::UserQuestionRequest;
 
 /// 浏览器只接收展示字段；供应商回传元数据保留在领域存储中。
 #[derive(Serialize)]
@@ -25,7 +31,7 @@ struct TurnView<'a> {
     worked_ms: Option<u64>,
     steering: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    background_task: &'a Option<crate::model::BackgroundTask>,
+    background_task: &'a Option<vva_core::model::BackgroundTask>,
 }
 
 impl<'a> From<&'a Turn> for TurnView<'a> {
@@ -68,13 +74,13 @@ struct SessionData<'a> {
 
 #[derive(Serialize)]
 pub(super) struct SessionSnapshot<'a> {
-    pending_inputs: &'a [crate::harness::PendingInput],
+    pending_inputs: &'a [vva_core::harness::PendingInput],
     revision: u64,
     state: String,
     persisted: bool,
     notices: &'a [Notice],
-    background_tasks: &'a std::collections::BTreeMap<String, crate::model::BackgroundTask>,
-    shell_outputs: &'a std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>,
+    background_tasks: &'a std::collections::BTreeMap<String, vva_core::model::BackgroundTask>,
+    shell_outputs: &'a std::collections::BTreeMap<String, Arc<vva_core::model::ShellOutput>>,
     external_web: &'a [String],
     session: SessionData<'a>,
     draft: Vec<&'a ContentPart>,
@@ -128,7 +134,7 @@ struct DraftPatch<'a> {
 enum ShellOutputPatch<'a> {
     Set {
         id: &'a str,
-        output: &'a crate::model::ShellOutput,
+        output: &'a vva_core::model::ShellOutput,
     },
     Append {
         id: &'a str,
@@ -194,7 +200,7 @@ fn shell_output_patches<'a>(
 #[derive(Serialize)]
 pub(super) struct SessionDelta<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pending_inputs: Option<&'a [crate::harness::PendingInput]>,
+    pending_inputs: Option<&'a [vva_core::harness::PendingInput]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     shell_outputs: Vec<ShellOutputPatch<'a>>,
     base_revision: u64,
@@ -204,7 +210,8 @@ pub(super) struct SessionDelta<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     notices: Option<&'a [Notice]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    background_tasks: Option<&'a std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
+    background_tasks:
+        Option<&'a std::collections::BTreeMap<String, vva_core::model::BackgroundTask>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     external_web: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -314,9 +321,9 @@ impl<'a> SessionDelta<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::RunState;
-    use crate::model::Annotation;
     use serde_json::{Value, json};
+    use vva_core::harness::RunState;
+    use vva_core::model::Annotation;
 
     fn view() -> SessionView {
         let mut view = SessionView::new(Session::new("/synthetic", None), true);
@@ -333,11 +340,11 @@ mod tests {
     #[test]
     fn pending_input_consumption_is_atomic_with_the_user_turn() {
         let mut before = view();
-        Arc::make_mut(&mut before.pending_inputs).push(crate::harness::PendingInput {
+        Arc::make_mut(&mut before.pending_inputs).push(vva_core::harness::PendingInput {
             id: "input_fixture".into(),
             prompt: "guidance".into(),
             attachments: vec![],
-            mode: crate::harness::InputMode::Steer,
+            mode: vva_core::harness::InputMode::Steer,
         });
         let snapshot = serde_json::to_value(SessionSnapshot::from(&before)).unwrap();
         assert_eq!(snapshot["pending_inputs"][0]["mode"], "steer");
@@ -355,7 +362,7 @@ mod tests {
     #[test]
     fn shell_tail_deltas_are_bounded_and_handle_skipped_frames_and_rewrites() {
         let mut before = view();
-        let old = crate::model::ShellOutput {
+        let old = vva_core::model::ShellOutput {
             revision: 3,
             text: format!("🙂旧\n{}", "x".repeat(200_000)),
             ..Default::default()
@@ -386,7 +393,7 @@ mod tests {
         let before = view();
         let mut after = before.clone();
         after.revision += 1;
-        let task = crate::model::BackgroundTask::running("task_sample".into());
+        let task = vva_core::model::BackgroundTask::running("task_sample".into());
         Arc::make_mut(&mut after.background_tasks).insert(task.task_id.clone(), task);
         let patch = delta(&before, &after);
         assert_eq!(
@@ -504,7 +511,7 @@ mod tests {
         aborted.draft.clear();
         aborted.notices.push(Notice::new(
             "aborted".into(),
-            crate::harness::NoticeKind::Session,
+            vva_core::harness::NoticeKind::Session,
         ));
         aborted.state = RunState::Idle;
         let update = delta(&relocated, &aborted);

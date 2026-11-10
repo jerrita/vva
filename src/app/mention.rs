@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use tokio::io::AsyncReadExt;
 
-use crate::model::{ContentPart, MediaSource};
+use vva_core::model::ContentPart;
+use vva_core::model::MediaSource;
 
 /// 单个文本引用的内容上限（超出截断并标记 `truncated`）
 pub const MAX_TEXT_BYTES: u64 = 128 * 1024;

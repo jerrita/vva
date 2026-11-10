@@ -1,5 +1,5 @@
 use super::*;
-use crate::harness::ManagedSession;
+use crate::app::handle::ManagedSession;
 use crate::ui::test_support::create_test_app;
 
 /// 等待会话后台轮次结束，避免 App::new 的 try_read 与引擎写锁产生调度竞争
@@ -42,8 +42,8 @@ async fn blur_toggle_covers_frame_and_overlays_and_restores_transparency() {
     let mut ta = create_test_app("init_model", None, None, false).await;
     let app = &mut ta.app;
     app.add_part(
-        crate::model::Role::User,
-        crate::model::ContentPart::text("Hello"),
+        vva_core::model::Role::User,
+        vva_core::model::ContentPart::text("Hello"),
     );
     let view = app.view.clone();
     let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
@@ -186,7 +186,7 @@ async fn test_slash_command_variant_execution() {
             "prov/model-without-vars".into(),
             None,
             None,
-            crate::model::SessionToggles { web_search: false },
+            crate::app::records::SessionToggles { web_search: false },
         )
         .await
         .unwrap();
@@ -227,7 +227,7 @@ async fn test_cycle_variant_wraps_through_declared_order() {
             "prov/model-without-vars".into(),
             None,
             None,
-            crate::model::SessionToggles { web_search: false },
+            crate::app::records::SessionToggles { web_search: false },
         )
         .await
         .unwrap();
@@ -238,9 +238,11 @@ async fn test_cycle_variant_wraps_through_declared_order() {
 
 #[tokio::test]
 async fn chat_keyboard_focus_survives_reflow_and_collapses_tools_in_order() {
-    use crate::model::{ContentPart, Message, Turn};
     use crate::ui::app::chat_focus::ChatTarget;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use vva_core::model::ContentPart;
+    use vva_core::model::Message;
+    use vva_core::model::Turn;
 
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;
@@ -249,7 +251,7 @@ async fn chat_keyboard_focus_survives_reflow_and_collapses_tools_in_order() {
     session.append_turn(Turn::user_turn(Message::text("Explain this output")));
     let mut response = Turn::assistant_turn(vec![Message::new(vec![
         ContentPart::reasoning("Inspect the output.\nVerify ordering.", None),
-        ContentPart::ToolCall(crate::model::ToolCall::new(
+        ContentPart::ToolCall(vva_core::model::ToolCall::new(
             "shell",
             "Shell",
             r#"{"intent":"inspect","command":"seq 100"}"#,
@@ -259,9 +261,9 @@ async fn chat_keyboard_focus_survives_reflow_and_collapses_tools_in_order() {
     response.worked_ms = Some(1_000);
     session.append_turn(response);
     session.append_turn(Turn::new(
-        crate::model::Role::Tool,
+        vva_core::model::Role::Tool,
         vec![Message::new(vec![ContentPart::ToolResult(
-            crate::model::ToolResult::success(
+            vva_core::model::ToolResult::success(
                 "shell",
                 (0..100)
                     .map(|i| format!("Output {i}\n"))
@@ -323,8 +325,8 @@ async fn bracketed_paste_leaves_chat_browsing_without_submitting() {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     let mut ta = create_test_app("test_model", None, None, false).await;
     ta.add_part(
-        crate::model::Role::User,
-        crate::model::ContentPart::text("Earlier prompt"),
+        vva_core::model::Role::User,
+        vva_core::model::ContentPart::text("Earlier prompt"),
     );
     ta.refresh_chat_lines(80);
     ta.set_input("/model ");
@@ -342,8 +344,11 @@ async fn bracketed_paste_leaves_chat_browsing_without_submitting() {
 
 #[tokio::test]
 async fn test_tool_right_click_before_request_completion() {
-    use crate::model::{ContentPart, Role, ToolCall, ToolResult};
     use crate::ui::app::ToolExpand;
+    use vva_core::model::ContentPart;
+    use vva_core::model::Role;
+    use vva_core::model::ToolCall;
+    use vva_core::model::ToolResult;
 
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;
@@ -404,12 +409,14 @@ async fn test_completed_nonfinal_responses_collapse_and_expand() {
     let view = std::sync::Arc::make_mut(&mut app.view);
     let session = std::sync::Arc::make_mut(&mut view.session);
 
-    let mut first =
-        crate::model::Turn::assistant_turn(vec![crate::model::Message::text("Earlier response")]);
+    let mut first = vva_core::model::Turn::assistant_turn(vec![vva_core::model::Message::text(
+        "Earlier response",
+    )]);
     first.elapsed_ms = Some(1_500);
     session.append_turn(first);
-    let mut last =
-        crate::model::Turn::assistant_turn(vec![crate::model::Message::text("Latest response")]);
+    let mut last = vva_core::model::Turn::assistant_turn(vec![vva_core::model::Message::text(
+        "Latest response",
+    )]);
     last.elapsed_ms = Some(500);
     last.worked_ms = Some(2_000);
     let response_id = last.id.clone();
@@ -463,7 +470,9 @@ async fn test_completed_nonfinal_responses_collapse_and_expand() {
 
 #[tokio::test]
 async fn test_response_groups_keep_independent_state_across_prompts() {
-    use crate::model::{ContentPart, Message, Turn};
+    use vva_core::model::ContentPart;
+    use vva_core::model::Message;
+    use vva_core::model::Turn;
 
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;
@@ -522,7 +531,8 @@ async fn test_response_groups_keep_independent_state_across_prompts() {
 
 #[tokio::test]
 async fn test_completed_single_turn_work_collapses_before_final_reply() {
-    use crate::model::{ContentPart, WebSearchCall};
+    use vva_core::model::ContentPart;
+    use vva_core::model::WebSearchCall;
     let search = |id: &str, query: &str| {
         ContentPart::WebSearchCall(WebSearchCall::completed(id, query, Vec::new()))
     };
@@ -546,7 +556,7 @@ async fn test_completed_single_turn_work_collapses_before_final_reply() {
         app.thinking_concise = false;
         let view = std::sync::Arc::make_mut(&mut app.view);
         let mut response =
-            crate::model::Turn::assistant_turn(vec![crate::model::Message::new(parts)]);
+            vva_core::model::Turn::assistant_turn(vec![vva_core::model::Message::new(parts)]);
         response.elapsed_ms = Some(2_000);
         response.worked_ms = Some(2_000);
         std::sync::Arc::make_mut(&mut view.session).append_turn(response);
@@ -659,7 +669,7 @@ async fn test_session_resume_preserves_web_search_state() {
         uuid::Uuid::new_v4()
     ));
     let _ = std::fs::create_dir_all(&temp_dir);
-    let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
+    let store = Arc::new(crate::app::store::AppSessionStore::new(&temp_dir).unwrap());
     let session_mgr = Arc::new(SessionManager::new(
         store.clone(),
         crate::ui::test_support::test_config(),
@@ -673,7 +683,7 @@ async fn test_session_resume_preserves_web_search_state() {
             "model_1".into(),
             None,
             Some("Session 1".into()),
-            crate::model::SessionToggles::default(),
+            crate::app::records::SessionToggles::default(),
         )
         .await
         .unwrap();
@@ -689,7 +699,7 @@ async fn test_session_resume_preserves_web_search_state() {
             "model_2".into(),
             None,
             Some("Session 2".into()),
-            crate::model::SessionToggles { web_search: false },
+            crate::app::records::SessionToggles { web_search: false },
         )
         .await
         .unwrap();
@@ -776,29 +786,29 @@ async fn test_prompt_history_rotation_and_draft_restore() {
 async fn test_user_message_hits_and_revert_fills_input() {
     let temp_dir = std::env::temp_dir().join(format!("vva_revert_ui_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&temp_dir);
-    let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
-    let mut session = crate::model::Session::with_model(
+    let store = Arc::new(crate::app::store::AppSessionStore::new(&temp_dir).unwrap());
+    let mut session = crate::app::model::Session::with_model(
         &temp_dir,
         Some("Origin".into()),
         "openai/test_model",
         None,
-        crate::model::SessionToggles { web_search: false },
+        crate::app::records::SessionToggles { web_search: false },
     );
-    session.append_turn(crate::model::Turn::new(
-        crate::model::Role::System,
-        vec![crate::model::Message::text("sys")],
+    session.append_turn(vva_core::model::Turn::new(
+        vva_core::model::Role::System,
+        vec![vva_core::model::Message::text("sys")],
     ));
-    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
-        "first",
-    )));
-    session.append_turn(crate::model::Turn::assistant_turn(vec![
-        crate::model::Message::text("a1"),
+    session.append_turn(vva_core::model::Turn::user_turn(
+        vva_core::model::Message::text("first"),
+    ));
+    session.append_turn(vva_core::model::Turn::assistant_turn(vec![
+        vva_core::model::Message::text("a1"),
     ]));
-    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
-        "second prompt",
-    )));
-    session.append_turn(crate::model::Turn::assistant_turn(vec![
-        crate::model::Message::text("a2"),
+    session.append_turn(vva_core::model::Turn::user_turn(
+        vva_core::model::Message::text("second prompt"),
+    ));
+    session.append_turn(vva_core::model::Turn::assistant_turn(vec![
+        vva_core::model::Message::text("a2"),
     ]));
     let id = session.header.id.clone();
     store.save_header(&session).await.unwrap();
@@ -830,27 +840,27 @@ async fn test_user_message_hits_and_revert_fills_input() {
 async fn test_fork_user_turn_creates_titled_session() {
     let temp_dir = std::env::temp_dir().join(format!("vva_fork_ui_{}", uuid::Uuid::new_v4()));
     let _ = std::fs::create_dir_all(&temp_dir);
-    let store = Arc::new(crate::storage::jsonl::JsonlSessionStore::new(&temp_dir).unwrap());
-    let mut session = crate::model::Session::with_model(
+    let store = Arc::new(crate::app::store::AppSessionStore::new(&temp_dir).unwrap());
+    let mut session = crate::app::model::Session::with_model(
         &temp_dir,
         Some("Origin".into()),
         "openai/test_model",
         Some("high".into()),
-        crate::model::SessionToggles::default(),
+        crate::app::records::SessionToggles::default(),
     );
-    session.append_turn(crate::model::Turn::new(
-        crate::model::Role::System,
-        vec![crate::model::Message::text("sys")],
+    session.append_turn(vva_core::model::Turn::new(
+        vva_core::model::Role::System,
+        vec![vva_core::model::Message::text("sys")],
     ));
-    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
-        "first",
-    )));
-    session.append_turn(crate::model::Turn::assistant_turn(vec![
-        crate::model::Message::text("a1"),
+    session.append_turn(vva_core::model::Turn::user_turn(
+        vva_core::model::Message::text("first"),
+    ));
+    session.append_turn(vva_core::model::Turn::assistant_turn(vec![
+        vva_core::model::Message::text("a1"),
     ]));
-    session.append_turn(crate::model::Turn::user_turn(crate::model::Message::text(
-        "second",
-    )));
+    session.append_turn(vva_core::model::Turn::user_turn(
+        vva_core::model::Message::text("second"),
+    ));
     let origin_id = session.header.id.clone();
     store.save_header(&session).await.unwrap();
     let session_mgr = Arc::new(SessionManager::new(

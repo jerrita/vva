@@ -3,24 +3,24 @@
 //! 其余字段行（`event:` / `id:` / 注释行等）按 SSE 规范忽略。
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SseEvent {
+pub(crate) struct SseEvent {
     pub data: String,
 }
 
 #[derive(Debug, Default)]
-pub struct SseDecoder {
+pub(crate) struct SseDecoder {
     buffer: Vec<u8>,
     current_data: Vec<String>,
 }
 
 impl SseDecoder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// 解码传入的 chunk 字节流，产生解析完成的 SSE 事件列表。
     /// 按字节缓冲并在完整行形成后才解码，多字节字符被 chunk 边界切开时不会损坏。
-    pub fn decode(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
+    pub(crate) fn decode(&mut self, chunk: &[u8]) -> Vec<SseEvent> {
         self.buffer.extend_from_slice(chunk);
 
         let mut events = Vec::new();
@@ -50,7 +50,7 @@ impl SseDecoder {
     }
 
     /// 在流结束时如果存在残余数据，产生最终事件
-    pub fn flush(&mut self) -> Option<SseEvent> {
+    pub(crate) fn flush(&mut self) -> Option<SseEvent> {
         if self.current_data.is_empty() {
             return None;
         }

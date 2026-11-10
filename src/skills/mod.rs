@@ -1,6 +1,8 @@
 //! vva 的技能发现顺序与斜杠调用策略。
 use std::path::{Path, PathBuf};
-pub use vva_core::skills::{SKILL_FILE, Skill, SkillSource, format_skill_content, parse_skill};
+#[cfg(test)]
+use vva_core::skills::SKILL_FILE;
+use vva_core::skills::{Skill, SkillSource};
 
 pub fn discover_skills(workspace: &Path) -> Vec<Skill> {
     discover_from(&crate::discover::global_dirs("skills"), workspace)

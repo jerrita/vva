@@ -6,11 +6,15 @@ use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 use vva::app::VvaSessionManager as SessionManager;
+use vva::app::model::Session;
+use vva::app::store::AppSessionStore as JsonlSessionStore;
 use vva::config::{AppConfig, home_dir, load_config};
-use vva::harness::AgentEvent;
-use vva::model::{Annotation, ContentPart, Session, WebSearchAction, WebSearchCall};
-use vva::storage::jsonl::JsonlSessionStore;
 use vva::ui::run_tui;
+use vva_core::harness::AgentEvent;
+use vva_core::model::Annotation;
+use vva_core::model::ContentPart;
+use vva_core::model::WebSearchAction;
+use vva_core::model::WebSearchCall;
 
 #[derive(Parser)]
 #[command(
@@ -476,7 +480,7 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
             prompt,
         } => {
             let workspace = resolve_workspace(workspace);
-            let toggles = vva::model::ToggleOverrides { web_search };
+            let toggles = vva::app::records::ToggleOverrides { web_search };
 
             // 未提供 prompt 时启动 TUI 交互
             let prompt = match prompt {
@@ -506,9 +510,12 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
             );
             println!("🎯 Session Model: {}", view.session.header.current_model);
             let (tx, rx) = mpsc::channel::<AgentEvent>(32);
-            session.submit(&prompt, Vec::new(), Some(tx)).await?;
-
-            stream_events(rx).await;
+            let result = session.submit(&prompt, Vec::new(), Some(tx)).await;
+            if result.is_ok() {
+                stream_events(rx).await;
+            }
+            manager.shutdown().await?;
+            result?;
         }
 
         Commands::Web {
@@ -520,7 +527,10 @@ async fn run(cli: Cli, vva_dir: PathBuf) -> Result<(), Box<dyn std::error::Error
             let manager =
                 SessionManager::new(store, app_config, workspace, vva_dir.join("state.json"))
                     .with_config_path(cli.config.as_deref());
-            vva::web::run_server(Arc::new(manager), host, port).await?;
+            let manager = Arc::new(manager);
+            let result = vva::web::run_server(manager.clone(), host, port).await;
+            manager.shutdown().await?;
+            result?;
         }
 
         Commands::Agent => {

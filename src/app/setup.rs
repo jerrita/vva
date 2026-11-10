@@ -7,16 +7,18 @@ Managing skills (installing, creating, removing): a skill is a directory `<name>
 4. `<workspace>/.vva/skills` (project)
 Install and create skills in the project directory `<workspace>/.vva/skills` (the workspace is the session's working directory; for the resident agent it is `~/.vva/space`); use the global directories when the user explicitly asks for a global install. Run `npx skills add` from the workspace root without `-g`/`--global`: the default project install lands in `<workspace>/.agents/skills`, which is discovered. After installing, confirm the skill directory sits under one of the paths above; new sessions pick up new skills.";
 
-use crate::harness::ExecutionPlan;
-use crate::tools::names;
 use std::path::PathBuf;
 use std::sync::Arc;
+use vva_core::harness::ExecutionPlan;
+use vva_core::tools::names;
 
 use crate::config::{AppConfig, ResolvedModel};
-use crate::provider::{CompletionOptions, Provider};
-use crate::tools::{ToolRegistry, WorkspaceToolDeps};
 use tokio::sync::mpsc;
 use vva_core::model::{Message, Role, Session, Turn};
+use vva_core::provider::CompletionOptions;
+use vva_core::provider::Provider;
+use vva_core::tools::ToolRegistry;
+use vva_core::tools::WorkspaceToolDeps;
 
 /// 能力协商：补全选项与供应商原生能力不匹配时生成显式降级通知（不静默失效）。
 /// `external_search` 为真表示外置 web search 工具已接管，不再报"选项被忽略"。
@@ -46,12 +48,14 @@ pub fn capability_notices(
 }
 
 /// 会话工具工厂：按会话 header 决定额外挂载的运行期工具（如渠道绑定的 SendFile）
-pub type SessionToolFactory =
-    Arc<dyn Fn(&crate::model::SessionHeader) -> Vec<Arc<dyn crate::tools::Tool>> + Send + Sync>;
+pub type SessionToolFactory = Arc<
+    dyn Fn(&crate::app::model::SessionHeader) -> Vec<Arc<dyn vva_core::tools::Tool>> + Send + Sync,
+>;
 
 /// 会话前导：按会话 header 提供首次落盘时追加的 `<system-reminder>` 文本（如记忆索引快照），
 /// 空列表表示无需注入
-pub type SessionPreamble = Arc<dyn Fn(&crate::model::SessionHeader) -> Vec<String> + Send + Sync>;
+pub type SessionPreamble =
+    Arc<dyn Fn(&crate::app::model::SessionHeader) -> Vec<String> + Send + Sync>;
 
 /// Provider 的连接状态随会话保留，工具注册表仍在每次装配时刷新。
 #[derive(Default)]
@@ -86,16 +90,16 @@ impl SessionProvider {
 pub(crate) struct EngineDeps {
     pub provider: Arc<SessionProvider>,
     pub tool_outputs: PathBuf,
-    pub hashline: Arc<crate::tools::hashline::HashlineSession>,
-    pub ask_user_requests: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
-    pub background: Arc<crate::tools::background::BackgroundTasks>,
-    pub shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
-    pub skills: Vec<crate::skills::Skill>,
-    pub agents: Vec<crate::agents::AgentDef>,
-    pub subagents: Vec<crate::agents::AgentDef>,
-    pub broker: Arc<dyn crate::tools::agent::SessionBroker>,
+    pub hashline: Arc<vva_core::tools::hashline::HashlineSession>,
+    pub ask_user_requests: mpsc::Sender<vva_core::tools::ask_user::AskUserRequest>,
+    pub background: Arc<vva_core::tools::background::BackgroundTasks>,
+    pub shell_outputs: Arc<vva_core::tools::shell_output::ShellOutputs>,
+    pub skills: Vec<vva_core::skills::Skill>,
+    pub agents: Vec<vva_core::agents::AgentDef>,
+    pub subagents: Vec<vva_core::agents::AgentDef>,
+    pub broker: Arc<dyn vva_core::tools::agent::SessionBroker>,
     /// 工厂产出的会话专属工具，最后注册
-    pub extra_tools: Vec<Arc<dyn crate::tools::Tool>>,
+    pub extra_tools: Vec<Arc<dyn vva_core::tools::Tool>>,
     pub interactive: bool,
     pub coding: crate::app::records::CodingSessionConfig,
 }
@@ -132,7 +136,7 @@ impl VvaSessionSetup {
         let allowed = |name: &str| {
             agent_def
                 .as_ref()
-                .is_none_or(|def| crate::tools::tool_allowed(&def.tools, name))
+                .is_none_or(|def| vva_core::tools::tool_allowed(&def.tools, name))
         };
         let search_allowed = allowed("WebSearch");
         let fetch_allowed = allowed("WebFetch");
@@ -153,7 +157,7 @@ impl VvaSessionSetup {
         let web_declared = coding.web_search && resolved.model_config.declare_web_search();
         let standalone_search = web_declared
             && search_allowed
-            && resolved.effective_type() == crate::provider::ProviderType::Anthropic
+            && resolved.effective_type() == vva_core::provider::ProviderType::Anthropic
             && resolved.model_config.standalone_search();
         let search_provider = standalone_search.then(|| resolved.create_anthropic_provider());
         let options = CompletionOptions {
@@ -174,7 +178,10 @@ impl VvaSessionSetup {
         };
         if let Some(provider) = search_provider {
             tools.register(Arc::new(
-                crate::tools::web::standalone::StandaloneSearchTool::new(provider, options.clone()),
+                vva_core::tools::web::standalone::StandaloneSearchTool::new(
+                    provider,
+                    options.clone(),
+                ),
             ));
         }
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
@@ -208,7 +215,7 @@ impl VvaSessionSetup {
                 && !native_search
                 && let Some(search) = &external.search
             {
-                tools.register(Arc::new(crate::tools::web::tool::WebSearchTool::new(
+                tools.register(Arc::new(vva_core::tools::web::tool::WebSearchTool::new(
                     search.clone(),
                 )));
                 external_web.push(search.name().to_string());
@@ -218,7 +225,7 @@ impl VvaSessionSetup {
                 && !native_fetch
                 && let Some(fetch) = &external.fetch
             {
-                tools.register(Arc::new(crate::tools::web::tool::WebFetchTool::new(
+                tools.register(Arc::new(vva_core::tools::web::tool::WebFetchTool::new(
                     fetch.clone(),
                 )));
                 external_web.push(fetch.name().to_string());
@@ -247,7 +254,7 @@ impl VvaSessionSetup {
     /// 工作空间工具与会话级工具 (交互 / 后台 / 技能 / 子代理编排)
     fn base_tools(
         session: &Session,
-        inputs: &crate::provider::InputCapabilities,
+        inputs: &vva_core::provider::InputCapabilities,
         deps: EngineDeps,
     ) -> Result<ToolRegistry, String> {
         let mut tools = ToolRegistry::with_workspace_tools(
@@ -265,21 +272,21 @@ impl VvaSessionSetup {
             },
         );
         let broker = deps.broker;
-        let task_stop = crate::tools::background::TaskStopTool::new(deps.background.clone())
+        let task_stop = vva_core::tools::background::TaskStopTool::new(deps.background.clone())
             .with_broker(broker.clone());
-        let mut extra: Vec<Arc<dyn crate::tools::Tool>> = vec![
-            Arc::new(crate::tools::background::TaskOutputTool::new(
+        let mut extra: Vec<Arc<dyn vva_core::tools::Tool>> = vec![
+            Arc::new(vva_core::tools::background::TaskOutputTool::new(
                 deps.background,
             )),
             Arc::new(task_stop),
-            Arc::new(crate::tools::skill::SkillTool::new(
+            Arc::new(vva_core::tools::skill::SkillTool::new(
                 Arc::new(deps.skills),
                 SKILL_TOOL_DESCRIPTION.into(),
             )),
         ];
         // 交互能力由宿主装配明确指定。
         if deps.interactive {
-            extra.push(Arc::new(crate::tools::ask_user::AskUserTool::new(
+            extra.push(Arc::new(vva_core::tools::ask_user::AskUserTool::new(
                 deps.ask_user_requests,
             )));
         }
@@ -287,13 +294,13 @@ impl VvaSessionSetup {
         for tool in extra {
             tools.register(tool);
         }
-        let subagent_tools: [Arc<dyn crate::tools::Tool>; 2] = [
-            Arc::new(crate::tools::agent::AgentTool::new(
+        let subagent_tools: [Arc<dyn vva_core::tools::Tool>; 2] = [
+            Arc::new(vva_core::tools::agent::AgentTool::new(
                 broker.clone(),
                 Arc::new(deps.subagents),
-                crate::tools::agent::SubagentContext::from_session(session),
+                vva_core::tools::agent::SubagentContext::from_session(session),
             )),
-            Arc::new(crate::tools::session_ipc::SendMessageTool::new(broker)),
+            Arc::new(vva_core::tools::session_ipc::SendMessageTool::new(broker)),
         ];
         for tool in subagent_tools {
             tools.register(tool);
@@ -378,8 +385,8 @@ pub(crate) async fn generate_title(
 /// 会话已载入同路径或本轮已排队的文件跳过。
 fn collect_on_demand_agents(
     session: &Session,
-    call: &crate::model::ToolCall,
-    result: &crate::model::ToolResult,
+    call: &vva_core::model::ToolCall,
+    result: &vva_core::model::ToolResult,
     pending: &[(PathBuf, String)],
 ) -> Option<(PathBuf, String)> {
     if !matches!(call.name.as_str(), names::READ | names::HASHLINE_READ) || result.is_error {
@@ -388,7 +395,7 @@ fn collect_on_demand_agents(
     let args = serde_json::from_str::<serde_json::Value>(&call.arguments).ok()?;
     let path_str = args.get("path").and_then(|p| p.as_str())?;
     let file_path =
-        crate::tools::filesystem::resolve_path(&session.header.workspace_root, path_str);
+        vva_core::tools::filesystem::resolve_path(&session.header.workspace_root, path_str);
     let agents_path =
         crate::system::find_directory_agents_md(&session.header.workspace_root, &file_path)?;
     let ws_canonical = session
@@ -421,7 +428,7 @@ impl VvaSessionSetup {
     async fn initial_turns(
         &self,
         source: &Session,
-        skills: &[crate::skills::Skill],
+        skills: &[vva_core::skills::Skill],
     ) -> Result<Vec<Turn>, String> {
         let mut session = source.clone();
         let workspace = session.header.workspace_root.clone();
@@ -513,22 +520,22 @@ impl VvaSessionSetup {
 
 pub struct VvaSessionSetup {
     config: Arc<AppConfig>,
-    store: Arc<crate::storage::SessionStore>,
+    store: Arc<crate::app::store::AppSessionStore>,
     state_path: PathBuf,
     provider: Arc<SessionProvider>,
-    broker: Arc<dyn crate::tools::agent::SessionBroker>,
+    broker: Arc<dyn vva_core::tools::agent::SessionBroker>,
     tool_factory: Option<SessionToolFactory>,
     preamble: Option<SessionPreamble>,
     interactive: bool,
-    internal_agents: Vec<crate::agents::AgentDef>,
+    internal_agents: Vec<vva_core::agents::AgentDef>,
 }
 
 impl VvaSessionSetup {
     pub fn new(
         config: Arc<AppConfig>,
-        store: Arc<crate::storage::SessionStore>,
+        store: Arc<crate::app::store::AppSessionStore>,
         state_path: PathBuf,
-        broker: Arc<dyn crate::tools::agent::SessionBroker>,
+        broker: Arc<dyn vva_core::tools::agent::SessionBroker>,
         tool_factory: Option<SessionToolFactory>,
         preamble: Option<SessionPreamble>,
     ) -> Self {
@@ -550,12 +557,12 @@ impl VvaSessionSetup {
         self
     }
 
-    pub fn with_internal_agents(mut self, agents: Vec<crate::agents::AgentDef>) -> Self {
+    pub fn with_internal_agents(mut self, agents: Vec<vva_core::agents::AgentDef>) -> Self {
         self.internal_agents = agents;
         self
     }
 
-    fn agents(&self, workspace: &std::path::Path) -> Vec<crate::agents::AgentDef> {
+    fn agents(&self, workspace: &std::path::Path) -> Vec<vva_core::agents::AgentDef> {
         let mut agents = crate::agents::discover_agents(workspace);
         for internal in &self.internal_agents {
             if !agents.iter().any(|def| def.name == internal.name) {
@@ -567,11 +574,11 @@ impl VvaSessionSetup {
 }
 
 #[async_trait::async_trait]
-impl crate::harness::SessionSetup for VvaSessionSetup {
+impl vva_core::harness::SessionSetup for VvaSessionSetup {
     async fn plan(
         &self,
         session: &Session,
-        services: &crate::harness::SessionServices,
+        services: &vva_core::harness::SessionServices,
     ) -> Result<ExecutionPlan, String> {
         let record = self
             .store
@@ -631,7 +638,7 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
         session: &Session,
         mut input: Message,
         new_session: bool,
-    ) -> Result<crate::harness::PreparedInput, String> {
+    ) -> Result<vva_core::harness::PreparedInput, String> {
         let skills = crate::skills::discover_skills(&session.header.workspace_root);
         let prompt = input.text_content();
         let inputs = self
@@ -660,7 +667,7 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
         } else {
             Vec::new()
         };
-        let mut prepared = crate::harness::PreparedInput::unchanged(input);
+        let mut prepared = vva_core::harness::PreparedInput::unchanged(input);
         prepared.notices = notices;
         if session.header.agent.is_none() {
             let changed = crate::system::skills_change_reminder(
@@ -672,7 +679,7 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
                     .flat_map(|turn| &turn.messages)
                     .flat_map(|message| &message.parts)
                     .filter_map(|part| match part {
-                        crate::model::ContentPart::Text { text, .. } => Some(text.as_str()),
+                        vva_core::model::ContentPart::Text { text, .. } => Some(text.as_str()),
                         _ => None,
                     }),
                 &skills,
@@ -695,7 +702,7 @@ impl crate::harness::SessionSetup for VvaSessionSetup {
     async fn after_tools(
         &self,
         session: &Session,
-        batch: &[crate::harness::ToolExecution],
+        batch: &[vva_core::harness::ToolExecution],
     ) -> Result<Vec<Message>, String> {
         let mut pending = Vec::new();
         for execution in batch {

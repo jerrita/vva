@@ -1,5 +1,5 @@
 use super::App;
-use crate::harness::InputMode;
+use vva_core::harness::InputMode;
 
 impl App {
     pub fn selected_input_index(&self) -> Option<usize> {
@@ -88,8 +88,9 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContentPart, MediaSource};
     use crate::ui::test_support::{create_test_app, test_config};
+    use vva_core::model::ContentPart;
+    use vva_core::model::MediaSource;
 
     #[tokio::test]
     async fn pending_selection_promotes_backwards_and_escape_restores_in_submission_order() {

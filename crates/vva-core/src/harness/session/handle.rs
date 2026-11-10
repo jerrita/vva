@@ -9,7 +9,7 @@ pub struct CompletedTurn {
 }
 
 impl CompletedTurn {
-    pub fn subagent_report(
+    pub(crate) fn subagent_report(
         &self,
         session_id: String,
         session: &Session,
@@ -25,16 +25,16 @@ impl CompletedTurn {
     }
 }
 
-pub type DeliveryResult = Result<crate::tools::agent::SubagentReport, String>;
+pub(crate) type DeliveryResult = Result<crate::tools::agent::SubagentReport, String>;
 pub type DeliveryReceipt = oneshot::Receiver<DeliveryResult>;
 
-pub struct PendingDelivery {
+pub(crate) struct PendingDelivery {
     pub text: String,
     pub mode: InputMode,
     pub completion: oneshot::Sender<DeliveryResult>,
 }
 
-pub enum SharedCommand {
+pub(crate) enum SharedCommand {
     SetInputMode {
         id: String,
         mode: InputMode,
@@ -72,7 +72,10 @@ pub enum SharedCommand {
     },
 }
 
-pub enum Command {
+pub(crate) enum Command {
+    Close {
+        reply: Reply,
+    },
     Submit {
         prompt: String,
         /// 用户随提示词提交的图片附件（Base64）
@@ -122,13 +125,17 @@ pub enum Command {
 
 pub struct ManagedSession {
     pub id: String,
-    pub commands: mpsc::Sender<Command>,
-    pub view: watch::Receiver<Arc<SessionView>>,
+    pub(crate) commands: mpsc::Sender<Command>,
+    pub(crate) view: watch::Receiver<Arc<SessionView>>,
     /// 已完成轮次计数（每次 finish_turn 递增），供外部等待轮次结束
-    pub turns: watch::Receiver<CompletedTurn>,
+    pub(crate) turns: watch::Receiver<CompletedTurn>,
 }
 
 impl ManagedSession {
+    pub(crate) async fn close(&self) -> Result<(), String> {
+        self.request(|reply| Command::Close { reply }).await
+    }
+
     pub async fn watch_delivery(
         &self,
         session_id: String,
@@ -212,7 +219,10 @@ impl ManagedSession {
         }
     }
 
-    pub async fn request(&self, command: impl FnOnce(Reply) -> Command) -> Result<(), String> {
+    pub(crate) async fn request(
+        &self,
+        command: impl FnOnce(Reply) -> Command,
+    ) -> Result<(), String> {
         let (tx, rx) = oneshot::channel();
         self.commands
             .send(command(tx))

@@ -14,10 +14,10 @@ pub(crate) struct RenderState {
 }
 
 pub(crate) struct ChatRender<'a> {
-    pub notices: &'a [crate::harness::Notice],
+    pub notices: &'a [vva_core::harness::Notice],
     pub shell_outputs:
-        &'a std::collections::BTreeMap<String, std::sync::Arc<crate::model::ShellOutput>>,
-    pub tasks: &'a std::collections::BTreeMap<String, crate::model::BackgroundTask>,
+        &'a std::collections::BTreeMap<String, std::sync::Arc<vva_core::model::ShellOutput>>,
+    pub tasks: &'a std::collections::BTreeMap<String, vva_core::model::BackgroundTask>,
     pub query_owners: &'a HashMap<String, String>,
     pub lines: &'a mut Vec<Line<'static>>,
     pub links: &'a mut Vec<LinkRegion>,

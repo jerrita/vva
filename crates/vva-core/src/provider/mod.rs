@@ -10,7 +10,8 @@ pub mod gemini;
 pub mod http;
 #[cfg(feature = "response")]
 pub mod response;
-pub mod sse;
+#[cfg(any(feature = "response", feature = "anthropic", feature = "gemini"))]
+pub(crate) mod sse;
 #[cfg(feature = "response")]
 mod websocket;
 

@@ -526,7 +526,7 @@ pub(crate) fn push_empty_hint(render: &mut ChatRender<'_>) {
 
 pub(crate) fn append_turn_outcome(render: &mut ChatRender<'_>, turn_id: &str) {
     for notice in render.notices {
-        if matches!(&notice.kind, crate::harness::NoticeKind::Turn { turn_id: id, .. } if id == turn_id)
+        if matches!(&notice.kind, vva_core::harness::NoticeKind::Turn { turn_id: id, .. } if id == turn_id)
         {
             render.lines.push(Line::from(""));
             for text in notice.text.lines() {

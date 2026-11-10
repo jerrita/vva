@@ -4,11 +4,12 @@ use sha2::{Digest, Sha256};
 
 use super::model::{AppConfig, ModelConfig, ProviderConfig};
 use super::parser::ConfigError;
-use crate::provider::InputCapabilities;
-use crate::provider::anthropic::AnthropicProvider;
-use crate::provider::gemini::GeminiProvider;
-use crate::provider::response::ResponseProvider;
-use crate::provider::{Provider, ProviderType};
+use vva_core::provider::InputCapabilities;
+use vva_core::provider::Provider;
+use vva_core::provider::ProviderType;
+use vva_core::provider::anthropic::AnthropicProvider;
+use vva_core::provider::gemini::GeminiProvider;
+use vva_core::provider::response::ResponseProvider;
 
 pub struct ResolvedModel<'a> {
     pub provider_id: String,

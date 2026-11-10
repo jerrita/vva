@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::Origin;
+use crate::app::records::Origin;
 
 const BINDINGS_FILE: &str = "bindings.json";
 const MESSAGE_INDEX_FILE: &str = "message_index.jsonl";

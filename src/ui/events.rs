@@ -692,7 +692,7 @@ async fn handle_escape(app: &mut App) {
                 .view
                 .notices
                 .iter()
-                .filter(|notice| matches!(notice.kind, crate::harness::NoticeKind::Session))
+                .filter(|notice| matches!(notice.kind, vva_core::harness::NoticeKind::Session))
                 .map(|notice| notice.id.clone())
                 .collect::<Vec<_>>();
             for id in ids {

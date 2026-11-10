@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::scheduler::{RawTask, ScheduleStore, Task, describe_task, format_time, now_minute};
-use crate::tools::{Tool, parse_args};
+use vva_core::tools::Tool;
+use vva_core::tools::parse_args;
 
 struct ScheduleTool {
     store: Arc<ScheduleStore>,
@@ -93,8 +94,8 @@ impl Tool for ScheduleTool {
          chats configured with /sethome; remaining bindings do not select recipients."
     }
 
-    fn input(&self) -> crate::model::ToolInput {
-        crate::model::ToolInput::Json({
+    fn input(&self) -> vva_core::model::ToolInput {
+        vva_core::model::ToolInput::Json({
             serde_json::json!({
                 "type": "object",
                 "properties": {

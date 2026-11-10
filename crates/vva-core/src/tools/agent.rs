@@ -256,7 +256,7 @@ impl AgentTool {
 const SUBAGENT_REMINDER_TEXT_BYTES: usize = 8 * 1024;
 
 /// 后台子代理完成通知轮次正文：状态行 + 截尾最终消息，background-task reminder 包裹
-pub fn format_session_reminder(report: &SubagentReport, background: bool) -> String {
+pub(crate) fn format_session_reminder(report: &SubagentReport, background: bool) -> String {
     let mut notification = if background {
         format!(
             "Background agent {} ({}) finished.",
@@ -294,7 +294,7 @@ pub fn format_session_reminder(report: &SubagentReport, background: bool) -> Str
 }
 
 /// UI 使用完整最终回复，模型 reminder 保持独立的上下文预算。
-pub fn subagent_task(report: &SubagentReport) -> crate::model::BackgroundTask {
+pub(crate) fn subagent_task(report: &SubagentReport) -> crate::model::BackgroundTask {
     use crate::model::{BackgroundTask, BackgroundTaskStatus};
     let (status, output) = if let Some(error) = &report.error {
         (BackgroundTaskStatus::Failed, error.clone())

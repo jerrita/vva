@@ -44,7 +44,7 @@ impl App {
     }
 
     /// 接管一个会话句柄：重置界面局部状态并订阅其视图（切换、新建共用）
-    pub fn attach_session(&mut self, session: std::sync::Arc<crate::harness::ManagedSession>) {
+    pub fn attach_session(&mut self, session: std::sync::Arc<crate::app::handle::ManagedSession>) {
         self.selected_input = None;
         self.active_session = session;
         self.view_rx = self.active_session.subscribe();
@@ -246,7 +246,7 @@ impl App {
     pub async fn answer_user(
         &mut self,
         request_id: String,
-        answers: Vec<crate::model::UserAnswer>,
+        answers: Vec<vva_core::model::UserAnswer>,
     ) {
         self.modal = ActiveModal::None;
         if let Err(error) = self.active_session.answer_user(request_id, answers).await {
@@ -387,7 +387,7 @@ impl App {
         let Some(turn) = self.view.session.turns.get(hit.turn_index) else {
             return;
         };
-        if turn.role != crate::model::Role::User {
+        if turn.role != vva_core::model::Role::User {
             return;
         }
         self.modal = ActiveModal::MessageAction(MessageActionState::new(
@@ -416,7 +416,7 @@ impl App {
             .title
             .clone()
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| crate::model::provisional_title(&prompt));
+            .unwrap_or_else(|| vva_core::model::provisional_title(&prompt));
         self.modal = ActiveModal::ForkTitle(ForkTitleState::new(turn_index, prompt, &default));
     }
 

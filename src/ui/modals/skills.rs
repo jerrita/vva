@@ -1,5 +1,5 @@
 use super::fuzzy_matches;
-use crate::skills::Skill;
+use vva_core::skills::Skill;
 
 /// /skills 模态弹窗状态机：浏览已发现的 Agent Skills（只读，无确认动作）
 #[derive(Debug, Clone)]
@@ -51,9 +51,9 @@ impl_filterable_modal!(SkillsModalState, filtered_skills);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::SkillSource;
     use crate::ui::modals::FilterableModal;
     use std::path::PathBuf;
+    use vva_core::skills::SkillSource;
 
     fn skill(name: &str, description: &str, source: SkillSource) -> Skill {
         Skill {

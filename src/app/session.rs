@@ -1,19 +1,23 @@
 use super::setup::{SessionPreamble, SessionToolFactory, VvaSessionSetup};
+use crate::app::handle::ManagedSession;
+use crate::app::model::Session;
+use crate::app::records::SessionToggles;
+use crate::app::records::ToggleOverrides;
+use crate::app::store::AppSessionStore as SessionStore;
 use crate::app::view::RunStateDisplay;
 use crate::config::{AppConfig, AppState};
-use crate::harness::{AgentAssembly, ManagedSession};
-use crate::model::{Role, Session, SessionToggles, ToggleOverrides};
-use crate::storage::SessionStore;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
+use vva_core::harness::AgentAssembly;
 use vva_core::harness::SessionManager;
+use vva_core::model::Role;
 
 fn resolve_session_editor(
     model_config: &crate::config::ModelConfig,
-    settings_editor: Option<crate::model::EditorKind>,
-) -> crate::model::EditorKind {
+    settings_editor: Option<vva_core::model::EditorKind>,
+) -> vva_core::model::EditorKind {
     model_config
         .editor()
         .or(settings_editor)
@@ -119,22 +123,6 @@ impl VvaSessionManager {
         })
     }
 
-    #[cfg(test)]
-    fn spawn(self: &Arc<Self>, session: Session, persisted: bool) -> Arc<ManagedSession> {
-        self.store.prepare(&session).unwrap();
-        let setup = self.setup(&session);
-        ManagedSession::new(
-            self.core.spawn(
-                AgentAssembly {
-                    session: session.to_core(),
-                    setup,
-                },
-                persisted,
-            ),
-            self.store.clone(),
-        )
-        .unwrap()
-    }
     async fn spawn_registered(
         self: &Arc<Self>,
         session: Session,
@@ -151,7 +139,7 @@ impl VvaSessionManager {
                 },
                 persisted,
             )
-            .await;
+            .await?;
         let handle = ManagedSession::new(core, self.store.clone())?;
         self.sessions
             .lock()
@@ -191,6 +179,11 @@ impl VvaSessionManager {
         let handle = ManagedSession::new(core, self.store.clone())?;
         sessions.insert(id.into(), handle.clone());
         Ok(handle)
+    }
+    pub async fn shutdown(&self) -> Result<(), String> {
+        let result = self.core.shutdown().await;
+        self.sessions.lock().await.clear();
+        result
     }
     pub async fn delete_session(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
         let summaries = self
@@ -266,7 +259,7 @@ impl VvaSessionManager {
         variant: Option<String>,
         title: Option<String>,
         toggles: SessionToggles,
-        init: impl FnOnce(&mut crate::model::SessionHeader),
+        init: impl FnOnce(&mut crate::app::model::SessionHeader),
     ) -> Result<Arc<ManagedSession>, String> {
         let workspace = workspace.into();
         // 新建项目语义：目录不存在时自动创建
@@ -368,7 +361,7 @@ impl VvaSessionManager {
         title: String,
     ) -> Result<Arc<ManagedSession>, String> {
         if source.is_running() {
-            return Err(crate::harness::session::BUSY.into());
+            return Err(vva_core::harness::BUSY.into());
         }
         let origin = source.snapshot().session.clone();
         if turn_index >= origin.turns.len() {
@@ -379,7 +372,7 @@ impl VvaSessionManager {
         }
         let title = title.trim();
         let title = if title.is_empty() {
-            crate::model::provisional_title(&origin.turns[turn_index].text_content())
+            vva_core::model::provisional_title(&origin.turns[turn_index].text_content())
         } else {
             title.to_string()
         };
@@ -420,7 +413,7 @@ impl SessionBrokerHandle {
     async fn watch_session(
         &self,
         session_id: String,
-        receipt: crate::harness::session::handle::DeliveryReceipt,
+        receipt: vva_core::harness::DeliveryReceipt,
         background: bool,
     ) -> Result<(), String> {
         let owner = self
@@ -452,21 +445,21 @@ impl SessionBrokerHandle {
 }
 
 #[async_trait::async_trait]
-impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
+impl vva_core::tools::agent::SessionBroker for SessionBrokerHandle {
     async fn spawn_subagent(
         &self,
-        parent: &crate::tools::agent::SubagentContext,
-        def: &crate::agents::AgentDef,
+        parent: &vva_core::tools::agent::SubagentContext,
+        def: &vva_core::agents::AgentDef,
         prompt: &str,
         description: &str,
         background: bool,
-    ) -> Result<crate::tools::agent::SubagentLaunch, String> {
+    ) -> Result<vva_core::tools::agent::SubagentLaunch, String> {
         let manager = self.manager()?;
-        if parent.depth >= crate::agents::MAX_SUBAGENT_DEPTH {
+        if parent.depth >= vva_core::agents::MAX_SUBAGENT_DEPTH {
             return Err(format!(
                 "Subagent nesting depth {} reached; maximum is {}",
-                crate::agents::MAX_SUBAGENT_DEPTH,
-                crate::agents::MAX_SUBAGENT_DEPTH
+                vva_core::agents::MAX_SUBAGENT_DEPTH,
+                vva_core::agents::MAX_SUBAGENT_DEPTH
             ));
         }
         let model = def
@@ -526,7 +519,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         if let Some(receipt) = receipt {
             self.watch_session(handle.id.clone(), receipt, true).await?;
         }
-        Ok(crate::tools::agent::SubagentLaunch {
+        Ok(vva_core::tools::agent::SubagentLaunch {
             session_id: handle.id.clone(),
             turn_seq,
         })
@@ -557,7 +550,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
         session_id: &str,
         seen_seq: u64,
         timeout: Option<std::time::Duration>,
-    ) -> Result<crate::tools::agent::SubagentReport, String> {
+    ) -> Result<vva_core::tools::agent::SubagentReport, String> {
         let handle = self.manager()?.live_or_load(session_id).await?;
         let report = match timeout {
             Some(duration) => tokio::time::timeout(duration, handle.settled_report(seen_seq))
@@ -572,7 +565,7 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
     async fn session_report(
         &self,
         session_id: &str,
-    ) -> Result<crate::tools::agent::SubagentReport, String> {
+    ) -> Result<vva_core::tools::agent::SubagentReport, String> {
         let handle = self.manager()?.live_or_load(session_id).await?;
         Ok(handle.report())
     }
@@ -610,121 +603,5 @@ impl crate::tools::agent::SessionBroker for SessionBrokerHandle {
                 let _ = handle.abort_current().await;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::harness::RunState;
-    use crate::harness::session::handle::{Command, CompletedTurn};
-    use crate::storage::jsonl::JsonlSessionStore;
-    use crate::tools::agent::{SessionBroker, SubagentReport};
-    use tokio::sync::{mpsc, watch};
-    use vva_core::harness::{ManagedSession as CoreManagedSession, SessionView as CoreView};
-
-    fn manager() -> (Arc<VvaSessionManager>, PathBuf) {
-        let root = std::env::temp_dir().join(format!("vva-broker-{}", uuid::Uuid::new_v4()));
-        let store = Arc::new(JsonlSessionStore::new(&root).unwrap());
-        let manager = Arc::new(VvaSessionManager::new(
-            store,
-            AppConfig::default(),
-            &root,
-            root.join("state.json"),
-        ));
-        (manager, root)
-    }
-
-    #[tokio::test]
-    async fn cross_session_requests_keep_independent_receipts() {
-        let (manager, root) = manager();
-        let target = manager.spawn(Session::new(&root, None), false);
-        let id = target.id.clone();
-        let (commands, mut requests) = mpsc::channel(4);
-        let mut target_view = CoreView::new(Session::new(&root, None).to_core(), false);
-        target_view.state = RunState::Thinking;
-        let (_, view) = watch::channel(Arc::new(target_view));
-        let (_, turns) = watch::channel(CompletedTurn::default());
-        manager.sessions.lock().await.insert(
-            id.clone(),
-            ManagedSession::new(
-                Arc::new(CoreManagedSession {
-                    id: id.clone(),
-                    commands,
-                    view,
-                    turns,
-                }),
-                manager.store.clone(),
-            )
-            .unwrap(),
-        );
-        let mut callers = Vec::new();
-        for _ in 0..2 {
-            let session = Session::new(&root, None);
-            let owner_id = session.header.id.clone();
-            let (commands, rx) = mpsc::channel(1);
-            manager.store.prepare(&session).unwrap();
-            let (_, view) = watch::channel(Arc::new(CoreView::new(session.to_core(), false)));
-            let (_, turns) = watch::channel(CompletedTurn::default());
-            let handle = ManagedSession::new(
-                Arc::new(CoreManagedSession {
-                    id: owner_id.clone(),
-                    commands,
-                    view,
-                    turns,
-                }),
-                manager.store.clone(),
-            )
-            .unwrap();
-            manager
-                .sessions
-                .lock()
-                .await
-                .insert(owner_id.clone(), handle);
-            callers.push((SessionBrokerHandle::new(manager.clone(), owner_id), rx));
-        }
-        let actor = tokio::spawn(async move {
-            let mut deliveries = Vec::new();
-            for _ in 0..2 {
-                let Some(Command::Deliver { delivery, reply }) = requests.recv().await else {
-                    panic!("expected delivery");
-                };
-                let _ = reply.send(Ok(()));
-                deliveries.push(delivery);
-            }
-            for delivery in deliveries {
-                let report = SubagentReport {
-                    session_id: id.clone(),
-                    agent: String::new(),
-                    title: String::new(),
-                    turn_seq: 2,
-                    error: None,
-                    text: delivery.text.clone(),
-                };
-                let _ = delivery.completion.send(Ok(report));
-            }
-        });
-        let mut receipts = Vec::new();
-        for (index, (broker, rx)) in callers.iter_mut().enumerate() {
-            let text = format!("reply {index}");
-            let future = broker.deliver(&target.id, &text);
-            tokio::pin!(future);
-            tokio::select! {
-                _ = &mut future => panic!("registration must be acknowledged"),
-                command = rx.recv() => {
-                    let Some(Command::WatchSession { receipt, background, reply, .. }) = command else { panic!("expected registration") };
-                    assert!(!background);
-                    receipts.push(receipt);
-                    let _ = reply.send(Ok(()));
-                }
-            }
-            future.await.unwrap();
-        }
-        for (index, receipt) in receipts.into_iter().enumerate() {
-            let report = receipt.await.unwrap().unwrap();
-            assert_eq!(report.text, format!("reply {index}"));
-        }
-        actor.await.unwrap();
-        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -13,7 +13,7 @@ pub fn tool_allowed(allowed: &[String], name: &str) -> bool {
 
 pub mod agent;
 #[cfg(feature = "filesystem-tools")]
-pub mod apply_patch;
+pub(crate) mod apply_patch;
 pub mod ask_user;
 pub mod background;
 #[cfg(feature = "filesystem-tools")]
@@ -85,10 +85,11 @@ pub(crate) fn result_with_task(
     }
 }
 
-pub const MAX_INLINE_OUTPUT_BYTES: usize = 32 * 1024;
+pub(crate) const MAX_INLINE_OUTPUT_BYTES: usize = 32 * 1024;
 
 /// 工具输出的内联预算：为包装文案预留的余量。
-pub const INLINE_OUTPUT_BUDGET: usize = MAX_INLINE_OUTPUT_BYTES - 256;
+#[cfg(any(feature = "filesystem-tools", feature = "shell-tools"))]
+pub(crate) const INLINE_OUTPUT_BUDGET: usize = MAX_INLINE_OUTPUT_BYTES - 256;
 
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -141,7 +142,8 @@ impl ToolRegistry {
 
     /// 按会话绑定的编辑协议注册 Read / Glob / Grep 与对应编辑工具。
     #[cfg(feature = "filesystem-tools")]
-    pub fn with_editor(
+    #[cfg(test)]
+    pub(crate) fn with_editor(
         workspace: &Path,
         tool_outputs: Option<PathBuf>,
         editor: EditorKind,

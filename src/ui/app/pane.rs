@@ -5,13 +5,16 @@ use std::ops::Range;
 use std::sync::{Arc, Weak};
 
 use super::selection::SelectionTracker;
-use crate::model::{ContentPart, Role, Session, Turn};
+use crate::app::model::Session;
 use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
     ChatRender, RenderState, append_collapsed_response, append_parts, append_turn_outcome,
     collect_query_owners, collect_tool_results, extract_selected_text, is_empty_session,
     push_tool_call,
 };
+use vva_core::model::ContentPart;
+use vva_core::model::Role;
+use vva_core::model::Turn;
 
 use super::draft::DraftRenderCache;
 
@@ -170,10 +173,10 @@ pub struct ChatCache {
     width: usize,
     thinking_concise: bool,
     responses_collapsed: bool,
-    notices: Vec<crate::harness::Notice>,
-    shell_outputs: Arc<std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>>,
-    shell_calls: HashMap<String, crate::model::ToolCall>,
-    tasks: Arc<std::collections::BTreeMap<String, crate::model::BackgroundTask>>,
+    notices: Vec<vva_core::harness::Notice>,
+    shell_outputs: Arc<std::collections::BTreeMap<String, Arc<vva_core::model::ShellOutput>>>,
+    shell_calls: HashMap<String, vva_core::model::ToolCall>,
+    tasks: Arc<std::collections::BTreeMap<String, vva_core::model::BackgroundTask>>,
     query_owners: HashMap<String, String>,
     history_lines: usize,
     render_state: RenderState,
@@ -326,7 +329,7 @@ impl super::App {
                 .flat_map(|turn| &turn.messages)
                 .flat_map(|message| &message.parts)
                 .filter_map(|part| match part {
-                    ContentPart::ToolCall(call) if call.name == crate::tools::names::SHELL => {
+                    ContentPart::ToolCall(call) if call.name == vva_core::tools::names::SHELL => {
                         Some((call.id.clone(), call.clone()))
                     }
                     _ => None,
@@ -379,7 +382,8 @@ impl super::App {
                                 })
                                 .filter(|id| {
                                     self.view.background_tasks.get(*id).is_some_and(|task| {
-                                        task.status == crate::model::BackgroundTaskStatus::Running
+                                        task.status
+                                            == vva_core::model::BackgroundTaskStatus::Running
                                     })
                                 })
                                 .count(),

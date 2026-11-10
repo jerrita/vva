@@ -3,10 +3,10 @@ pub use assembly::{
     AgentAssembly, ExecutionPlan, FixedSetup, PreparedInput, SessionServices, SessionSetup,
     ToolExecution,
 };
-pub mod session;
+pub(crate) mod session;
 
 pub use crate::event::AgentEvent;
 pub use session::{
-    InputMode, ManagedSession, Notice, NoticeKind, PendingInput, RunState, SessionManager,
-    SessionView,
+    BUSY, CompletedTurn, DeliveryReceipt, InputMode, ManagedSession, Notice, NoticeKind,
+    PendingInput, RunState, SessionManager, SessionView,
 };
