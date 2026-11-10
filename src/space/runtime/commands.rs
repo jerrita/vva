@@ -6,9 +6,9 @@ use chrono::Utc;
 
 use super::mode_model::check_mode_model;
 use super::{DeliveryTarget, Runtime};
+use crate::app::handle::ManagedSession;
+use crate::app::records::ToggleOverrides;
 use crate::app::stats::compute_stats;
-use crate::harness::ManagedSession;
-use crate::model::ToggleOverrides;
 use crate::space::binding::is_group_binding;
 use crate::space::channel::Inbound;
 use crate::space::command::{self, Command};
@@ -427,8 +427,8 @@ impl Runtime {
             ["名称", "来源", "描述"],
             skills.iter().map(|s| {
                 let source = match s.source {
-                    crate::skills::SkillSource::Global => "全局",
-                    crate::skills::SkillSource::Project => "项目",
+                    vva_core::skills::SkillSource::Global => "全局",
+                    vva_core::skills::SkillSource::Project => "项目",
                 };
                 [
                     s.name.clone(),

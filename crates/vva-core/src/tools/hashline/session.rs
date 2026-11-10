@@ -37,7 +37,7 @@ impl HashlineSession {
             .map_err(|_| "hashline snapshot lock poisoned".into())
     }
 
-    pub fn record(
+    pub(crate) fn record(
         &self,
         canonical: PathBuf,
         text: &str,
@@ -102,7 +102,7 @@ impl HashlineSession {
     }
 }
 
-pub fn file_tag(text: &str) -> String {
+pub(crate) fn file_tag(text: &str) -> String {
     Sha256::digest(text.as_bytes())[..2]
         .iter()
         .map(|byte| format!("{byte:02X}"))

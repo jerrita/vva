@@ -8,14 +8,14 @@ mod read;
 mod tests;
 mod write;
 
-pub use edit::EditTool;
+pub(crate) use edit::EditTool;
 pub(crate) use edit::{
     ChangedRange, EditPlan, commit_text_edit, format_edit_result, persist_edit, with_edit_locks,
 };
-pub use glob::GlobTool;
-pub use grep::GrepTool;
-pub use read::ReadTool;
-pub use write::WriteTool;
+pub(crate) use glob::GlobTool;
+pub(crate) use grep::GrepTool;
+pub(crate) use read::ReadTool;
+pub(crate) use write::WriteTool;
 
 use ::glob::{MatchOptions, Pattern};
 use std::fs::{self, OpenOptions};

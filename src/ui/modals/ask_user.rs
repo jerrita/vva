@@ -1,4 +1,5 @@
-use crate::model::{UserAnswer, UserQuestionRequest};
+use vva_core::model::UserAnswer;
+use vva_core::model::UserQuestionRequest;
 
 #[derive(Debug, Clone)]
 pub struct AskUserModalState {
@@ -23,7 +24,7 @@ impl AskUserModalState {
         }
     }
 
-    pub fn current_question(&self) -> &crate::model::UserQuestion {
+    pub fn current_question(&self) -> &vva_core::model::UserQuestion {
         &self.request.questions[self.question_index]
     }
 

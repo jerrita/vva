@@ -4,7 +4,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::skills::{Skill, SkillSource};
 use crate::ui::modals::SkillsModalState;
 use crate::ui::text::{pad_to_width, truncate};
 use crate::ui::views::fg;
@@ -12,6 +11,8 @@ use crate::ui::views::modal_shell::{
     ModalShellSpec, filter_line, footer_hints, list_row_affix, render_modal_list,
     render_modal_shell,
 };
+use vva_core::skills::Skill;
+use vva_core::skills::SkillSource;
 
 /// 渲染 /skills 模态弹窗：只读浏览已发现的 Agent Skills；
 /// 返回列表区几何供鼠标命中测试

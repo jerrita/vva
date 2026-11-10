@@ -10,8 +10,10 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::markdown;
-use crate::model::{ContentPart, Role, Session};
-use crate::tools::names;
+use crate::app::model::Session;
+use vva_core::model::ContentPart;
+use vva_core::model::Role;
+use vva_core::tools::names;
 
 /// 每类条目在单条汇报中的展示上限，超出时单独列出剩余数量与总数
 const MAX_FILES: usize = 8;
@@ -264,9 +266,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ToolCall;
-    use crate::model::{Message, Turn};
     use std::sync::Mutex;
+    use vva_core::model::Message;
+    use vva_core::model::ToolCall;
+    use vva_core::model::Turn;
 
     fn session(root: &str) -> Session {
         Session::new(root, None)

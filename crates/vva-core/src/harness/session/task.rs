@@ -2,67 +2,79 @@ use super::*;
 use crate::tools::names;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TurnOutcome {
+pub(crate) enum TurnOutcome {
     Completed,
     Aborted,
 }
 
-/// 会话任务的外部依赖
-pub struct TaskDeps {
-    pub store: Arc<dyn SessionStore>,
-    pub setup: Arc<dyn crate::harness::SessionSetup>,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopMode {
+    Abort,
+    Delete,
+    Close,
 }
 
-pub struct PendingSubagentCompletion {
+/// 会话任务的外部依赖
+pub(crate) struct TaskDeps {
+    pub(crate) store: Arc<dyn SessionStore>,
+    pub(crate) setup: Arc<dyn crate::harness::SessionSetup>,
+}
+
+pub(crate) struct PendingSubagentCompletion {
     task: Option<crate::model::BackgroundTask>,
     reminder: String,
 }
 
-pub struct SessionTask {
+pub(crate) struct SessionTask {
     #[cfg(feature = "filesystem-tools")]
-    pub hashline: Arc<crate::tools::hashline::HashlineSession>,
-    pub view: SessionView,
-    pub view_tx: watch::Sender<Arc<SessionView>>,
-    pub store: Arc<dyn SessionStore>,
-    pub setup: Arc<dyn crate::harness::SessionSetup>,
-    pub commands: mpsc::WeakSender<Command>,
+    pub(crate) hashline: Arc<crate::tools::hashline::HashlineSession>,
+    pub(crate) view: SessionView,
+    pub(crate) view_tx: watch::Sender<Arc<SessionView>>,
+    pub(crate) store: Arc<dyn SessionStore>,
+    pub(crate) setup: Arc<dyn crate::harness::SessionSetup>,
+    pub(crate) commands: mpsc::WeakSender<Command>,
     /// 流式增量只置脏，由 drive 的节流 tick 或结构性变化触发发布
-    pub dirty: bool,
-    pub cli: Option<mpsc::Sender<AgentEvent>>,
+    pub(crate) dirty: bool,
+    pub(crate) cli: Option<mpsc::Sender<AgentEvent>>,
     /// 待处理的停止请求 (是否删除, 应答)，当前轮次结束后执行
-    pub stop_request: Option<(bool, Reply)>,
-    pub title_task: Option<tokio::task::JoinHandle<()>>,
+    pub(crate) stop_request: Option<(StopMode, Reply)>,
+    close_reply: Option<Reply>,
+    receipt_tasks: tokio::task::JoinSet<()>,
+    pub(crate) title_task: Option<tokio::task::JoinHandle<()>>,
     /// 响应内文本标识到草稿部件的映射，供增量与引用共同定位。
-    pub text_parts: HashMap<String, usize>,
-    pub ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
-    pub ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
-    pub pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
+    pub(crate) text_parts: HashMap<String, usize>,
+    pub(crate) ask_user_tx: mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
+    pub(crate) ask_user_rx: mpsc::Receiver<crate::tools::ask_user::AskUserRequest>,
+    pub(crate) pending_user_question: Option<crate::tools::ask_user::AskUserRequest>,
     /// 会话级 Shell 输出采集与合并唤醒。
-    pub shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
+    pub(crate) shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
     output_pending: bool,
     last_output_publish: tokio::time::Instant,
-    pub shell_calls: std::collections::HashSet<String>,
+    pub(crate) shell_calls: std::collections::HashSet<String>,
     /// 会话级后台任务注册表（Shell run_in_background），随会话结束回收
-    pub tasks: Arc<crate::tools::background::BackgroundTasks>,
+    pub(crate) tasks: Arc<crate::tools::background::BackgroundTasks>,
     /// 已完成、尚未注入会话的后台任务 id（轮次间隙注入）
-    pub task_completions: Vec<String>,
+    pub(crate) task_completions: Vec<String>,
     /// 已完成、尚未注入会话的后台子代理报告（捕获完成瞬间的最终消息）
-    pub subagent_completions: Vec<PendingSubagentCompletion>,
+    pub(crate) subagent_completions: Vec<PendingSubagentCompletion>,
     /// 运行中到达的程序化消息及其独立完成回执
-    pub pending_deliveries: Vec<PendingDelivery>,
+    pub(crate) pending_deliveries: Vec<PendingDelivery>,
     /// 已执行投递的回执，保留到异步工作及其续跑完成。
-    pub active_deliveries: Vec<PendingDelivery>,
-    pub async_count: usize,
-    pub auto_resume: bool,
+    pub(crate) active_deliveries: Vec<PendingDelivery>,
+    pub(crate) async_count: usize,
+    pub(crate) auto_resume: bool,
     /// 已完成轮次计数通道：每次 finish_turn 递增，供外部等待轮次结束
-    pub turn_tx: watch::Sender<CompletedTurn>,
-    pub turn_start: usize,
+    pub(crate) turn_tx: watch::Sender<CompletedTurn>,
+    pub(crate) turn_start: usize,
     /// 运行中到达、待轮次间隙追加的提示（只追加，不触发轮次）
-    pub pending_notes: Vec<String>,
+    pub(crate) pending_notes: Vec<String>,
 }
 
 /// 提交前校验上传附件：避免不支持模态的模型留下无效轮次
-pub fn validate_attachments(engine: &ExecutionPlan, parts: &[ContentPart]) -> Result<(), String> {
+pub(crate) fn validate_attachments(
+    engine: &ExecutionPlan,
+    parts: &[ContentPart],
+) -> Result<(), String> {
     for part in parts {
         engine.inputs.validate_part(part)?;
     }
@@ -72,7 +84,7 @@ pub fn validate_attachments(engine: &ExecutionPlan, parts: &[ContentPart]) -> Re
 impl SessionTask {
     /// 构造任务及其发布通道：返回 (任务, 视图订阅, 已完成轮次订阅)；
     /// 后台任务完成经 `commands` 弱引用可靠回投；会话关闭后停止投递。
-    pub fn new(
+    pub(crate) fn new(
         session: Session,
         persisted: bool,
         deps: TaskDeps,
@@ -111,6 +123,8 @@ impl SessionTask {
             dirty: false,
             cli: None,
             stop_request: None,
+            close_reply: None,
+            receipt_tasks: tokio::task::JoinSet::new(),
             title_task: None,
             text_parts: HashMap::new(),
             ask_user_tx,
@@ -148,7 +162,7 @@ impl SessionTask {
         }
     }
 
-    pub fn publish(&mut self) {
+    pub(crate) fn publish(&mut self) {
         self.dirty = false;
         self.view.revision += 1;
         self.view_tx.send_replace(Arc::new(self.view.clone()));
@@ -159,7 +173,7 @@ impl SessionTask {
     }
 
     /// 流式增量期间累积改动，由节流点统一发布，避免每个 token 复制整份草稿
-    pub fn publish_throttled(&mut self) {
+    pub(crate) fn publish_throttled(&mut self) {
         if self.dirty {
             self.publish();
         }
@@ -222,7 +236,7 @@ impl SessionTask {
         }
     }
 
-    pub async fn event(&mut self, event: AgentEvent) {
+    pub(crate) async fn event(&mut self, event: AgentEvent) {
         // 文本与思考增量按节流发布，其余事件改变结构或状态，立即发布
         let is_delta = matches!(
             event,
@@ -320,7 +334,7 @@ impl SessionTask {
         }
     }
 
-    pub async fn append(&mut self, turn: Turn) -> Result<(), String> {
+    pub(crate) async fn append(&mut self, turn: Turn) -> Result<(), String> {
         self.store
             .append_turn(&self.view.session.header.id, &turn)
             .await
@@ -346,7 +360,7 @@ impl SessionTask {
         Ok(())
     }
 
-    pub async fn configure(
+    pub(crate) async fn configure(
         &mut self,
         model: Option<String>,
         variant: Option<Option<String>>,
@@ -457,11 +471,11 @@ impl SessionTask {
         Ok(plan)
     }
 
-    pub async fn build_engine(&self) -> Result<ExecutionPlan, String> {
+    pub(crate) async fn build_engine(&self) -> Result<ExecutionPlan, String> {
         self.build_engine_for(&self.view.session).await
     }
 
-    pub async fn start(
+    pub(crate) async fn start(
         &mut self,
         prompt: &str,
         images: Vec<ContentPart>,
@@ -469,7 +483,7 @@ impl SessionTask {
         self.append_input(prompt, images, false).await
     }
 
-    pub async fn append_input(
+    pub(crate) async fn append_input(
         &mut self,
         prompt: &str,
         images: Vec<ContentPart>,
@@ -557,7 +571,7 @@ impl SessionTask {
     }
 
     /// 后台任务完成：原位发布状态，id 入队等待安全轮隙持久化并投递模型。
-    pub async fn queue_task_completion(&mut self, task_id: String) {
+    pub(crate) async fn queue_task_completion(&mut self, task_id: String) {
         self.flush_shell_outputs().await;
         if let Some(snapshot) = self.tasks.snapshot(&task_id) {
             self.event(AgentEvent::BackgroundTaskUpdated(snapshot.task()))
@@ -569,7 +583,7 @@ impl SessionTask {
     }
 
     /// 将已完成后台任务的完整通知作为用户轮次注入会话（下一次模型调用可见）
-    pub async fn drain_task_completions(&mut self) -> Result<(), String> {
+    pub(crate) async fn drain_task_completions(&mut self) -> Result<(), String> {
         while let Some(task_id) = self.task_completions.first().cloned() {
             match self.tasks.snapshot(&task_id) {
                 Some(snapshot) => {
@@ -587,7 +601,7 @@ impl SessionTask {
     }
 
     /// 追加提示（只落盘，不起轮次）：空闲直接追加，运行中入队等轮次间隙
-    pub async fn note(&mut self, text: String) -> Result<(), String> {
+    pub(crate) async fn note(&mut self, text: String) -> Result<(), String> {
         if !self.view.persisted {
             return Err("Session has no persisted history to append a note to".into());
         }
@@ -596,7 +610,7 @@ impl SessionTask {
     }
 
     /// 将运行中排队的提示依序追加到历史末尾
-    pub async fn drain_notes(&mut self) -> Result<(), String> {
+    pub(crate) async fn drain_notes(&mut self) -> Result<(), String> {
         for text in std::mem::take(&mut self.pending_notes) {
             tracing::debug!("冲刷排队提示: {} 字符", text.chars().count());
             self.note(text).await?;
@@ -605,7 +619,7 @@ impl SessionTask {
     }
 
     /// 登记与 watcher 创建在会话内一起完成，工具取消不会留下无回投的计数。
-    pub fn watch_session(
+    pub(crate) fn watch_session(
         &mut self,
         session_id: String,
         receipt: super::handle::DeliveryReceipt,
@@ -614,7 +628,7 @@ impl SessionTask {
         self.async_count += 1;
         self.publish();
         let commands = self.commands.clone();
-        tokio::spawn(async move {
+        self.receipt_tasks.spawn(async move {
             let result = receipt
                 .await
                 .map_err(|_| "Session is closed".to_string())
@@ -636,7 +650,7 @@ impl SessionTask {
     }
 
     /// 会话结果在投递时已经固定，首轮后台委派同时更新原工具块。
-    pub async fn queue_session_completion(
+    pub(crate) async fn queue_session_completion(
         &mut self,
         report: crate::tools::agent::SubagentReport,
         background: bool,
@@ -665,7 +679,7 @@ impl SessionTask {
     }
 
     /// 在工具结果完整配对后追加会话结果，随后交给模型。
-    pub async fn drain_subagent_completions(&mut self) -> Result<(), String> {
+    pub(crate) async fn drain_subagent_completions(&mut self) -> Result<(), String> {
         while let Some(pending) = self.subagent_completions.first() {
             let mut turn = Turn::new(Role::User, vec![Message::text(&pending.reminder)]);
             turn.background_task = pending.task.clone();
@@ -677,7 +691,7 @@ impl SessionTask {
 
     /// 网络与工具等待期间处理设置和取消；磁盘提交在本任务中顺序完成。
     /// 流式增量以 PUBLISH_INTERVAL 为节奏发布，慢于终端重绘频率即无可见差异。
-    pub async fn drive<T>(
+    pub(crate) async fn drive<T>(
         &mut self,
         future: impl Future<Output = T>,
         commands: &mut mpsc::Receiver<Command>,
@@ -756,9 +770,22 @@ impl SessionTask {
             Command::Revert { reply, .. } => {
                 let _ = reply.send(Err(BUSY.into()));
             }
+            Command::Close { reply } => {
+                self.cancel_pending_user_question();
+                self.stop_request = Some((StopMode::Close, reply));
+                self.publish_throttled();
+                return false;
+            }
             Command::Stop { delete, reply } => {
                 self.cancel_pending_user_question();
-                self.stop_request = Some((delete, reply));
+                self.stop_request = Some((
+                    if delete {
+                        StopMode::Delete
+                    } else {
+                        StopMode::Abort
+                    },
+                    reply,
+                ));
                 self.publish_throttled();
                 return false;
             }
@@ -841,7 +868,7 @@ impl SessionTask {
     }
 
     /// 通过稳定身份关闭提示；重复关闭保持幂等。
-    pub fn dismiss_notice(&mut self, id: &str) {
+    pub(crate) fn dismiss_notice(&mut self, id: &str) {
         self.view
             .notices
             .retain(|notice| notice.id != id || matches!(notice.kind, NoticeKind::Capability));
@@ -849,7 +876,7 @@ impl SessionTask {
     }
 
     /// 单个用户轮次：反复「模型响应 → 并行工具」直至模型不再调用工具
-    pub async fn execute(
+    pub(crate) async fn execute(
         &mut self,
         engine: ExecutionPlan,
         commands: &mut mpsc::Receiver<Command>,
@@ -1094,10 +1121,10 @@ impl SessionTask {
         }
     }
 
-    async fn stop(&mut self, delete: bool, reply: Reply) -> bool {
+    async fn stop(&mut self, mode: StopMode, reply: Reply) -> bool {
         self.auto_resume = false;
         self.cli = None;
-        if delete {
+        if mode != StopMode::Abort {
             Arc::make_mut(&mut self.view.pending_inputs).clear();
         }
         self.cancel_deliveries("Session stopped");
@@ -1107,7 +1134,7 @@ impl SessionTask {
                 completed.settled = true;
             }
         });
-        let result = if delete && self.view.persisted {
+        let result = if mode == StopMode::Delete && self.view.persisted {
             self.store
                 .delete_session(&self.view.session.header.id)
                 .await
@@ -1115,14 +1142,18 @@ impl SessionTask {
         } else {
             Ok(())
         };
-        let close = delete && result.is_ok();
+        if mode == StopMode::Close {
+            self.close_reply = Some(reply);
+            return true;
+        }
+        let close = mode == StopMode::Delete && result.is_ok();
         let _ = reply.send(result);
         close
     }
 
     /// 连续执行轮次：后台任务与后台子代理在轮次间隙完成时自动续跑，直到队列清空或轮次终止。
     /// 用户中止与供应商错误暂停自动续跑，完成结果仍持久化。
-    pub async fn run_turns(
+    pub(crate) async fn run_turns(
         &mut self,
         mut engine: ExecutionPlan,
         commands: &mut mpsc::Receiver<Command>,
@@ -1142,7 +1173,7 @@ impl SessionTask {
 
     /// 轮次收尾：状态复位、终态事件、CLI 通道释放与停止请求处理；
     /// 返回是否终止会话任务
-    pub async fn finish_turn(&mut self, result: Result<TurnOutcome, String>) -> bool {
+    pub(crate) async fn finish_turn(&mut self, result: Result<TurnOutcome, String>) -> bool {
         let mut error = match &result {
             Ok(TurnOutcome::Completed) => None,
             Ok(TurnOutcome::Aborted) => Some("Turn aborted".to_string()),
@@ -1224,7 +1255,10 @@ impl SessionTask {
     }
 
     /// 同一轮次间隙的投递合并处理，每个投递者获得该轮固定的完成报告。
-    pub async fn run_pending_deliveries(&mut self, commands: &mut mpsc::Receiver<Command>) -> bool {
+    pub(crate) async fn run_pending_deliveries(
+        &mut self,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> bool {
         while !self.pending_deliveries.is_empty() {
             let deliveries = std::mem::take(&mut self.pending_deliveries);
             let text = deliveries
@@ -1283,7 +1317,7 @@ impl SessionTask {
         }
     }
 
-    pub async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
+    pub(crate) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
         loop {
             let command = tokio::select! {
                 command = commands.recv() => match command { Some(command) => command, None => break },
@@ -1353,17 +1387,64 @@ impl SessionTask {
                 Command::Revert { turn_index, reply } => {
                     let _ = reply.send(self.revert(turn_index).await);
                 }
+                Command::Close { reply } => {
+                    self.stop(StopMode::Close, reply).await;
+                    break;
+                }
                 Command::Stop { delete, reply } => {
-                    if self.stop(delete, reply).await {
+                    if self
+                        .stop(
+                            if delete {
+                                StopMode::Delete
+                            } else {
+                                StopMode::Abort
+                            },
+                            reply,
+                        )
+                        .await
+                    {
                         break;
                     }
                 }
             }
         }
-        if let Some(task) = self.title_task {
+        self.cancel_pending_user_question();
+        self.cancel_deliveries("Session closed");
+        self.setup
+            .abort_children(&self.view.session.header.id)
+            .await;
+        let mut errors = Vec::new();
+        if let Some(task) = self.title_task.take() {
             task.abort();
+            if let Err(error) = task.await
+                && !error.is_cancelled()
+            {
+                errors.push(error.to_string());
+            }
         }
-        self.tasks.shutdown();
+        self.receipt_tasks.abort_all();
+        while let Some(result) = self.receipt_tasks.join_next().await {
+            if let Err(error) = result
+                && !error.is_cancelled()
+            {
+                errors.push(error.to_string());
+            }
+        }
+        if let Err(error) = self.tasks.shutdown().await {
+            errors.push(error);
+        }
+        let reply = self.close_reply.take();
+        drop(self);
+        let result = if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        };
+        if let Some(reply) = reply {
+            let _ = reply.send(result);
+        } else if let Err(error) = result {
+            tracing::error!("Session cleanup failed: {error}");
+        }
     }
 }
 

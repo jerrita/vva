@@ -35,11 +35,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Padding, Scrollbar, ScrollbarOrientation, ScrollbarState};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::harness::SessionView;
-use crate::model::{
-    Annotation, ContentPart, ImageGenerationStatus, Role, ToolCall, ToolResult, WebSearchAction,
-    WebSearchCall,
-};
+use crate::app::view::SessionView;
 use crate::ui::app::{
     App, CitationsHit, ResponseHit, TextCoord, TextSelection, ThoughtHit, ToolExpand, ToolHit,
     char_in_column_range,
@@ -48,3 +44,11 @@ use crate::ui::markdown::{LinkRegion, render_markdown, wrap_spans_to_lines};
 use crate::ui::text::truncate;
 use crate::ui::views::header::session_title_line;
 use crate::ui::views::{PANEL_BORDER, panel_block};
+use vva_core::model::Annotation;
+use vva_core::model::ContentPart;
+use vva_core::model::ImageGenerationStatus;
+use vva_core::model::Role;
+use vva_core::model::ToolCall;
+use vva_core::model::ToolResult;
+use vva_core::model::WebSearchAction;
+use vva_core::model::WebSearchCall;

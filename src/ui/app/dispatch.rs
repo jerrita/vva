@@ -1,6 +1,6 @@
 use super::App;
 use super::toast::ToastLevel;
-use crate::model::ToggleOverrides;
+use crate::app::records::ToggleOverrides;
 use crate::ui::modals::{ActiveModal, ConfigItemKind};
 
 /// 开关命令参数：`on` / `off` 显式设置，其余（含空）为切换

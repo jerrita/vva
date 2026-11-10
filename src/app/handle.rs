@@ -145,17 +145,14 @@ impl ManagedSession {
         });
         Ok(())
     }
-    pub async fn deliver(
-        &self,
-        text: &str,
-    ) -> Result<vva_core::harness::session::handle::DeliveryReceipt, String> {
+    pub async fn deliver(&self, text: &str) -> Result<vva_core::harness::DeliveryReceipt, String> {
         self.deliver_input(text, InputMode::After).await
     }
     async fn deliver_input(
         &self,
         text: &str,
         mode: InputMode,
-    ) -> Result<vva_core::harness::session::handle::DeliveryReceipt, String> {
+    ) -> Result<vva_core::harness::DeliveryReceipt, String> {
         let receipt = self.core.deliver_input(text, mode).await?;
         let (tx, rx) = oneshot::channel();
         let store = self.store.clone();
@@ -174,7 +171,7 @@ impl ManagedSession {
         Ok(rx)
     }
     async fn wait_delivery(
-        receipt: vva_core::harness::session::handle::DeliveryReceipt,
+        receipt: vva_core::harness::DeliveryReceipt,
     ) -> Result<vva_core::tools::agent::SubagentReport, String> {
         let report = receipt.await.map_err(|e| e.to_string())??;
         match report.error {

@@ -18,35 +18,40 @@ use super::parse_args;
 use super::{Tool, TruncateSide, truncate_utf8};
 
 /// 单个任务的输出保留上限（超出丢弃头部，仅保尾部）
-pub const BACKGROUND_BUFFER_CAP: usize = 256 * 1024;
+pub(crate) const BACKGROUND_BUFFER_CAP: usize = 256 * 1024;
 /// TaskOutput 返回的尾部字节数
-pub const TASK_OUTPUT_TAIL: usize = 16 * 1024;
+pub(crate) const TASK_OUTPUT_TAIL: usize = 16 * 1024;
 /// 完成通知轮次内联的尾部字节数
-pub const NOTIFY_TAIL_BYTES: usize = 4 * 1024;
+pub(crate) const NOTIFY_TAIL_BYTES: usize = 4 * 1024;
 
 /// 任务未找到时的统一提示：任务不随会话重启或分叉存活
 const NOT_FOUND: &str = "not found; tasks do not survive session restarts or forks";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BackgroundStatus {
+pub(crate) enum BackgroundStatus {
     Running,
     /// TaskStop / 会话回收终止
     Killed,
+    #[cfg(any(feature = "shell-tools", test))]
     Failed {
         error: String,
     },
     /// code 为 None 表示被信号终止
+    #[cfg(any(feature = "shell-tools", test))]
     Exited {
         code: Option<i32>,
     },
 }
 
-pub fn status_line(status: &BackgroundStatus) -> String {
+pub(crate) fn status_line(status: &BackgroundStatus) -> String {
     match status {
         BackgroundStatus::Running => "running".to_string(),
+        #[cfg(any(feature = "shell-tools", test))]
         BackgroundStatus::Failed { error } => format!("failed: {error}"),
         BackgroundStatus::Killed => "stopped by TaskStop".to_string(),
+        #[cfg(any(feature = "shell-tools", test))]
         BackgroundStatus::Exited { code: Some(code) } => format!("exited with code {code}"),
+        #[cfg(any(feature = "shell-tools", test))]
         BackgroundStatus::Exited { code: None } => "exited (killed by signal)".to_string(),
     }
 }
@@ -92,7 +97,7 @@ struct BackgroundTask {
 }
 
 /// 供 UI 与工具读取的只读快照
-pub struct TaskSnapshot {
+pub(crate) struct TaskSnapshot {
     pub id: String,
     pub intent: String,
     pub command: String,
@@ -110,11 +115,14 @@ impl TaskSnapshot {
         use crate::model::{BackgroundTask, BackgroundTaskStatus};
         let (status, exit_code) = match &self.status {
             BackgroundStatus::Running => (BackgroundTaskStatus::Running, None),
+            #[cfg(any(feature = "shell-tools", test))]
             BackgroundStatus::Failed { .. } => (BackgroundTaskStatus::Failed, None),
             BackgroundStatus::Killed => (BackgroundTaskStatus::Stopped, None),
+            #[cfg(any(feature = "shell-tools", test))]
             BackgroundStatus::Exited { code: Some(0) } => {
                 (BackgroundTaskStatus::Completed, Some(0))
             }
+            #[cfg(any(feature = "shell-tools", test))]
             BackgroundStatus::Exited { code } => (BackgroundTaskStatus::Failed, *code),
         };
         BackgroundTask {
@@ -157,8 +165,13 @@ impl BackgroundTasks {
 
     /// 后台启动命令，立即返回任务 id。子进程 kill_on_drop：
     /// monitor 中止（TaskStop / 会话回收）或运行时回收时兜底杀进程。
-    #[cfg(feature = "shell-tools")]
-    pub fn spawn(&self, intent: &str, command: &str, working_dir: &Path) -> Result<String, String> {
+    #[cfg(all(test, feature = "shell-tools"))]
+    pub(crate) fn spawn(
+        &self,
+        intent: &str,
+        command: &str,
+        working_dir: &Path,
+    ) -> Result<String, String> {
         self.spawn_captured(
             intent,
             command,
@@ -271,7 +284,7 @@ impl BackgroundTasks {
         Ok(id)
     }
 
-    pub fn snapshot(&self, id: &str) -> Option<TaskSnapshot> {
+    pub(crate) fn snapshot(&self, id: &str) -> Option<TaskSnapshot> {
         let (intent, command, started_at, inner) = {
             let tasks = self.tasks.lock().expect("background tasks lock poisoned");
             let task = tasks.get(id)?;
@@ -307,7 +320,7 @@ impl BackgroundTasks {
     }
 
     /// 运行中或完成结果尚未交给会话的任务数。
-    pub fn pending_count(&self) -> usize {
+    pub(crate) fn pending_count(&self) -> usize {
         self.tasks
             .lock()
             .expect("background tasks lock poisoned")
@@ -329,7 +342,7 @@ impl BackgroundTasks {
 
     /// 停止运行中的任务：置 Killed 并中止 monitor，wait future 被 drop
     /// 后由 kill_on_drop 杀掉子进程。已终态或未知 id 显式报错。
-    pub fn stop(&self, id: &str) -> Result<String, String> {
+    pub(crate) fn stop(&self, id: &str) -> Result<String, String> {
         let mut tasks = self.tasks.lock().expect("background tasks lock poisoned");
         let Some(task) = tasks.get_mut(id) else {
             return Err(format!("Background task {id} {NOT_FOUND}"));
@@ -347,16 +360,18 @@ impl BackgroundTasks {
         }
         inner.pending = false;
         drop(inner);
-        if let Some(monitor) = task.monitor.take() {
+        if let Some(monitor) = &task.monitor {
             monitor.abort();
         }
         Ok(format!("Task {id} stopped."))
     }
 
-    /// 会话结束回收：杀掉仍在运行的任务并清空注册表
-    pub fn shutdown(&self) {
-        let mut tasks = self.tasks.lock().expect("background tasks lock poisoned");
-        for task in tasks.values_mut() {
+    /// 会话结束回收：取消并等待 monitor 释放子进程与输出管道。
+    pub(crate) async fn shutdown(&self) -> Result<(), String> {
+        let tasks =
+            std::mem::take(&mut *self.tasks.lock().expect("background tasks lock poisoned"));
+        let mut monitors = Vec::new();
+        for mut task in tasks.into_values() {
             {
                 let mut inner = task.inner.lock().expect("task state lock poisoned");
                 if inner.status == BackgroundStatus::Running {
@@ -365,15 +380,28 @@ impl BackgroundTasks {
             }
             if let Some(monitor) = task.monitor.take() {
                 monitor.abort();
+                monitors.push(monitor);
             }
         }
-        tasks.clear();
+        let mut errors = Vec::new();
+        for monitor in monitors {
+            if let Err(error) = monitor.await
+                && !error.is_cancelled()
+            {
+                errors.push(error.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }
 
 /// 完成通知轮次正文：以 background-task reminder 注入会话，
 /// 首行为状态（UI 展示用），其余为模型可见的输出详情
-pub fn format_notification(snapshot: &TaskSnapshot) -> String {
+pub(crate) fn format_notification(snapshot: &TaskSnapshot) -> String {
     let mut notification = format!(
         "Background task {} {}\nintent: {}\ncommand: {}\ncaptured output: {} bytes",
         snapshot.id,
@@ -739,7 +767,7 @@ mod tests {
             if stop {
                 tasks.stop("1").unwrap();
             } else {
-                tasks.shutdown();
+                tasks.shutdown().await.unwrap();
             }
 
             // 保持另一端打开，模拟继承了输出管道的进程仍在运行。
@@ -781,7 +809,7 @@ mod tests {
         let first = tasks.spawn("one", sleep_command(), Path::new(".")).unwrap();
         let second = tasks.spawn("two", sleep_command(), Path::new(".")).unwrap();
 
-        tasks.shutdown();
+        tasks.shutdown().await.unwrap();
         assert!(tasks.snapshot(&first).is_none());
         assert!(tasks.snapshot(&second).is_none());
         assert!(tasks.stop(&first).is_err());

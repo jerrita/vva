@@ -1,7 +1,8 @@
 use super::*;
-use crate::model::Session;
-use crate::provider::{ProviderError, ProviderResponse};
-use crate::tools::names;
+use crate::app::model::Session;
+use vva_core::provider::ProviderError;
+use vva_core::provider::ProviderResponse;
+use vva_core::tools::names;
 
 #[tokio::test]
 async fn title_generation_disables_thinking_with_native_parameters() {
@@ -92,8 +93,8 @@ impl Provider for NoSearchProvider {
         "no-search"
     }
 
-    fn capabilities(&self) -> crate::provider::ProviderCapabilities {
-        crate::provider::ProviderCapabilities {
+    fn capabilities(&self) -> vva_core::provider::ProviderCapabilities {
+        vva_core::provider::ProviderCapabilities {
             supports_native_search: false,
             supports_reasoning_effort: false,
             server_tool_names: Vec::new(),
@@ -103,7 +104,7 @@ impl Provider for NoSearchProvider {
     async fn complete(
         &self,
         _session: &vva_core::model::Session,
-        _tools: &[crate::model::ToolDefinition],
+        _tools: &[vva_core::model::ToolDefinition],
         _options: &CompletionOptions,
     ) -> Result<ProviderResponse, ProviderError> {
         unimplemented!()
@@ -112,9 +113,9 @@ impl Provider for NoSearchProvider {
     async fn complete_stream(
         &self,
         _session: &vva_core::model::Session,
-        _tools: &[crate::model::ToolDefinition],
+        _tools: &[vva_core::model::ToolDefinition],
         _options: &CompletionOptions,
-        _event_sender: Option<tokio::sync::mpsc::Sender<crate::event::AgentEvent>>,
+        _event_sender: Option<tokio::sync::mpsc::Sender<vva_core::event::AgentEvent>>,
     ) -> Result<ProviderResponse, ProviderError> {
         unimplemented!()
     }
@@ -129,9 +130,9 @@ fn test_capability_notices_flag_unsupported_options() {
         reasoning_effort: Some("high".into()),
         ..Default::default()
     };
-    let response = crate::provider::response::ResponseProvider::new("k");
+    let response = vva_core::provider::response::ResponseProvider::new("k");
     assert!(capability_notices(&response, &options, false).is_empty());
-    let anthropic = crate::provider::anthropic::AnthropicProvider::new("k");
+    let anthropic = vva_core::provider::anthropic::AnthropicProvider::new("k");
     assert!(capability_notices(&anthropic, &options, false).is_empty());
 
     // 无原生搜索能力的供应商生成搜索降级通知
@@ -174,7 +175,7 @@ fn build_engine(config: &AppConfig, session: &Session) -> Result<ExecutionPlan, 
 fn build_engine_with_agents(
     config: &AppConfig,
     session: &Session,
-    agents: Vec<crate::agents::AgentDef>,
+    agents: Vec<vva_core::agents::AgentDef>,
 ) -> Result<ExecutionPlan, String> {
     let (tx, _rx) = mpsc::channel(1);
     VvaSessionSetup::assemble(
@@ -184,9 +185,9 @@ fn build_engine_with_agents(
             provider: Arc::default(),
             tool_outputs: std::env::temp_dir()
                 .join(format!("vva-agent-test-{}", uuid::Uuid::new_v4())),
-            hashline: crate::tools::hashline::HashlineSession::new(),
+            hashline: vva_core::tools::hashline::HashlineSession::new(),
             ask_user_requests: tx,
-            background: Arc::new(crate::tools::background::BackgroundTasks::new(Arc::new(
+            background: Arc::new(vva_core::tools::background::BackgroundTasks::new(Arc::new(
                 |_| {},
             ))),
             shell_outputs: Arc::default(),
@@ -215,7 +216,7 @@ async fn ask_user_is_absent_for_agent_managed_sessions() {
     assert!(plain.tools.get("AskUser").is_some());
 
     let mut managed = session_for("p/nos", false);
-    managed.header.origin = Some(crate::model::Origin {
+    managed.header.origin = Some(crate::app::records::Origin {
         channel: "qq".into(),
         chat_id: "c2c:1".into(),
     });
@@ -223,7 +224,7 @@ async fn ask_user_is_absent_for_agent_managed_sessions() {
     assert!(engine.tools.get("AskUser").is_none());
 
     let mut curator = session_for("p/nos", false);
-    curator.header.kind = crate::model::SessionKind::Curator;
+    curator.header.kind = crate::app::records::SessionKind::Curator;
     assert!(
         build_engine(&config, &curator)
             .unwrap()
@@ -242,7 +243,7 @@ async fn engine_registers_subagent_tools_for_top_level_sessions() {
     assert!(engine.tools.get("SendMessage").is_some());
     // agent 参数 enum 来自发现结果（含内置定义）
     let agent = engine.tools.get("Agent").unwrap();
-    let crate::model::ToolInput::Json(parameters) = agent.input() else {
+    let vva_core::model::ToolInput::Json(parameters) = agent.input() else {
         panic!("expected JSON input");
     };
     let names: Vec<_> = parameters["properties"]["agent"]["enum"]
@@ -289,9 +290,9 @@ async fn subagent_missing_definition_is_rejected() {
 #[tokio::test]
 async fn subagent_web_permissions_cover_native_and_external_tools() {
     for provider_type in [
-        crate::provider::ProviderType::Response,
-        crate::provider::ProviderType::Anthropic,
-        crate::provider::ProviderType::Gemini,
+        vva_core::provider::ProviderType::Response,
+        vva_core::provider::ProviderType::Anthropic,
+        vva_core::provider::ProviderType::Gemini,
     ] {
         for (native, standalone) in [(true, false), (false, false), (true, true), (false, true)] {
             for (search, fetch) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -310,7 +311,7 @@ async fn subagent_web_permissions_cover_native_and_external_tools() {
                 if fetch {
                     allowed.push("WebFetch".into());
                 }
-                let defs = vec![crate::agents::AgentDef {
+                let defs = vec![vva_core::agents::AgentDef {
                     name: "restricted".into(),
                     description: "Restricted agent".into(),
                     model: None,
@@ -332,7 +333,7 @@ async fn subagent_web_permissions_cover_native_and_external_tools() {
                     assert_eq!(engine.tools.get("web_search").is_some(), search);
                     assert_eq!(engine.tools.get("web_fetch").is_some(), fetch);
                 }
-                if native && provider_type == crate::provider::ProviderType::Anthropic {
+                if native && provider_type == vva_core::provider::ProviderType::Anthropic {
                     assert_eq!(engine.options.enable_web_search, search && !standalone);
                     assert_eq!(
                         engine.tools.get("web_search").is_some(),
@@ -432,7 +433,7 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
         assert!(!engine.tools.is_server_tool("web_search"));
         assert!(engine.external_web.is_empty());
         let tool = engine.tools.get("web_search").unwrap();
-        let crate::model::ToolInput::Json(input) = tool.input() else {
+        let vva_core::model::ToolInput::Json(input) = tool.input() else {
             panic!("expected JSON input");
         };
         assert!(input["properties"].get("max_results").is_none());
@@ -446,7 +447,7 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
             .complete(&session, &definitions, &engine.options)
             .await
             .unwrap();
-        let crate::model::ContentPart::ToolCall(call) = &response.messages[0].parts[0] else {
+        let vva_core::model::ContentPart::ToolCall(call) = &response.messages[0].parts[0] else {
             panic!("expected client search call");
         };
         let result = engine.tools.execute_call(call).await;
@@ -462,9 +463,9 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
         session.append_turn(turn);
         session.append_turn(Turn::new(
             Role::Tool,
-            vec![Message::new(vec![crate::model::ContentPart::ToolResult(
-                result,
-            )])],
+            vec![Message::new(vec![
+                vva_core::model::ContentPart::ToolResult(result),
+            ])],
         ));
         let final_response = engine
             .provider
@@ -556,7 +557,7 @@ fn web_config(annotation: Option<crate::config::model::ModelAnnotation>) -> AppC
 fn session_for(model: &str, web_search: bool) -> Session {
     let mut session = Session::new(".", None);
     session.set_model(model.to_string(), None);
-    session.set_toggles(crate::model::SessionToggles { web_search });
+    session.set_toggles(crate::app::records::SessionToggles { web_search });
     session
 }
 
@@ -625,10 +626,10 @@ async fn engine_notices_affinity_downgrade_on_model_switch() {
     let config = web_config(None);
     let mut session = session_for("p/nos", true);
     // 上一轮由不同亲和组产出且携带原生状态
-    let mut turn = Turn::assistant_turn(vec![Message::new(vec![crate::model::ContentPart::text(
-        "earlier answer",
-    )])]);
-    turn.meta.response = Some(crate::model::ResponseTurnMeta::new("resp_prev"));
+    let mut turn = Turn::assistant_turn(vec![Message::new(vec![
+        vva_core::model::ContentPart::text("earlier answer"),
+    ])]);
+    turn.meta.response = Some(vva_core::model::ResponseTurnMeta::new("resp_prev"));
     turn.meta.response.as_mut().unwrap().scope = Some("homo/gpt".into());
     session.append_turn(turn);
 
@@ -645,7 +646,7 @@ async fn engine_notices_affinity_downgrade_on_model_switch() {
     // 同亲和组续跑不提示
     let mut session = session_for("p/nos", true);
     let mut turn = Turn::assistant_turn(vec![Message::text("earlier")]);
-    turn.meta.response = Some(crate::model::ResponseTurnMeta::new("resp_prev"));
+    turn.meta.response = Some(vva_core::model::ResponseTurnMeta::new("resp_prev"));
     turn.meta.response.as_mut().unwrap().scope = Some("p".into());
     session.append_turn(turn);
     let engine = build_engine(&config, &session).unwrap();

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{DeliveryTarget, EMPTY_REPLY, InputMode, Runtime};
-use crate::harness::ManagedSession;
-use crate::model::SessionKind;
+use crate::app::handle::ManagedSession;
+use crate::app::records::SessionKind;
 use crate::space::router::SessionTtl;
 use crate::space::scheduler::{Failure, Missed, Task, Trigger, format_time};
 use crate::system::format_scheduled_reminder;

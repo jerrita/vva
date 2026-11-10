@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::fuzzy_matches;
-use crate::model::SessionSummary;
+use crate::app::model::SessionSummary;
 
 /// /sessions 会话列表筛选作用域
 #[derive(Debug, Clone, PartialEq, Eq)]

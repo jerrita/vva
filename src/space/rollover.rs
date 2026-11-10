@@ -8,9 +8,14 @@
 use std::sync::Arc;
 
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::handle::ManagedSession;
+use crate::app::model::Session;
 use crate::config::{AgentSpaceConfig, AppConfig};
-use crate::harness::ManagedSession;
-use crate::model::{ContentPart, Message, Role, Session, TokenUsage, Turn};
+use vva_core::model::ContentPart;
+use vva_core::model::Message;
+use vva_core::model::Role;
+use vva_core::model::TokenUsage;
+use vva_core::model::Turn;
 
 /// 追加到旧会话末尾的压缩 prompt
 const COMPRESS_PROMPT: &str = "\
@@ -259,9 +264,12 @@ fn successor_session(old: &Session, before: usize, summary: &str, memory: Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::store::AppSessionStore as JsonlSessionStore;
     use crate::config::{ModelConfig, ProviderConfig, model::ModelLimitConfig};
-    use crate::model::{AnthropicTurnMeta, TokenUsage, ToolCall, ToolResult};
-    use crate::storage::jsonl::JsonlSessionStore;
+    use vva_core::model::AnthropicTurnMeta;
+    use vva_core::model::TokenUsage;
+    use vva_core::model::ToolCall;
+    use vva_core::model::ToolResult;
 
     fn user(text: &str) -> Turn {
         Turn::user_turn(Message::text(text))
@@ -285,7 +293,7 @@ mod tests {
             .parts
             .push(ContentPart::ToolCall(ToolCall::new(
                 id,
-                crate::tools::names::READ,
+                vva_core::tools::names::READ,
                 "{}",
             )));
         let result = Turn::new(
@@ -301,7 +309,7 @@ mod tests {
             Some("t".into()),
             "p/m",
             None,
-            crate::model::SessionToggles::default(),
+            crate::app::records::SessionToggles::default(),
         );
         session.turns = turns;
         session

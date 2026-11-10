@@ -17,9 +17,12 @@ use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeFile;
 
+use crate::app::handle::ManagedSession;
+use crate::app::model::SessionSummary;
 use crate::app::stats::{SidebarStats, compute_stats};
-use crate::harness::ManagedSession;
-use crate::model::{ContentPart, MediaSource, SessionSummary, UserAnswer};
+use vva_core::model::ContentPart;
+use vva_core::model::MediaSource;
+use vva_core::model::UserAnswer;
 
 use super::server::AppState;
 use super::sync::{SessionDelta, SessionSnapshot};
@@ -149,8 +152,8 @@ pub async fn list_skills(State(state): State<AppState>) -> Json<SkillsResponse> 
                 name: skill.name,
                 description: skill.description,
                 source: match skill.source {
-                    crate::skills::SkillSource::Global => "global",
-                    crate::skills::SkillSource::Project => "project",
+                    vva_core::skills::SkillSource::Global => "global",
+                    vva_core::skills::SkillSource::Project => "project",
                 },
                 path: skill.path.to_string_lossy().into_owned(),
             })
@@ -362,7 +365,7 @@ pub async fn list_fs_entries(
 ) -> ApiResult<Json<FsEntriesResponse>> {
     let workspace = workspace_or_default(&state, query.workspace.as_deref());
     let subpath = query.path.as_deref().unwrap_or("").trim();
-    let target_dir = crate::tools::filesystem::resolve_path(&workspace, subpath);
+    let target_dir = vva_core::tools::filesystem::resolve_path(&workspace, subpath);
 
     match tokio::fs::metadata(&target_dir).await {
         Ok(meta) if meta.is_dir() => {}
@@ -444,10 +447,10 @@ pub async fn create_session(
     let model = request
         .model
         .unwrap_or_else(|| state.manager.app_config().settings.default.clone());
-    let toggles = crate::model::ToggleOverrides {
+    let toggles = crate::app::records::ToggleOverrides {
         web_search: request.search,
     }
-    .apply(crate::model::SessionToggles::default());
+    .apply(crate::app::records::SessionToggles::default());
     let handle = match request.workspace.as_deref().map(str::trim) {
         Some(workspace) if !workspace.is_empty() => {
             state
@@ -637,7 +640,7 @@ async fn open_workspace_file(
     workspace: &StdPath,
     rel_path: &str,
 ) -> ApiResult<(PathBuf, std::fs::Metadata)> {
-    let path = crate::tools::filesystem::resolve_path(workspace, rel_path);
+    let path = vva_core::tools::filesystem::resolve_path(workspace, rel_path);
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| ApiError::new(StatusCode::NOT_FOUND, format!("文件不存在: {e}")))?;
@@ -781,7 +784,7 @@ pub async fn submit_message(
 #[derive(Deserialize)]
 pub struct InputModeRequest {
     pub id: String,
-    pub mode: crate::harness::InputMode,
+    pub mode: vva_core::harness::InputMode,
 }
 
 pub async fn set_input_mode(
@@ -804,7 +807,7 @@ pub struct TakeInputRequest {
 pub async fn take_input(
     session: Session,
     Json(request): Json<TakeInputRequest>,
-) -> ApiResult<Json<crate::harness::PendingInput>> {
+) -> ApiResult<Json<vva_core::harness::PendingInput>> {
     session
         .0
         .take_input(request.id)
@@ -931,7 +934,7 @@ pub async fn configure_session(
         .configure(
             request.model,
             request.variant,
-            crate::model::ToggleOverrides {
+            crate::app::records::ToggleOverrides {
                 web_search: request.search,
             },
         )
@@ -1059,7 +1062,7 @@ mod tests {
 
         let temp_sessions = TempDir::new().unwrap();
         let store =
-            Arc::new(crate::storage::jsonl::JsonlSessionStore::new(temp_sessions.path()).unwrap());
+            Arc::new(crate::app::store::AppSessionStore::new(temp_sessions.path()).unwrap());
         let config = crate::config::AppConfig::default();
         let manager = Arc::new(SessionManager::new(
             store,

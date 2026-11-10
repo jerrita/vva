@@ -4,11 +4,12 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::model::{BackgroundTaskKind, BackgroundTaskStatus};
 use crate::ui::app::App;
 use crate::ui::text::truncate;
 use crate::ui::views::chat::apply_selection_highlight;
 use crate::ui::views::{bold, fg};
+use vva_core::model::BackgroundTaskKind;
+use vva_core::model::BackgroundTaskStatus;
 
 pub const DETAILS_LINE_COUNT: usize = 21;
 
@@ -18,7 +19,7 @@ pub struct SidebarInfo<'a> {
     pub workspace: &'a str,
     pub model: &'a str,
     pub variant: Option<&'a str>,
-    pub editor: crate::model::EditorKind,
+    pub editor: vva_core::model::EditorKind,
 }
 
 /// 标签值行：左侧留白后显示 `Label: value`（标签固定 DarkGray，值样式由调用方给定）
@@ -294,7 +295,7 @@ mod tests {
             workspace: "C:/workspace",
             model: "test-model",
             variant: None,
-            editor: crate::model::EditorKind::Hashline,
+            editor: vva_core::model::EditorKind::Hashline,
         };
         let backend = TestBackend::new(30, 25);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

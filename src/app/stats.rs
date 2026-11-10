@@ -1,6 +1,6 @@
+use crate::app::model::Session;
 use crate::config::AppConfig;
 use crate::config::model::ModelCostConfig;
-use crate::model::Session;
 use serde::Serialize;
 
 /// 侧边栏展示的会话全局统计数据
@@ -109,8 +109,11 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
 mod tests {
     use super::*;
     use crate::config::model::{ContextOver200kCost, ModelConfig, ProviderConfig};
-    use crate::model::{AnthropicTurnMeta, TokenUsage, Turn, TurnMeta};
     use std::collections::HashMap;
+    use vva_core::model::AnthropicTurnMeta;
+    use vva_core::model::TokenUsage;
+    use vva_core::model::Turn;
+    use vva_core::model::TurnMeta;
 
     fn cost_app_config() -> AppConfig {
         let mut config = AppConfig::default();
@@ -155,7 +158,7 @@ mod tests {
             None,
             "p/m",
             None,
-            crate::model::SessionToggles { web_search: false },
+            crate::app::records::SessionToggles { web_search: false },
         );
         let mut turn = Turn::assistant_turn(vec![]);
         turn.usage = Some(TokenUsage {
@@ -189,7 +192,7 @@ mod tests {
             None,
             "model_a",
             None,
-            crate::model::SessionToggles { web_search: false },
+            crate::app::records::SessionToggles { web_search: false },
         );
         for total_tokens in [150, 300] {
             let mut turn = Turn::assistant_turn(vec![]);
@@ -215,7 +218,7 @@ mod tests {
             None,
             "model_a",
             None,
-            crate::model::SessionToggles { web_search: false },
+            crate::app::records::SessionToggles { web_search: false },
         );
         for (completion_tokens, elapsed_ms) in [(50, 500), (150, 1_500)] {
             let mut turn = Turn::assistant_turn(vec![]);

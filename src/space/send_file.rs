@@ -11,8 +11,9 @@ use serde::Deserialize;
 
 use super::channel::{Channel, Outbound, OutboundFile};
 use crate::config::expand_tilde;
-use crate::tools::filesystem::resolve_path;
-use crate::tools::{Tool, parse_args};
+use vva_core::tools::Tool;
+use vva_core::tools::filesystem::resolve_path;
+use vva_core::tools::parse_args;
 
 struct SendFileTool {
     channel: Arc<dyn Channel>,
@@ -31,8 +32,8 @@ impl Tool for SendFileTool {
         "Send a local file to the user through the current chat channel. Accepts workspace-relative, absolute, and ~ paths. Use it when the user should receive the file itself."
     }
 
-    fn input(&self) -> crate::model::ToolInput {
-        crate::model::ToolInput::Json({
+    fn input(&self) -> vva_core::model::ToolInput {
+        vva_core::model::ToolInput::Json({
             serde_json::json!({
                 "type": "object",
                 "properties": {

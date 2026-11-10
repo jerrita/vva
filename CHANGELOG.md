@@ -2,6 +2,8 @@
 
 ## [2.0.0]
 
+- 移除根包 core 临时 re-export，收起运行时内部 API；提供 headless 示例和等待资源回收的 close/shutdown。
+
 - 会话升级为 JSONL v3：Space 元数据和 coding 配置迁入独立应用记录，core 仅保留通用执行与公开会话 API；应用投影保持 TUI/Web 展示。
 - v2 不再直接读取。停止所有写入后运行 `vva session migrate --source OLD --destination NEW --stopped`，核对输出清单，再用 `vva --sessions-dir NEW …` 启动；迁移不修改源目录，旧 scratch/tool_outputs 必须保留。详见 [存储与迁移](docs/storage.md#5-v2--v3-迁移)。
 

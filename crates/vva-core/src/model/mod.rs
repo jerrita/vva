@@ -1,15 +1,15 @@
-pub mod background;
-pub mod content;
-pub mod message;
-pub mod meta;
-pub mod session;
-pub mod shell;
-pub mod tool;
-pub mod turn;
+pub(crate) use background::{background_tasks, update_background_task};
+pub(crate) mod background;
+pub(crate) mod content;
+pub(crate) mod message;
+pub(crate) mod meta;
+pub(crate) mod session;
+pub(crate) mod shell;
+pub(crate) mod tool;
+pub(crate) mod turn;
 
 pub use background::{
     BackgroundTask, BackgroundTaskActivity, BackgroundTaskKind, BackgroundTaskStatus,
-    background_tasks, update_background_task,
 };
 pub use content::{
     Annotation, ContentPart, ImageGenerationCall, ImageGenerationStatus, MediaSource, SearchStatus,

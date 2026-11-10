@@ -12,12 +12,12 @@ use super::{ProviderError, sse::SseDecoder};
 /// SSE 事件处理器：每个 Provider 用自身流式状态实现该接口。
 /// 异步接口保留 `send().await` 的背压语义，避免缓冲溢出丢事件。
 #[async_trait]
-pub trait SseEventHandler: Send {
+pub(crate) trait SseEventHandler: Send {
     async fn on_event(&mut self, json: serde_json::Value) -> Result<(), ProviderError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SseTermination {
+pub(crate) enum SseTermination {
     DoneSentinel,
     Eof,
 }
@@ -65,7 +65,7 @@ pub async fn post_json(
 }
 
 /// 发送 JSON POST 并将 SSE 事件逐个交给处理器（自动补 Accept 头）
-pub async fn post_sse<H: SseEventHandler>(
+pub(crate) async fn post_sse<H: SseEventHandler>(
     url: &str,
     mut headers: HeaderMap,
     body: &serde_json::Value,

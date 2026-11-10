@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::skills::Skill;
+use vva_core::skills::Skill;
 
 const SYSTEM_TEMPLATE: &str = include_str!("prompts/system.md");
 
@@ -183,7 +183,7 @@ pub fn skills_change_reminder<'a>(
 pub fn format_skill_load_reminder(skill: &Skill) -> String {
     reminder(
         &format!("type=\"skill-loaded\" name=\"{}\"", skill.name),
-        &crate::skills::format_skill_content(skill),
+        &vva_core::skills::format_skill_content(skill),
     )
 }
 
@@ -481,11 +481,11 @@ pub fn session_contains_agents_md(session: &vva_core::model::Session, rel_path: 
     session
         .turns
         .iter()
-        .filter(|turn| turn.role == crate::model::Role::User)
+        .filter(|turn| turn.role == vva_core::model::Role::User)
         .flat_map(|turn| &turn.messages)
         .flat_map(|message| &message.parts)
         .any(|part| match part {
-            crate::model::ContentPart::Text { text, .. } => {
+            vva_core::model::ContentPart::Text { text, .. } => {
                 parse_agents_reminder(text).is_some_and(|r| r.path.replace('\\', "/") == normalized)
             }
             _ => false,
@@ -506,7 +506,7 @@ mod tests {
             metadata: Default::default(),
             allowed_tools: None,
             path: PathBuf::from(format!("/skills/{name}")),
-            source: crate::skills::SkillSource::Global,
+            source: vva_core::skills::SkillSource::Global,
             body: body.into(),
         }
     }
@@ -623,7 +623,7 @@ mod tests {
     fn format_and_parse_background_task_reminder() {
         let notification =
             "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 4 bytes";
-        let reminder = crate::tools::background::format_background_task_reminder(notification);
+        let reminder = vva_core::tools::background::format_background_task_reminder(notification);
         let parsed = parse_agents_reminder(&reminder).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::BackgroundTask);
         assert_eq!(parsed.content, notification);

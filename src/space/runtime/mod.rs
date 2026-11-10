@@ -28,10 +28,14 @@ use super::rollover::maybe_rollover;
 use super::router::Router;
 use super::scheduler::{self, ScheduleStore};
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::handle::ManagedSession;
+use crate::app::model::Session;
+use crate::app::model::SessionSummary;
+use crate::app::records::Origin;
+use crate::app::records::SessionKind;
 use crate::config::AgentSpaceConfig;
-use crate::harness::{InputMode, ManagedSession};
-use crate::model::{Origin, Session, SessionKind, SessionSummary};
-use crate::tools::agent::SubagentReport;
+use vva_core::harness::InputMode;
+use vva_core::tools::agent::SubagentReport;
 
 /// 待附件缓冲的过期检查周期
 const EXPIRE_PERIOD: Duration = Duration::from_secs(30);

@@ -111,7 +111,10 @@ pub static COMMANDS: &[SlashCommand] = &[
 ];
 
 /// 匹配当前输入前缀的可用补全候选（内置命令在前、技能在后；仅在输入命令名且尚未输入参数空格时触发）
-pub fn match_candidates(input: &str, skills: &[crate::skills::Skill]) -> Vec<CompletionCandidate> {
+pub fn match_candidates(
+    input: &str,
+    skills: &[vva_core::skills::Skill],
+) -> Vec<CompletionCandidate> {
     let trimmed = input.trim_start();
     if !trimmed.starts_with('/') {
         return Vec::new();
@@ -165,8 +168,9 @@ pub fn command_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::{Skill, SkillSource};
     use std::path::PathBuf;
+    use vva_core::skills::Skill;
+    use vva_core::skills::SkillSource;
 
     fn skill(name: &str, description: &str) -> Skill {
         Skill {

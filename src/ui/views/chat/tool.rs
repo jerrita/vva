@@ -3,9 +3,9 @@
 use super::*;
 use super::{patch::*, pipeline::push_source_row, state::*, tool_block::*};
 use crate::app::view::BackgroundTaskDisplay;
-use crate::tools::names;
 use crate::ui::text::truncate;
 use crate::ui::views::{bold, fg};
+use vva_core::tools::names;
 
 pub(super) fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(serde_json::Value::as_str)
@@ -318,7 +318,7 @@ pub(crate) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
         .collect();
     let display_result = task.zip(result).map(|(task, _)| {
         let mut result = ToolResult::success(&call.id, &task.output);
-        result.is_error = task.status == crate::model::BackgroundTaskStatus::Failed;
+        result.is_error = task.status == vva_core::model::BackgroundTaskStatus::Failed;
         if call.name == "Agent" {
             result.task = Some(task.clone());
         }
@@ -383,7 +383,7 @@ pub(crate) fn push_tool_call(render: &mut ChatRender<'_>, call: &ToolCall) {
     if let Some(task) = task {
         spans.push(Span::styled(
             format!(" · {}", task.label()),
-            if task.status == crate::model::BackgroundTaskStatus::Running {
+            if task.status == vva_core::model::BackgroundTaskStatus::Running {
                 fg(Color::Rgb(220, 140, 170))
             } else {
                 detail_style

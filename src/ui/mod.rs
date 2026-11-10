@@ -32,9 +32,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::store::AppSessionStore as SessionStore;
+use crate::app::view::SessionView;
 use crate::config::AppConfig;
-use crate::harness::SessionView;
-use crate::storage::SessionStore;
 use app::{ActiveModal, App};
 use views::ask_user_modal::render_ask_user_modal;
 use views::chat::render_chat;
@@ -57,7 +57,7 @@ pub async fn run_tui(
     workspace: std::path::PathBuf,
     default_model: Option<String>,
     default_variant: Option<String>,
-    toggles: crate::model::ToggleOverrides,
+    toggles: crate::app::records::ToggleOverrides,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session_mgr = Arc::new(SessionManager::new(
         store,
@@ -99,6 +99,7 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let res = run_app_loop(&mut terminal, &mut app).await;
+    let cleanup = app.session_mgr.shutdown().await;
 
     // 恢复终端
     if keyboard_enhancement {
@@ -116,6 +117,7 @@ pub async fn run_tui(
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    cleanup?;
     if let Err(err) = res {
         eprintln!("UI error: {err:?}");
     }
@@ -159,7 +161,7 @@ async fn run_app_loop(
                         || app.sidebar.lines.len() > DETAILS_LINE_COUNT
                         || app.view.background_tasks.values().any(|task| {
                             task.activity.is_some()
-                                && task.status == crate::model::BackgroundTaskStatus::Running
+                                && task.status == vva_core::model::BackgroundTaskStatus::Running
                         })
                     {
                         app.tick();
