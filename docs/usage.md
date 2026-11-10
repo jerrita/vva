@@ -46,7 +46,7 @@ Web 运行中 Enter 或「排队」提交消息，在待发列表逐条选择「
 ## 单次执行
 
 ```bash
-vva run "梳理 src/harness 的调用链并总结"
+vva run "梳理 crates/vva-core/src/harness 的调用链并总结"
 ```
 
 结果流式打印到终端。常用参数：

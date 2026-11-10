@@ -1,3 +1,12 @@
+const SKILL_TOOL_DESCRIPTION: &str = "Load a skill's full instructions by name. Call it before starting a task that matches a skill listed in the conversation's Skills reminder.
+
+Managing skills (installing, creating, removing): a skill is a directory `<name>/SKILL.md` whose frontmatter has `name` (same as the directory, lowercase letters/digits/hyphens) and `description`. Skills are discovered from these directories, lowest to highest priority; a later directory overrides a same-named skill from an earlier one:
+1. `~/.agents/skills` (global)
+2. `~/.vva/skills` (global)
+3. `<workspace>/.agents/skills` (project)
+4. `<workspace>/.vva/skills` (project)
+Install and create skills in the project directory `<workspace>/.vva/skills` (the workspace is the session's working directory; for the resident agent it is `~/.vva/space`); use the global directories when the user explicitly asks for a global install. Run `npx skills add` from the workspace root without `-g`/`--global`: the default project install lands in `<workspace>/.agents/skills`, which is discovered. After installing, confirm the skill directory sits under one of the paths above; new sessions pick up new skills.";
+
 use crate::harness::ExecutionPlan;
 use crate::tools::names;
 use std::path::PathBuf;
@@ -261,7 +270,10 @@ impl VvaSessionSetup {
                 deps.background,
             )),
             Arc::new(task_stop),
-            Arc::new(crate::tools::skill::SkillTool::new(Arc::new(deps.skills))),
+            Arc::new(crate::tools::skill::SkillTool::new(
+                Arc::new(deps.skills),
+                SKILL_TOOL_DESCRIPTION.into(),
+            )),
         ];
         // 交互能力由宿主装配明确指定。
         if deps.interactive {

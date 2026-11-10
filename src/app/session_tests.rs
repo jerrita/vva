@@ -3,14 +3,14 @@ use crate::config::AppConfig;
 use crate::config::{ModelConfig, ProviderConfig, model::ModelAnnotation};
 use crate::harness::session::handle::Command;
 use crate::harness::session::task::*;
-use crate::harness::session::tests::*;
-use crate::harness::testing::StubBroker;
 use crate::harness::*;
 use crate::model::EditorKind;
 use crate::model::{ContentPart, MediaSource, Message, Role, Session, Turn};
 use crate::provider::CompletionOptions;
 use crate::storage::SessionStore;
 use crate::storage::jsonl::JsonlSessionStore;
+use crate::test_support::broker::StubBroker;
+use crate::test_support::session::*;
 use crate::tools::agent::{SessionBroker as _, SubagentContext, SubagentReport};
 use crate::tools::background::BackgroundStatus;
 use std::path::{Path, PathBuf};
@@ -210,7 +210,7 @@ async fn model_switch_checks_persisted_media_before_mutating_state() {
     })).unwrap()), None);
     let session = Arc::make_mut(&mut task.view.session);
     session.set_model("test/vision", None);
-    session.turns = crate::provider::common::media_tool_session().turns;
+    session.turns = crate::test_support::media::media_tool_session().turns;
     task.store.save_header(&task.view.session).await.unwrap();
     let id = task.view.session.header.id.clone();
     task.view.session = Arc::new(task.store.load_session(&id).await.unwrap().unwrap());
@@ -976,7 +976,7 @@ async fn new_session_appends_preamble_reminders_before_user_prompt() {
 
 #[tokio::test]
 async fn websocket_chain_survives_engine_rebuilds_between_user_turns() {
-    use crate::provider::response::websocket_tests::{MockWebSocket, answer};
+    use crate::test_support::websocket::{MockWebSocket, answer};
 
     let mut server = MockWebSocket::new().await;
     let (mut task, _handle, mut commands) = command_task();
@@ -1702,7 +1702,7 @@ fn setup_for(
     })
 }
 
-impl crate::provider::response::websocket_tests::MockWebSocket {
+impl crate::test_support::websocket::MockWebSocket {
     pub(crate) fn config(&self, websocket: Option<bool>) -> AppConfig {
         let annotation = websocket.map(|enabled| serde_json::json!({"websocket": enabled}));
         serde_json::from_value(serde_json::json!({
@@ -1717,7 +1717,7 @@ impl crate::provider::response::websocket_tests::MockWebSocket {
 #[tokio::test]
 async fn websocket_rejection_is_explicit_and_annotation_false_uses_http() {
     use crate::provider::ProviderError;
-    use crate::provider::response::websocket_tests::answer;
+    use crate::test_support::websocket::answer;
     use axum::{Json, Router, http::StatusCode, routing::get};
     use serde_json::json;
 
