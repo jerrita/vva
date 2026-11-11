@@ -129,7 +129,7 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                 app.copy_active_selection();
             }
             if let Some(task_id) = task_click
-                && let Err(error) = app.reveal_background_task(&task_id)
+                && let Err(error) = app.scroll_to_background_task(&task_id)
             {
                 app.feedback.error(error);
             }

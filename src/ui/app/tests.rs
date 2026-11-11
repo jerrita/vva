@@ -655,7 +655,7 @@ async fn background_work_stays_visible_until_all_tasks_finish() {
 }
 
 #[tokio::test]
-async fn sidebar_task_click_reveals_its_original_tool_block() {
+async fn sidebar_task_click_only_scrolls_without_changing_expansion() {
     use crate::model::{
         BackgroundTask, BackgroundTaskActivity, BackgroundTaskKind, BackgroundTaskStatus,
         ContentPart, Message, Role, ToolCall, ToolResult, Turn,
@@ -679,6 +679,7 @@ async fn sidebar_task_click_reveals_its_original_tool_block() {
     session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(result)]));
     let mut response = Turn::assistant_turn(vec![Message::text("Build started")]);
     response.worked_ms = Some(1_000);
+    let response_id = response.id.clone();
     session.append_turn(response);
     session.append_turn(Turn::user_turn(Message::text("Later prompt\n".repeat(60))));
     Arc::make_mut(&mut view.background_tasks).insert(
@@ -697,7 +698,7 @@ async fn sidebar_task_click_reveals_its_original_tool_block() {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
     let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
 
-    // 名称行与状态行均可点击；终态短暂保留期间也能展开已折叠的工作段。
+    // 名称行与状态行均可点击；隐藏的工具正文和已折叠的工作段保持原状。
     for (status, row_offset) in [
         (BackgroundTaskStatus::Running, 0),
         (BackgroundTaskStatus::Completed, 1),
@@ -708,7 +709,7 @@ async fn sidebar_task_click_reveals_its_original_tool_block() {
         task.status = status;
         task.finished_at =
             (status == BackgroundTaskStatus::Completed).then(std::time::Instant::now);
-        app.response_expand.clear();
+        app.response_expand.insert(response_id.clone(), false);
         app.tool_expand
             .insert("call-build".into(), ToolExpand::Hidden);
         app.chat_focus = None;
@@ -717,6 +718,23 @@ async fn sidebar_task_click_reveals_its_original_tool_block() {
         terminal
             .draw(|frame| crate::ui::draw(app, frame, &view))
             .unwrap();
+        let target_line = if status == BackgroundTaskStatus::Running {
+            app.chat_cache
+                .tool_hits
+                .iter()
+                .find(|hit| hit.id == "call-build")
+                .unwrap()
+                .header_start
+        } else {
+            app.chat_cache
+                .response_hits
+                .iter()
+                .find(|hit| hit.id == response_id)
+                .unwrap()
+                .line_start
+        };
+        let response_expand = app.response_expand.clone();
+        let tool_expand = app.tool_expand.clone();
         let task_row = app
             .sidebar
             .lines
@@ -744,17 +762,11 @@ async fn sidebar_task_click_reveals_its_original_tool_block() {
         terminal
             .draw(|frame| crate::ui::draw(app, frame, &view))
             .unwrap();
-        let hit = app
-            .chat_cache
-            .tool_hits
-            .iter()
-            .find(|hit| hit.id == "call-build")
-            .unwrap();
         assert!(
-            (app.chat_scroll()..app.chat_scroll() + app.viewport_height)
-                .contains(&hit.header_start)
+            (app.chat_scroll()..app.chat_scroll() + app.viewport_height).contains(&target_line)
         );
-        assert!(hit.block_end > hit.block_start);
+        assert_eq!(app.response_expand, response_expand);
+        assert_eq!(app.tool_expand, tool_expand);
         assert!(!app.auto_scroll);
     }
 }
