@@ -2553,3 +2553,127 @@ async fn idle_shell_output_coalesces_bursts_and_remains_quiet_without_new_data()
     actor.await.unwrap();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn compact_preserves_transcript_but_restarts_context_and_survives_reload() {
+    use crate::provider::response::websocket_tests::{MockWebSocket, answer};
+
+    let mut server = MockWebSocket::new().await;
+    let (mut task, handle, commands) = command_task();
+    task.config = Arc::new(server.config(None));
+    Arc::make_mut(&mut task.view.session)
+        .append_turn(Turn::new(Role::System, vec![Message::text("KEEP_SYSTEM")]));
+    task.store.save_header(&task.view.session).await.unwrap();
+    let store = task.store.clone();
+    let root = task.view.session.header.workspace_root.clone();
+    let runner = tokio::spawn(task.run(commands));
+    assert!(handle.compact(None).await.is_err());
+
+    let done = handle.settled_report(handle.turn_seq());
+    handle.submit("/compact", Vec::new(), None).await.unwrap();
+    server.next().await.reply(answer("resp_original")).await;
+    done.await.unwrap();
+    let original = handle.snapshot().session.clone();
+
+    for summary in ["SUMMARY_ONE", "SUMMARY_TWO"] {
+        let completion = handle.compact(None).await.unwrap();
+        let (result, ()) = tokio::join!(completion, async {
+            let request = server.next().await;
+            // A second command while summarizing must not enter the ordinary input queue.
+            assert!(handle.compact(None).await.is_err());
+            let mut response = answer(summary);
+            response["response"]["store"] = serde_json::json!(true);
+            response["response"]["output"][0]["content"][0]["text"] = serde_json::json!(summary);
+            request.reply(response).await;
+        });
+        assert!(result.unwrap().contains(summary));
+        let stored = store.load_session(&handle.id).await.unwrap().unwrap();
+        assert_eq!(stored.turns, handle.snapshot().session.turns);
+        assert_eq!(&stored.turns[..original.turns.len()], &original.turns);
+        let context = stored.context();
+        assert!(
+            context
+                .turns
+                .iter()
+                .any(|turn| turn.text_content().contains(summary))
+        );
+        assert!(
+            !context
+                .turns
+                .iter()
+                .any(|turn| turn.text_content().contains("/compact"))
+        );
+        assert!(crate::space::rollover::context_tokens(&stored).is_none());
+
+        let done = handle.settled_report(handle.turn_seq());
+        handle
+            .submit("Continue after compaction", Vec::new(), None)
+            .await
+            .unwrap();
+        let request = server.next().await;
+        assert!(request.body.get("previous_response_id").is_none());
+        let input = request.body["input"].to_string();
+        assert!(input.contains("KEEP_SYSTEM") && input.contains(summary));
+        assert!(!input.contains("/compact"));
+        if summary == "SUMMARY_TWO" {
+            assert!(!input.contains("SUMMARY_ONE"));
+        }
+        request.reply(answer("resp_continued")).await;
+        done.await.unwrap();
+    }
+
+    // Removing the first /compact marker also removes its boundary and restores the old history.
+    handle.revert(original.turns.len()).await.unwrap();
+    assert_eq!(handle.snapshot().session.context().turns, original.turns);
+    drop(handle);
+    runner.await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_or_invalid_compaction_keeps_memory_and_disk_context() {
+    use crate::provider::response::websocket_tests::{MockWebSocket, completed};
+
+    let mut server = MockWebSocket::new().await;
+    let (mut task, handle, commands) = command_task();
+    task.config = Arc::new(server.config(None));
+    Arc::make_mut(&mut task.view.session)
+        .append_turn(Turn::user_turn(Message::text("original history")));
+    task.store.save_header(&task.view.session).await.unwrap();
+    let original = task.view.session.clone();
+    let store = task.store.clone();
+    let root = task.view.session.header.workspace_root.clone();
+    let runner = tokio::spawn(task.run(commands));
+
+    let completion = handle.compact(None).await.unwrap();
+    let (result, ()) = tokio::join!(completion, async {
+        let _request = server.next().await;
+        handle.abort_current().await.unwrap();
+    });
+    assert!(result.is_err());
+    assert_eq!(handle.snapshot().session.turns, original.turns);
+
+    let completion = handle.compact(None).await.unwrap();
+    let (result, ()) = tokio::join!(completion, async {
+        let request = server.next().await;
+        request
+            .reply(completed(
+                "resp_tool",
+                vec![serde_json::json!({
+                    "type": "function_call", "id": "fc_1", "call_id": "call_1",
+                    "name": "Shell", "arguments": "{}", "status": "completed"
+                })],
+            ))
+            .await;
+    });
+    let error = result.unwrap_err();
+    assert!(error.contains("工具调用"), "{error}");
+    assert_eq!(handle.snapshot().session.turns, original.turns);
+    assert_eq!(
+        store.load_session(&handle.id).await.unwrap().unwrap().turns,
+        original.turns
+    );
+    drop(handle);
+    runner.await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

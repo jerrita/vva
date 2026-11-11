@@ -32,6 +32,9 @@ pub struct Turn {
     /// 用户在当前执行中插入的引导，延续同一次执行的状态与计时。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub steering: bool,
+    /// 成功的上下文摘要；后续请求从此轮承接，原始历史保留用于展示与回退。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compaction: bool,
     /// 后台完成投递的领域快照，与模型可见的 reminder 文本解耦。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_task: Option<super::BackgroundTask>,
@@ -49,6 +52,7 @@ impl Turn {
             elapsed_ms: None,
             worked_ms: None,
             steering: false,
+            compaction: false,
             background_task: None,
             meta: TurnMeta::default(),
         }

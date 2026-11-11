@@ -1075,6 +1075,20 @@ async fn test_slash_skill_completion_and_invocation() {
     app.skills = crate::skills::discover_skills(&ta.temp_dir);
     assert!(app.skills.iter().any(|s| s.name == "doc-review"));
 
+    // 同名技能不能覆盖内置命令。
+    let help_skill = ta.temp_dir.join(".vva/skills/help");
+    std::fs::create_dir_all(&help_skill).unwrap();
+    std::fs::write(
+        help_skill.join("SKILL.md"),
+        "---\nname: help\ndescription: A help skill.\n---\nSkill instructions.",
+    )
+    .unwrap();
+    app.skills = crate::skills::discover_skills(&ta.temp_dir);
+    app.run("/help").await;
+    assert!(matches!(app.modal, ActiveModal::Help { .. }));
+    assert!(app.active_session.snapshot().session.turns.is_empty());
+    app.modal = ActiveModal::None;
+
     // 1. 前缀匹配出技能候选
     app.set_input("/doc");
     assert!(
