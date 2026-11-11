@@ -655,7 +655,7 @@ async fn background_work_stays_visible_until_all_tasks_finish() {
 }
 
 #[tokio::test]
-async fn sidebar_task_click_only_scrolls_without_changing_expansion() {
+async fn sidebar_task_click_expands_only_the_collapsed_work_segment() {
     use crate::model::{
         BackgroundTask, BackgroundTaskActivity, BackgroundTaskKind, BackgroundTaskStatus,
         ContentPart, Message, Role, ToolCall, ToolResult, Turn,
@@ -698,7 +698,7 @@ async fn sidebar_task_click_only_scrolls_without_changing_expansion() {
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
     let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
 
-    // 名称行与状态行均可点击；隐藏的工具正文和已折叠的工作段保持原状。
+    // 名称行与状态行均可点击；仅展开已折叠的工作段，工具正文保持隐藏。
     for (status, row_offset) in [
         (BackgroundTaskStatus::Running, 0),
         (BackgroundTaskStatus::Completed, 1),
@@ -718,21 +718,6 @@ async fn sidebar_task_click_only_scrolls_without_changing_expansion() {
         terminal
             .draw(|frame| crate::ui::draw(app, frame, &view))
             .unwrap();
-        let target_line = if status == BackgroundTaskStatus::Running {
-            app.chat_cache
-                .tool_hits
-                .iter()
-                .find(|hit| hit.id == "call-build")
-                .unwrap()
-                .header_start
-        } else {
-            app.chat_cache
-                .response_hits
-                .iter()
-                .find(|hit| hit.id == response_id)
-                .unwrap()
-                .line_start
-        };
         let response_expand = app.response_expand.clone();
         let tool_expand = app.tool_expand.clone();
         let task_row = app
@@ -762,10 +747,19 @@ async fn sidebar_task_click_only_scrolls_without_changing_expansion() {
         terminal
             .draw(|frame| crate::ui::draw(app, frame, &view))
             .unwrap();
+        let target_line = app
+            .chat_cache
+            .tool_hits
+            .iter()
+            .find(|hit| hit.id == "call-build")
+            .unwrap()
+            .header_start;
         assert!(
             (app.chat_scroll()..app.chat_scroll() + app.viewport_height).contains(&target_line)
         );
-        assert_eq!(app.response_expand, response_expand);
+        if status == BackgroundTaskStatus::Running {
+            assert_eq!(app.response_expand, response_expand);
+        }
         assert_eq!(app.tool_expand, tool_expand);
         assert!(!app.auto_scroll);
     }
