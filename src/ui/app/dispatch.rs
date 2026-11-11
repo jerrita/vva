@@ -32,13 +32,6 @@ impl App {
         self.feedback.clear();
         // 处理斜杠命令
         if input_text.starts_with('/') {
-            if crate::skills::match_invocation(&input_text, &self.skills).is_some() {
-                if self.submit_prompt(&input_text).await {
-                    self.clear_input();
-                    self.input_attachments.clear();
-                }
-                return;
-            }
             self.clear_input();
             self.handle_slash_command(&input_text).await;
             return;
@@ -117,6 +110,18 @@ impl App {
         let arg = parts.collect::<Vec<&str>>().join(" ");
 
         match cmd.as_str() {
+            "/compact" => {
+                if !arg.is_empty() || !self.input_attachments.is_empty() {
+                    self.feedback
+                        .error("用法：/compact（不接受参数或附件）".into());
+                    return;
+                }
+                self.auto_scroll = true;
+                if let Err(error) = self.active_session.compact(None).await.map(drop) {
+                    self.feedback.error(error);
+                }
+                self.refresh_view();
+            }
             "/sessions" | "/session" => {
                 self.open_sessions_modal().await;
             }
@@ -180,7 +185,9 @@ impl App {
                 // 先重新发现，保证新装 / 刚删的技能立即生效
                 self.skills = crate::skills::discover_skills(self.session_mgr.workspace());
                 if crate::skills::match_invocation(cmd_line, &self.skills).is_some() {
-                    self.submit_prompt(cmd_line).await;
+                    if self.submit_prompt(cmd_line).await {
+                        self.input_attachments.clear();
+                    }
                 } else {
                     self.feedback.error(format!(
                         "Unknown command '{cmd}'. Type /help for available commands."

@@ -70,6 +70,7 @@ pub async fn run_server(
             "/api/sessions/{id}/messages",
             post(api::submit_message).layer(DefaultBodyLimit::disable()),
         )
+        .route("/api/sessions/{id}/compact", post(api::compact_session))
         .route("/api/sessions/{id}/revert", post(api::revert_session))
         .route("/api/sessions/{id}/inputs/mode", post(api::set_input_mode))
         .route("/api/sessions/{id}/inputs/take", post(api::take_input))

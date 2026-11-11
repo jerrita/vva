@@ -376,6 +376,15 @@ export default function App() {
     async (text: string, files: FileAttachment[] = []) => {
       setError(null)
       try {
+        const command = text.trim().split(/\s+/, 1)[0].toLowerCase()
+        if (command === '/compact') {
+          if (text.trim().toLowerCase() !== '/compact' || files.length > 0) {
+            throw new Error('用法：/compact（不接受参数或附件）')
+          }
+          if (!activeId) throw new Error('当前会话没有可压缩的历史')
+          await api.compact(activeId)
+          return
+        }
         let id = activeId
         if (!id) {
           const created = await api.createSession({

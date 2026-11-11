@@ -1,7 +1,7 @@
 //! Rollover：上下文达到预留线后的摘要与会话切换。
 //!
-//! 不原地改写历史：回合结束后若上下文逼近窗口，由主模型在**同一会话末尾**追加压缩
-//! prompt（模型 / 工具 / 推理参数与上一轮完全一致，复用 cache 前缀），摘要作为追加轮次
+//! 不原地改写历史：回合结束后若上下文逼近窗口，复用 /compact 请求生成摘要
+//! （模型 / 工具 / 推理参数与上一轮一致，复用 cache 前缀），压缩记录与摘要追加
 //! 留在旧会话；随后新建会话承接——复制旧会话的 system 前缀，其后仅有摘要 reminder，
 //! 不复制任何对话轮次。旧会话写 `superseded_by`，其余内容只增不改。
 
@@ -9,27 +9,7 @@ use std::sync::Arc;
 
 use crate::config::{AgentSpaceConfig, AppConfig};
 use crate::harness::{ManagedSession, SessionManager};
-use crate::model::{ContentPart, Message, Role, Session, TokenUsage, Turn};
-
-/// 追加到旧会话末尾的压缩 prompt
-const COMPRESS_PROMPT: &str = "\
-请对到目前为止的整个对话做一次上下文压缩，产出供后续会话承接的摘要。\
-该摘要将是新会话中仅有的历史，不会附带任何原始对话，因此必须自足。\
-本次回复不得调用任何工具，只输出摘要正文，按以下分节书写（某节没有内容时写“无”）：
-
-## 目标
-## 偏好
-## 关键事实
-## 约束
-## 决策
-## 待办
-## 未决问题
-## 当前进展
-
-“当前进展”写明最近一条用户请求的原意、已完成与正在进行的步骤。
-
-要求：只保留继续工作所需的信息；保留具体的路径、标识符、数值与命令；\
-不确定或未经验证的信息标注“未确认”；不要编造，不要复述寒暄。";
+use crate::model::{Message, Role, Session, TokenUsage, Turn};
 
 /// rollover 完成后新旧会话 id；上层据此切换 binding focus 与 message_index
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +34,7 @@ pub fn context_tokens(session: &Session) -> Option<u64> {
         .turns
         .iter()
         .rev()
+        .take_while(|turn| !turn.compaction)
         .filter(|turn| turn.role == Role::Assistant)
         .find_map(|turn| {
             let usage = turn.usage.as_ref()?;
@@ -133,7 +114,7 @@ pub async fn maybe_rollover(
     rollover(manager, handle).await.map(Some)
 }
 
-/// 压缩并切换到接替会话。失败时旧会话回到调用前的内容（追加的压缩轮次被回退）。
+/// 压缩并切换到接替会话。摘要请求失败时不改动历史。
 async fn rollover(
     manager: &Arc<SessionManager>,
     handle: &Arc<ManagedSession>,
@@ -144,7 +125,7 @@ async fn rollover(
     // 压缩前读取：索引读取失败时不留下压缩轮次
     let memory = super::curator::memory_reminder(manager.workspace())?;
     let before = handle.snapshot().session.turns.len();
-    let summary = compress(handle, before).await?;
+    let summary = handle.compact(None).await?.await?;
     let old = handle.snapshot().session.clone();
     let successor = manager
         .adopt_session(successor_session(&old, before, &summary, memory.as_deref()))
@@ -159,42 +140,6 @@ async fn rollover(
         old_id: handle.id.clone(),
         new_id: successor.id.clone(),
     })
-}
-
-/// 在旧会话末尾追加压缩 prompt 并取回摘要；任何失败都回退追加的轮次
-async fn compress(handle: &Arc<ManagedSession>, before: usize) -> Result<String, String> {
-    tracing::info!("rollover 发出压缩请求: session={}", handle.id);
-    let outcome = handle.deliver_wait(COMPRESS_PROMPT).await;
-    let session = handle.snapshot().session.clone();
-    let failure = match outcome {
-        Err(error) => format!("压缩请求失败: {error}"),
-        Ok(_) if calls_tool(&session.turns[before..]) => "压缩请求发起了工具调用，视为失败".into(),
-        Ok(report) if report.text.trim().is_empty() => "压缩请求未返回摘要".into(),
-        Ok(report) => {
-            let summary = report.text.trim().to_string();
-            tracing::info!(
-                "rollover 摘要已生成: session={} {} 字符",
-                handle.id,
-                summary.chars().count()
-            );
-            return Ok(summary);
-        }
-    };
-    tracing::warn!("rollover 压缩失败: session={}: {failure}", handle.id);
-    if session.turns.len() > before
-        && let Err(error) = handle.revert(before).await
-    {
-        return Err(format!("{failure}；回退压缩轮次失败: {error}"));
-    }
-    Err(failure)
-}
-
-fn calls_tool(turns: &[Turn]) -> bool {
-    turns
-        .iter()
-        .flat_map(|turn| &turn.messages)
-        .flat_map(|message| &message.parts)
-        .any(|part| matches!(part, ContentPart::ToolCall(_)))
 }
 
 /// 注入内容（system 与 reminder）不是用户轮次边界
@@ -259,7 +204,7 @@ fn successor_session(old: &Session, before: usize, summary: &str, memory: Option
 mod tests {
     use super::*;
     use crate::config::{ModelConfig, ProviderConfig, model::ModelLimitConfig};
-    use crate::model::{AnthropicTurnMeta, TokenUsage, ToolCall, ToolResult};
+    use crate::model::{AnthropicTurnMeta, ContentPart, TokenUsage, ToolCall, ToolResult};
     use crate::storage::jsonl::JsonlSessionStore;
 
     fn user(text: &str) -> Turn {

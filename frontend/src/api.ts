@@ -57,6 +57,7 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: 'DELETE' }),
   submit: (id: string, prompt: string, files: FileAttachment[] = []) =>
     request<void>(`/api/sessions/${id}/messages`, json('POST', { prompt, files })),
+  compact: (id: string) => request<void>(`/api/sessions/${id}/compact`, { method: 'POST' }),
   setInputMode: (id: string, inputId: string, mode: InputMode) =>
     request<void>(`/api/sessions/${id}/inputs/mode`, json('POST', { id: inputId, mode })),
   takeInput: (id: string, inputId: string) =>
