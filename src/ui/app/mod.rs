@@ -55,6 +55,8 @@ pub struct App {
     pub(crate) chat_focus: Option<chat_focus::ChatTarget>,
     pub(crate) chat_focus_needs_reveal: bool,
     pub sidebar: TextPane,
+    /// 侧栏任务名称与状态行到任务身份的映射，随侧栏渲染更新。
+    pub(crate) sidebar_task_hits: Vec<(std::ops::Range<usize>, String)>,
     pub spinner_frame: usize,
     pub should_quit: bool,
     pub modal: ActiveModal,
@@ -134,6 +136,7 @@ impl App {
             chat_focus: None,
             chat_focus_needs_reveal: false,
             sidebar: TextPane::default(),
+            sidebar_task_hits: Vec::new(),
             spinner_frame: 0,
             should_quit: false,
             modal: ActiveModal::None,
