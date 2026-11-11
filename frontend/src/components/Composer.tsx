@@ -70,11 +70,16 @@ export function Composer({
   const selectedOptionRef = useRef<HTMLButtonElement>(null)
   const dragDepthRef = useRef(0)
 
-  // /<skill_name> 快速选择：输入以 / 开头且不含空白时按名前缀过滤
+  // 斜杠命令与 /<skill_name> 按名前缀过滤。
   const query = text.trimStart()
   const skillMatches =
     query.startsWith('/') && !/\s/.test(query)
-      ? skills.filter(skill => skill.name.toLowerCase().startsWith(query.slice(1).toLowerCase()))
+      ? [
+          { name: 'compact', description: '压缩当前上下文，保留聊天记录', title: '压缩当前上下文，保留聊天记录' },
+          ...skills.filter(skill => skill.name.toLowerCase() !== 'compact').map(skill => ({
+            name: skill.name, description: skill.description, title: `${skill.description}\n${skill.path}`,
+          })),
+        ].filter(command => command.name.toLowerCase().startsWith(query.slice(1).toLowerCase()))
       : []
   const paletteOpen = skillMatches.length > 0 && !paletteClosed
   const hasContent = text.trim() !== '' || files.length > 0 || uploadedFiles.length > 0
@@ -159,7 +164,7 @@ export function Composer({
     })
   }
 
-  const applySkill = (skill: SkillEntry) => {
+  const applySkill = (skill: { name: string }) => {
     setText(`/${skill.name} `)
     setSkillIndex(0)
     requestAnimationFrame(resize)
@@ -442,7 +447,7 @@ export function Composer({
         </div>
       )}
       {paletteOpen && (
-        <div className="composer-menu" role="listbox" aria-label="技能候选">
+        <div className="composer-menu" role="listbox" aria-label="命令与技能候选">
           {skillMatches.map((skill, index) => (
             <button
               key={skill.name}
@@ -451,7 +456,7 @@ export function Composer({
               aria-selected={index === activeSkill}
               ref={index === activeSkill ? selectedOptionRef : undefined}
               className={`composer-option${index === activeSkill ? ' selected' : ''}`}
-              title={`${skill.description}\n${skill.path}`}
+              title={skill.title}
               onMouseDown={event => {
                 event.preventDefault()
                 applySkill(skill)
@@ -496,7 +501,7 @@ export function Composer({
         value={text}
         rows={1}
         readOnly={sending}
-        placeholder={running ? '输入后 Enter 排队，可在待发消息中切换为引导' : '输入消息，/ 选择技能，@ 引用文件或文件夹，Enter 发送，Shift+Enter 换行'}
+        placeholder={running ? '输入后 Enter 排队，可在待发消息中切换为引导' : '输入消息，/ 选择命令或技能，@ 引用文件或文件夹，Enter 发送，Shift+Enter 换行'}
         onChange={event => {
           setText(event.target.value)
           resetPalette()

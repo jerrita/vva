@@ -78,6 +78,11 @@ pub enum SharedCommand {
 }
 
 pub enum Command {
+    Compact {
+        events: Option<mpsc::Sender<AgentEvent>>,
+        completion: oneshot::Sender<Result<String, String>>,
+        reply: Reply,
+    },
     Submit {
         prompt: String,
         /// 用户随提示词提交的图片附件（Base64）
@@ -228,6 +233,25 @@ impl ManagedSession {
             reply,
         })
         .await
+    }
+
+    /// 接受上下文压缩请求，返回只等待本次压缩完成的回执。
+    pub async fn compact(
+        &self,
+        events: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<impl Future<Output = Result<String, String>> + Send + 'static, String> {
+        let (completion, result) = oneshot::channel();
+        self.request(|reply| Command::Compact {
+            events,
+            completion,
+            reply,
+        })
+        .await?;
+        Ok(async move {
+            result
+                .await
+                .map_err(|_| "Session task stopped".to_string())?
+        })
     }
 
     /// 程序化消息投递：运行中排队，空闲即触发轮次
