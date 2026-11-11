@@ -71,7 +71,7 @@ fn context_gauge_line(width: u16, ratio: f64, percent: u16) -> Line<'static> {
 }
 
 /// 构建侧边栏可见文本行，供渲染与复制共用。
-pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> {
+fn build_sidebar_lines(app: &mut App, info: &SidebarInfo) -> Vec<Line<'static>> {
     let short_id = truncate(info.session_id, 16);
 
     let ws_display = std::path::Path::new(info.workspace)
@@ -169,11 +169,15 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
         )
     });
     if !tasks.is_empty() {
+        let insert_at = 4;
         let mut task_lines = vec![Line::from(Span::styled(
             format!(" Background Tasks ({})", tasks.len()),
             bold(Color::DarkGray),
         ))];
         for (task, activity) in tasks.iter().take(3) {
+            let row = insert_at + task_lines.len();
+            app.sidebar_task_hits
+                .push((row..row + 2, task.task_id.clone()));
             let kind = match activity.kind {
                 BackgroundTaskKind::Shell => "Shell",
                 BackgroundTaskKind::Agent => "Agent",
@@ -219,13 +223,14 @@ pub fn build_sidebar_lines(app: &App, info: &SidebarInfo) -> Vec<Line<'static>> 
             )));
         }
         task_lines.push(Line::from(""));
-        lines.splice(4..4, task_lines);
+        lines.splice(insert_at..insert_at, task_lines);
     }
     lines
 }
 
 /// 右侧边栏：展示 Session ID、Workspace、模型与编辑协议、缓存、上下文窗口、Token 消耗与 Cost 估算
 pub fn render_sidebar(app: &mut App, frame: &mut Frame, area: Rect, info: &SidebarInfo) {
+    app.sidebar_task_hits.clear();
     let block = super::panel_block().title(Span::styled(" Details ", bold(Color::DarkGray)));
 
     let inner = block.inner(area);
