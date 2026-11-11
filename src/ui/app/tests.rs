@@ -584,6 +584,188 @@ async fn test_completed_single_turn_work_collapses_before_final_reply() {
 }
 
 #[tokio::test]
+async fn background_work_stays_visible_until_all_tasks_finish() {
+    use crate::model::{
+        BackgroundTask, BackgroundTaskStatus, ContentPart, Message, Role, ToolCall, ToolResult,
+        Turn,
+    };
+
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    let view = Arc::make_mut(&mut app.view);
+    let session = Arc::make_mut(&mut view.session);
+    session.append_turn(Turn::user_turn(Message::text("Build and verify")));
+    for id in ["build", "verify"] {
+        session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+            ContentPart::ToolCall(ToolCall::new(
+                id,
+                "Shell",
+                r#"{"intent":"Build","command":"make","run_in_background":true}"#,
+            )),
+        ])]));
+        let mut result = ToolResult::success(id, "Started");
+        result.background_task_id = Some(id.into());
+        session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(result)]));
+        Arc::make_mut(&mut view.background_tasks)
+            .insert(id.into(), BackgroundTask::running(id.into()));
+    }
+    let mut response = Turn::assistant_turn(vec![Message::text("Tasks started")]);
+    response.worked_ms = Some(2_000);
+    let response_id = response.id.clone();
+    session.append_turn(response);
+    session.append_turn(Turn::user_turn(Message::text("Next prompt")));
+    let mut next = Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::reasoning("Unrelated work", None),
+        ContentPart::text("Next reply"),
+    ])]);
+    next.worked_ms = Some(1_000);
+    let next_id = next.id.clone();
+    session.append_turn(next);
+    view.revision += 1;
+    app.response_expand.insert(response_id.clone(), false);
+
+    for completed in 0..=2 {
+        app.refresh_chat_lines(80);
+        let owner = app
+            .chat_cache
+            .response_hits
+            .iter()
+            .find(|hit| hit.id == response_id)
+            .unwrap();
+        assert_eq!(owner.collapsed, completed == 2);
+        assert_eq!(
+            app.chat_cache.tool_hits.len(),
+            if completed == 2 { 0 } else { 2 }
+        );
+        assert!(
+            app.chat_cache
+                .response_hits
+                .iter()
+                .find(|hit| hit.id == next_id)
+                .unwrap()
+                .collapsed
+        );
+        if completed < 2 {
+            let task = Arc::make_mut(&mut Arc::make_mut(&mut app.view).background_tasks)
+                .get_mut(["build", "verify"][completed])
+                .unwrap();
+            task.status = BackgroundTaskStatus::Completed;
+        }
+    }
+}
+
+#[tokio::test]
+async fn sidebar_task_click_expands_only_the_collapsed_work_segment() {
+    use crate::model::{
+        BackgroundTask, BackgroundTaskActivity, BackgroundTaskKind, BackgroundTaskStatus,
+        ContentPart, Message, Role, ToolCall, ToolResult, Turn,
+    };
+    use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut ta = create_test_app("test_model", None, None, false).await;
+    let app = &mut ta.app;
+    let view = Arc::make_mut(&mut app.view);
+    let session = Arc::make_mut(&mut view.session);
+    session.append_turn(Turn::user_turn(Message::text("Build")));
+    session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
+        ContentPart::ToolCall(ToolCall::new(
+            "call-build",
+            "Shell",
+            r#"{"intent":"Build project","command":"make","run_in_background":true}"#,
+        )),
+    ])]));
+    let mut result = ToolResult::success("call-build", "Started");
+    result.background_task_id = Some("task-build".into());
+    session.append_turn(Turn::new(Role::Tool, vec![Message::tool_result(result)]));
+    let mut response = Turn::assistant_turn(vec![Message::text("Build started")]);
+    response.worked_ms = Some(1_000);
+    let response_id = response.id.clone();
+    session.append_turn(response);
+    session.append_turn(Turn::user_turn(Message::text("Later prompt\n".repeat(60))));
+    Arc::make_mut(&mut view.background_tasks).insert(
+        "task-build".into(),
+        BackgroundTask {
+            output: "Compiler output".into(),
+            activity: Some(BackgroundTaskActivity {
+                name: "Build project".into(),
+                kind: BackgroundTaskKind::Shell,
+                started_at: std::time::Instant::now(),
+            }),
+            ..BackgroundTask::running("task-build".into())
+        },
+    );
+    view.revision += 1;
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 24)).unwrap();
+    let (_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+
+    // 名称行与状态行均可点击；仅展开已折叠的工作段，工具正文保持隐藏。
+    for (status, row_offset) in [
+        (BackgroundTaskStatus::Running, 0),
+        (BackgroundTaskStatus::Completed, 1),
+    ] {
+        let task = Arc::make_mut(&mut Arc::make_mut(&mut app.view).background_tasks)
+            .get_mut("task-build")
+            .unwrap();
+        task.status = status;
+        task.finished_at =
+            (status == BackgroundTaskStatus::Completed).then(std::time::Instant::now);
+        app.response_expand.insert(response_id.clone(), false);
+        app.tool_expand
+            .insert("call-build".into(), ToolExpand::Hidden);
+        app.chat_focus = None;
+        app.scroll_to_bottom();
+        let view = app.view.clone();
+        terminal
+            .draw(|frame| crate::ui::draw(app, frame, &view))
+            .unwrap();
+        let response_expand = app.response_expand.clone();
+        let tool_expand = app.tool_expand.clone();
+        let task_row = app
+            .sidebar
+            .lines
+            .iter()
+            .position(|line| line.to_string().contains("Build project"))
+            .unwrap();
+        let column = app.sidebar.area.x + 2;
+        let row = app.sidebar.area.y + (task_row + row_offset) as u16;
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+        ] {
+            crate::ui::events::handle_crossterm_event(
+                app,
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut events,
+            )
+            .await;
+        }
+        terminal
+            .draw(|frame| crate::ui::draw(app, frame, &view))
+            .unwrap();
+        let target_line = app
+            .chat_cache
+            .tool_hits
+            .iter()
+            .find(|hit| hit.id == "call-build")
+            .unwrap()
+            .header_start;
+        assert!(
+            (app.chat_scroll()..app.chat_scroll() + app.viewport_height).contains(&target_line)
+        );
+        if status == BackgroundTaskStatus::Running {
+            assert_eq!(app.response_expand, response_expand);
+        }
+        assert_eq!(app.tool_expand, tool_expand);
+        assert!(!app.auto_scroll);
+    }
+}
+
+#[tokio::test]
 async fn test_app_scroll_control_and_clamping() {
     let mut ta = create_test_app("test_model", None, None, false).await;
     let app = &mut ta.app;

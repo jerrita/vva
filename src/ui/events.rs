@@ -106,10 +106,32 @@ async fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             } else {
                 None
             };
+            let task_click = if app.modal.is_none()
+                && app.sidebar.hit(mouse.column, mouse.row)
+                && app.sidebar.selection.is_selecting()
+            {
+                app.sidebar
+                    .selection
+                    .get()
+                    .filter(|sel| sel.is_empty())
+                    .and_then(|sel| {
+                        app.sidebar_task_hits
+                            .iter()
+                            .find(|(lines, _)| lines.contains(&sel.anchor.line))
+                            .map(|(_, id)| id.clone())
+                    })
+            } else {
+                None
+            };
             app.is_dragging_scrollbar = false;
             app.finish_selections();
             if selecting {
                 app.copy_active_selection();
+            }
+            if let Some(task_id) = task_click
+                && let Err(error) = app.scroll_to_background_task(&task_id)
+            {
+                app.feedback.error(error);
             }
             if let Some(line) = user_click
                 && !app.handle_tool_click(line)

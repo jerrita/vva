@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::sync::{Arc, Weak};
 
 use super::selection::SelectionTracker;
-use crate::model::{ContentPart, Role, Session, Turn};
+use crate::model::{BackgroundTask, BackgroundTaskStatus, ContentPart, Role, Session, Turn};
 use crate::ui::markdown::LinkRegion;
 use crate::ui::views::chat::{
     ChatRender, RenderState, append_collapsed_response, append_parts, append_turn_outcome,
@@ -262,6 +262,7 @@ impl<'t> ResponseGroup<'t> {
         range: Range<usize>,
         settled: bool,
         response_expand: &HashMap<String, bool>,
+        tasks: &std::collections::BTreeMap<String, BackgroundTask>,
     ) -> Self {
         let assistant_turns: Vec<usize> = range
             .clone()
@@ -277,7 +278,19 @@ impl<'t> ResponseGroup<'t> {
         let has_work = final_reply.is_some_and(|(start, end)| {
             assistant_turns.len() > 1 || start > 0 || end < last_part_count
         });
-        let collapsible = has_work && elapsed_ms.is_some();
+        let background_running = turns[range.clone()]
+            .iter()
+            .flat_map(|turn| &turn.messages)
+            .flat_map(|message| &message.parts)
+            .any(|part| match part {
+                ContentPart::ToolResult(result) => result
+                    .background_task_id
+                    .as_ref()
+                    .and_then(|id| tasks.get(id))
+                    .is_some_and(|task| task.status == BackgroundTaskStatus::Running),
+                _ => false,
+            });
+        let collapsible = has_work && elapsed_ms.is_some() && !background_running;
         let expanded = id.is_some_and(|id| response_expand.get(id).copied().unwrap_or(false));
         let collapse = (range.end < turns.len() || settled) && collapsible && !expanded;
         Self {
@@ -297,6 +310,58 @@ impl<'t> ResponseGroup<'t> {
 }
 
 impl super::App {
+    /// 按需展开所属工作段并滚动到原工具块，保留工具块自身的展开状态。
+    pub(crate) fn scroll_to_background_task(&mut self, task_id: &str) -> Result<(), String> {
+        let results = collect_tool_results(&self.view);
+        let call_id = results
+            .values()
+            .find(|result| result.background_task_id.as_deref() == Some(task_id))
+            .ok_or_else(|| format!("后台任务 {task_id} 缺少启动回执"))?
+            .tool_call_id
+            .clone();
+        let width = self.chat.area.width.saturating_sub(1) as usize;
+        self.refresh_chat_lines(width);
+        if !self
+            .chat_cache
+            .tool_hits
+            .iter()
+            .any(|hit| hit.id == call_id)
+        {
+            let last = self
+                .view
+                .session
+                .turns
+                .iter()
+                .skip_while(|turn| {
+                    !turn.messages.iter().flat_map(|message| &message.parts).any(
+                        |part| matches!(part, ContentPart::ToolCall(call) if call.id == call_id),
+                    )
+                })
+                .take_while(|turn| !turn_is_user_boundary(turn))
+                .filter(|turn| turn.role == Role::Assistant)
+                .last()
+                .expect("hidden launch belongs to a completed response");
+            let response = self
+                .chat_cache
+                .response_hits
+                .iter()
+                .find(|hit| hit.id == last.id && hit.collapsed)
+                .expect("hidden launch belongs to a collapsed response");
+            self.response_expand.insert(response.id.clone(), true);
+            self.refresh_chat_lines(width);
+        }
+        self.scroll_offset = self
+            .chat_cache
+            .tool_hits
+            .iter()
+            .find(|hit| hit.id == call_id)
+            .expect("launch tool is rendered in the expanded work segment")
+            .header_start;
+        self.auto_scroll = false;
+        self.chat_focus_needs_reveal = false;
+        Ok(())
+    }
+
     /// 历史随会话快照和布局失效，草稿随视图版本更新，关联反馈变化使历史失效。
     pub fn refresh_chat_lines(&mut self, width: usize) {
         let width = width.max(20);
@@ -351,6 +416,7 @@ impl super::App {
                     range[0]..range[1],
                     responses_collapsed,
                     &self.response_expand,
+                    &self.view.background_tasks,
                 );
                 for (turn_index, turn) in turns.iter().enumerate().take(range[1]).skip(range[0]) {
                     let line_start = self.chat.lines.len();
@@ -367,22 +433,6 @@ impl super::App {
                             &mut render,
                             id,
                             elapsed_ms,
-                            turns[range[0]..range[1]]
-                                .iter()
-                                .flat_map(|turn| &turn.messages)
-                                .flat_map(|message| &message.parts)
-                                .filter_map(|part| match part {
-                                    ContentPart::ToolResult(result) => {
-                                        result.background_task_id.as_ref()
-                                    }
-                                    _ => None,
-                                })
-                                .filter(|id| {
-                                    self.view.background_tasks.get(*id).is_some_and(|task| {
-                                        task.status == crate::model::BackgroundTaskStatus::Running
-                                    })
-                                })
-                                .count(),
                             &mut cache.render_state,
                         );
                     }
