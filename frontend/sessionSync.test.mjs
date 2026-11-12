@@ -113,7 +113,7 @@ test('invalid versions and malformed patches fail without changing the baseline'
   assert.deepEqual(before, snapshot())
 })
 
-test('subscription resets on reconnect, rejects broken chains, and closes on cleanup', () => {
+test('subscription reconnects without duplicate completions, retains run errors, and rejects broken chains', () => {
   const original = globalThis.EventSource
   let source
   class FakeEventSource {
@@ -126,14 +126,25 @@ test('subscription resets on reconnect, rejects broken chains, and closes on cle
   }
   globalThis.EventSource = FakeEventSource
   try {
-    const received = [], errors = []
-    const close = subscribeSession('synthetic', value => received.push(value), error => errors.push(error))
+    const received = [], errors = [], completed = []
+    const close = subscribeSession('synthetic', value => received.push(value), error => errors.push(error),
+      (_, outcome) => completed.push(outcome))
+    source.emit('snapshot', { ...snapshot(), revision: 0, state: '' })
     source.emit('snapshot', snapshot())
     source.emit('delta', delta())
     // A new server connection can establish a lower revision after a process restart.
     source.emit('snapshot', { ...snapshot(), revision: 0 })
     source.emit('delta', delta({ base_revision: 0, revision: 2 }))
-    assert.deepEqual(received.map(value => value.revision), [1, 5, 0, 2])
+    assert.deepEqual(received.map(value => value.revision), [0, 1, 5, 0, 2])
+    const failure = { id: 'failure', kind: 'turn', turn_id: 'turn', aborted: false, text: 'Provider error' }
+    source.emit('delta', delta({ base_revision: 2, revision: 3, notices: [failure] }))
+    source.emit('delta', delta({ base_revision: 3, revision: 4, state: '' }))
+    // Reconnecting to an idle session must not repeat the notification.
+    source.emit('snapshot', { ...snapshot(), revision: 4, state: '', notices: [failure] })
+    source.emit('delta', delta({ base_revision: 4, revision: 5, state: '' }))
+    source.emit('delta', delta({ base_revision: 5, revision: 6 }))
+    source.emit('delta', delta({ base_revision: 6, revision: 7, state: '' }))
+    assert.deepEqual(completed, [failure, undefined])
     source.emit('delta', delta())
     assert.equal(errors.length, 1)
     assert.equal(source.closed, true)
