@@ -347,7 +347,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// 当前可执行文件所在目录运行官方安装脚本；脚本比较版本，已是最新时跳过下载
 fn self_update() -> Result<(), Box<dyn std::error::Error>> {
     const SCRIPT_BASE: &str = "https://raw.githubusercontent.com/jerrita/vva/master/scripts";
-    let exe = std::env::current_exe()?.canonicalize()?;
+    // 不 canonicalize：Windows 的 \\?\ 前缀无法被 Windows PowerShell 的 Join-Path 处理。
+    let exe = std::env::current_exe()?;
+    #[cfg(not(windows))]
+    let exe = exe.canonicalize()?;
     let dir = exe.parent().ok_or("无法确定可执行文件所在目录")?;
     let mut command = if cfg!(windows) {
         let mut command = std::process::Command::new("powershell");
