@@ -20,7 +20,7 @@ import { usePanelLayout } from './hooks/usePanelLayout'
 import { useStatsPanel } from './hooks/useStatsPanel'
 import { usePersistentSet, usePersistentState } from './hooks/usePersistentState'
 import { extractRelatedFiles } from './utils/relatedFiles'
-import type { FileAttachment, ModelsResponse, SessionSnapshot, SessionSummary, SkillEntry, UserAnswer } from './types'
+import type { FileAttachment, ModelsResponse, Notice, SessionSnapshot, SessionSummary, SkillEntry, UserAnswer } from './types'
 
 const ACTIVE_SESSION_STORAGE_KEY = 'vva.active-session'
 
@@ -51,6 +51,35 @@ export default function App() {
   const [unreadIds, setUnreadIds] = usePersistentSet('vva.sessions-unread')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const composerRef = useRef<ComposerHandle>(null)
+  const [finished, setFinished] = useState<{ id: string; failed: boolean } | null>(null)
+  const notificationPermissionRequested = useRef(false)
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+
+  const onRunFinished = useCallback((next: SessionSnapshot, outcome: Notice | undefined) => {
+    const failed = outcome?.kind === 'turn' && !outcome.aborted
+    const viewed = next.session.id === activeIdRef.current &&
+      document.visibilityState === 'visible' && document.hasFocus()
+    if (viewed) return
+    if (next.session.id === activeIdRef.current) {
+      setFinished({ id: next.session.id, failed })
+    }
+    if (!window.isSecureContext || !('Notification' in window) || Notification.permission !== 'granted') return
+    try {
+      const notification = new Notification(failed ? 'vva · 运行失败' : 'vva · 运行结束', {
+        body: next.session.title?.trim() || next.session.id,
+        tag: next.session.id,
+      })
+      notification.onclick = () => {
+        window.focus()
+        setActiveId(next.session.id)
+        setFinished(null)
+        notification.close()
+      }
+    } catch (e) {
+      setError(toError(e))
+    }
+  }, [])
 
   const {
     sidebarHidden,
@@ -161,17 +190,40 @@ export default function App() {
 
   useEffect(() => {
     const summary = sessions.find(session => session.id === activeId)
-    document.title = active?.title?.trim() || summary?.title?.trim() || 'vva'
-  }, [active, activeId, sessions])
+    const current = snap?.session.id === activeId ? snap : null
+    const session = current ? current.session : summary
+    const title = session?.title?.trim() || activeId || 'vva'
+    const state = current ? current.state : summary?.state
+    const marker = state ? '● 运行中 · ' : finished?.id === activeId
+      ? finished.failed ? '✕ 运行失败 · ' : '✓ 已完成 · '
+      : ''
+    document.title = marker + title
+  }, [snap, activeId, sessions, finished])
+
+  useEffect(() => {
+    const clearFinished = () => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) setFinished(null)
+    }
+    window.addEventListener('focus', clearFinished)
+    document.addEventListener('visibilitychange', clearFinished)
+    return () => {
+      window.removeEventListener('focus', clearFinished)
+      document.removeEventListener('visibilitychange', clearFinished)
+    }
+  }, [])
 
   // 切换会话时建立 SSE 订阅，连接建立即收到当前快照
   useEffect(() => {
     setSnap(null)
+    setFinished(null)
     setPending(null)
     resetFiles()
     if (!activeId) return
-    return subscribeSession(activeId, setSnap, e => setError(toError(e)))
-  }, [activeId, resetFiles])
+    return subscribeSession(activeId, next => {
+      setSnap(next)
+      if (next.state) setFinished(null)
+    }, e => setError(toError(e)), onRunFinished)
+  }, [activeId, resetFiles, onRunFinished])
 
   const relatedFiles = useMemo(
     () => (active ? extractRelatedFiles(active, snap?.draft) : []),
@@ -230,8 +282,6 @@ export default function App() {
     setSessions(prev => [summary, ...prev.filter(item => item.id !== summary.id)])
   }, [summary])
 
-  const activeIdRef = useRef(activeId)
-  activeIdRef.current = activeId
   const runningWatchKey = sessions
     .filter(session => session.id !== activeId && Boolean(session.state))
     .map(session => session.id)
@@ -260,12 +310,13 @@ export default function App() {
           }
         },
         () => {},
+        onRunFinished,
       ),
     )
     return () => {
       for (const unsubscribe of unsubscribers) unsubscribe()
     }
-  }, [runningWatchKey, setUnreadIds])
+  }, [runningWatchKey, setUnreadIds, onRunFinished])
 
   // 定期刷新列表：有生成中会话时 4s 快速跟进（新派生的 subagent 会话由引擎侧
   // 创建，本地无通知）；全部空闲时 15s 兜底纠偏（如外部触发的运行态变化）
@@ -375,6 +426,11 @@ export default function App() {
   const submit = useCallback(
     async (text: string, files: FileAttachment[] = []) => {
       setError(null)
+      if (window.isSecureContext && 'Notification' in window &&
+        Notification.permission === 'default' && !notificationPermissionRequested.current) {
+        notificationPermissionRequested.current = true
+        void Notification.requestPermission().catch(e => setError(toError(e)))
+      }
       try {
         const command = text.trim().split(/\s+/, 1)[0].toLowerCase()
         if (command === '/compact') {
