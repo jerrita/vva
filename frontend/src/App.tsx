@@ -194,8 +194,8 @@ export default function App() {
     const session = current ? current.session : summary
     const title = session?.title?.trim() || activeId || 'vva'
     const state = current ? current.state : summary?.state
-    const marker = state ? '● 运行中 · ' : finished?.id === activeId
-      ? finished.failed ? '✕ 运行失败 · ' : '✓ 已完成 · '
+    const marker = state ? '● ' : finished?.id === activeId
+      ? finished.failed ? '✕ ' : '✓ '
       : ''
     document.title = marker + title
   }, [snap, activeId, sessions, finished])
