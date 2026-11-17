@@ -33,21 +33,6 @@ impl AppSessionStore {
             slots: Mutex::new(BTreeMap::new()),
         })
     }
-    #[cfg(test)]
-    pub(crate) fn with_core(core: Arc<dyn CoreStore>, base: PathBuf) -> Self {
-        Self {
-            core,
-            records: base.with_file_name(format!(
-                "{}-app",
-                base.file_name()
-                    .expect("test fixture directory has a name")
-                    .to_string_lossy()
-            )),
-            base,
-            mutation: Mutex::new(()),
-            slots: Mutex::new(BTreeMap::new()),
-        }
-    }
     pub fn slot(&self, id: &str) -> Result<Arc<watch::Sender<SessionRecord>>, StoreError> {
         let path = self.records.join(format!("{id}.json"));
         let mut slots = self.slots.lock().expect("application records lock");

@@ -6,7 +6,7 @@
 Cargo.toml                 # workspace；default-members = vva + vva-core
 build.rs                   # 仅应用：frontend 构建
 src/                       # vva 应用
-├── lib.rs / main.rs        # 模块导出 / CLI 入口 (vva run, session list|inspect|migrate, web, agent, version, update)
+├── lib.rs / main.rs        # 应用模块导出（不转发 core） / CLI 入口 (vva run, session list|inspect|migrate, web, agent, version, update)
 ├── find.rs                 # 工作区遍历与模糊匹配 (walk_workspace / fuzzy_match；TUI @ 补全与 Web go-to-file 共用)
 ├── app/                    # 应用会话 facade 与装配策略
 │   ├── session.rs          # VvaSessionManager：模型偏好、配置重载、会话创建与子代理装配
@@ -27,8 +27,8 @@ src/                       # vva 应用
 │   ├── env.rs              # env 文件 (dotenv 子集)
 │   ├── resolver.rs         # resolve_model → ResolvedModel；create_provider 单独构造
 │   └── state.rs            # ~/.vva/state.json 运行时偏好
-├── agents/mod.rs           # 默认目录优先级与内置 general / explore；re-export core AgentDef / 解析器
-├── skills/mod.rs           # 默认目录优先级与斜杠调用；re-export core Skill / 解析器
+├── agents/mod.rs           # 默认目录优先级与内置 general / explore；直接使用 core AgentDef / 解析器
+├── skills/mod.rs           # 默认目录优先级与斜杠调用；直接使用 core Skill / 解析器
 ├── space/                  # 常驻 IM agent (设计见 docs/agent.md)
 │   ├── mod.rs              # AgentSpace 启动校验与装配、tool_factory
 │   ├── runtime/            # 主循环 / inbound / commands / schedule / mode_model
@@ -58,9 +58,11 @@ frontend/                   # React + Vite + TypeScript；build.rs 构建期编�
 └── src/components/         # Sidebar / Chat / Composer / Parts / trace / files / StatsPanel / modals ...
 crates/vva-core/
 ├── Cargo.toml             # 默认无 feature 的库
-├── tests/support/         # 随代码迁移的共享协议与运行时测试 fixture
+├── examples/headless.rs  # response + jsonl：自定义工具、一次投递与 shutdown
+├── tests/support/         # 共享协议与公开 API 测试 fixture
 └── src/
     ├── lib.rs
+    ├── test_session.rs     # 仅 core 单测使用的 Task / Command fixture
     ├── agents.rs          # AgentDef、YAML 解析与显式目录扫描
     ├── skills.rs          # Skill、SKILL.md 解析与显式目录扫描
     ├── discover.rs        # 通用字段校验
@@ -97,5 +99,5 @@ crates/vva-core/
     │   └── web/                # web_search / web_fetch 外置 provider (brave / deepseek / google / tavily / zhipu / local)
     └── harness/                # 调度引擎
         ├── assembly.rs         # AgentAssembly / SessionSetup / ExecutionPlan / FixedSetup
-        └── session/            # SessionManager 句柄表 · SessionTask 执行任务 · ManagedSession 句柄/Command · SessionView 快照
+        └── session/            # SessionManager 句柄表 · SessionTask 执行任务 · ManagedSession 公开句柄 · SessionView 快照；Task/Command 私有，manager 提供 close/shutdown
 ```

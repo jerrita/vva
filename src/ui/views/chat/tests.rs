@@ -6,12 +6,14 @@ use super::tool_block::*;
 use super::user_block::*;
 use super::view::*;
 use super::*;
-use crate::model::{ToolCall, ToolResult, WebSearchSource};
-use crate::tools::names;
 use crate::ui::app::{TextCoord, ToolExpand};
 use crate::ui::test_support::TestApp;
 use std::collections::HashMap;
 use std::sync::Arc;
+use vva_core::model::ToolCall;
+use vva_core::model::ToolResult;
+use vva_core::model::WebSearchSource;
+use vva_core::tools::names;
 
 fn joined(lines: &[Line]) -> String {
     lines
@@ -29,8 +31,8 @@ struct Env<'r> {
     expand: HashMap<String, ToolExpand>,
     thought_expand: HashMap<String, bool>,
     citations_expand: HashMap<String, bool>,
-    shell_outputs: std::collections::BTreeMap<String, Arc<crate::model::ShellOutput>>,
-    tasks: std::collections::BTreeMap<String, crate::model::BackgroundTask>,
+    shell_outputs: std::collections::BTreeMap<String, Arc<vva_core::model::ShellOutput>>,
+    tasks: std::collections::BTreeMap<String, vva_core::model::BackgroundTask>,
     query_owners: HashMap<String, String>,
 }
 
@@ -381,7 +383,7 @@ fn tool_preview_block_truncates_and_full_shows_all() {
 
 #[test]
 fn background_task_reminder_not_rendered() {
-    let text = crate::tools::background::format_background_task_reminder(
+    let text = vva_core::tools::background::format_background_task_reminder(
         "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 5 bytes",
     );
     let mut sink = Sink::default();
@@ -549,7 +551,8 @@ async fn test_chat_cache_preserves_history_and_layout() {
     }
     // 会话内容替换时，即使轮次数与视图版本相同也必须重建历史。
     let session = Arc::make_mut(&mut Arc::make_mut(&mut app.view).session);
-    session.turns[0] = crate::model::Turn::user_turn(crate::model::Message::text("Replacement"));
+    session.turns[0] =
+        vva_core::model::Turn::user_turn(vva_core::model::Message::text("Replacement"));
     check(app, 80);
     app.attach_session(app.active_session.clone());
     check(app, 80);
@@ -652,23 +655,25 @@ async fn test_thinking_grouping_and_concise_modes() {
     // 搜索调用、思考与带注脚的正文同属一轮，来源由同轮注脚提供。
     let view = Arc::make_mut(&mut app.view);
     view.revision += 1;
-    Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+    Arc::make_mut(&mut view.session).append_turn(vva_core::model::Turn::new(
         Role::Assistant,
         vec![
-            crate::model::Message::new(vec![ContentPart::WebSearchCall(WebSearchCall::completed(
-                "ws_1",
-                "示例查询",
-                vec![WebSearchSource::new(
-                    "https://source.example/article",
-                    "Uncited candidate",
-                    None,
-                )],
-            ))]),
-            crate::model::Message::new(vec![ContentPart::reasoning(
+            vva_core::model::Message::new(vec![ContentPart::WebSearchCall(
+                WebSearchCall::completed(
+                    "ws_1",
+                    "示例查询",
+                    vec![WebSearchSource::new(
+                        "https://source.example/article",
+                        "Uncited candidate",
+                        None,
+                    )],
+                ),
+            )]),
+            vva_core::model::Message::new(vec![ContentPart::reasoning(
                 "**Cross-checking sources**".to_string(),
                 None,
             )]),
-            crate::model::Message::new(vec![ContentPart::Text {
+            vva_core::model::Message::new(vec![ContentPart::Text {
                 text: "这里是带引用的示例答复。".to_string(),
                 annotations: vec![Annotation::UrlCitation {
                     title: "示例来源".into(),
@@ -993,10 +998,10 @@ async fn test_separate_search_calls_track_draft_citations_and_turn_boundaries() 
     view.revision += 1;
     let messages = std::mem::take(&mut view.draft)
         .into_iter()
-        .map(|part| crate::model::Message::new(vec![Arc::unwrap_or_clone(part)]))
+        .map(|part| vva_core::model::Message::new(vec![Arc::unwrap_or_clone(part)]))
         .collect();
     Arc::make_mut(&mut view.session)
-        .append_turn(crate::model::Turn::new(Role::Assistant, messages));
+        .append_turn(vva_core::model::Turn::new(Role::Assistant, messages));
     app.refresh_chat_lines(100);
     assert_eq!(text(&app.chat.lines), rendered);
 
@@ -1107,9 +1112,9 @@ async fn test_open_and_find_match_action_urls() {
         .into_iter()
         .map(Arc::unwrap_or_clone)
         .collect::<Vec<_>>();
-    Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+    Arc::make_mut(&mut view.session).append_turn(vva_core::model::Turn::new(
         Role::Assistant,
-        vec![crate::model::Message::new(parts)],
+        vec![vva_core::model::Message::new(parts)],
     ));
     assert_eq!(build_chat_lines(&app, 100), lines);
 }
@@ -1138,9 +1143,9 @@ async fn test_user_file_ref_and_attachment_rows() {
     // 单个用户轮次：Text 之后依次跟随 FileRef / Image / File 附件
     let view = Arc::make_mut(&mut app.view);
     view.revision += 1;
-    Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+    Arc::make_mut(&mut view.session).append_turn(vva_core::model::Turn::new(
         Role::User,
-        vec![crate::model::Message::new(vec![
+        vec![vva_core::model::Message::new(vec![
             ContentPart::text("看下这个文件"),
             ContentPart::FileRef {
                 path: "src/main.rs".into(),
@@ -1154,7 +1159,7 @@ async fn test_user_file_ref_and_attachment_rows() {
             },
             ContentPart::image_url("https://example.com/a.png"),
             ContentPart::File {
-                source: crate::model::MediaSource::Url {
+                source: vva_core::model::MediaSource::Url {
                     url: "https://example.com/a.pdf".into(),
                 },
                 mime_type: "application/pdf".into(),
@@ -1441,7 +1446,7 @@ fn test_agents_reminders_rendering_visibility() {
     assert!(!output.contains("ui instructions"));
 
     // 3. /<skill_name> 直接加载的技能：仅展示 "Load <name>"，正文不外显
-    let skill = crate::skills::Skill {
+    let skill = vva_core::skills::Skill {
         name: "pdf-processing".into(),
         description: "Extract PDF text.".into(),
         license: None,
@@ -1449,7 +1454,7 @@ fn test_agents_reminders_rendering_visibility() {
         metadata: Default::default(),
         allowed_tools: None,
         path: std::path::PathBuf::from("/skills/pdf-processing"),
-        source: crate::skills::SkillSource::Global,
+        source: vva_core::skills::SkillSource::Global,
         body: "1. Open the file.".into(),
     };
     let output = append(format_skill_load_reminder(&skill));
@@ -1538,9 +1543,10 @@ async fn toast_does_not_change_layout_areas() {
 
 #[tokio::test]
 async fn turn_outcome_and_task_completion_render_at_their_owners() {
-    use crate::harness::{Notice, NoticeKind};
+    use vva_core::harness::Notice;
+    use vva_core::harness::NoticeKind;
     let mut app = create_test_app().await;
-    let first = crate::model::Turn::user_turn(crate::model::Message::text("First request"));
+    let first = vva_core::model::Turn::user_turn(vva_core::model::Message::text("First request"));
     let first_id = first.id.clone();
     let mut result = ToolResult::success("call-build", "Started");
     result.background_task_id = Some("task-build".into());
@@ -1553,11 +1559,14 @@ async fn turn_outcome_and_task_completion_render_at_their_owners() {
     let session = Arc::make_mut(&mut view.session);
     session.turns = vec![
         first,
-        crate::model::Turn::assistant_turn(vec![crate::model::Message::new(vec![
+        vva_core::model::Turn::assistant_turn(vec![vva_core::model::Message::new(vec![
             ContentPart::ToolCall(call),
         ])]),
-        crate::model::Turn::new(Role::Tool, vec![crate::model::Message::tool_result(result)]),
-        crate::model::Turn::user_turn(crate::model::Message::text("Later request")),
+        vva_core::model::Turn::new(
+            Role::Tool,
+            vec![vva_core::model::Message::tool_result(result)],
+        ),
+        vva_core::model::Turn::user_turn(vva_core::model::Message::text("Later request")),
     ];
     view.notices = vec![Notice::new(
         "Execution stopped".into(),
@@ -1568,10 +1577,10 @@ async fn turn_outcome_and_task_completion_render_at_their_owners() {
     )];
     Arc::make_mut(&mut view.background_tasks).insert(
         "task-build".into(),
-        crate::model::BackgroundTask {
-            status: crate::model::BackgroundTaskStatus::Completed,
+        vva_core::model::BackgroundTask {
+            status: vva_core::model::BackgroundTaskStatus::Completed,
             output: "Build completed".into(),
-            ..crate::model::BackgroundTask::running("task-build".into())
+            ..vva_core::model::BackgroundTask::running("task-build".into())
         },
     );
     app.refresh_chat_lines(120);
@@ -1589,7 +1598,7 @@ async fn turn_outcome_and_task_completion_render_at_their_owners() {
     let task = Arc::make_mut(&mut Arc::make_mut(&mut app.view).background_tasks)
         .get_mut("task-build")
         .unwrap();
-    task.status = crate::model::BackgroundTaskStatus::Failed;
+    task.status = vva_core::model::BackgroundTaskStatus::Failed;
     task.output = "Build failed".into();
     app.refresh_chat_lines(120);
     let text = joined(&app.chat.lines);
@@ -1837,7 +1846,7 @@ async fn shell_output_updates_only_its_cached_block_and_preserves_coordinates() 
         view.revision += 1;
         Arc::make_mut(&mut view.shell_outputs).insert(
             "stream".into(),
-            Arc::new(crate::model::ShellOutput {
+            Arc::new(vva_core::model::ShellOutput {
                 revision: view.revision,
                 text: text.into(),
                 ..Default::default()

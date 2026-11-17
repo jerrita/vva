@@ -32,10 +32,11 @@ use self::router::{RouteModel, Router, SmallRouteModel};
 use self::runtime::Runtime;
 use self::scheduler::ScheduleStore;
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::model::SessionHeader;
+use crate::app::records::SessionKind;
+use crate::app::store::AppSessionStore as SessionStore;
 use crate::app::{SessionPreamble, SessionToolFactory};
 use crate::config::{AgentSpaceConfig, AppConfig, expand_tilde};
-use crate::model::{SessionHeader, SessionKind};
-use crate::storage::SessionStore;
 
 /// agent space 固定工作区
 const WORKSPACE: &str = "~/.vva/space";
@@ -247,6 +248,7 @@ impl AgentSpace {
             task.abort();
         }
         channel_task.abort();
+        self.manager.shutdown().await?;
         outcome
     }
 }
@@ -261,10 +263,10 @@ pub(crate) fn session_setup(setup: crate::app::VvaSessionSetup) -> crate::app::V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Origin;
+    use crate::app::records::Origin;
 
     fn header(kind: SessionKind, origin: bool) -> SessionHeader {
-        let mut header = crate::model::Session::new("/ws", None).header;
+        let mut header = crate::app::model::Session::new("/ws", None).header;
         header.kind = kind;
         header.origin = origin.then(|| Origin {
             channel: "qq".into(),
@@ -320,7 +322,7 @@ mod tests {
     #[test]
     fn chat_binding_only_for_top_level_origin_sessions() {
         let header = |kind, origin: bool, continued: bool| {
-            let mut header = crate::model::Session::new("/w", None).header;
+            let mut header = crate::app::model::Session::new("/w", None).header;
             header.kind = kind;
             header.origin = origin.then(|| Origin {
                 channel: "qq".into(),

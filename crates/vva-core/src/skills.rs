@@ -77,7 +77,7 @@ struct SkillFrontmatter {
 }
 
 /// 解析并校验单个技能目录（SKILL.md 缺失或规范校验失败时返回错误）
-pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
+pub(crate) fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
     let dir_name = dir
         .file_name()
         .and_then(|name| name.to_str())

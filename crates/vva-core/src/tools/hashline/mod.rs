@@ -16,10 +16,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use apply::apply_sections;
-pub use session::{HashlineSession, file_tag};
-pub use snapshot::{format_grep_file, format_read};
+pub use session::HashlineSession;
+pub(crate) use snapshot::{format_grep_file, format_read};
 
-pub struct HashlineEditTool {
+pub(crate) struct HashlineEditTool {
     working_dir: PathBuf,
     session: Option<Arc<HashlineSession>>,
 }

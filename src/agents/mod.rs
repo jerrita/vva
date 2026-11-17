@@ -1,7 +1,9 @@
 //! vva 的内置子代理与默认发现顺序。
-use crate::tools::names::{self, FILE_READ_TOOLS, FILE_TOOLS};
 use std::path::{Path, PathBuf};
-pub use vva_core::agents::{AgentDef, MAX_SUBAGENT_DEPTH, parse_agent_file};
+use vva_core::agents::AgentDef;
+use vva_core::tools::names;
+use vva_core::tools::names::FILE_READ_TOOLS;
+use vva_core::tools::names::FILE_TOOLS;
 
 fn tool_names(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| name.to_string()).collect()

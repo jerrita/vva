@@ -62,7 +62,7 @@ impl BackgroundTask {
 }
 
 /// 同一任务终态不被较晚提交的启动回执覆盖；主动停止保留其语义。
-pub fn update_background_task(
+pub(crate) fn update_background_task(
     tasks: &mut BTreeMap<String, BackgroundTask>,
     mut task: BackgroundTask,
 ) {
@@ -93,7 +93,7 @@ pub fn update_background_task(
 }
 
 /// 仅投影仍有启动调用的任务，回退后到达的结果不会重新引入旧任务。
-pub fn background_tasks(session: &Session) -> BTreeMap<String, BackgroundTask> {
+pub(crate) fn background_tasks(session: &Session) -> BTreeMap<String, BackgroundTask> {
     let mut tasks = BTreeMap::new();
     for turn in &session.turns {
         for part in turn.messages.iter().flat_map(|message| &message.parts) {

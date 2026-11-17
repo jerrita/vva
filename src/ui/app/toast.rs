@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::harness::{Notice, NoticeKind};
+use vva_core::harness::Notice;
+use vva_core::harness::NoticeKind;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ToastLevel {

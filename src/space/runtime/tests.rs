@@ -6,15 +6,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::mode_model::MODE_MODEL_FILE;
 use super::*;
+use crate::app::store::AppSessionStore as JsonlSessionStore;
 use crate::config::model::ModelLimitConfig;
 use crate::config::{ModelConfig, ProviderConfig};
-use crate::provider::ProviderType;
 use crate::space::channel::{self, FileSource, InboundFile, ProgressStream};
 use crate::space::command::Command;
 use crate::space::curator::CuratorResult;
 use crate::space::router::{Action, ModelReply, RouteDecision, RouteInput, RouteModel, SessionTtl};
 use crate::space::scheduler::Task;
-use crate::storage::jsonl::JsonlSessionStore;
+use vva_core::provider::ProviderType;
 
 /// 内存假 channel：记录出站文本，id 依次为 out1、out2…
 #[derive(Default)]
@@ -260,7 +260,7 @@ impl Fixture {
             None,
             "p/m",
             None,
-            crate::model::SessionToggles::default(),
+            crate::app::records::SessionToggles::default(),
         );
         session.header.origin = Some(self.runtime.origin(binding).unwrap());
         self.manager.adopt_session(session).await.unwrap()
@@ -879,7 +879,7 @@ async fn curator_model_selection_across_mode_changes() {
                 .store()
                 .append_turn(
                     &source.id,
-                    &crate::model::Turn::user_turn(crate::model::Message::text("示例偏好")),
+                    &vva_core::model::Turn::user_turn(vva_core::model::Message::text("示例偏好")),
                 )
                 .await
                 .unwrap();
@@ -1107,7 +1107,7 @@ async fn memory_update_broadcast_notes_eligible_sessions_without_a_turn() {
         live.session
             .turns
             .iter()
-            .all(|t| t.role != crate::model::Role::Assistant)
+            .all(|t| t.role != vva_core::model::Role::Assistant)
     );
     let _ = std::fs::remove_dir_all(&f.dir);
 }

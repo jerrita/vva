@@ -1,6 +1,12 @@
 use crate::config::{AppConfig, model::WebSettings};
-use crate::tools::web::{brave, deepseek, google, local, tavily, zhipu, *};
 use std::sync::Arc;
+use vva_core::tools::web::brave;
+use vva_core::tools::web::deepseek;
+use vva_core::tools::web::google;
+use vva_core::tools::web::local;
+use vva_core::tools::web::tavily;
+use vva_core::tools::web::zhipu;
+use vva_core::tools::web::*;
 /// 会话 web 开关开启时调用。配置错误（能力不匹配、provider 未声明、密钥缺失）
 /// 直接报错，与会话寻址错误同级；`settings.web` 未配置时为空集合
 pub fn resolve(config: &AppConfig) -> Result<ExternalWeb, String> {
@@ -167,7 +173,7 @@ fn resolve_google<'a>(
     let resolved = config
         .resolve_model(spec, None)
         .map_err(|error| format!("settings.web.provider.google.model: {error}"))?;
-    if resolved.effective_type() != crate::provider::ProviderType::Gemini {
+    if resolved.effective_type() != vva_core::provider::ProviderType::Gemini {
         return Err(format!(
             "settings.web.provider.google.model = {spec:?}: model must use the gemini protocol"
         ));

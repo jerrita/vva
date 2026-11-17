@@ -15,7 +15,6 @@ use std::sync::Arc;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use crate::model::{ContentPart, Role};
 use crate::ui::markdown::{
     code_box_footer_line, code_box_header_line, code_box_line, render_markdown_open,
     strippable_line,
@@ -25,6 +24,8 @@ use crate::ui::views::chat::{
     polish_md_line, push_citations_block, push_empty_hint, thought_body_style, thought_kind,
     thought_prefix_style,
 };
+use vva_core::model::ContentPart;
+use vva_core::model::Role;
 
 use super::pane::ThoughtHit;
 

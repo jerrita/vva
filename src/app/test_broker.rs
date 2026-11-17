@@ -1,6 +1,9 @@
 //! 测试共享桩：无编排能力的 broker。
 
-use crate::tools::agent::{SessionBroker, SubagentContext, SubagentLaunch, SubagentReport};
+use vva_core::tools::agent::SessionBroker;
+use vva_core::tools::agent::SubagentContext;
+use vva_core::tools::agent::SubagentLaunch;
+use vva_core::tools::agent::SubagentReport;
 
 /// 拒绝派生与投递的 broker 桩；携带报告时 `session_report` 返回该报告
 pub(crate) struct StubBroker(pub Option<SubagentReport>);
@@ -12,7 +15,7 @@ impl SessionBroker for StubBroker {
     async fn spawn_subagent(
         &self,
         _parent: &SubagentContext,
-        _def: &crate::agents::AgentDef,
+        _def: &vva_core::agents::AgentDef,
         _prompt: &str,
         _description: &str,
         _background: bool,

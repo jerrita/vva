@@ -1,8 +1,8 @@
 //! 测试共享基建：以临时 JSONL 存储构造 App 实例，消除跨文件重复的测试样板。
 
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::store::AppSessionStore as JsonlSessionStore;
 use crate::config::AppConfig;
-use crate::storage::jsonl::JsonlSessionStore;
 use crate::ui::app::App;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ pub(crate) async fn create_test_app(
             model.into(),
             variant.map(str::to_string),
             None,
-            crate::model::SessionToggles { web_search },
+            crate::app::records::SessionToggles { web_search },
         )
         .await
         .unwrap();
@@ -103,12 +103,16 @@ impl App {
             .clone()
     }
 
-    pub(crate) fn add_part(&mut self, role: crate::model::Role, part: crate::model::ContentPart) {
+    pub(crate) fn add_part(
+        &mut self,
+        role: vva_core::model::Role,
+        part: vva_core::model::ContentPart,
+    ) {
         let view = Arc::make_mut(&mut self.view);
         view.revision += 1;
-        Arc::make_mut(&mut view.session).append_turn(crate::model::Turn::new(
+        Arc::make_mut(&mut view.session).append_turn(vva_core::model::Turn::new(
             role,
-            vec![crate::model::Message::new(vec![part])],
+            vec![vva_core::model::Message::new(vec![part])],
         ));
     }
 }

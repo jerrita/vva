@@ -12,9 +12,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::binding::{AttachedFile, MessageIndex};
+use crate::app::model::Session;
 use crate::config::AppConfig;
-use crate::model::{Message, Role, Session, TokenUsage, Turn};
-use crate::provider::{CompletionOptions, ResponseSchema};
+use vva_core::model::Message;
+use vva_core::model::Role;
+use vva_core::model::TokenUsage;
+use vva_core::model::Turn;
+use vva_core::provider::CompletionOptions;
+use vva_core::provider::ResponseSchema;
 
 /// 日志中输入文字的摘要上限（字符数）
 const LOG_TEXT_LIMIT: usize = 200;

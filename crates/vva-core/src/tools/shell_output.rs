@@ -5,13 +5,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(any(feature = "shell-tools", test))]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Notify;
 
 use crate::model::ShellOutput;
 
-pub const OUTPUT_CAP: usize = 256 * 1024;
-pub const OUTPUT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+#[cfg(any(feature = "shell-tools", test))]
+pub(crate) const OUTPUT_CAP: usize = 256 * 1024;
+pub(crate) const OUTPUT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 #[derive(Default)]
 pub struct ShellOutputs {
@@ -21,7 +23,8 @@ pub struct ShellOutputs {
 }
 
 impl ShellOutputs {
-    pub fn capture(self: &Arc<Self>, call_id: &str) -> OutputCapture {
+    #[cfg(any(feature = "shell-tools", test))]
+    pub(crate) fn capture(self: &Arc<Self>, call_id: &str) -> OutputCapture {
         let buffer = Arc::new(Mutex::new(OutputBuffer::default()));
         self.entries
             .lock()
@@ -42,12 +45,12 @@ impl ShellOutputs {
         }
     }
 
-    pub async fn notified(&self) {
+    pub(crate) async fn notified(&self) {
         self.notify.notified().await;
     }
 
     /// 每个脏调用只复制一次尾部；终态 buffer 从采集表释放。
-    pub fn drain(&self) -> Vec<(String, Arc<ShellOutput>)> {
+    pub(crate) fn drain(&self) -> Vec<(String, Arc<ShellOutput>)> {
         // 先清标记，随后到达的写入会重新唤醒；已在锁内读取的写入由本批覆盖。
         self.dirty.store(false, Ordering::Release);
         let mut updates = Vec::new();
@@ -67,12 +70,13 @@ impl ShellOutputs {
 }
 
 #[derive(Clone)]
-pub struct OutputHandle {
+pub(crate) struct OutputHandle {
     buffer: Arc<Mutex<OutputBuffer>>,
     outputs: Arc<ShellOutputs>,
 }
 
 impl OutputHandle {
+    #[cfg(any(feature = "shell-tools", test))]
     fn push(&self, text: &str, bytes: usize) {
         let mut buffer = self.buffer.lock().expect("shell output lock");
         if buffer.finished {
@@ -130,11 +134,11 @@ impl OutputHandle {
         self.outputs.wake();
     }
 
-    pub fn snapshot(&self) -> ShellOutput {
+    pub(crate) fn snapshot(&self) -> ShellOutput {
         self.buffer.lock().expect("shell output lock").snapshot()
     }
 
-    pub fn finish(&self, error: Option<String>) {
+    pub(crate) fn finish(&self, error: Option<String>) {
         let mut buffer = self.buffer.lock().expect("shell output lock");
         if buffer.finished {
             return;
@@ -147,10 +151,12 @@ impl OutputHandle {
     }
 }
 
-pub struct OutputCapture {
+#[cfg(any(feature = "shell-tools", test))]
+pub(crate) struct OutputCapture {
     pub handle: OutputHandle,
 }
 
+#[cfg(any(feature = "shell-tools", test))]
 impl Drop for OutputCapture {
     fn drop(&mut self) {
         self.handle.finish(Some("Command stopped".into()));
@@ -166,6 +172,7 @@ struct OutputBuffer {
     finished: bool,
     error: Option<String>,
     dirty: bool,
+    #[cfg(any(feature = "shell-tools", test))]
     carriage_return: bool,
 }
 
@@ -191,12 +198,14 @@ impl OutputBuffer {
 
 /// 每条管道独立维护 UTF-8 和 ANSI 状态，避免 stdout/stderr 的半个字符互相污染。
 #[derive(Default)]
-pub struct OutputDecoder {
+#[cfg(any(feature = "shell-tools", test))]
+pub(crate) struct OutputDecoder {
     pending: Vec<u8>,
     escape: AnsiState,
 }
 
 #[derive(Default)]
+#[cfg(any(feature = "shell-tools", test))]
 enum AnsiState {
     #[default]
     None,
@@ -206,8 +215,9 @@ enum AnsiState {
     OscEscape,
 }
 
+#[cfg(any(feature = "shell-tools", test))]
 impl OutputDecoder {
-    pub fn push(&mut self, handle: &OutputHandle, bytes: &[u8], eof: bool) {
+    pub(crate) fn push(&mut self, handle: &OutputHandle, bytes: &[u8], eof: bool) {
         self.pending.extend_from_slice(bytes);
         let mut text = String::with_capacity(self.pending.len());
         let mut consumed = 0;
@@ -276,7 +286,8 @@ impl OutputDecoder {
     }
 }
 
-pub async fn read_output(
+#[cfg(any(feature = "shell-tools", test))]
+pub(crate) async fn read_output(
     mut pipe: impl AsyncRead + Unpin,
     handle: Option<&OutputHandle>,
     mut file: Option<&mut tokio::fs::File>,

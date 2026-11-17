@@ -13,10 +13,15 @@ use std::sync::Arc;
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::agents::AgentDef;
 use crate::app::VvaSessionManager as SessionManager;
-use crate::model::{ContentPart, Origin, Role, SessionKind, SessionToggles, Turn};
-use crate::storage::SessionStore;
+use crate::app::records::Origin;
+use crate::app::records::SessionKind;
+use crate::app::records::SessionToggles;
+use crate::app::store::AppSessionStore as SessionStore;
+use vva_core::agents::AgentDef;
+use vva_core::model::ContentPart;
+use vva_core::model::Role;
+use vva_core::model::Turn;
 
 /// 内置 curator agent 名
 pub const CURATOR_AGENT: &str = "curator";
@@ -69,7 +74,7 @@ pub fn curator_agent() -> AgentDef {
         name: CURATOR_AGENT.into(),
         description: "Distills conversation increments into long-term memory and skills.".into(),
         model: None,
-        tools: crate::tools::names::FILE_TOOLS
+        tools: vva_core::tools::names::FILE_TOOLS
             .iter()
             .map(|name| name.to_string())
             .collect(),
@@ -527,8 +532,9 @@ mod git {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Message, Session};
-    use crate::storage::jsonl::JsonlSessionStore;
+    use crate::app::model::Session;
+    use crate::app::store::AppSessionStore as JsonlSessionStore;
+    use vva_core::model::Message;
 
     type Script = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
@@ -581,7 +587,7 @@ mod tests {
 
     async fn seed(store: &JsonlSessionStore, root: &Path, texts: &[(&str, &str)]) -> Session {
         let mut session = Session::new(root, None);
-        session.header.origin = Some(crate::model::Origin {
+        session.header.origin = Some(crate::app::records::Origin {
             channel: "test".into(),
             chat_id: "chat".into(),
         });
@@ -648,7 +654,7 @@ mod tests {
             assert!(!curator.input_path(&session.header.id).exists());
         }
         // 后续打标仍处理此前全部对话。
-        session.header.origin = Some(crate::model::Origin {
+        session.header.origin = Some(crate::app::records::Origin {
             channel: "test".into(),
             chat_id: "chat".into(),
         });
@@ -786,14 +792,14 @@ mod tests {
         let mut call = Turn::assistant_turn(vec![Message::text("查一下")]);
         call.messages[0]
             .parts
-            .push(ContentPart::ToolCall(crate::model::ToolCall::new(
+            .push(ContentPart::ToolCall(vva_core::model::ToolCall::new(
                 "c1",
-                crate::tools::names::READ,
+                vva_core::tools::names::READ,
                 "{\"path\":\"a\"}",
             )));
         let result = Turn::new(
             Role::Tool,
-            vec![Message::tool_result(crate::model::ToolResult::success(
+            vec![Message::tool_result(vva_core::model::ToolResult::success(
                 "c1",
                 "x".repeat(500),
             ))],

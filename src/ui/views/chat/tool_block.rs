@@ -2,8 +2,8 @@
 
 use super::*;
 use super::{diff::*, patch::*, tool::*};
-use crate::tools::names;
 use crate::ui::views::fg;
+use vva_core::tools::names;
 
 pub(super) const EDIT_DELETE: Style = Style::new().fg(Color::Rgb(220, 100, 100));
 pub(super) const EDIT_INSERT: Style = Style::new().fg(Color::Rgb(100, 180, 110));
@@ -93,7 +93,7 @@ pub(super) fn push_tool_block(
     lines: &mut Vec<Line<'static>>,
     call: &ToolCall,
     result: Option<&ToolResult>,
-    shell_output: Option<&crate::model::ShellOutput>,
+    shell_output: Option<&vva_core::model::ShellOutput>,
     query_errors: &[&str],
     full: bool,
     max_width: usize,

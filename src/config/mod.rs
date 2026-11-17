@@ -1,4 +1,4 @@
-use crate::provider::ProviderType;
+use vva_core::provider::ProviderType;
 pub mod env;
 pub mod model;
 pub mod parser;
@@ -205,7 +205,7 @@ mod tests {
             parse_config_str(r#"{ "settings": { "editor": "patch" } }"#).expect("parse global");
         assert_eq!(
             global.settings.editor,
-            Some(crate::model::EditorKind::Patch)
+            Some(vva_core::model::EditorKind::Patch)
         );
 
         // 项目未声明时保留全局值
@@ -214,7 +214,7 @@ mod tests {
             .merge(parse_config_str(r#"{ "settings": {} }"#).expect("parse project"));
         assert_eq!(
             merged.settings.editor,
-            Some(crate::model::EditorKind::Patch)
+            Some(vva_core::model::EditorKind::Patch)
         );
 
         // 项目显式声明时覆写
@@ -223,7 +223,7 @@ mod tests {
         );
         assert_eq!(
             merged.settings.editor,
-            Some(crate::model::EditorKind::Replace)
+            Some(vva_core::model::EditorKind::Replace)
         );
     }
 

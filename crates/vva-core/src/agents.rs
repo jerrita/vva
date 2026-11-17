@@ -35,7 +35,7 @@ struct AgentDefFile {
 }
 
 /// 解析单个定义文件：name 缺省取文件主干，显式时必须与主干一致
-pub fn parse_agent_file(path: &Path) -> Result<AgentDef, String> {
+pub(crate) fn parse_agent_file(path: &Path) -> Result<AgentDef, String> {
     let stem = path
         .file_stem()
         .and_then(|stem| stem.to_str())
