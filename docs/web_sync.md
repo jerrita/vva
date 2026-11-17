@@ -8,7 +8,7 @@ core Harness 通过 `watch<Arc<SessionView>>` 发布进程内只读视图，流�
 
 进程内视图继续服务 TUI。Web 层在 `src/web/sync.rs` 投影传输数据，
 前端在 `frontend/src/sessionSync.ts` 重建展示快照。领域模型、持久化与供应商协议保持原样。
-Web 轮次投影包含消息、usage、elapsed_ms、worked_ms；Turn.meta 留在服务端。
+Web 轮次投影包含消息、usage、elapsed_ms、worked_ms，以及 steering / compaction 标记（语义见[领域模型](domain_model.md#12-turn轮次)）；Turn.meta 留在服务端。
 
 ## 帧与版本
 
@@ -32,6 +32,15 @@ Web 轮次投影包含消息、usage、elapsed_ms、worked_ms；Turn.meta 留在
 版本必须满足 `base_revision == 本地 revision` 且 `revision > base_revision`。
 解析、版本或部件类型错误关闭订阅并展示错误，避免在失配基线上继续追加。
 设置命令的 HTTP 响应只确认命令完成，界面状态由 SSE 统一驱动。
+Web 将 `/compact` 分发到 `POST /api/sessions/{id}/compact`，不提交为聊天消息；接口返回 202 表示已接受，运行状态、摘要与错误由现有 SSE 同步。
+
+## 运行状态与浏览器通知
+
+前端根据 SSE 的 `state` 从非空变为空识别运行结束；初次打开空闲会话不提示，重连后的重复空闲快照不重复提示。运行开始时记录 Notice ID，结束时以本次新增的 turn Notice 区分错误与主动停止，历史错误不影响后续运行。
+
+标签页标题显示当前会话名称（未命名时显示会话 ID），运行中前缀 `●`；当前会话在标签页隐藏或窗口失焦时结束，保留 `✓` 或 `✕`，重新查看标签页、切换会话或开始新运行后清除标记。
+
+首次发送消息时通过用户操作请求 Notification API 授权，每次页面加载最多请求一次，不在加载时弹窗。通知要求浏览器支持、安全上下文（HTTPS 或 localhost）且权限已授予；未正在查看的当前会话和已订阅的后台会话结束时发送系统通知，错误结束使用失败标题。点击通知聚焦窗口并打开对应会话。通知仅在页面保持打开且接收到运行结束状态时发送，不使用后台推送。
 
 ## Shell 输出增量
 

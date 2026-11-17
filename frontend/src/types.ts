@@ -172,6 +172,7 @@ export interface Turn {
   elapsed_ms?: number
   worked_ms?: number
   steering?: boolean
+  compaction?: boolean
   background_task?: BackgroundTask
 }
 

@@ -38,6 +38,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub type ShellEnv =
+    Arc<dyn Fn() -> Result<std::collections::HashMap<String, String>, String> + Send + Sync>;
+
 /// 工作空间工具装配依赖；hashline 快照与后台任务由会话持有。
 #[cfg(feature = "filesystem-tools")]
 pub struct WorkspaceToolDeps {
@@ -45,7 +48,7 @@ pub struct WorkspaceToolDeps {
     pub inputs: crate::provider::InputCapabilities,
     pub background: Option<Arc<background::BackgroundTasks>>,
     pub shell_outputs: Option<Arc<shell_output::ShellOutputs>>,
-    pub env: std::collections::HashMap<String, String>,
+    pub env: ShellEnv,
 }
 
 #[cfg(feature = "filesystem-tools")]
@@ -56,7 +59,7 @@ impl Default for WorkspaceToolDeps {
             inputs: Default::default(),
             background: None,
             shell_outputs: None,
-            env: std::collections::HashMap::new(),
+            env: Arc::new(|| Ok(std::collections::HashMap::new())),
         }
     }
 }

@@ -657,3 +657,57 @@ async fn engine_notices_affinity_downgrade_on_model_switch() {
             .any(|notice| notice.contains("cannot be replayed"))
     );
 }
+
+#[tokio::test]
+async fn shell_reloads_project_env_before_each_foreground_and_background_command() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".vva")).unwrap();
+    let mut session = session_for("p/nos", false);
+    session.header.workspace_root = root.path().to_path_buf();
+    let plan = build_engine(&web_config(None), &session).unwrap();
+    let command = if cfg!(windows) {
+        "[Console]::Write($env:VVA_ENV_RELOAD)"
+    } else {
+        "printf '%s' \"$VVA_ENV_RELOAD\""
+    };
+    for background in [false, true] {
+        for value in ["first", "updated"] {
+            std::fs::write(
+                root.path().join(".vva/env"),
+                format!("VVA_ENV_RELOAD={value}\n"),
+            )
+            .unwrap();
+            let result = plan.tools.execute_call(&vva_core::model::ToolCall::new(
+                "env-command",
+                names::SHELL,
+                serde_json::json!({"intent":"read current project env", "command":command, "run_in_background":background}).to_string(),
+            )).await;
+            assert!(!result.is_error, "{}", result.content);
+            if background {
+                let id = result.background_task_id.unwrap();
+                let task = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let result = plan
+                            .tools
+                            .execute_call(&vva_core::model::ToolCall::new(
+                                "env-output",
+                                "TaskOutput",
+                                serde_json::json!({"task_id":id}).to_string(),
+                            ))
+                            .await;
+                        let task = result.task.unwrap();
+                        if task.status != vva_core::model::BackgroundTaskStatus::Running {
+                            break task;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(task.output, value);
+            } else {
+                assert_eq!(result.content, value);
+            }
+        }
+    }
+}

@@ -1031,3 +1031,183 @@ async fn websocket_rejection_is_explicit_and_annotation_false_uses_http() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn compact_preserves_transcript_but_restarts_context_and_survives_reload() {
+    use crate::test_support::websocket::{MockWebSocket, answer};
+
+    let mut server = MockWebSocket::new().await;
+    let root = tmp("compact");
+    let manager = manager_for(&root, server.config(None));
+    let mut session = Session::with_model(
+        &root,
+        Some("fixture".into()),
+        "p/m",
+        None,
+        Default::default(),
+    );
+    session.append_turn(Turn::new(Role::System, vec![Message::text("KEEP_SYSTEM")]));
+    let handle = manager.adopt_session(session).await.unwrap();
+    let store = manager.store().clone();
+
+    assert!(handle.compact(None).await.is_err());
+
+    let done = handle.settled_report(handle.turn_seq());
+    handle.submit("/compact", Vec::new(), None).await.unwrap();
+    server.next().await.reply(answer("resp_original")).await;
+    done.await.unwrap();
+    let original = handle.snapshot().session.clone();
+
+    for summary in ["SUMMARY_ONE", "SUMMARY_TWO"] {
+        let completion = handle.compact(None).await.unwrap();
+        let (result, ()) = tokio::join!(completion, async {
+            let request = server.next().await;
+            // A second command while summarizing must not enter the ordinary input queue.
+            assert!(handle.compact(None).await.is_err());
+            let mut response = answer(summary);
+            response["response"]["store"] = serde_json::json!(true);
+            response["response"]["output"][0]["content"][0]["text"] = serde_json::json!(summary);
+            request.reply(response).await;
+        });
+        assert!(result.unwrap().contains(summary));
+        let stored = store.load_session(&handle.id).await.unwrap().unwrap();
+        assert_eq!(stored.turns, handle.snapshot().session.turns);
+        assert_eq!(&stored.turns[..original.turns.len()], &original.turns);
+        let context = stored.context();
+        assert!(
+            context
+                .turns
+                .iter()
+                .any(|turn| turn.text_content().contains(summary))
+        );
+        assert!(
+            !context
+                .turns
+                .iter()
+                .any(|turn| turn.text_content().contains("/compact"))
+        );
+        assert!(crate::space::rollover::context_tokens(&stored).is_none());
+
+        let done = handle.settled_report(handle.turn_seq());
+        handle
+            .submit("Continue after compaction", Vec::new(), None)
+            .await
+            .unwrap();
+        let request = server.next().await;
+        assert!(request.body.get("previous_response_id").is_none());
+        let input = request.body["input"].to_string();
+        assert!(input.contains("KEEP_SYSTEM") && input.contains(summary));
+        assert!(!input.contains("/compact"));
+        if summary == "SUMMARY_TWO" {
+            assert!(!input.contains("SUMMARY_ONE"));
+        }
+        request.reply(answer("resp_continued")).await;
+        done.await.unwrap();
+    }
+
+    // Removing the first /compact marker also removes its boundary and restores the old history.
+    handle.revert(original.turns.len()).await.unwrap();
+    assert_eq!(handle.snapshot().session.context().turns, original.turns);
+    manager.delete_session(&handle).await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_or_invalid_compaction_keeps_memory_and_disk_context() {
+    use crate::test_support::websocket::{MockWebSocket, completed};
+
+    let mut server = MockWebSocket::new().await;
+    let root = tmp("compact");
+    let manager = manager_for(&root, server.config(None));
+    let mut session = Session::with_model(
+        &root,
+        Some("fixture".into()),
+        "p/m",
+        None,
+        Default::default(),
+    );
+    session.header.origin = Some(crate::app::records::Origin {
+        channel: "test".into(),
+        chat_id: "chat".into(),
+    });
+    session.append_turn(Turn::user_turn(Message::text("original history")));
+    let handle = manager.adopt_session(session).await.unwrap();
+    let store = manager.store().clone();
+    let original = handle.snapshot().session.clone();
+
+    let completion = handle.compact(None).await.unwrap();
+    let (result, ()) = tokio::join!(completion, async {
+        let _request = server.next().await;
+        handle.abort_current().await.unwrap();
+    });
+    assert!(result.is_err());
+    assert!(handle.snapshot().session.header.last_activity.is_some());
+    assert_eq!(handle.snapshot().session.turns, original.turns);
+
+    let completion = handle.compact(None).await.unwrap();
+    let (result, ()) = tokio::join!(completion, async {
+        let request = server.next().await;
+        request
+            .reply(completed(
+                "resp_tool",
+                vec![serde_json::json!({
+                    "type": "function_call", "id": "fc_1", "call_id": "call_1",
+                    "name": "Shell", "arguments": "{}", "status": "completed"
+                })],
+            ))
+            .await;
+    });
+    let error = result.unwrap_err();
+    assert!(error.contains("工具调用"), "{error}");
+    assert_eq!(handle.snapshot().session.turns, original.turns);
+    assert_eq!(
+        store.load_session(&handle.id).await.unwrap().unwrap().turns,
+        original.turns
+    );
+    manager.delete_session(&handle).await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn configure_disables_invalid_search_before_validation_and_restores_failed_changes() {
+    let root = tmp("configure-search");
+    let mut config = unreachable_config();
+    config.settings.web =
+        Some(serde_json::from_value(serde_json::json!({"search":"brave"})).unwrap());
+    let manager = manager_for(&root, config);
+    let handle = manager
+        .create_session(
+            "p/m".into(),
+            None,
+            Some("fixture".into()),
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    handle
+        .configure(
+            None,
+            None,
+            crate::app::records::ToggleOverrides {
+                web_search: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!handle.snapshot().session.header.web_search);
+    assert!(
+        handle
+            .configure(
+                Some("p/missing".into()),
+                None,
+                crate::app::records::ToggleOverrides {
+                    web_search: Some(true)
+                }
+            )
+            .await
+            .is_err()
+    );
+    assert!(!handle.snapshot().session.header.web_search);
+    manager.delete_session(&handle).await.unwrap();
+    let _ = std::fs::remove_dir_all(root);
+}

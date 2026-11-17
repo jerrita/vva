@@ -1,3 +1,5 @@
+pub use vva_core::model::{format_rollover_summary_reminder, is_reminder_text};
+
 use std::path::{Path, PathBuf};
 
 use vva_core::skills::Skill;
@@ -187,20 +189,6 @@ pub fn format_skill_load_reminder(skill: &Skill) -> String {
     )
 }
 
-/// 格式化 rollover 摘要为 <system-reminder> User Message 文本（新会话首条动态内容，
-/// 承接 `from` 会话被压缩的历史）
-pub fn format_rollover_summary_reminder(from: &str, summary: &str) -> String {
-    reminder(
-        &format!("type=\"rollover-summary\" from=\"{from}\""),
-        &format!(
-            "This session continues session {from}, whose earlier history was compressed \
-             into the summary below. The most recent turns follow verbatim. Items marked \
-             unconfirmed are not verified facts.\n\n{}",
-            summary.trim()
-        ),
-    )
-}
-
 /// 格式化记忆索引快照为 <system-reminder> User Message 文本（agent space 会话创建时快照，
 /// `dir` 为记忆库绝对路径，主题文件按需阅读）
 pub fn format_memory_reminder(dir: &Path, index: &str) -> String {
@@ -239,11 +227,6 @@ pub fn format_scheduled_reminder(id: &str, trigger: &str, prompt: &str) -> Strin
             prompt.trim()
         ),
     )
-}
-
-/// 文本是否为 <system-reminder> 注入内容（非用户轮次边界）
-pub fn is_reminder_text(text: &str) -> bool {
-    text.trim_start().starts_with("<system-reminder")
 }
 
 /// 当前平台的 OS 描述（发行版 / 版本 / 内核或构建号）

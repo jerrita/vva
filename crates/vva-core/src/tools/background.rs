@@ -32,12 +32,12 @@ pub(crate) enum BackgroundStatus {
     Running,
     /// TaskStop / 会话回收终止
     Killed,
-    #[cfg(any(feature = "shell-tools", test))]
+    #[cfg(feature = "shell-tools")]
     Failed {
         error: String,
     },
     /// code 为 None 表示被信号终止
-    #[cfg(any(feature = "shell-tools", test))]
+    #[cfg(feature = "shell-tools")]
     Exited {
         code: Option<i32>,
     },
@@ -46,12 +46,12 @@ pub(crate) enum BackgroundStatus {
 pub(crate) fn status_line(status: &BackgroundStatus) -> String {
     match status {
         BackgroundStatus::Running => "running".to_string(),
-        #[cfg(any(feature = "shell-tools", test))]
+        #[cfg(feature = "shell-tools")]
         BackgroundStatus::Failed { error } => format!("failed: {error}"),
         BackgroundStatus::Killed => "stopped by TaskStop".to_string(),
-        #[cfg(any(feature = "shell-tools", test))]
+        #[cfg(feature = "shell-tools")]
         BackgroundStatus::Exited { code: Some(code) } => format!("exited with code {code}"),
-        #[cfg(any(feature = "shell-tools", test))]
+        #[cfg(feature = "shell-tools")]
         BackgroundStatus::Exited { code: None } => "exited (killed by signal)".to_string(),
     }
 }
@@ -115,14 +115,14 @@ impl TaskSnapshot {
         use crate::model::{BackgroundTask, BackgroundTaskStatus};
         let (status, exit_code) = match &self.status {
             BackgroundStatus::Running => (BackgroundTaskStatus::Running, None),
-            #[cfg(any(feature = "shell-tools", test))]
+            #[cfg(feature = "shell-tools")]
             BackgroundStatus::Failed { .. } => (BackgroundTaskStatus::Failed, None),
             BackgroundStatus::Killed => (BackgroundTaskStatus::Stopped, None),
-            #[cfg(any(feature = "shell-tools", test))]
+            #[cfg(feature = "shell-tools")]
             BackgroundStatus::Exited { code: Some(0) } => {
                 (BackgroundTaskStatus::Completed, Some(0))
             }
-            #[cfg(any(feature = "shell-tools", test))]
+            #[cfg(feature = "shell-tools")]
             BackgroundStatus::Exited { code } => (BackgroundTaskStatus::Failed, *code),
         };
         BackgroundTask {

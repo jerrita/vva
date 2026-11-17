@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::Tool;
 use super::names;
 use super::parse_args;
+use super::{ShellEnv, Tool};
 
 /// 单条命令的执行超时
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct ShellTool {
     working_dir: PathBuf,
-    env: std::collections::HashMap<String, String>,
+    env: ShellEnv,
     background: Option<Arc<super::background::BackgroundTasks>>,
     description: String,
     outputs: Option<Arc<super::shell_output::ShellOutputs>>,
@@ -26,7 +26,7 @@ impl ShellTool {
     pub fn new(working_dir: impl Into<PathBuf>) -> Self {
         Self {
             working_dir: working_dir.into(),
-            env: std::collections::HashMap::new(),
+            env: Arc::new(|| Ok(std::collections::HashMap::new())),
             background: None,
             outputs: None,
             output_dir: None,
@@ -40,7 +40,7 @@ impl ShellTool {
         }
     }
 
-    pub fn with_env(mut self, env: std::collections::HashMap<String, String>) -> Self {
+    pub fn with_env(mut self, env: ShellEnv) -> Self {
         self.env = env;
         self
     }
@@ -154,6 +154,7 @@ impl ShellTool {
             return Err("intent must not be empty".to_string());
         }
 
+        let env = (self.env)()?;
         if args.run_in_background {
             let tasks = self.background.as_ref().ok_or_else(|| {
                 "Background execution is not available in this context".to_string()
@@ -163,7 +164,7 @@ impl ShellTool {
                 &args.command,
                 &self.working_dir,
                 capture.take(),
-                &self.env,
+                &env,
             )?;
             return Ok((
                 format!(
@@ -174,7 +175,7 @@ impl ShellTool {
             ));
         }
 
-        let command = workspace_shell_command(&args.command, &self.working_dir, &self.env);
+        let command = workspace_shell_command(&args.command, &self.working_dir, &env);
         run_shell_command(
             command,
             capture.as_ref().map(|capture| &capture.handle),

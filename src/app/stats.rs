@@ -42,6 +42,10 @@ pub fn compute_stats(session: &Session, app_config: &AppConfig) -> SidebarStats 
                 gen_ms += elapsed_ms;
             }
         }
+        if turn.compaction {
+            // 压缩请求的 usage 仍计费，但不再代表压缩后的上下文；下次请求更新实测值。
+            context_tok = 0;
+        }
         if let Some(anthropic) = &turn.meta.anthropic
             && let Some(w) = anthropic.cache_creation_input_tokens
         {
