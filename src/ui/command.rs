@@ -44,6 +44,11 @@ use ratatui::text::{Line, Span};
 
 pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand {
+        name: "/compact",
+        aliases: &[],
+        description: "Summarize the current context while keeping the transcript",
+    },
+    SlashCommand {
         name: "/sessions",
         aliases: &["/session"],
         description: "Select and resume a session (per project)",

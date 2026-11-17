@@ -9,6 +9,7 @@ pub enum Command {
     Switch(String),
     Sessions,
     Stop,
+    Compact(String),
     Status,
     SetHome(String),
     UnsetHome(String),
@@ -34,6 +35,7 @@ impl Command {
             Command::Switch(_) => "/switch",
             Command::Sessions => "/sessions",
             Command::Stop => "/stop",
+            Command::Compact(_) => "/compact",
             Command::Status => "/status",
             Command::SetHome(_) => "/sethome",
             Command::UnsetHome(_) => "/unsethome",
@@ -55,6 +57,7 @@ impl Command {
                 | Self::Switch(_)
                 | Self::Sessions
                 | Self::Stop
+                | Self::Compact(_)
                 | Self::Status
                 | Self::Rename(_)
                 | Self::Clear(_)
@@ -71,6 +74,7 @@ const HELP: &[(&str, &str)] = &[
     ("/switch <前缀>", "切换默认会话"),
     ("/sessions", "列出会话"),
     ("/stop", "中止默认会话当前轮次"),
+    ("/compact", "压缩默认会话上下文，保留聊天记录"),
     ("/status", "默认会话状态（/stat）"),
     ("/sethome", "将当前聊天加入后台通知接收集合"),
     ("/unsethome", "将当前聊天移出后台通知接收集合"),
@@ -127,6 +131,7 @@ pub fn parse(text: &str) -> Option<Command> {
         "switch" => Command::Switch(arg.to_string()),
         "sessions" => Command::Sessions,
         "stop" => Command::Stop,
+        "compact" => Command::Compact(arg.to_string()),
         "status" | "stat" => Command::Status,
         "sethome" => Command::SetHome(arg.to_string()),
         "unsethome" => Command::UnsetHome(arg.to_string()),

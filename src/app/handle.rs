@@ -95,14 +95,27 @@ impl ManagedSession {
         variant: Option<Option<String>>,
         toggles: ToggleOverrides,
     ) -> Result<(), String> {
-        self.core.configure(model, variant).await?;
+        let previous = self.record.borrow().coding.web_search;
         if let Some(enabled) = toggles.web_search {
             self.store.update_record(&self.id, |record| {
                 let changed = record.coding.web_search != enabled;
                 record.coding.web_search = enabled;
                 Ok(changed)
             })?;
-            self.core.configure(None, None).await?;
+        }
+        if let Err(error) = self.core.configure(model, variant).await {
+            if toggles.web_search.is_some() {
+                self.store
+                    .update_record(&self.id, |record| {
+                        let changed = record.coding.web_search != previous;
+                        record.coding.web_search = previous;
+                        Ok(changed)
+                    })
+                    .map_err(|rollback| {
+                        format!("{error}; failed to restore search setting: {rollback}")
+                    })?;
+            }
+            return Err(error);
         }
         Ok(())
     }
@@ -145,6 +158,26 @@ impl ManagedSession {
         });
         Ok(())
     }
+    pub async fn compact(
+        &self,
+        events: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<impl std::future::Future<Output = Result<String, String>> + Send + 'static, String>
+    {
+        let completion = self.core.compact(events).await?;
+        let store = self.store.clone();
+        let id = self.id.clone();
+        let (tx, rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = completion.await;
+            let result = match crate::space::activity::touch(&store, &id) {
+                Ok(()) => result,
+                Err(error) => Err(error),
+            };
+            let _ = tx.send(result);
+        });
+        Ok(async move { rx.await.map_err(|error| error.to_string())? })
+    }
+
     pub async fn deliver(
         &self,
         text: &str,

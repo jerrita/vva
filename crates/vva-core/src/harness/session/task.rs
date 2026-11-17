@@ -166,7 +166,7 @@ impl SessionTask {
     }
 
     /// 用修改后的会话替换视图并发布快照
-    fn replace_session(&mut self, session: Session) {
+    pub(super) fn replace_session(&mut self, session: Session) {
         self.view.session = Arc::new(session);
         self.publish();
     }
@@ -452,8 +452,9 @@ impl SessionTask {
     }
 
     async fn build_engine_for(&self, session: &Session) -> Result<ExecutionPlan, String> {
-        let plan = self.setup.plan(session, &self.services()).await?;
-        plan.inputs.validate_session(session)?;
+        let context = session.context();
+        let plan = self.setup.plan(&context, &self.services()).await?;
+        plan.inputs.validate_session(&context)?;
         Ok(plan)
     }
 
@@ -753,7 +754,7 @@ impl SessionTask {
                 let result = self.queue_input(prompt, images).await;
                 let _ = reply.send(result);
             }
-            Command::Revert { reply, .. } => {
+            Command::Compact { reply, .. } | Command::Revert { reply, .. } => {
                 let _ = reply.send(Err(BUSY.into()));
             }
             Command::Stop { delete, reply } => {
@@ -871,7 +872,8 @@ impl SessionTask {
             self.view.state = RunState::Thinking;
             self.publish();
             let response_started = Instant::now();
-            let context = self.view.session.clone();
+            let session = self.view.session.clone();
+            let context = session.context();
             let (tx, mut rx) = mpsc::channel(64);
             let request =
                 engine
@@ -1292,6 +1294,48 @@ impl SessionTask {
             };
             match command {
                 Command::Shared(command) => self.handle_shared(command).await,
+                Command::Compact {
+                    events,
+                    completion,
+                    reply,
+                } => {
+                    if !self.view.session.turns.iter().any(|turn| {
+                        turn.role == Role::User
+                            && !crate::model::is_reminder_text(&turn.text_content())
+                    }) {
+                        let _ = reply.send(Err("当前会话没有可压缩的历史".into()));
+                        continue;
+                    }
+                    let engine = match self.build_engine().await {
+                        Ok(engine) => engine,
+                        Err(error) => {
+                            let _ = reply.send(Err(error));
+                            continue;
+                        }
+                    };
+                    self.cli = events;
+                    self.auto_resume = true;
+                    self.turn_start = self.view.session.turns.len();
+                    self.view.state = RunState::Thinking;
+                    self.publish();
+                    let _ = reply.send(Ok(()));
+                    let result = self.compact(engine, &mut commands).await;
+                    let close = self.finish_turn(result).await;
+                    {
+                        let report = self.turn_tx.borrow();
+                        let result = match &report.error {
+                            Some(error) => Err(error.clone()),
+                            None => Ok(report.text.clone()),
+                        };
+                        let _ = completion.send(result);
+                    }
+                    if close
+                        || self.run_pending_inputs(&mut commands).await
+                        || self.run_pending_deliveries(&mut commands).await
+                    {
+                        break;
+                    }
+                }
                 Command::Submit {
                     prompt,
                     images,

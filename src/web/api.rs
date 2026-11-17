@@ -778,6 +778,18 @@ pub async fn submit_message(
     Ok(StatusCode::ACCEPTED)
 }
 
+/// 接受压缩请求；状态、摘要与错误通过会话 SSE 发布。
+pub async fn compact_session(session: Session) -> ApiResult<StatusCode> {
+    drop(
+        session
+            .0
+            .compact(None)
+            .await
+            .map_err(fail(StatusCode::CONFLICT))?,
+    );
+    Ok(StatusCode::ACCEPTED)
+}
+
 #[derive(Deserialize)]
 pub struct InputModeRequest {
     pub id: String,

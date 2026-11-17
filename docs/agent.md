@@ -74,7 +74,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 ### 4.2 rollover
 
-不原地改写历史。回合结束后若上下文达到 `limit.context − 预留`，由**主模型在同一 session 末尾追加压缩 prompt**（请求参数与上一轮一致，复用 cache 前缀），摘要作为追加轮次留在旧 session。随后：
+不原地改写历史。回合结束后若上下文达到 `limit.context − 预留`，复用 [`/compact`](usage.md#压缩上下文) 请求由主模型生成摘要（请求参数与上一轮一致，复用 cache 前缀），压缩记录与摘要作为追加轮次留在旧 session。随后：
 
 1. 新建 session，`continued_from` 指向旧 session（不借用 subagent 的 `parent`），首条 `<system-reminder>` 为摘要，除 system 前缀外不复制任何对话轮次（摘要须自足）；
 2. binding focus 与 `message_index` 切到新 session（`replace_focus` + `MessageIndex::repoint`），提示用户，home 标记保留；
@@ -82,7 +82,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 
 约束：
 
-- 压缩请求不改变 system、工具、模型、推理档位、`tool_choice`；prompt 要求不调用工具，仍调用则视为失败（`tool_choice` 与 thinking 变更是否使缓存失效需实测）；
+- 压缩请求不改变 system、工具、模型、推理档位、`tool_choice`；prompt 要求不调用工具，仍返回工具调用则视为失败且不执行（`tool_choice` 与 thinking 变更是否使缓存失效需实测）；
 - 失败：显式通知用户，session 不变，下个回合结束重试；
 - 预留 ≥ 压缩 prompt + 摘要 `max_tokens`；
 - 轮内溢出（单轮工具输出撑满窗口）不在此机制范围，显式报错。
@@ -143,6 +143,7 @@ IM ──► Channel ──► Inbound{binding, user, text, files, reply_to}
 | `/skills` | 列出 agent space 可发现技能 |
 | `/schedule [list\|pause\|resume\|delete\|run <id>]` | 管理定时任务（私聊） |
 | `/delete [前缀]` | 缺省 focus；按沉淀标记决定是否整理后删除，后台执行并回报，整理失败则保留会话 |
+| `/compact` | 压缩默认会话上下文，见[使用指南](usage.md#压缩上下文) |
 | `/clear [前缀]` | 直接删除，跳过整理 |
 | `/sethome` `/unsethome` | 加入 / 移出 home |
 
@@ -150,7 +151,7 @@ agent 模式模型决定新会话的模型（curator 未配置独立模型时每
 
 `/clear`、`/delete` 成功删除 focus 会话后，所有指向它的 binding 按 [focus 补位规则](#2-概念)改指；删除其他会话保留现有 focus。
 
-群内开放 `/new`、`/switch`、`/sessions`、`/stop`、`/status`、`/rename`、`/clear`、`/sethome`、`/unsethome`、`/help`；其余个人管理命令提示在私聊使用，帮助只列当前可用命令。
+群内开放 `/new`、`/switch`、`/sessions`、`/stop`、`/compact`、`/status`、`/rename`、`/clear`、`/sethome`、`/unsethome`、`/help`；其余个人管理命令提示在私聊使用，帮助只列当前可用命令。
 
 ## 7. Scheduler
 

@@ -250,6 +250,7 @@ impl VvaSessionSetup {
         inputs: &crate::provider::InputCapabilities,
         deps: EngineDeps,
     ) -> Result<ToolRegistry, String> {
+        let workspace = session.header.workspace_root.clone();
         let mut tools = ToolRegistry::with_workspace_tools(
             &session.header.workspace_root,
             Some(deps.tool_outputs),
@@ -259,9 +260,10 @@ impl VvaSessionSetup {
                 inputs: inputs.clone(),
                 background: Some(deps.background.clone()),
                 shell_outputs: Some(deps.shell_outputs),
-                env: crate::config::env::workspace_env(&session.header.workspace_root)?
-                    .into_iter()
-                    .collect(),
+                env: Arc::new(move || {
+                    crate::config::env::workspace_env(&workspace)
+                        .map(|env| env.into_iter().collect())
+                }),
             },
         );
         let broker = deps.broker;
