@@ -187,12 +187,6 @@ pub fn format_skill_load_reminder(skill: &Skill) -> String {
     )
 }
 
-/// 格式化后台任务完成通知为 <system-reminder> User Message 文本
-/// （正文首行为 UI 展示的状态行，其余为模型可见的输出详情）
-pub fn format_background_task_reminder(notification: &str) -> String {
-    reminder("type=\"background-task\"", notification.trim())
-}
-
 /// 格式化 rollover 摘要为 <system-reminder> User Message 文本（新会话首条动态内容，
 /// 承接 `from` 会话被压缩的历史）
 pub fn format_rollover_summary_reminder(from: &str, summary: &str) -> String {
@@ -629,7 +623,7 @@ mod tests {
     fn format_and_parse_background_task_reminder() {
         let notification =
             "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 4 bytes";
-        let reminder = format_background_task_reminder(notification);
+        let reminder = crate::tools::background::format_background_task_reminder(notification);
         let parsed = parse_agents_reminder(&reminder).unwrap();
         assert_eq!(parsed.kind, AgentsReminderKind::BackgroundTask);
         assert_eq!(parsed.content, notification);

@@ -18,14 +18,21 @@ use parse::GeminiAccumulator;
 pub struct GeminiProvider {
     api_key: String,
     base_url: String,
+    headers: reqwest::header::HeaderMap,
 }
 
 impl GeminiProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
+            headers: reqwest::header::HeaderMap::new(),
             base_url: "https://generativelanguage.googleapis.com/v1beta".into(),
         }
+    }
+
+    pub fn with_headers(mut self, headers: reqwest::header::HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -58,7 +65,7 @@ impl GeminiProvider {
 
     /// JSON Content-Type 与 x-goog-api-key 鉴权头
     fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
-        let mut headers = HeaderMap::new();
+        let mut headers = self.headers.clone();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert("x-goog-api-key", header_value(&self.api_key)?);
         Ok(headers)

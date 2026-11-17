@@ -186,6 +186,7 @@ pub(super) async fn search(
     api_key: &str,
     query: &str,
     max_results: usize,
+    client_info: &super::ClientInfo,
 ) -> Result<Vec<WebSearchResult>, String> {
     let mut session = Session {
         endpoint: endpoint.into(),
@@ -199,7 +200,7 @@ pub(super) async fn search(
             "initialize",
             json!({
                 "protocolVersion":"2025-06-18", "capabilities":{},
-                "clientInfo":{"name":"vva", "version":env!("CARGO_PKG_VERSION")}
+                "clientInfo":client_info
             }),
         )
         .await?;

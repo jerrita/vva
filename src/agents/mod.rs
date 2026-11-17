@@ -76,13 +76,9 @@ fn builtin_explore() -> AgentDef {
     }
 }
 
-/// 内置定义；curator 仅供 agent space 系统创建的会话使用（不暴露给 Agent 工具）
+/// 内置 coding 子代理定义。
 pub fn builtin_agents() -> Vec<AgentDef> {
-    vec![
-        crate::space::curator::curator_agent(),
-        builtin_explore(),
-        builtin_general(),
-    ]
+    vec![builtin_explore(), builtin_general()]
 }
 
 /// YAML 定义文件字段集（未知字段拒绝）
@@ -252,7 +248,7 @@ mod tests {
 
         let defs = discover_from(std::slice::from_ref(&global), &workspace);
         let names: Vec<_> = defs.iter().map(|def| def.name.as_str()).collect();
-        assert_eq!(names, ["curator", "custom", "explore", "general"]);
+        assert_eq!(names, ["custom", "explore", "general"]);
         let general = defs.iter().find(|def| def.name == "general").unwrap();
         assert_eq!(general.description, "Global override.");
         let custom = defs.iter().find(|def| def.name == "custom").unwrap();

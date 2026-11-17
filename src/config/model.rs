@@ -1,3 +1,5 @@
+use crate::provider::ProviderType;
+use crate::tools::web::zhipu::ZhipuSearchEngine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -5,51 +7,6 @@ use std::collections::HashMap;
 pub const GLM_CODING_PLAN_PROVIDER_ID: &str = "glm-coding-plan";
 /// Codex / Responses 原生端点，支持 `web_search`。
 pub const GLM_CODING_PLAN_BASE_URL: &str = "https://open.bigmodel.cn/api/v1";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum ProviderType {
-    #[default]
-    Response,
-    Anthropic,
-    Gemini,
-}
-
-impl ProviderType {
-    pub fn require_media(
-        self,
-        kind: crate::model::MediaKind,
-        mime_type: &str,
-    ) -> Result<(), String> {
-        use crate::model::MediaKind;
-        let supported = match (self, kind) {
-            (Self::Gemini, _) => true,
-            (_, MediaKind::Pdf) => mime_type == "application/pdf",
-            (_, MediaKind::Image) => matches!(
-                mime_type,
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-            ),
-            _ => false,
-        };
-        if supported {
-            Ok(())
-        } else {
-            Err(format!(
-                "Protocol '{}' does not support {mime_type} input",
-                self.as_str()
-            ))
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Response => "response",
-            Self::Anthropic => "anthropic",
-            Self::Gemini => "gemini",
-        }
-    }
-}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -379,17 +336,6 @@ pub struct WebZhipu {
     pub api_key: String,
     #[serde(default)]
     pub search_engine: ZhipuSearchEngine,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ZhipuSearchEngine {
-    #[default]
-    SearchStd,
-    SearchPro,
-    SearchProSogou,
-    SearchProQuark,
-    SearchMcp,
 }
 
 impl WebSettings {

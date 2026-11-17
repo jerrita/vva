@@ -14,7 +14,7 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::agents::AgentDef;
-use crate::harness::SessionManager;
+use crate::app::VvaSessionManager as SessionManager;
 use crate::model::{ContentPart, Origin, Role, SessionKind, SessionToggles, Turn};
 use crate::storage::SessionStore;
 

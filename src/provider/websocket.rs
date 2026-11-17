@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::{
     protocol::Role,
 };
 
-use super::{ProviderError, client_builder, http::add_app_attribution};
+use super::{ProviderError, client_builder};
 
 // RFC 6455 的 Upgrade 使用 HTTP/1.1；仅设置单个请求的 version 不会禁用 TLS ALPN 的 h2。
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -40,7 +40,6 @@ impl JsonWebSocket {
         terminal: fn(&Value) -> bool,
     ) -> Result<Self, ProviderError> {
         // 独立的 HTTP/1.1 连接池沿用公共客户端配置，保留代理、证书与超时行为。
-        add_app_attribution(url, &mut headers);
         let key = generate_key();
         headers.insert(CONNECTION, HeaderValue::from_static("Upgrade"));
         headers.insert(UPGRADE, HeaderValue::from_static("websocket"));

@@ -381,7 +381,7 @@ fn tool_preview_block_truncates_and_full_shows_all() {
 
 #[test]
 fn background_task_reminder_not_rendered() {
-    let text = crate::system::format_background_task_reminder(
+    let text = crate::tools::background::format_background_task_reminder(
         "Background task 1 exited with code 0\nintent: watch build\ncaptured output: 5 bytes",
     );
     let mut sink = Sink::default();

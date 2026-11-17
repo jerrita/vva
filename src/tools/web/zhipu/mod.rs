@@ -12,7 +12,16 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use super::WebSearchResult;
-use crate::config::model::ZhipuSearchEngine;
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZhipuSearchEngine {
+    #[default]
+    SearchStd,
+    SearchPro,
+    SearchProSogou,
+    SearchProQuark,
+    SearchMcp,
+}
 
 const SEARCH_URL: &str = "https://open.bigmodel.cn/api/paas/v4/web_search";
 const MCP_URL: &str = "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp";
@@ -30,16 +39,24 @@ fn client() -> &'static reqwest::Client {
     })
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct ClientInfo {
+    pub name: String,
+    pub version: String,
+}
+
 pub struct ZhipuSearchProvider {
     api_key: String,
     search_engine: ZhipuSearchEngine,
+    client_info: ClientInfo,
 }
 
 impl ZhipuSearchProvider {
-    pub fn new(api_key: String, search_engine: ZhipuSearchEngine) -> Self {
+    pub fn new(api_key: String, search_engine: ZhipuSearchEngine, client_info: ClientInfo) -> Self {
         Self {
             api_key,
             search_engine,
+            client_info,
         }
     }
 
@@ -100,7 +117,14 @@ impl super::WebSearchProvider for ZhipuSearchProvider {
         tokio::time::timeout(SEARCH_TIMEOUT, async {
             match self.search_engine {
                 ZhipuSearchEngine::SearchMcp => {
-                    mcp::search(MCP_URL, &self.api_key, query, max_results).await
+                    mcp::search(
+                        MCP_URL,
+                        &self.api_key,
+                        query,
+                        max_results,
+                        &self.client_info,
+                    )
+                    .await
                 }
                 _ => self.rest_search(SEARCH_URL, query, max_results).await,
             }

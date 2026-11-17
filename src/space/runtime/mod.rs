@@ -27,8 +27,9 @@ use super::progress;
 use super::rollover::maybe_rollover;
 use super::router::Router;
 use super::scheduler::{self, ScheduleStore};
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::AgentSpaceConfig;
-use crate::harness::{InputMode, ManagedSession, SessionManager};
+use crate::harness::{InputMode, ManagedSession};
 use crate::model::{Origin, Session, SessionKind, SessionSummary};
 use crate::tools::agent::SubagentReport;
 

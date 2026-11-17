@@ -60,7 +60,7 @@ pub struct SessionView {
 }
 
 impl SessionView {
-    pub(super) fn new(session: Session, persisted: bool) -> Self {
+    pub(crate) fn new(session: Session, persisted: bool) -> Self {
         let mut background_tasks = crate::model::background_tasks(&session);
         for task in background_tasks.values_mut() {
             if task.status == crate::model::BackgroundTaskStatus::Running {

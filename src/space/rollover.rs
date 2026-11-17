@@ -7,8 +7,9 @@
 
 use std::sync::Arc;
 
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::{AgentSpaceConfig, AppConfig};
-use crate::harness::{ManagedSession, SessionManager};
+use crate::harness::ManagedSession;
 use crate::model::{Message, Role, Session, TokenUsage, Turn};
 
 /// rollover 完成后新旧会话 id；上层据此切换 binding focus 与 message_index

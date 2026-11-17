@@ -13,8 +13,12 @@ use super::parse_args;
 /// 单条命令的执行超时
 const SHELL_TIMEOUT: Duration = Duration::from_secs(120);
 
+pub type ShellEnv =
+    Arc<dyn Fn() -> Result<std::collections::HashMap<String, String>, String> + Send + Sync>;
+
 pub struct ShellTool {
     working_dir: PathBuf,
+    env: ShellEnv,
     background: Option<Arc<super::background::BackgroundTasks>>,
     description: String,
     outputs: Option<Arc<super::shell_output::ShellOutputs>>,
@@ -25,6 +29,7 @@ impl ShellTool {
     pub fn new(working_dir: impl Into<PathBuf>) -> Self {
         Self {
             working_dir: working_dir.into(),
+            env: Arc::new(|| Ok(std::collections::HashMap::new())),
             background: None,
             outputs: None,
             output_dir: None,
@@ -36,6 +41,11 @@ impl ShellTool {
                 names::GREP,
             ]),
         }
+    }
+
+    pub fn with_env(mut self, env: ShellEnv) -> Self {
+        self.env = env;
+        self
     }
 
     pub(crate) fn with_outputs(
@@ -147,6 +157,7 @@ impl ShellTool {
             return Err("intent must not be empty".to_string());
         }
 
+        let env = (self.env)()?;
         if args.run_in_background {
             let tasks = self.background.as_ref().ok_or_else(|| {
                 "Background execution is not available in this context".to_string()
@@ -156,6 +167,7 @@ impl ShellTool {
                 &args.command,
                 &self.working_dir,
                 capture.take(),
+                &env,
             )?;
             return Ok((
                 format!(
@@ -166,7 +178,7 @@ impl ShellTool {
             ));
         }
 
-        let command = workspace_shell_command(&args.command, &self.working_dir)?;
+        let command = workspace_shell_command(&args.command, &self.working_dir, &env);
         run_shell_command(
             command,
             capture.as_ref().map(|capture| &capture.handle),
@@ -177,15 +189,15 @@ impl ShellTool {
     }
 }
 
-/// 在工作区内组装 shell 命令：设置工作目录，并注入本次读取的项目 env（`.vva/env`）
+/// 在工作区内组装 shell 命令，注入宿主提供的环境。
 pub(crate) fn workspace_shell_command(
     command: &str,
     working_dir: &Path,
-) -> Result<tokio::process::Command, String> {
-    let env = crate::config::env::workspace_env(working_dir)?;
+    env: &std::collections::HashMap<String, String>,
+) -> tokio::process::Command {
     let mut cmd = build_shell_command(command);
     cmd.current_dir(working_dir).envs(env);
-    Ok(cmd)
+    cmd
 }
 
 /// 组装平台相关的 shell 命令（bash -c / PowerShell 包装），前台与后台执行共用
