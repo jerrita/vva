@@ -29,6 +29,7 @@ pub use session::{
     EditorKind, JsonlRecord, Origin, SESSION_VERSION, Session, SessionHeader, SessionKind,
     SessionSummary, SessionToggles, ToggleOverrides, generate_session_id, provisional_title,
 };
+pub use session::{format_rollover_summary_reminder, is_reminder_text};
 pub use shell::ShellOutput;
 pub use tool::{
     MediaContent, MediaKind, ToolCall, ToolCallKind, ToolDefinition, ToolInput, ToolResult,

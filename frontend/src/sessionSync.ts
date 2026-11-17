@@ -1,4 +1,4 @@
-import type { Session, SessionDelta, SessionSnapshot, SessionSummary } from './types'
+import type { Notice, Session, SessionDelta, SessionSnapshot, SessionSummary } from './types'
 
 /** 当前与后台会话共用列表投影，完整保留服务端的可空字段。 */
 export function sessionSummary(session: Session, state: string): SessionSummary {
@@ -105,11 +105,14 @@ export function subscribeSession(
   id: string,
   onSnapshot: (snapshot: SessionSnapshot) => void,
   onError: (error: unknown) => void,
+  onRunFinished?: (snapshot: SessionSnapshot, outcome: Notice | undefined) => void,
 ): () => void {
   const source = new EventSource(`/api/sessions/${id}/events`)
   let current: SessionSnapshot | null = null
+  let runNoticeIds = new Set<string>()
   const receive = (event: MessageEvent, snapshot: boolean) => {
     try {
+      const previous = current
       if (snapshot) {
         const next = JSON.parse(event.data) as SessionSnapshot
         if (next.session.id !== id) throw new Error('会话快照 ID 不匹配')
@@ -119,6 +122,16 @@ export function subscribeSession(
         current = applySessionDelta(current, JSON.parse(event.data) as SessionDelta)
       }
       onSnapshot(current)
+      // Notice 可先于空闲帧发布；保留本次运行开始时的基线，排除历史错误。
+      if (previous?.state && current.state === '') {
+        const outcome = current.notices.find(notice =>
+          notice.kind === 'turn' && !runNoticeIds.has(notice.id),
+        )
+        onRunFinished?.(current, outcome)
+      }
+      if (!previous || current.state === '') {
+        runNoticeIds = new Set(current.notices.map(notice => notice.id))
+      }
     } catch (error) {
       source.close()
       onError(error)
