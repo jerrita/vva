@@ -1,0 +1,327 @@
+//! Agent Skills：SKILL.md 技能包的解析与发现（agentskills.io Specification）。
+//!
+//! 渐进披露三层：发现时仅持有 frontmatter 元数据（name + description 注入系统提示）；
+//! 激活时由 Skill 工具返回 SKILL.md 正文；scripts/ 等资源复用既有工具按需读取。
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+/// 技能清单文件名（规范必需）
+pub const SKILL_FILE: &str = "SKILL.md";
+
+/// 技能来源层级
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkillSource {
+    /// 宿主提供的全局目录
+    Global,
+    /// 宿主提供的项目目录
+    Project,
+}
+
+/// 已发现的技能：frontmatter 强类型元数据 + SKILL.md 正文
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    pub license: Option<String>,
+    pub compatibility: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+    /// 实验性字段：仅解析透出，vva 无权限层不强制
+    pub allowed_tools: Option<String>,
+    /// 技能根目录（SKILL.md 所在目录），资源文件相对此路径
+    pub path: PathBuf,
+    pub source: SkillSource,
+    /// frontmatter 之后的 Markdown 正文
+    pub body: String,
+}
+
+impl Skill {
+    /// 系统提示技能清单行（渐进披露第一层：仅元数据）
+    pub fn prompt_line(&self) -> String {
+        format!("- {}: {}", self.name, self.description)
+    }
+}
+
+/// 技能激活文本（渐进披露第二层）：SKILL.md 正文包裹于 <skill> 标签。
+/// Skill 工具返回与 /<skill_name> 直接加载共用此格式，对模型呈现一致。
+pub fn format_skill_content(skill: &Skill) -> String {
+    format!(
+        "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>\n\n\
+         Files referenced by this skill (scripts/, references/, assets/) are relative to the \
+         skill root directory above. Load them with the file-reading tools or Shell only when needed.",
+        skill.name,
+        skill.path.display(),
+        skill.body
+    )
+}
+
+/// SKILL.md frontmatter 强类型字段集（规范字段加已知生态字段 `hidden`，其余未知字段告警后忽略）
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+    license: Option<String>,
+    compatibility: Option<String>,
+    /// 规范为 string → string；非字符串值告警后丢弃
+    metadata: Option<BTreeMap<String, serde_yaml::Value>>,
+    #[serde(rename = "allowed-tools")]
+    allowed_tools: Option<String>,
+    /// 生态扩展字段（如 agent-browser 的存根技能）：接受但 vva 不据此改变行为
+    #[allow(dead_code)]
+    hidden: Option<bool>,
+    /// 未知字段：仅用于告警
+    #[serde(flatten)]
+    unknown: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// 解析并校验单个技能目录（SKILL.md 缺失或规范校验失败时返回错误）
+pub fn parse_skill(dir: &Path, source: SkillSource) -> Result<Skill, String> {
+    let dir_name = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| format!("Invalid skill directory name: {}", dir.display()))?;
+    let skill_file = dir.join(SKILL_FILE);
+    let content = std::fs::read_to_string(&skill_file)
+        .map_err(|error| format!("Failed to read {}: {error}", skill_file.display()))?;
+    let (frontmatter, body) = split_frontmatter(&content)?;
+    let frontmatter: SkillFrontmatter = serde_yaml::from_str(&frontmatter)
+        .map_err(|error| format!("Invalid SKILL.md frontmatter: {error}"))?;
+    for key in frontmatter.unknown.keys() {
+        tracing::warn!(
+            "Ignoring unknown SKILL.md frontmatter field `{key}` in {}",
+            skill_file.display()
+        );
+    }
+    let mut metadata = BTreeMap::new();
+    for (key, value) in frontmatter.metadata.unwrap_or_default() {
+        match value {
+            serde_yaml::Value::String(text) => {
+                metadata.insert(key, text);
+            }
+            _ => tracing::warn!(
+                "Ignoring non-string SKILL.md metadata `{key}` in {}",
+                skill_file.display()
+            ),
+        }
+    }
+
+    crate::discover::validate_name(&frontmatter.name, dir_name, "skill", "directory name")?;
+    crate::discover::validate_description(&frontmatter.description, "skill", &frontmatter.name)?;
+    if frontmatter
+        .compatibility
+        .as_deref()
+        .is_some_and(|text| text.trim().is_empty() || text.chars().count() > 500)
+    {
+        return Err(format!(
+            "Skill '{}' compatibility must be 1-500 characters",
+            frontmatter.name
+        ));
+    }
+
+    Ok(Skill {
+        name: frontmatter.name,
+        description: frontmatter.description,
+        license: frontmatter.license,
+        compatibility: frontmatter.compatibility,
+        metadata,
+        allowed_tools: frontmatter.allowed_tools,
+        path: dir.to_path_buf(),
+        source,
+        body,
+    })
+}
+
+/// 依次扫描宿主提供的目录；后扫描目录覆盖同名技能。
+pub fn discover_skills(dirs: &[(PathBuf, SkillSource)]) -> Vec<Skill> {
+    let mut by_name = BTreeMap::new();
+    for (dir, source) in dirs {
+        collect_skills(dir, *source, &mut by_name);
+    }
+    by_name.into_values().collect()
+}
+
+fn collect_skills(dir: &Path, source: SkillSource, out: &mut BTreeMap<String, Skill>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() || !path.join(SKILL_FILE).is_file() {
+            continue;
+        }
+        match parse_skill(&path, source) {
+            Ok(skill) => {
+                out.insert(skill.name.clone(), skill);
+            }
+            Err(error) => tracing::warn!("Skipping invalid skill {}: {error}", path.display()),
+        }
+    }
+}
+
+/// 切分 `---` 包裹的 YAML frontmatter 与 Markdown 正文
+fn split_frontmatter(content: &str) -> Result<(String, String), String> {
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let mut lines = content.lines();
+    if lines.next() != Some("---") {
+        return Err("SKILL.md must begin with a YAML frontmatter block (---)".into());
+    }
+    let mut frontmatter = String::new();
+    let mut body: Option<Vec<&str>> = None;
+    for line in lines {
+        match &mut body {
+            Some(lines) => lines.push(line),
+            None => {
+                if line == "---" {
+                    body = Some(Vec::new());
+                } else {
+                    frontmatter.push_str(line);
+                    frontmatter.push('\n');
+                }
+            }
+        }
+    }
+    match body {
+        Some(lines) => Ok((frontmatter, lines.join("\n"))),
+        None => Err("SKILL.md frontmatter is not closed with a --- line".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_skill(root: &Path, name: &str, content: &str) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(SKILL_FILE), content).unwrap();
+        dir
+    }
+
+    fn temp_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("vva-skills-{tag}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn parses_minimal_frontmatter_and_body() {
+        let root = temp_root("minimal");
+        write_skill(
+            &root,
+            "pdf-processing",
+            "---\nname: pdf-processing\ndescription: Extract PDF text and fill forms.\n---\n\n# Steps\n\n1. Open the file.\n",
+        );
+        let skill = parse_skill(&root.join("pdf-processing"), SkillSource::Global).unwrap();
+        assert_eq!(skill.name, "pdf-processing");
+        assert_eq!(skill.description, "Extract PDF text and fill forms.");
+        assert_eq!(skill.body, "\n# Steps\n\n1. Open the file.");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parses_optional_fields() {
+        let root = temp_root("optional");
+        write_skill(
+            &root,
+            "web-scrape",
+            "---\nname: web-scrape\ndescription: Scrape pages.\nlicense: Apache-2.0\ncompatibility: Requires Python 3.12+\nmetadata:\n  author: example-org\n  version: \"1.0\"\n  hermes:\n    tags: [a]\nallowed-tools: Bash(curl:*) Read\nhidden: true\nversion: 2\n---\nBody here.\n",
+        );
+        let skill = parse_skill(&root.join("web-scrape"), SkillSource::Project).unwrap();
+        // metadata 只保留字符串值；未知顶层字段被忽略
+        assert_eq!(
+            skill.metadata.get("author").map(String::as_str),
+            Some("example-org")
+        );
+        assert_eq!(
+            skill.metadata.get("version").map(String::as_str),
+            Some("1.0")
+        );
+        assert!(!skill.metadata.contains_key("hermes"));
+        assert_eq!(skill.allowed_tools.as_deref(), Some("Bash(curl:*) Read"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_spec_violations() {
+        let root = temp_root("invalid");
+
+        // name 含大写 / 连续连字符 / 起始连字符 / 超长
+        let too_long = "a".repeat(65);
+        for name in [
+            "PDF-Processing",
+            "pdf--processing",
+            "-pdf",
+            "pdf_",
+            too_long.as_str(),
+        ] {
+            write_skill(
+                &root,
+                name.trim_start_matches('-'),
+                &format!("---\nname: {name}\ndescription: d\n---\n"),
+            );
+            assert!(
+                parse_skill(
+                    &root.join(name.trim_start_matches('-')),
+                    SkillSource::Global
+                )
+                .is_err(),
+                "name '{name}' should be rejected"
+            );
+        }
+
+        // name 与目录名不一致
+        write_skill(
+            &root,
+            "real-dir",
+            "---\nname: other-name\ndescription: d\n---\n",
+        );
+        assert!(parse_skill(&root.join("real-dir"), SkillSource::Global).is_err());
+
+        // description 超长
+        write_skill(
+            &root,
+            "long-desc",
+            &format!(
+                "---\nname: long-desc\ndescription: {}\n---\n",
+                "x".repeat(1025)
+            ),
+        );
+        assert!(parse_skill(&root.join("long-desc"), SkillSource::Global).is_err());
+
+        // compatibility 超长
+        write_skill(
+            &root,
+            "long-compat",
+            &format!(
+                "---\nname: long-compat\ndescription: d\ncompatibility: {}\n---\n",
+                "y".repeat(501)
+            ),
+        );
+        assert!(parse_skill(&root.join("long-compat"), SkillSource::Global).is_err());
+
+        // 缺失 / 未闭合 frontmatter
+        write_skill(&root, "no-fm", "# Just markdown\n");
+        assert!(parse_skill(&root.join("no-fm"), SkillSource::Global).is_err());
+        write_skill(
+            &root,
+            "unclosed-fm",
+            "---\nname: unclosed-fm\ndescription: d\n",
+        );
+        assert!(parse_skill(&root.join("unclosed-fm"), SkillSource::Global).is_err());
+
+        // 缺 SKILL.md 的子目录静默跳过
+        std::fs::create_dir_all(root.join("empty-dir")).unwrap();
+
+        let skills = discover_skills_from_global(&root);
+        assert!(skills.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 测试专用：以指定根目录作为全局技能目录执行发现
+    fn discover_skills_from_global(root: &Path) -> Vec<Skill> {
+        let mut by_name = BTreeMap::new();
+        collect_skills(root, SkillSource::Global, &mut by_name);
+        by_name.into_values().collect()
+    }
+}

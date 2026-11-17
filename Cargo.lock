@@ -3905,10 +3905,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
- "dom_smoothie",
  "futures",
- "glob",
- "htmd",
  "ignore",
  "mime_guess",
  "pulldown-cmark",
@@ -3918,7 +3915,6 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
- "serde_yaml",
  "sha2 0.11.0",
  "tempfile",
  "thiserror 2.0.20",
@@ -3928,6 +3924,33 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-width",
+ "uuid",
+ "vva-core",
+]
+
+[[package]]
+name = "vva-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "chrono",
+ "dom_smoothie",
+ "futures",
+ "glob",
+ "htmd",
+ "http",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
  "uuid",
 ]
 

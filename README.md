@@ -114,7 +114,7 @@ vva run --model anthropic/claude-sonnet-4-5  # 以 供应商/模型 指定
 
 ```bash
 vva                                    # 终端界面
-vva run "梳理 src/harness 的调用链"     # 单次执行，结果流式输出
+vva run "梳理 crates/vva-core/src/harness 的调用链"     # 单次执行，结果流式输出
 vva web                                # 浏览器界面，http://127.0.0.1:3000
 vva agent                              # 常驻 IM agent
 ```
