@@ -1,5 +1,5 @@
 use super::{App, ToolExpand};
-use crate::ui::history::compute_stats;
+use crate::app::stats::compute_stats;
 use crate::ui::modals::*;
 
 /// 工具块无覆盖值时的默认展示档位：变更类工具直接全文，其余预览

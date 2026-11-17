@@ -54,7 +54,6 @@ pub struct SessionServices {
     pub ask_user_requests: tokio::sync::mpsc::Sender<crate::tools::ask_user::AskUserRequest>,
     pub background: Arc<crate::tools::background::BackgroundTasks>,
     pub shell_outputs: Arc<crate::tools::shell_output::ShellOutputs>,
-    pub curation_tool: Arc<dyn crate::tools::Tool>,
 }
 
 #[async_trait]
@@ -88,7 +87,9 @@ pub trait SessionSetup: Send + Sync {
     ) -> Result<(), String> {
         Err("This session setup does not support model changes".into())
     }
-    fn selection_saved(&self, _session: &Session) {}
+    fn selection_saved(&self, _session: &Session) -> Result<(), String> {
+        Ok(())
+    }
     async fn title(&self, _session: &Session, _prompt: &str) -> Result<Option<String>, String> {
         Ok(None)
     }

@@ -6,11 +6,15 @@
 Cargo.toml                 # workspace；default-members = vva + vva-core
 build.rs                   # 仅应用：frontend 构建
 src/                       # vva 应用
-├── lib.rs / main.rs        # 模块导出 / CLI 入口 (vva run, session list|inspect, web, agent, version, update)
+├── lib.rs / main.rs        # 模块导出 / CLI 入口 (vva run, session list|inspect|migrate, web, agent, version, update)
 ├── find.rs                 # 工作区遍历与模糊匹配 (walk_workspace / fuzzy_match；TUI @ 补全与 Web go-to-file 共用)
 ├── app/                    # 应用会话 facade 与装配策略
 │   ├── session.rs          # VvaSessionManager：模型偏好、配置重载、会话创建与子代理装配
 │   ├── setup.rs            # VvaSessionSetup：工具选择、coding 上下文与能力通知
+│   ├── records.rs · store.rs # 独立强类型应用记录与会话关联
+│   ├── model.rs · view.rs · handle.rs # 应用会话/快照投影与公开 handle 包装
+│   ├── stats.rs            # TUI/Web 共用统计（含原有测试）
+│   ├── migration.rs        # 停写后 v2→v3、新目录与清单
 │   ├── mention.rs          # @ 文件引用解析与展开
 │   └── web.rs              # 外置联网模型与凭据解析
 ├── system.rs               # 系统环境采集与系统提示组装 (日期 / OS / arch / workspace / scratch)
@@ -30,6 +34,7 @@ src/                       # vva 应用
 │   ├── runtime/            # 主循环 / inbound / commands / schedule / mode_model
 │   ├── router.rs · decisions.rs        # L0/L1/L2 路由；Decisions API 后端
 │   ├── binding.rs                      # BindingStore / MessageIndex / PendingFiles
+│   ├── activity.rs · curation_tool.rs # 完成回执维护活动时间 / 沉淀标记工具
 │   ├── lifecycle.rs · curator.rs · rollover.rs  # TTL 清理 / 知识沉淀 / 上下文压缩续接
 │   ├── scheduler.rs · schedule_tool.rs # 定时任务表与 Schedule 工具
 │   ├── progress.rs · send_file.rs · command.rs · markdown.rs
@@ -38,7 +43,7 @@ src/                       # vva 应用
 │   ├── mod.rs · events.rs  # 终端生命周期与主循环 / 输入事件分发
 │   ├── app/                # App 状态机：session / editor / dispatch / pane / draft / selection / scroll
 │   ├── command.rs          # 斜杠命令与补全、@ 文件候选
-│   ├── input.rs · markdown.rs · text.rs · spans.rs · hyperlinks.rs · history.rs
+│   ├── input.rs · markdown.rs · text.rs · spans.rs · hyperlinks.rs
 │   ├── modals/             # ActiveModal 与各弹窗状态机 (sessions / models / variants / config / skills / ask_user / message)
 │   └── views/              # 纯渲染：chat/ (pipeline / tool / diff / patch / thought / citations / user_block / selection / view)、各弹窗视图、header / sidebar / input_area
 └── web/                    # Axum 服务器

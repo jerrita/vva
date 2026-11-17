@@ -1,3 +1,4 @@
+extern crate self as vva_core;
 pub mod agents;
 mod discover;
 pub mod event;

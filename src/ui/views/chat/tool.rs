@@ -2,6 +2,7 @@
 
 use super::*;
 use super::{patch::*, pipeline::push_source_row, state::*, tool_block::*};
+use crate::app::view::BackgroundTaskDisplay;
 use crate::tools::names;
 use crate::ui::text::truncate;
 use crate::ui::views::{bold, fg};

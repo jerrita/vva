@@ -2,16 +2,17 @@
 pub mod jsonl;
 
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::model::{Session, SessionSummary, Turn};
 
 #[cfg(feature = "jsonl")]
-pub use jsonl::{SCRATCH_DIR, TOOL_OUTPUTS_DIR, project_key};
+pub use jsonl::project_key;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
+    #[error("unsupported session version {0}; explicit migration is required")]
+    UnsupportedVersion(u32),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Serialization error: {0}")]
@@ -40,10 +41,4 @@ pub trait SessionStore: Send + Sync {
 
     /// 列出所有存储的会话概要
     async fn list_sessions(&self) -> Result<Vec<SessionSummary>, StoreError>;
-
-    /// 确保项目目录与 scratch 文件夹存在，返回 scratch 路径
-    async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError>;
-
-    /// 确保项目目录与 tool_outputs 文件夹存在，返回 tool_outputs 路径
-    async fn ensure_tool_outputs(&self, workspace: &Path) -> Result<PathBuf, StoreError>;
 }

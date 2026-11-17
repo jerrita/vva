@@ -15,11 +15,11 @@ vva 在统一 Session 抽象之上保留各供应商原生特性。设计约束�
 
 ## 2. 分层
 
-Cargo workspace 含根应用 `vva`（1.17.0）和 `crates/vva-core`（0.1.0），`default-members` 同时包含两包，依赖方向为 `vva → vva-core`。
+Cargo workspace 含根应用 `vva`（2.0.0）和 `crates/vva-core`（0.1.0），`default-members` 同时包含两包，依赖方向为 `vva → vva-core`。
 core 的 `response`、`anthropic`、`gemini`、`filesystem-tools`、`shell-tools`、`web-tools`、`jsonl` feature 默认关闭；根应用显式开启全部能力。
 `web-tools` 联动 Anthropic 独立搜索与 Gemini 原生联网实现。关闭实现不裁剪历史元数据，也不更换协议或工具。
 `build.rs`、终端 / 剪贴板、Axum、静态资源和 frontend 仅属于应用；单独构建 core 不执行 npm。
-根库暂时 re-export 已迁移模块；v2 SessionHeader 的 Space 字段和运行时内部接口仍为迁移中间状态。
+根库暂时 re-export 已迁移模块。core JSONL v3 只保存通用会话；应用侧 coding 配置与 Space 记录独立存储，见 [storage](storage.md)。Space 通过公开会话 API 工作；应用投影组合快照、应用记录和展示规则。
 
 ```
 +--------------------------------------------------------------+
@@ -51,7 +51,7 @@ core 的 `response`、`anthropic`、`gemini`、`filesystem-tools`、`shell-tools
 
 1. 交互层向 `ManagedSession` 提交输入，`SessionTask` 调用宿主 `SessionSetup::prepare_input` 处理输入，再取得 `ExecutionPlan`（coding 的 `@` / skills / AGENTS.md 策略由 `VvaSessionSetup` 实现）；
 2. Provider 以原生协议请求，流式增量转为 `AgentEvent`；
-3. 事件驱动 `SessionTask` 更新草稿，并以 `SessionView` 快照经 `watch` 发布（33ms 节流）；
+3. 事件驱动 `SessionTask` 更新草稿，并以 core `SessionView` 快照经 `watch` 发布（33ms 节流）；应用投影关联会话配置和 Space 记录，提供状态文案与 TUI 终态计时，再交给 TUI/Web/IM；
 4. 工具调用由 `ToolRegistry` 执行，结果配对后进入下一次请求；
 5. 每个完成的 Turn 追加写入 JSONL，供应商强类型元数据随 Turn 保存，下一次请求按原生协议回传。
 
