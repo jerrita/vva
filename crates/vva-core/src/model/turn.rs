@@ -14,6 +14,19 @@ pub struct TokenUsage {
     pub cached_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u32>,
+    /// Responses input_tokens_details.cache_write_tokens；缺省与 0 分开保留。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens: Option<u32>,
+    /// Responses 官方缓存写入时长明细，不从总量推算。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_tokens_details: Option<CacheWriteTokensDetails>,
+}
+
+/// Responses 缓存写入明细；对象存在时两个官方计数字段均必需。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheWriteTokensDetails {
+    pub ttl_30m_tokens: u32,
+    pub ttl_12h_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

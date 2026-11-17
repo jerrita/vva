@@ -81,6 +81,15 @@ pub struct ResponseSchema {
     pub schema: serde_json::Value,
 }
 
+/// Responses 原生思考摘要选项；不改变 Anthropic / Gemini 请求。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningSummary {
+    Auto,
+    Concise,
+    Detailed,
+}
+
 #[derive(Debug, Clone)]
 pub struct CompletionOptions {
     pub model: String,
@@ -90,6 +99,8 @@ pub struct CompletionOptions {
     /// 是否向 API 声明 web_fetch 服务端工具（模型级 `annotation.web_fetch: false` 时关闭）
     pub enable_web_fetch: bool,
     pub reasoning_effort: Option<String>,
+    /// Responses 摘要可独立于 effort 设置；None 保持原有 effort-only 的 concise 行为。
+    pub reasoning_summary: Option<ReasoningSummary>,
     /// 显式关闭思考，优先于 reasoning_effort；适配器转换为供应商原生参数。
     pub disable_thinking: bool,
     /// Anthropic 服务端 web 工具版本后缀（模型级 `annotation.web_tool_version`；原生与独立搜索共用默认值）
@@ -111,6 +122,7 @@ impl Default for CompletionOptions {
             enable_web_search: true,
             enable_web_fetch: true,
             reasoning_effort: None,
+            reasoning_summary: None,
             disable_thinking: false,
             web_tool_version: None,
             service_tier: None,

@@ -358,6 +358,7 @@ pub(crate) async fn generate_title(
         enable_web_search: false,
         enable_web_fetch: false,
         reasoning_effort: None,
+        reasoning_summary: None,
         disable_thinking: resolved.model_config.reasoning,
         web_tool_version: None,
         service_tier: resolved.model_config.service_tier().map(str::to_string),

@@ -7,7 +7,7 @@ use crate::model::{
 };
 use crate::provider::ProviderType;
 use crate::provider::common::{WebCallSurface, header_value, web_call_surface};
-use crate::provider::{CompletionOptions, Provider, ProviderError};
+use crate::provider::{CompletionOptions, Provider, ProviderError, ReasoningSummary};
 
 /// 领域动作 → Responses API web_search_call.action
 fn web_search_action_json(action: &WebSearchAction, query: &str) -> serde_json::Value {
@@ -328,14 +328,24 @@ impl ResponseProvider {
 
         if options.disable_thinking {
             body["reasoning"] = serde_json::json!({ "effort": "none" });
-        } else if let Some(effort) = &options.reasoning_effort
-            && !effort.is_empty()
-        {
-            // OpenAI 仅在显式请求 summary 时才生成思考摘要，否则 reasoning item 的 summary 恒为空
-            body["reasoning"] = serde_json::json!({
-                "effort": effort,
-                "summary": "concise"
-            });
+        } else {
+            let effort = options
+                .reasoning_effort
+                .as_deref()
+                .filter(|s| !s.is_empty());
+            let summary = options
+                .reasoning_summary
+                .or(effort.map(|_| ReasoningSummary::Concise));
+            let mut reasoning = serde_json::Map::new();
+            if let Some(effort) = effort {
+                reasoning.insert("effort".into(), serde_json::json!(effort));
+            }
+            if let Some(summary) = summary {
+                reasoning.insert("summary".into(), serde_json::json!(summary));
+            }
+            if !reasoning.is_empty() {
+                body["reasoning"] = serde_json::Value::Object(reasoning);
+            }
         }
 
         if let Some(rs) = &options.response_schema {
