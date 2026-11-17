@@ -37,7 +37,7 @@ pub(crate) struct WorkspaceToolDeps {
     pub inputs: crate::provider::InputCapabilities,
     pub background: Option<Arc<background::BackgroundTasks>>,
     pub shell_outputs: Option<Arc<shell_output::ShellOutputs>>,
-    pub env: std::collections::HashMap<String, String>,
+    pub env: shell::ShellEnv,
 }
 
 impl Default for WorkspaceToolDeps {
@@ -47,7 +47,7 @@ impl Default for WorkspaceToolDeps {
             inputs: Default::default(),
             background: None,
             shell_outputs: None,
-            env: std::collections::HashMap::new(),
+            env: Arc::new(|| Ok(std::collections::HashMap::new())),
         }
     }
 }

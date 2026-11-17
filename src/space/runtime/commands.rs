@@ -50,6 +50,27 @@ impl Runtime {
                 self.focus_handle(binding).await?.abort_current().await?;
                 "⏹️ 已请求中止当前轮次。".to_string()
             }
+            Command::Compact(arg) => {
+                if !arg.is_empty() || !msg.files.is_empty() {
+                    return Err("用法：/compact（不接受参数或附件）".into());
+                }
+                let handle = self.focus_handle(binding).await?;
+                let completion = handle.compact(None).await?;
+                self.say(binding, Some(&msg.message_id), "⏳ 正在压缩上下文。")
+                    .await;
+                let this = self.clone();
+                let binding = binding.clone();
+                let reply_to = msg.message_id.clone();
+                tokio::spawn(async move {
+                    let reply = match completion.await {
+                        Ok(_) => "✅ 上下文已压缩，后续请求使用摘要，聊天记录保留。".into(),
+                        Err(error) => format!("⚠️ 压缩失败：{}", markdown::text(&error)),
+                    };
+                    this.say_indexed(&binding, Some(&reply_to), &reply, &handle.id)
+                        .await;
+                });
+                return Ok(());
+            }
             Command::Status => self.status(binding).await?,
             Command::SetHome(arg) | Command::UnsetHome(arg) if !arg.is_empty() => {
                 return Err("用法：/sethome 或 /unsethome，直接在目标聊天中执行，无需参数".into());

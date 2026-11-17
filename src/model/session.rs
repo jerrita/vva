@@ -162,6 +162,32 @@ impl Session {
         self.updated_at = Utc::now();
     }
 
+    /// 模型可见的上下文：初始指令前缀 + 最近摘要 + 压缩后的新轮次。
+    /// 摘要作为新的用户 reminder 回放，不携带压缩前的原生链锚点或签名。
+    pub fn context(&self) -> std::borrow::Cow<'_, Self> {
+        let Some(index) = self.turns.iter().rposition(|turn| turn.compaction) else {
+            return std::borrow::Cow::Borrowed(self);
+        };
+        let prefix = self.turns.iter().take_while(|turn| {
+            turn.role != Role::User || crate::system::is_reminder_text(&turn.text_content())
+        });
+        let mut context = Self {
+            header: self.header.clone(),
+            updated_at: self.updated_at,
+            turns: prefix.cloned().collect(),
+        };
+        let mut summary = Turn::user_turn(super::Message::text(
+            crate::system::format_rollover_summary_reminder(
+                &self.header.id,
+                &self.turns[index].text_content(),
+            ),
+        ));
+        summary.id = self.turns[index].id.clone();
+        context.turns.push(summary);
+        context.turns.extend_from_slice(&self.turns[index + 1..]);
+        std::borrow::Cow::Owned(context)
+    }
+
     /// 提取最近一次成功且可链式调用的 OpenAI response_id
     /// 最近一个携带原生链锚点且亲和组匹配的 Assistant 轮次：
     /// 亲和组不一致（切换模型）时锚点不可复用，调用方回退全量历史重建

@@ -23,6 +23,7 @@ struct TurnView<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     worked_ms: Option<u64>,
     steering: bool,
+    compaction: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     background_task: &'a Option<crate::model::BackgroundTask>,
 }
@@ -37,6 +38,7 @@ impl<'a> From<&'a Turn> for TurnView<'a> {
             elapsed_ms: turn.elapsed_ms,
             worked_ms: turn.worked_ms,
             steering: turn.steering,
+            compaction: turn.compaction,
             background_task: &turn.background_task,
         }
     }

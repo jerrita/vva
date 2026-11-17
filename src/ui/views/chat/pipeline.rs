@@ -17,21 +17,12 @@ pub(crate) fn append_collapsed_response(
     render: &mut ChatRender<'_>,
     turn_id: &str,
     elapsed_ms: u64,
-    background_running: usize,
     state: &mut RenderState,
 ) {
     render.lines.push(Line::from(""));
     let line_start = render.lines.len();
     render.lines.push(Line::from(vec![Span::styled(
-        format!(
-            "> Worked {}{}",
-            worked_duration(elapsed_ms),
-            if background_running > 0 {
-                format!(" · 后台运行 {background_running}")
-            } else {
-                String::new()
-            }
-        ),
+        format!("> Worked {}", worked_duration(elapsed_ms)),
         fg(Color::Rgb(150, 150, 150)),
     )]));
     render.response_hits.push(ResponseHit {
