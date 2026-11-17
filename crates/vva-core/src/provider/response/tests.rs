@@ -1638,3 +1638,137 @@ async fn test_stream_completed_projects_custom_tool_call() {
             if call.kind == ToolCallKind::Custom && call.arguments == "*** Begin Patch\n*** End Patch"
     ));
 }
+
+#[tokio::test]
+async fn cache_write_usage_preserves_absence_zero_and_retention_details() {
+    use serde_json::json;
+
+    let provider = ResponseProvider::new("test-key");
+    for (details, written, retention) in [
+        (json!({"cached_tokens": 2}), None, None),
+        (
+            json!({"cached_tokens": 2, "cache_write_tokens": 0}),
+            Some(0),
+            None,
+        ),
+        (
+            json!({"cached_tokens": 2, "cache_write_tokens": 7}),
+            Some(7),
+            None,
+        ),
+        (
+            json!({"cached_tokens": 2, "cache_write_tokens": 7,
+            "cache_write_tokens_details": {"ttl_30m_tokens": 3, "ttl_12h_tokens": 4}}),
+            Some(7),
+            Some(CacheWriteTokensDetails {
+                ttl_30m_tokens: 3,
+                ttl_12h_tokens: 4,
+            }),
+        ),
+        (
+            json!({"cached_tokens": 2, "cache_write_tokens": 0,
+            "cache_write_tokens_details": {"ttl_30m_tokens": 0, "ttl_12h_tokens": 0}}),
+            Some(0),
+            Some(CacheWriteTokensDetails {
+                ttl_30m_tokens: 0,
+                ttl_12h_tokens: 0,
+            }),
+        ),
+        (
+            json!({"cached_tokens": 2, "cache_write_tokens_details": {"ttl_30m_tokens": 3, "ttl_12h_tokens": 4}}),
+            None,
+            Some(CacheWriteTokensDetails {
+                ttl_30m_tokens: 3,
+                ttl_12h_tokens: 4,
+            }),
+        ),
+    ] {
+        let response = json!({
+            "id": "resp_cache_write", "status": "completed", "output": [],
+            "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11,
+                "input_tokens_details": details, "output_tokens_details": {"reasoning_tokens": 0}}
+        });
+        let parsed = provider.parse_response(response.clone()).unwrap();
+        let usage = parsed.usage.unwrap();
+        assert_eq!(usage.cache_write_tokens, written);
+        assert_eq!(usage.cache_write_tokens_details, retention);
+        assert_eq!(usage.cached_tokens, Some(2));
+        let mut handler = ResponseStreamHandler::new(&provider, None);
+        handler
+            .on_event(json!({"type": "response.completed", "response": response}))
+            .await
+            .unwrap();
+        assert_eq!(handler.completed.unwrap().usage, Some(usage));
+    }
+    for invalid in [
+        json!({"cached_tokens": 2, "cache_write_tokens": "7"}),
+        json!({"cached_tokens": 2, "cache_write_tokens_details": {"ttl_30m_tokens": 3}}),
+    ] {
+        assert!(provider.parse_response(json!({
+            "id": "resp_bad_usage", "status": "completed", "output": [],
+            "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11,
+                "input_tokens_details": invalid, "output_tokens_details": {"reasoning_tokens": 0}}
+        })).is_err());
+    }
+}
+
+#[test]
+fn reasoning_summary_is_independent_of_effort_and_respects_disable() {
+    use crate::provider::ReasoningSummary;
+    use serde_json::json;
+
+    let provider = ResponseProvider::new("test-key");
+    let session = Session::new(".", None);
+    for (effort, summary, disabled, expected) in [
+        (
+            None,
+            Some(ReasoningSummary::Auto),
+            false,
+            Some(json!({"summary": "auto"})),
+        ),
+        (
+            None,
+            Some(ReasoningSummary::Concise),
+            false,
+            Some(json!({"summary": "concise"})),
+        ),
+        (
+            None,
+            Some(ReasoningSummary::Detailed),
+            false,
+            Some(json!({"summary": "detailed"})),
+        ),
+        (
+            Some("high"),
+            None,
+            false,
+            Some(json!({"effort": "high", "summary": "concise"})),
+        ),
+        (
+            Some("high"),
+            Some(ReasoningSummary::Detailed),
+            false,
+            Some(json!({"effort": "high", "summary": "detailed"})),
+        ),
+        (None, None, false, None),
+        (Some(""), None, false, None),
+        (
+            Some("high"),
+            Some(ReasoningSummary::Auto),
+            true,
+            Some(json!({"effort": "none"})),
+        ),
+    ] {
+        let options = CompletionOptions {
+            model: "gpt-5".into(),
+            reasoning_effort: effort.map(str::to_string),
+            reasoning_summary: summary,
+            disable_thinking: disabled,
+            ..Default::default()
+        };
+        let body = provider
+            .build_request_body(&session, &[], &options)
+            .unwrap();
+        assert_eq!(body.get("reasoning"), expected.as_ref());
+    }
+}

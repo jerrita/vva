@@ -171,6 +171,8 @@ mod tests {
             total_tokens: prompt_tokens + completion_tokens,
             cached_tokens,
             reasoning_tokens: None,
+            cache_write_tokens: None,
+            cache_write_tokens_details: None,
         });
         if let Some(anthropic) = anthropic {
             turn.meta = TurnMeta {
@@ -206,6 +208,8 @@ mod tests {
                 total_tokens,
                 cached_tokens: None,
                 reasoning_tokens: None,
+                cache_write_tokens: None,
+                cache_write_tokens_details: None,
             });
             session.turns.push(turn);
         }

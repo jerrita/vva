@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0] - 2026-11-18
+
+- vva-core 升为 0.2.0：公开结构体新增字段，完整字面量构造需补齐；会话格式仍为 JSONL v3。
+- Anthropic 原生搜索/抓取支持从同亲和组历史 TurnMeta 配对 pause_turn 后只含结果的续包；续发预算由宿主控制，不自动续发、不新增 container。
+- Responses 用量保留可选缓存写入总量及 30 分钟/12 小时时长明细，区分缺省与 0，不引入计价。
+- 新增独立 ReasoningSummary（auto / concise / detailed），可只请求摘要；未设置时保持原 effort-only 的 concise 行为，disable_thinking 仍优先。
+
 ## [2.0.0] - 2026-11-17
 
 - 移除根包 core 临时 re-export，收起运行时内部 API；提供 headless 示例和等待资源回收的 close/shutdown。

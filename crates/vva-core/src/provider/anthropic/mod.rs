@@ -15,7 +15,7 @@ use crate::provider::http::{post_json, post_sse};
 use crate::provider::{
     CompletionOptions, Provider, ProviderCapabilities, ProviderError, ProviderResponse,
 };
-use parse::assemble_response;
+use parse::{assemble_response, pending_server_uses};
 use tokio::sync::mpsc;
 
 use stream::AnthropicStreamHandler;
@@ -84,7 +84,8 @@ impl Provider for AnthropicProvider {
             &body,
         )
         .await?;
-        let mut parsed = self.parse_response(response, tools)?;
+        let mut parsed =
+            self.parse_response(response, tools, pending_server_uses(session, options))?;
         parsed.stamp_scope(options.affinity.as_deref());
         Ok(parsed)
     }
@@ -99,7 +100,8 @@ impl Provider for AnthropicProvider {
         let mut body = self.build_request_body(session, tools, options)?;
         body["stream"] = serde_json::json!(true);
 
-        let mut handler = AnthropicStreamHandler::new(event_sender);
+        let server_uses = pending_server_uses(session, options);
+        let mut handler = AnthropicStreamHandler::new(event_sender, server_uses.clone());
         let _ = post_sse(
             &normalize_endpoint(&self.base_url, "messages"),
             self.auth_headers()?,
@@ -109,7 +111,7 @@ impl Provider for AnthropicProvider {
         .await?;
         let (blocks, usage) = handler.finish()?;
 
-        let mut response = assemble_response(blocks, usage, tools)?;
+        let mut response = assemble_response(blocks, usage, tools, server_uses)?;
         response.stamp_scope(options.affinity.as_deref());
         Ok(response)
     }

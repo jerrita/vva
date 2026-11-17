@@ -4,17 +4,45 @@ use super::AnthropicProvider;
 use crate::model::{
     Annotation, AnthropicCitation, AnthropicContentBlock, AnthropicFetchResultContent,
     AnthropicSearchResult, AnthropicSearchResultContent, AnthropicTurnMeta, ContentPart, Message,
-    SearchStatus, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchAction, WebSearchCall,
-    WebSearchSource,
+    Role, SearchStatus, Session, TokenUsage, ToolCall, ToolDefinition, TurnMeta, WebSearchAction,
+    WebSearchCall, WebSearchSource,
 };
 use crate::provider::common::{freeform_call_input, is_freeform_tool, require_str};
-use crate::provider::{ProviderError, ProviderResponse};
+use crate::provider::{CompletionOptions, ProviderError, ProviderResponse};
+
+pub(super) type ServerUses = HashMap<String, (String, serde_json::Value)>;
+
+/// 只关联本次请求会回放的同亲和组原生调用；历史结果已消费的调用不再待配对。
+pub(super) fn pending_server_uses(session: &Session, options: &CompletionOptions) -> ServerUses {
+    let mut pending = ServerUses::new();
+    for turn in &session.turns {
+        if turn.role == Role::Assistant
+            && let Some(meta) = &turn.meta.anthropic
+            && meta.scope.as_deref() == options.affinity.as_deref()
+        {
+            for block in &meta.content_blocks {
+                match block {
+                    AnthropicContentBlock::ServerToolUse { id, name, input } => {
+                        pending.insert(id.clone(), (name.clone(), input.clone()));
+                    }
+                    AnthropicContentBlock::WebSearchToolResult { tool_use_id, .. }
+                    | AnthropicContentBlock::WebFetchToolResult { tool_use_id, .. } => {
+                        pending.remove(tool_use_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    pending
+}
 
 impl AnthropicProvider {
     pub(super) fn parse_response(
         &self,
         json: serde_json::Value,
         tools: &[ToolDefinition],
+        server_uses: ServerUses,
     ) -> Result<ProviderResponse, ProviderError> {
         let dto: AnthropicResponseDto = serde_json::from_value(json).map_err(|e| {
             ProviderError::Protocol(format!("Invalid Anthropic Messages API response: {e}"))
@@ -35,7 +63,7 @@ impl AnthropicProvider {
             },
         };
 
-        assemble_response(dto.content, usage, tools)
+        assemble_response(dto.content, usage, tools, server_uses)
     }
 }
 
@@ -64,10 +92,9 @@ struct AnthropicUsageDto {
 pub(super) fn project_parts(
     blocks: &[AnthropicContentBlock],
     tools: &[ToolDefinition],
+    mut server_uses: ServerUses,
 ) -> Result<Vec<ContentPart>, ProviderError> {
     let mut parts = Vec::new();
-    // 待配对的服务端调用：id -> (name, input)，结果块按 tool_use_id 取回
-    let mut server_uses: HashMap<String, (String, serde_json::Value)> = HashMap::new();
     for block in blocks {
         match block {
             AnthropicContentBlock::Thinking {
@@ -99,12 +126,7 @@ pub(super) fn project_parts(
                 tool_use_id,
                 content,
             } => {
-                let (name, input) = take_server_use(&mut server_uses, tool_use_id)?;
-                if name != "web_search" {
-                    return Err(ProviderError::Protocol(format!(
-                        "web_search_tool_result paired with server_tool_use '{name}'"
-                    )));
-                }
+                let input = take_server_use(&mut server_uses, tool_use_id, "web_search")?;
                 parts.push(ContentPart::WebSearchCall(project_search_call(
                     tool_use_id,
                     &input,
@@ -115,12 +137,7 @@ pub(super) fn project_parts(
                 tool_use_id,
                 content,
             } => {
-                let (name, input) = take_server_use(&mut server_uses, tool_use_id)?;
-                if name != "web_fetch" {
-                    return Err(ProviderError::Protocol(format!(
-                        "web_fetch_tool_result paired with server_tool_use '{name}'"
-                    )));
-                }
+                let input = take_server_use(&mut server_uses, tool_use_id, "web_fetch")?;
                 parts.push(ContentPart::WebSearchCall(project_fetch_call(
                     tool_use_id,
                     &input,
@@ -135,15 +152,22 @@ pub(super) fn project_parts(
 }
 
 /// 取回并移除与结果块配对的 server_tool_use：缺失即报协议错误
-fn take_server_use(
-    server_uses: &mut HashMap<String, (String, serde_json::Value)>,
+pub(super) fn take_server_use(
+    server_uses: &mut ServerUses,
     tool_use_id: &str,
-) -> Result<(String, serde_json::Value), ProviderError> {
-    server_uses.remove(tool_use_id).ok_or_else(|| {
+    expected_name: &str,
+) -> Result<serde_json::Value, ProviderError> {
+    let (name, input) = server_uses.remove(tool_use_id).ok_or_else(|| {
         ProviderError::Protocol(format!(
             "server tool result without preceding server_tool_use '{tool_use_id}'"
         ))
-    })
+    })?;
+    if name != expected_name {
+        return Err(ProviderError::Protocol(format!(
+            "{expected_name}_tool_result paired with server_tool_use '{name}'"
+        )));
+    }
+    Ok(input)
 }
 
 pub(super) fn project_annotation(citation: &AnthropicCitation) -> Annotation {
@@ -227,8 +251,9 @@ pub(super) fn assemble_response(
     blocks: Vec<AnthropicContentBlock>,
     usage: AnthropicUsageSnapshot,
     tools: &[ToolDefinition],
+    server_uses: ServerUses,
 ) -> Result<ProviderResponse, ProviderError> {
-    let parts = project_parts(&blocks, tools)?;
+    let parts = project_parts(&blocks, tools, server_uses)?;
     let AnthropicUsageSnapshot {
         seen,
         input_tokens,
@@ -243,6 +268,8 @@ pub(super) fn assemble_response(
         total_tokens: input_tokens + output_tokens,
         cached_tokens: cache_read_input_tokens,
         reasoning_tokens: None,
+        cache_write_tokens: None,
+        cache_write_tokens_details: None,
     });
     let meta = TurnMeta {
         anthropic: Some(AnthropicTurnMeta {

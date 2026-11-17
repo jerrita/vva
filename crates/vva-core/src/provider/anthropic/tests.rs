@@ -67,7 +67,7 @@ fn test_anthropic_thinking_signature_and_caching_roundtrip() {
     });
 
     let parsed = provider
-        .parse_response(mock_resp, &[])
+        .parse_response(mock_resp, &[], ServerUses::new())
         .expect("parse response");
     let anthropic_meta = parsed.meta.anthropic.as_ref().unwrap();
     assert_eq!(anthropic_meta.cache_creation_input_tokens, Some(1000));
@@ -178,11 +178,11 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
     });
 
     let parsed = provider
-        .parse_response(full.clone(), &[])
+        .parse_response(full.clone(), &[], ServerUses::new())
         .expect("parse full");
 
     // 用等价的流式事件序列驱动同一个组装路径
-    let mut handler = AnthropicStreamHandler::new(None);
+    let mut handler = AnthropicStreamHandler::new(None, ServerUses::new());
     let events = [
         serde_json::json!({
             "type": "message_start",
@@ -236,7 +236,7 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
         handler.on_event(ev).await.expect("handle stream event");
     }
     let (blocks, usage) = handler.finish().expect("finish");
-    let streamed = assemble_response(blocks, usage, &[]).expect("assemble");
+    let streamed = assemble_response(blocks, usage, &[], ServerUses::new()).expect("assemble");
 
     assert_eq!(streamed.messages[0].parts, parsed.messages[0].parts);
     assert_eq!(streamed.usage, parsed.usage);
@@ -245,7 +245,7 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
 
 #[tokio::test]
 async fn test_anthropic_stream_error_event_reports_protocol_error() {
-    let mut handler = AnthropicStreamHandler::new(None);
+    let mut handler = AnthropicStreamHandler::new(None, ServerUses::new());
     let err = handler
         .on_event(serde_json::json!({
             "type": "error",
@@ -261,7 +261,7 @@ async fn test_anthropic_stream_error_event_reports_protocol_error() {
 
 #[tokio::test]
 async fn test_anthropic_stream_unknown_block_type_reports_protocol_error() {
-    let mut handler = AnthropicStreamHandler::new(None);
+    let mut handler = AnthropicStreamHandler::new(None, ServerUses::new());
     let err = handler
         .on_event(serde_json::json!({
             "type": "content_block_start", "index": 0,
@@ -324,7 +324,7 @@ fn test_anthropic_web_search_parse_and_native_echo() {
     });
 
     let parsed = provider
-        .parse_response(mock_resp, &[])
+        .parse_response(mock_resp, &[], ServerUses::new())
         .expect("parse response");
     let parts = &parsed.messages[0].parts;
     assert_eq!(parts.len(), 3);
@@ -466,7 +466,7 @@ fn test_anthropic_web_fetch_parse_and_native_echo() {
     });
 
     let parsed = provider
-        .parse_response(mock_resp.clone(), &[])
+        .parse_response(mock_resp.clone(), &[], ServerUses::new())
         .expect("parse response");
     let parts = &parsed.messages[0].parts;
     assert_eq!(parts.len(), 3);
@@ -535,7 +535,7 @@ fn test_anthropic_search_error_result_marks_failed() {
         "usage": { "input_tokens": 30, "output_tokens": 10 }
     });
     let parsed = provider
-        .parse_response(mock_resp, &[])
+        .parse_response(mock_resp, &[], ServerUses::new())
         .expect("parse response");
     match &parsed.messages[0].parts[0] {
         ContentPart::WebSearchCall(call) => {
@@ -571,7 +571,7 @@ fn test_anthropic_web_search_error_wrapped_in_array() {
 async fn test_anthropic_web_search_streaming_matches_parse() {
     let provider = AnthropicProvider::new("test-key");
     let (tx, mut rx) = mpsc::channel(16);
-    let mut handler = AnthropicStreamHandler::new(Some(tx));
+    let mut handler = AnthropicStreamHandler::new(Some(tx), ServerUses::new());
     let events = [
         serde_json::json!({
             "type": "message_start",
@@ -686,7 +686,7 @@ async fn test_anthropic_web_search_streaming_matches_parse() {
     }
 
     // 流式组装与非流式解析同源：领域投影与原生块链完全一致
-    let streamed = assemble_response(blocks, usage, &[]).expect("assemble");
+    let streamed = assemble_response(blocks, usage, &[], ServerUses::new()).expect("assemble");
     let parsed = provider
         .parse_response(
             serde_json::json!({
@@ -731,6 +731,7 @@ async fn test_anthropic_web_search_streaming_matches_parse() {
                 "usage": { "input_tokens": 60, "output_tokens": 30 }
             }),
             &[],
+            ServerUses::new(),
         )
         .expect("parse full");
     assert_eq!(streamed.messages[0].parts, parsed.messages[0].parts);
@@ -816,7 +817,7 @@ fn test_anthropic_native_blocks_skipped_on_affinity_mismatch() {
         "usage": { "input_tokens": 1, "output_tokens": 1 }
     });
     let parsed = provider
-        .parse_response(mock_resp, &[])
+        .parse_response(mock_resp, &[], ServerUses::new())
         .expect("parse response");
     let mut asst_turn = Turn::assistant_turn(parsed.messages);
     asst_turn.meta = parsed.meta;
@@ -1034,7 +1035,11 @@ fn test_anthropic_freeform_tool_projection() {
         })
     };
     let parsed = provider
-        .parse_response(resp(serde_json::json!({"input": "raw text"})), &tools)
+        .parse_response(
+            resp(serde_json::json!({"input": "raw text"})),
+            &tools,
+            ServerUses::new(),
+        )
         .expect("parse");
     assert_eq!(
         parsed.messages[0].parts,
@@ -1047,7 +1052,138 @@ fn test_anthropic_freeform_tool_projection() {
 
     // 缺 input 显式报错
     let err = provider
-        .parse_response(resp(serde_json::json!({"patch": "x"})), &tools)
+        .parse_response(
+            resp(serde_json::json!({"patch": "x"})),
+            &tools,
+            ServerUses::new(),
+        )
         .unwrap_err();
     assert!(matches!(err, ProviderError::Protocol(_)));
+}
+
+#[tokio::test]
+async fn paused_server_tools_pair_result_only_continuations_from_history() {
+    use serde_json::json;
+
+    let provider = AnthropicProvider::new("test-key");
+    let options = CompletionOptions {
+        model: "claude-sonnet-4-5".into(),
+        affinity: Some("anthropic-test".into()),
+        ..Default::default()
+    };
+    for (name, input, result, query, action) in [
+        (
+            "web_search",
+            json!({"query": "rust release"}),
+            json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_pending", "content": [
+                {"type": "web_search_result", "url": "https://blog.rust-lang.org/",
+                 "title": "Rust Blog", "encrypted_content": "encrypted-result"}
+            ]}),
+            "rust release",
+            WebSearchAction::Search,
+        ),
+        (
+            "web_fetch",
+            json!({"url": "https://blog.rust-lang.org/"}),
+            json!({"type": "web_fetch_tool_result", "tool_use_id": "srvtoolu_pending", "content": {
+                "type": "web_fetch_result", "url": "https://blog.rust-lang.org/",
+                "retrieved_at": "2026-11-18T00:00:00Z", "content": {
+                    "type": "document", "title": "Rust Blog",
+                    "source": {"type": "text", "media_type": "text/plain", "data": "Release notes"}
+                }
+            }}),
+            "",
+            WebSearchAction::OpenPage {
+                url: "https://blog.rust-lang.org/".into(),
+            },
+        ),
+    ] {
+        let mut session = Session::new(".", None);
+        session.append_turn(Turn::user_turn(Message::text(
+            "Read the latest Rust release",
+        )));
+        let paused = provider.parse_response(json!({
+            "id": "msg_paused", "type": "message", "role": "assistant",
+            "content": [{"type": "server_tool_use", "id": "srvtoolu_pending", "name": name, "input": input}],
+            "stop_reason": "pause_turn", "usage": {"input_tokens": 10, "output_tokens": 5}
+        }), &[], ServerUses::new()).unwrap();
+        let mut paused_turn = Turn::assistant_turn(paused.messages);
+        paused_turn.meta = paused.meta;
+        paused_turn.meta.anthropic.as_mut().unwrap().scope = options.affinity.clone();
+        session.append_turn(paused_turn);
+
+        let continuation = json!({
+            "id": "msg_continued", "type": "message", "role": "assistant",
+            "content": [result.clone()], "stop_reason": "end_turn",
+            "usage": {"input_tokens": 20, "output_tokens": 3}
+        });
+        let parsed = provider
+            .parse_response(
+                continuation.clone(),
+                &[],
+                pending_server_uses(&session, &options),
+            )
+            .unwrap();
+        let ContentPart::WebSearchCall(call) = &parsed.messages[0].parts[0] else {
+            panic!("missing server tool projection")
+        };
+        assert_eq!(call.id, "srvtoolu_pending");
+        assert_eq!(call.query, query);
+        assert_eq!(call.action.as_ref(), Some(&action));
+        assert_eq!(call.status, SearchStatus::Completed);
+        if name == "web_search" {
+            assert_eq!(call.sources[0].url, "https://blog.rust-lang.org/");
+        }
+
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut handler =
+            AnthropicStreamHandler::new(Some(tx), pending_server_uses(&session, &options));
+        for event in [
+            json!({"type": "message_start", "message": {"id": "msg_continued", "type": "message", "role": "assistant", "content": [], "model": options.model, "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 20, "output_tokens": 0}}}),
+            json!({"type": "content_block_start", "index": 0, "content_block": result}),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 3}}),
+            json!({"type": "message_stop"}),
+        ] {
+            handler.on_event(event).await.unwrap();
+        }
+        let AgentEvent::WebSearchCall(event_call) = rx.recv().await.unwrap() else {
+            panic!("missing streamed server tool result")
+        };
+        assert_eq!(&event_call, call);
+        let (blocks, usage) = handler.finish().unwrap();
+        let streamed =
+            assemble_response(blocks, usage, &[], pending_server_uses(&session, &options)).unwrap();
+        assert_eq!(streamed.messages, parsed.messages);
+        assert_eq!(streamed.meta, parsed.meta);
+
+        let other_scope = CompletionOptions {
+            affinity: Some("other".into()),
+            ..options.clone()
+        };
+        assert!(
+            provider
+                .parse_response(
+                    continuation.clone(),
+                    &[],
+                    pending_server_uses(&session, &other_scope)
+                )
+                .is_err()
+        );
+        let mut turn = Turn::assistant_turn(parsed.messages);
+        turn.meta = parsed.meta;
+        turn.meta.anthropic.as_mut().unwrap().scope = options.affinity.clone();
+        session.append_turn(turn);
+        assert!(
+            provider
+                .parse_response(continuation, &[], pending_server_uses(&session, &options))
+                .is_err()
+        );
+        let replay = provider
+            .build_request_body(&session, &[], &options)
+            .unwrap();
+        let blocks = replay["messages"][1]["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "server_tool_use");
+        assert_eq!(blocks[1]["tool_use_id"], "srvtoolu_pending");
+    }
 }

@@ -6,10 +6,18 @@ use crate::provider::common::{
 };
 
 use crate::model::{
-    ContentPart, Message, ResponseMessageContent, ResponseOutputItem, ResponseReasoningContent,
-    ResponseReasoningSummary, ResponseTurnMeta, TokenUsage, ToolCall, TurnMeta,
+    CacheWriteTokensDetails, ContentPart, Message, ResponseMessageContent, ResponseOutputItem,
+    ResponseReasoningContent, ResponseReasoningSummary, ResponseTurnMeta, TokenUsage, ToolCall,
+    TurnMeta,
 };
 use crate::provider::{ProviderError, ProviderResponse};
+
+#[derive(serde::Deserialize)]
+struct InputTokensDetails {
+    cached_tokens: u32,
+    cache_write_tokens: Option<u32>,
+    cache_write_tokens_details: Option<CacheWriteTokensDetails>,
+}
 
 impl ResponseProvider {
     /// 解析 Responses API 响应体：先反序列化为强类型 output items，
@@ -154,7 +162,8 @@ impl ResponseProvider {
             let total_tokens = require_u64(u, "total_tokens")? as u32;
 
             let input_details = require_value(u, "input_tokens_details")?;
-            let cached = require_u64(input_details, "cached_tokens")? as u32;
+            let input_details: InputTokensDetails =
+                from_value(input_details, "input_tokens_details")?;
 
             let output_details = require_value(u, "output_tokens_details")?;
             let reasoning = output_details["reasoning_tokens"].as_u64().ok_or_else(|| {
@@ -167,8 +176,10 @@ impl ResponseProvider {
                 prompt_tokens: input_tokens,
                 completion_tokens: output_tokens,
                 total_tokens,
-                cached_tokens: Some(cached),
+                cached_tokens: Some(input_details.cached_tokens),
                 reasoning_tokens: Some(reasoning),
+                cache_write_tokens: input_details.cache_write_tokens,
+                cache_write_tokens_details: input_details.cache_write_tokens_details,
             });
         }
 

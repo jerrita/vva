@@ -27,7 +27,15 @@ pub(crate) mod session {
 #[path = "../tests/support/websocket.rs"]
 pub(crate) mod websocket;
 
-#[cfg(any(feature = "web-tools", feature = "response"))]
+#[cfg(any(
+    feature = "web-tools",
+    all(
+        feature = "response",
+        feature = "jsonl",
+        feature = "shell-tools",
+        feature = "filesystem-tools"
+    )
+))]
 #[path = "../tests/support/http.rs"]
 pub(crate) mod http;
 
