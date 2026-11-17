@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.0.0]
+## [2.0.0] - 2026-11-17
 
 - 移除根包 core 临时 re-export，收起运行时内部 API；提供 headless 示例和等待资源回收的 close/shutdown。
 
