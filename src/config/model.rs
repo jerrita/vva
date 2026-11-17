@@ -1,7 +1,7 @@
-use crate::provider::ProviderType;
-use crate::tools::web::zhipu::ZhipuSearchEngine;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use vva_core::provider::ProviderType;
+use vva_core::tools::web::zhipu::ZhipuSearchEngine;
 
 /// GLM Coding Plan 供应商节点 id；配置中仅填 `api_key` 时按此 id 识别并自动补全。
 pub const GLM_CODING_PLAN_PROVIDER_ID: &str = "glm-coding-plan";
@@ -121,7 +121,7 @@ pub struct GlobalSettings {
     pub small_model: Option<String>,
     /// 模型未声明 `annotation.editor` 时的缺省文件编辑协议；缺省 `patch`
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub editor: Option<crate::model::EditorKind>,
+    pub editor: Option<vva_core::model::EditorKind>,
     /// 外置 web search / fetch 补全配置；模型原生能力缺位时以客户端工具补齐
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<WebSettings>,
@@ -450,7 +450,7 @@ impl ModelConfig {
     }
 
     /// 该模型显式声明的文件编辑协议；未声明时为 `None`
-    pub fn editor(&self) -> Option<crate::model::EditorKind> {
+    pub fn editor(&self) -> Option<vva_core::model::EditorKind> {
         self.annotation.as_ref().and_then(|a| a.editor)
     }
 
@@ -502,7 +502,7 @@ pub struct ModelAnnotation {
     pub affinity: Option<String>,
     /// 文件编辑协议：`hashline`（默认，`[PATH#TAG]` 行号补丁）、`replace`（old_string/new_string）、`patch`（Codex V4A）
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub editor: Option<crate::model::EditorKind>,
+    pub editor: Option<vva_core::model::EditorKind>,
     /// 以 `"service_tier": "fast"` 发起请求（快速档位端点）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<bool>,

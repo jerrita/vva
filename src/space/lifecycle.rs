@@ -11,8 +11,9 @@ use chrono::{DateTime, Utc};
 
 use super::curator::{Curator, CuratorReport, CuratorStatus};
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::model::SessionSummary;
+use crate::app::records::SessionKind;
 use crate::config::AgentSpaceConfig;
-use crate::model::{SessionKind, SessionSummary};
 
 /// 默认扫描周期
 pub const SWEEP_PERIOD: Duration = Duration::from_secs(60);
@@ -199,11 +200,14 @@ impl Lifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::model::Session;
+    use crate::app::records::Origin;
+    use crate::app::store::AppSessionStore as JsonlSessionStore;
     use crate::config::{AppConfig, ModelConfig, ProviderConfig};
-    use crate::model::{Message, Origin, Session, Turn};
     use crate::space::curator::CuratorRunner;
-    use crate::storage::jsonl::JsonlSessionStore;
     use std::path::PathBuf;
+    use vva_core::model::Message;
+    use vva_core::model::Turn;
 
     /// 固定结果的 curator 后端，记录被整理的次数
     struct Stub {

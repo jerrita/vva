@@ -345,8 +345,8 @@ pub(crate) fn input_status_lines(app: &App, width: usize) -> Vec<Line<'static>> 
             .take(6)
         {
             let mode = match input.mode {
-                crate::harness::InputMode::After => "after",
-                crate::harness::InputMode::Steer => "steer",
+                vva_core::harness::InputMode::After => "after",
+                vva_core::harness::InputMode::Steer => "steer",
             };
             let summary = input
                 .prompt

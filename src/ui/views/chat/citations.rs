@@ -54,7 +54,7 @@ pub(super) fn call_covers_url(call: &WebSearchCall, url: &str) -> bool {
 pub(crate) fn push_citations_block(
     render: &mut ChatRender<'_>,
     ctx: &PartContext<'_>,
-    annotations: &[crate::model::Annotation],
+    annotations: &[vva_core::model::Annotation],
     state: &mut RenderState,
 ) {
     let max_width = render.max_width;

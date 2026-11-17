@@ -19,7 +19,7 @@ Cargo workspace 含根应用 `vva`（2.0.0）和 `crates/vva-core`（0.1.0），
 core 的 `response`、`anthropic`、`gemini`、`filesystem-tools`、`shell-tools`、`web-tools`、`jsonl` feature 默认关闭；根应用显式开启全部能力。
 `web-tools` 联动 Anthropic 独立搜索与 Gemini 原生联网实现。关闭实现不裁剪历史元数据，也不更换协议或工具。
 `build.rs`、终端 / 剪贴板、Axum、静态资源和 frontend 仅属于应用；单独构建 core 不执行 npm。
-根库暂时 re-export 已迁移模块。core JSONL v3 只保存通用会话；应用侧 coding 配置与 Space 记录独立存储，见 [storage](storage.md)。Space 通过公开会话 API 工作；应用投影组合快照、应用记录和展示规则。
+应用直接引用 `vva_core`，根包不再转发 core 模块。core JSONL v3 只保存通用会话；应用侧 coding 配置与 Space 记录独立存储，见 [storage](storage.md)。Space 通过公开会话 API 工作；应用投影组合快照、应用记录和展示规则。
 
 ```
 +--------------------------------------------------------------+
@@ -56,3 +56,22 @@ core 的 `response`、`anthropic`、`gemini`、`filesystem-tools`、`shell-tools
 5. 每个完成的 Turn 追加写入 JSONL，供应商强类型元数据随 Turn 保存，下一次请求按原生协议回传。
 
 后续新增供应商的步骤见 [AGENTS.md §4](../AGENTS.md#4-开发指南)。
+
+## 4. 外部消费与生命周期
+
+[`examples/headless.rs`](../crates/vva-core/examples/headless.rs) 演示只使用 core 的会话执行：自定义 `Tool`、`ToolRegistry`、`FixedSetup`、JSONL 存储，投递一次输入并等待包含后台续跑的回执。示例仅开启 `response,jsonl`，不需要 Node、终端、应用配置或 `~/.vva`。使用：
+
+```sh
+cargo build -p vva-core --examples --features response,jsonl
+OPENAI_API_KEY=... OPENAI_MODEL=... VVA_SESSION_DIR=/absolute/path/to/sessions \
+  cargo run -p vva-core --example headless --features response,jsonl -- 'Uppercase hello using the tool.'
+```
+
+凭据、模型和存储目录必须显式提供。示例会联网调用 Responses；编译验收不要求凭据，也不发起请求。
+
+core 的公开入口包括 `harness::{AgentAssembly, SessionSetup, FixedSetup, ExecutionPlan, SessionServices, SessionManager, ManagedSession, SessionView, DeliveryReceipt}`，以及领域模型、Provider / Tool / SessionStore 契约与应用实际使用的适配器和工具装配。Task、Command、内部状态表、SSE 解码和输出采集实现不公开。
+
+- `SessionManager::close(id)` 中止该任务的当前执行，取消交互和投递等待，等待标题任务、后台回执等待任务及后台 monitor 退出，再移出登记表；保留已持久化历史。
+- `SessionManager::shutdown()` 关闭登记入口并清空句柄表，对所有会话执行上述清理；单项失败仍清理其余项，汇总错误返回。关闭后创建或打开新会话明确报错。
+- 中止当前轮次的 `abort_current()` 保留会话任务和后台结果处理，与关闭任务的生命周期不同。后台 Shell monitor 的取消会释放输出管道，并通过 `kill_on_drop` 终止其持有的子进程。
+- core 不注册进程信号、不退出进程；宿主负责调用生命周期 API。应用 facade 转交 shutdown，CLI 单次执行、TUI 退出及 Space 停止时回收其会话。

@@ -174,7 +174,7 @@ pub(crate) enum ModalAction {
     },
     AnswerUser {
         request_id: String,
-        answers: Vec<crate::model::UserAnswer>,
+        answers: Vec<vva_core::model::UserAnswer>,
     },
 }
 

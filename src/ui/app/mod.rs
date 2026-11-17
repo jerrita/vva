@@ -4,11 +4,11 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use crate::app::VvaSessionManager as SessionManager;
+use crate::app::handle::ManagedSession;
+use crate::app::view::SessionView;
 use crate::find::Candidate;
-use crate::harness::ManagedSession;
-use crate::harness::SessionView;
-use crate::skills::Skill;
 use crate::ui::command::{CompletionCandidate, FileCandidate};
+use vva_core::skills::Skill;
 
 pub use super::input::InputBuffer;
 pub use super::modals::*;
@@ -43,7 +43,7 @@ pub struct App {
     pub toast_area: Rect,
     pub input: InputBuffer,
     pub selected_input: Option<String>,
-    pub input_attachments: Vec<crate::model::ContentPart>,
+    pub input_attachments: Vec<vva_core::model::ContentPart>,
     pub scroll_offset: usize,
     pub auto_scroll: bool,
     pub max_scroll: usize,

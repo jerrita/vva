@@ -10,36 +10,41 @@ use tokio::sync::mpsc;
 use super::CompletionOptions;
 use super::ProviderError;
 use crate::event::AgentEvent;
+#[cfg(feature = "response")]
+use crate::model::ImageGenerationCall;
 #[cfg(any(feature = "response", feature = "anthropic"))]
 use crate::model::ToolDefinition;
-use crate::model::{Annotation, ImageGenerationCall, WebSearchCall};
+#[cfg(any(feature = "response", feature = "anthropic"))]
+use crate::model::{Annotation, WebSearchCall};
 #[cfg(any(feature = "anthropic", feature = "gemini"))]
 use crate::model::{ToolCall, ToolCallKind, ToolInput};
 
 /// 增量事件转发器：统一封装 `Option<Sender>` 的转发样板。
 /// 全部走 `send().await` 以保留背压语义（通道满时等待而非丢弃事件）。
 #[derive(Default)]
-pub struct EventForwarder {
+pub(crate) struct EventForwarder {
     tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
 impl EventForwarder {
-    pub fn new(tx: Option<mpsc::Sender<AgentEvent>>) -> Self {
+    pub(crate) fn new(tx: Option<mpsc::Sender<AgentEvent>>) -> Self {
         Self { tx }
     }
 
     /// 有订阅者时按背压语义转发（通道关闭视为无订阅者，忽略）
-    pub async fn send(&self, event: AgentEvent) {
+    pub(crate) async fn send(&self, event: AgentEvent) {
         if let Some(tx) = &self.tx {
             let _ = tx.send(event).await;
         }
     }
 
-    pub async fn thought(&self, delta: &str) {
+    #[cfg(any(feature = "response", feature = "anthropic"))]
+    pub(crate) async fn thought(&self, delta: &str) {
         self.send(AgentEvent::Thought(delta.to_string())).await;
     }
 
-    pub async fn text(&self, text_id: &str, delta: &str) {
+    #[cfg(any(feature = "response", feature = "anthropic"))]
+    pub(crate) async fn text(&self, text_id: &str, delta: &str) {
         self.send(AgentEvent::Text {
             text_id: text_id.to_string(),
             delta: delta.to_string(),
@@ -47,7 +52,8 @@ impl EventForwarder {
         .await;
     }
 
-    pub async fn citation(&self, text_id: &str, annotation: Annotation) {
+    #[cfg(any(feature = "response", feature = "anthropic"))]
+    pub(crate) async fn citation(&self, text_id: &str, annotation: Annotation) {
         self.send(AgentEvent::Citation {
             text_id: text_id.to_string(),
             annotation,
@@ -55,21 +61,20 @@ impl EventForwarder {
         .await;
     }
 
-    pub async fn web_search_call(&self, call: WebSearchCall) {
+    #[cfg(any(feature = "response", feature = "anthropic"))]
+    pub(crate) async fn web_search_call(&self, call: WebSearchCall) {
         self.send(AgentEvent::WebSearchCall(call)).await;
     }
 
-    pub async fn image_generation_call(&self, call: ImageGenerationCall) {
+    #[cfg(feature = "response")]
+    pub(crate) async fn image_generation_call(&self, call: ImageGenerationCall) {
         self.send(AgentEvent::ImageGenerationCall(call)).await;
-    }
-
-    pub async fn notice(&self, text: impl Into<String>) {
-        self.send(AgentEvent::Notice(text.into())).await;
     }
 }
 
 /// 规范化请求端点：base_url 无论是否携带 `/{suffix}` 后缀，均收敛到唯一端点
-pub fn normalize_endpoint(base_url: &str, suffix: &str) -> String {
+#[cfg(any(feature = "response", feature = "anthropic"))]
+pub(crate) fn normalize_endpoint(base_url: &str, suffix: &str) -> String {
     let base = base_url.trim_end_matches('/');
     let base = base.strip_suffix(&format!("/{suffix}")).unwrap_or(base);
     format!("{base}/{suffix}")
@@ -81,28 +86,34 @@ pub fn header_value(value: &str) -> Result<HeaderValue, ProviderError> {
 }
 
 /// 严格读取必填 u64 字段：缺失或类型不符直接报协议错误
-pub fn require_u64(json: &serde_json::Value, field: &str) -> Result<u64, ProviderError> {
+#[cfg(any(feature = "response", feature = "anthropic"))]
+pub(crate) fn require_u64(json: &serde_json::Value, field: &str) -> Result<u64, ProviderError> {
     json[field]
         .as_u64()
         .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
 }
 
 /// 严格读取必填字符串字段：缺失或类型不符直接报协议错误
-pub fn require_str<'a>(json: &'a serde_json::Value, field: &str) -> Result<&'a str, ProviderError> {
+pub(crate) fn require_str<'a>(
+    json: &'a serde_json::Value,
+    field: &str,
+) -> Result<&'a str, ProviderError> {
     json[field]
         .as_str()
         .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
 }
 
 /// 严格读取必填布尔字段：缺失或类型不符直接报协议错误
-pub fn require_bool(json: &serde_json::Value, field: &str) -> Result<bool, ProviderError> {
+#[cfg(feature = "response")]
+pub(crate) fn require_bool(json: &serde_json::Value, field: &str) -> Result<bool, ProviderError> {
     json[field]
         .as_bool()
         .ok_or_else(|| ProviderError::Protocol(format!("Missing '{field}'")))
 }
 
 /// 严格读取必填子结构（对象 / 数组等）：缺失即报协议错误
-pub fn require_value<'a>(
+#[cfg(any(feature = "response", feature = "anthropic"))]
+pub(crate) fn require_value<'a>(
     json: &'a serde_json::Value,
     field: &str,
 ) -> Result<&'a serde_json::Value, ProviderError> {
@@ -113,7 +124,8 @@ pub fn require_value<'a>(
 }
 
 /// 严格读取必填数组字段：缺失或类型不符直接报协议错误
-pub fn require_array<'a>(
+#[cfg(feature = "response")]
+pub(crate) fn require_array<'a>(
     json: &'a serde_json::Value,
     field: &str,
 ) -> Result<&'a Vec<serde_json::Value>, ProviderError> {
@@ -124,7 +136,8 @@ pub fn require_array<'a>(
 
 /// 强类型反序列化协议子结构：失败即报协议错误（含结构名与 serde 原因），
 /// 统一各适配器重复的 `from_value(..).map_err(..)` 样板
-pub fn from_value<T: serde::de::DeserializeOwned>(
+#[cfg(any(feature = "response", feature = "anthropic"))]
+pub(crate) fn from_value<T: serde::de::DeserializeOwned>(
     json: &serde_json::Value,
     what: &str,
 ) -> Result<T, ProviderError> {
@@ -134,13 +147,15 @@ pub fn from_value<T: serde::de::DeserializeOwned>(
 /// 相邻同角色消息合并器。
 /// Anthropic（user/assistant 严格交替）与 Gemini（user/model 角色）都要求
 /// 将连续的同角色内容块聚合进同一条消息，仅 `content` / `parts` 字段名不同。
-pub struct RoleBlockMerger {
+#[cfg(any(feature = "anthropic", feature = "gemini"))]
+pub(crate) struct RoleBlockMerger {
     blocks_key: &'static str,
     messages: Vec<serde_json::Value>,
 }
 
+#[cfg(any(feature = "anthropic", feature = "gemini"))]
 impl RoleBlockMerger {
-    pub fn new(blocks_key: &'static str) -> Self {
+    pub(crate) fn new(blocks_key: &'static str) -> Self {
         Self {
             blocks_key,
             messages: Vec::new(),
@@ -148,7 +163,7 @@ impl RoleBlockMerger {
     }
 
     /// 追加一组内容块：与上一条消息同角色时合并进去，空块直接丢弃
-    pub fn push(&mut self, role: &str, blocks: Vec<serde_json::Value>) {
+    pub(crate) fn push(&mut self, role: &str, blocks: Vec<serde_json::Value>) {
         if blocks.is_empty() {
             return;
         }
@@ -165,7 +180,7 @@ impl RoleBlockMerger {
         }));
     }
 
-    pub fn into_messages(self) -> Vec<serde_json::Value> {
+    pub(crate) fn into_messages(self) -> Vec<serde_json::Value> {
         self.messages
     }
 }
