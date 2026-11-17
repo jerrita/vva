@@ -4,7 +4,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::model::{ToolCall, UserAnswer, UserQuestion, UserQuestionOption, UserQuestionRequest};
 
-pub(crate) struct AskUserRequest {
+pub struct AskUserRequest {
     pub prompt: UserQuestionRequest,
     pub response: oneshot::Sender<Result<String, String>>,
 }
@@ -14,7 +14,7 @@ pub struct AskUserTool {
 }
 
 impl AskUserTool {
-    pub(crate) fn new(requests: mpsc::Sender<AskUserRequest>) -> Self {
+    pub fn new(requests: mpsc::Sender<AskUserRequest>) -> Self {
         Self { requests }
     }
 

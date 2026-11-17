@@ -5,8 +5,9 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
+use vva::app::VvaSessionManager as SessionManager;
 use vva::config::{AppConfig, home_dir, load_config};
-use vva::harness::{AgentEvent, SessionManager};
+use vva::harness::AgentEvent;
 use vva::model::{Annotation, ContentPart, Session, WebSearchAction, WebSearchCall};
 use vva::storage::SessionStore;
 use vva::storage::jsonl::JsonlSessionStore;

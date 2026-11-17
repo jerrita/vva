@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::Runtime;
+use crate::app::VvaSessionManager as SessionManager;
 use crate::config::AgentSpaceConfig;
-use crate::harness::SessionManager;
 
 pub(super) const MODE_MODEL_FILE: &str = "model.json";
 

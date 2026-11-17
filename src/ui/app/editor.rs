@@ -18,7 +18,7 @@ impl App {
     }
 
     pub fn at_token_at_cursor(&self) -> Option<(usize, String)> {
-        crate::harness::mention::mention_at_cursor(&self.input.text, self.input.cursor_pos)
+        crate::app::mention::mention_at_cursor(&self.input.text, self.input.cursor_pos)
     }
 
     pub fn insert_char(&mut self, c: char) {

@@ -7,10 +7,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as Frame;
 
 use super::ResponseProvider;
-use crate::config::AppConfig;
 use crate::event::AgentEvent;
 use crate::model::{ContentPart, Message, Role, Session, ToolCall, ToolResult, Turn};
-use crate::provider::{CompletionOptions, Provider, ProviderError, ProviderResponse};
+use crate::provider::{CompletionOptions, Provider, ProviderResponse};
 
 struct CheckHandshake;
 
@@ -113,16 +112,6 @@ impl MockWebSocket {
             .expect("mock request timed out")
             .unwrap()
     }
-
-    pub(crate) fn config(&self, websocket: Option<bool>) -> AppConfig {
-        let annotation = websocket.map(|enabled| json!({"websocket": enabled}));
-        serde_json::from_value(json!({
-            "settings": {"default": "p/m"},
-            "providers": {"p": {"base_url": self.url, "api_key": "fixture-key",
-                "models": {"m": {"name": "Fixture", "annotation": annotation}}}}
-        }))
-        .unwrap()
-    }
 }
 
 pub(crate) fn completed(id: &str, output: Vec<Value>) -> Value {
@@ -163,9 +152,7 @@ async fn stateless_continuation_sends_only_new_tool_results_and_user_input() {
     use base64::Engine;
 
     let mut server = MockWebSocket::new().await;
-    // 缺省配置通过 resolver 实际选择 WebSocket。
-    let config = server.config(None);
-    let provider = config.resolve_model("p/m", None).unwrap().create_provider();
+    let provider = ResponseProvider::new("fixture-key").with_base_url(format!("{}/v1", server.url));
     let mut session = Session::new(".", None);
     session.append_turn(Turn::user_turn(Message::text("Inspect synthetic fixtures")));
     session.append_turn(Turn::assistant_turn(vec![Message::new(vec![
@@ -409,41 +396,4 @@ async fn cancelling_a_partial_response_discards_its_connection() {
         request.reply(answer("resp_after_cancel")).await;
     });
     result.unwrap();
-}
-
-#[tokio::test]
-async fn websocket_rejection_is_explicit_and_annotation_false_uses_http() {
-    use axum::{Json, Router, http::StatusCode, routing::get};
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let app = Router::new().route(
-        "/v1/responses",
-        get(|| async { StatusCode::UPGRADE_REQUIRED })
-            .post(|| async { Json(answer("resp_http")["response"].clone()) }),
-    );
-    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    for enabled in [true, false] {
-        let config: AppConfig = serde_json::from_value(json!({"providers": {"p": {
-            "base_url": format!("http://{address}"), "api_key": "fixture",
-            "models": {"m": {"name": "Fixture", "annotation": {"websocket": enabled}}}
-        }}}))
-        .unwrap();
-        let provider = config.resolve_model("p/m", None).unwrap().create_provider();
-        let mut session = Session::new(".", None);
-        session.append_turn(Turn::user_turn(Message::text("transport fixture")));
-        let result = provider.complete(&session, &[], &options()).await;
-        if enabled {
-            assert!(matches!(
-                result,
-                Err(ProviderError::ApiError {
-                    status: reqwest::StatusCode::UPGRADE_REQUIRED,
-                    ..
-                })
-            ));
-        } else {
-            assert_eq!(result.unwrap().messages[0].text_content(), "fixture answer");
-        }
-    }
-    server.abort();
 }

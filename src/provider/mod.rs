@@ -1,3 +1,5 @@
+mod input;
+pub use input::{InputCapabilities, ProviderType};
 pub mod anthropic;
 pub mod common;
 pub mod gemini;

@@ -26,14 +26,21 @@ const DEFAULT_WEB_TOOL_VERSION: &str = "20260318";
 pub struct AnthropicProvider {
     api_key: String,
     base_url: String,
+    headers: reqwest::header::HeaderMap,
 }
 
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
             api_key: api_key.into(),
+            headers: reqwest::header::HeaderMap::new(),
             base_url: "https://api.anthropic.com/v1".into(),
         }
+    }
+
+    pub fn with_headers(mut self, headers: reqwest::header::HeaderMap) -> Self {
+        self.headers = headers;
+        self
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
@@ -42,7 +49,7 @@ impl AnthropicProvider {
     }
 
     fn auth_headers(&self) -> Result<HeaderMap, ProviderError> {
-        let mut headers = HeaderMap::new();
+        let mut headers = self.headers.clone();
         headers.insert("x-api-key", header_value(&self.api_key)?);
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

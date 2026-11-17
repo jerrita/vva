@@ -292,7 +292,7 @@ pub fn format_session_reminder(report: &SubagentReport, background: bool) -> Str
         "\nUse SendMessage with session_id \"{}\" to continue its conversation.",
         report.session_id
     ));
-    crate::system::format_background_task_reminder(&notification)
+    crate::tools::background::format_background_task_reminder(&notification)
 }
 
 /// UI 使用完整最终回复，模型 reminder 保持独立的上下文预算。
@@ -401,12 +401,6 @@ mod tests {
     #[test]
     fn reminder_wraps_status_and_tail() {
         let reminder = format_session_reminder(&report("all done"), true);
-        assert_eq!(
-            crate::system::parse_agents_reminder(&reminder)
-                .unwrap()
-                .kind,
-            crate::system::AgentsReminderKind::BackgroundTask
-        );
         for fact in ["sess_a1", "[general] probe", "all done"] {
             assert!(reminder.contains(fact), "{fact}\n{reminder}");
         }

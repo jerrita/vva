@@ -49,7 +49,7 @@ async fn rest_sends_native_engines_and_limits_results() {
         ),
         (ZhipuSearchEngine::SearchProQuark, "search_pro_quark", None),
     ] {
-        let provider = ZhipuSearchProvider::new("test-key".into(), engine);
+        let provider = ZhipuSearchProvider::new("test-key".into(), engine, client_info());
         let results = provider
             .rest_search(&format!("{base}/search"), "example", 3)
             .await
@@ -64,7 +64,11 @@ async fn rest_sends_native_engines_and_limits_results() {
         assert_eq!(results[0].url, "https://example.com/guide");
         assert_eq!(results[1].snippet, "Reference content");
     }
-    let provider = ZhipuSearchProvider::new("test-key".into(), ZhipuSearchEngine::SearchStd);
+    let provider = ZhipuSearchProvider::new(
+        "test-key".into(),
+        ZhipuSearchEngine::SearchStd,
+        client_info(),
+    );
     assert_eq!(
         provider
             .rest_search(&format!("{base}/search"), "example", 1)
@@ -93,7 +97,11 @@ async fn rest_reports_http_api_and_malformed_responses() {
             post(|| async { Json(json!({"search_result":[]})) }),
         );
     let (base, server) = serve(app).await;
-    let provider = ZhipuSearchProvider::new("test-key".into(), ZhipuSearchEngine::SearchStd);
+    let provider = ZhipuSearchProvider::new(
+        "test-key".into(),
+        ZhipuSearchEngine::SearchStd,
+        client_info(),
+    );
     for (path, expected) in [
         ("http", "429"),
         ("api", "1302"),
@@ -212,7 +220,7 @@ async fn mcp_negotiates_json_and_sse_discovers_tools_and_cleans_up() {
         .await;
         let results = tokio::time::timeout(
             Duration::from_secs(3),
-            mcp::search(&endpoint, "test-key", "example", 1),
+            mcp::search(&endpoint, "test-key", "example", 1, &client_info()),
         )
         .await
         .unwrap()
@@ -238,7 +246,7 @@ async fn mcp_errors_and_cancellation_terminate_session() {
             ..Default::default()
         })
         .await;
-        let error = mcp::search(&endpoint, "test-key", "example", 1)
+        let error = mcp::search(&endpoint, "test-key", "example", 1, &client_info())
             .await
             .unwrap_err();
         assert!(error.contains(expected), "{error}");
@@ -252,7 +260,9 @@ async fn mcp_errors_and_cancellation_terminate_session() {
         ..Default::default()
     })
     .await;
-    let task = tokio::spawn(async move { mcp::search(&endpoint, "test-key", "example", 1).await });
+    let task = tokio::spawn(async move {
+        mcp::search(&endpoint, "test-key", "example", 1, &client_info()).await
+    });
     tokio::time::timeout(Duration::from_secs(3), async {
         while rx.recv().await.unwrap()["method"] != "tools/call" {}
     })
@@ -262,4 +272,11 @@ async fn mcp_errors_and_cancellation_terminate_session() {
     assert!(task.await.unwrap_err().is_cancelled());
     await_cleanup(&mut rx).await;
     server.abort();
+}
+
+fn client_info() -> ClientInfo {
+    ClientInfo {
+        name: "test".into(),
+        version: "1".into(),
+    }
 }

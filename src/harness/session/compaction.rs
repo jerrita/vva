@@ -27,7 +27,7 @@ impl SessionTask {
     /// 在独立请求副本上生成摘要，成功后一次落盘，失败或取消保留原上下文。
     pub(super) async fn compact(
         &mut self,
-        engine: AgentEngine,
+        engine: ExecutionPlan,
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<TurnOutcome, String> {
         let mut context = self.view.session.context().into_owned();

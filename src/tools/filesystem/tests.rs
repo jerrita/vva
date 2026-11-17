@@ -7,8 +7,8 @@ use super::grep::*;
 use super::read::*;
 use super::write::*;
 use super::*;
-use crate::config::resolver::InputCapabilities;
 use crate::model::{MediaKind, ToolCall};
+use crate::provider::InputCapabilities;
 
 #[test]
 fn read_paginates_whole_lines_and_long_utf8_lines() {
@@ -104,7 +104,7 @@ async fn read_binary_is_gated_and_persists_bytes() {
             inputs: InputCapabilities {
                 model: "test/vision".into(),
                 modalities: vec!["image".into()],
-                protocol: crate::config::ProviderType::Response,
+                protocol: crate::provider::ProviderType::Response,
             },
             ..Default::default()
         },

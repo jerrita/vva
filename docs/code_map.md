@@ -7,6 +7,11 @@ src/
 ├── lib.rs / main.rs        # 模块导出 / CLI 入口 (vva run, session list|inspect, web, agent, version, update)
 ├── event.rs                # AgentEvent 统一事件流 (Provider 流式增量 + Harness 工具/Notice/Aborted)
 ├── find.rs                 # 工作区遍历与模糊匹配 (walk_workspace / fuzzy_match；TUI @ 补全与 Web go-to-file 共用)
+├── app/                    # 应用会话 facade 与装配策略
+│   ├── session.rs          # VvaSessionManager：模型偏好、配置重载、会话创建与子代理装配
+│   ├── setup.rs            # VvaSessionSetup：工具选择、coding 上下文与能力通知
+│   ├── mention.rs          # @ 文件引用解析与展开
+│   └── web.rs              # 外置联网模型与凭据解析
 ├── system.rs               # 系统环境采集与系统提示组装 (日期 / OS / arch / workspace / scratch)
 ├── discover.rs             # agents 与 skills 共用的目录优先级与 name 校验
 ├── prompts/system.md       # 系统提示模板
@@ -27,6 +32,7 @@ src/
 │   └── background.rs       # 后台任务快照与状态
 ├── storage/                # SessionStore trait；jsonl.rs 为追加写实现
 ├── provider/               # 供应商适配 (Provider trait、capabilities、共享 HTTP Client)
+│   ├── input.rs            # ProviderType / InputCapabilities 执行类型与媒体校验
 │   ├── common.rs           # EventForwarder / require_* / RoleBlockMerger / normalize_endpoint
 │   ├── http.rs             # post_json / post_sse (SseEventHandler)
 │   ├── sse.rs              # SSE 解码器
@@ -49,8 +55,7 @@ src/
 ├── agents/mod.rs           # Subagent 定义：AgentDef 解析与 discover_agents (内置 general / explore)
 ├── skills/mod.rs           # Agent Skills：SkillFrontmatter 解析与 discover_skills
 ├── harness/                # 调度引擎
-│   ├── agent.rs            # AgentEngine 组装与 capability_notices 能力协商
-│   ├── mention.rs          # @ 文件引用解析与展开
+│   ├── assembly.rs         # AgentAssembly / SessionSetup / ExecutionPlan / FixedSetup
 │   ├── testing.rs          # (cfg(test)) StubBroker
 │   └── session/            # SessionManager 句柄表 · SessionTask 执行任务 · ManagedSession 句柄/Command · SessionView 快照
 ├── space/                  # 常驻 IM agent (设计见 docs/agent.md)

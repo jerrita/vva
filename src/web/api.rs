@@ -1043,7 +1043,7 @@ pub async fn stream_events(session: Session) -> Sse<impl Stream<Item = Result<Ev
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::SessionManager;
+    use crate::app::VvaSessionManager as SessionManager;
     use tempfile::TempDir;
 
     #[tokio::test]

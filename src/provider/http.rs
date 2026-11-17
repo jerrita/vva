@@ -31,32 +31,12 @@ impl std::fmt::Display for SseTermination {
     }
 }
 
-/// OpenRouter 应用归属（https://openrouter.ai/docs/app-attribution）：
-/// 仅对 openrouter.ai 端点附加，不向其他供应商泄露
-pub(super) fn add_app_attribution(url: &str, headers: &mut HeaderMap) {
-    let is_openrouter = reqwest::Url::parse(url).is_ok_and(|url| {
-        url.host_str()
-            .is_some_and(|host| host == "openrouter.ai" || host.ends_with(".openrouter.ai"))
-    });
-    if !is_openrouter {
-        return;
-    }
-    for (name, value) in [
-        ("http-referer", "https://github.com/jerrita/vva"),
-        ("x-openrouter-title", "vva"),
-        ("x-openrouter-categories", "cli-agent"),
-    ] {
-        headers.insert(name, reqwest::header::HeaderValue::from_static(value));
-    }
-}
-
 /// 发送 JSON POST（非 2xx 返回 ApiError）
 async fn send_json(
     url: &str,
-    mut headers: HeaderMap,
+    headers: HeaderMap,
     body: &serde_json::Value,
 ) -> Result<reqwest::Response, ProviderError> {
-    add_app_attribution(url, &mut headers);
     let res = super::shared_client()
         .post(url)
         .headers(headers)
@@ -137,20 +117,4 @@ async fn dispatch_event<H: SseEventHandler>(
     let json = serde_json::from_str::<serde_json::Value>(data)
         .map_err(|e| ProviderError::Protocol(format!("Invalid JSON in SSE event data: {e}")))?;
     handler.on_event(json).await
-}
-
-#[cfg(test)]
-mod attribution_tests {
-    use super::*;
-
-    #[test]
-    fn attribution_only_for_openrouter() {
-        let mut h = HeaderMap::new();
-        add_app_attribution("https://openrouter.ai/api/v1/responses", &mut h);
-        assert_eq!(h["x-openrouter-title"], "vva");
-        assert!(h.contains_key("http-referer"));
-        let mut h = HeaderMap::new();
-        add_app_attribution("https://api.openai.com/v1/responses", &mut h);
-        assert!(h.is_empty());
-    }
 }
