@@ -35,7 +35,7 @@ pub use tool::{
     MediaContent, MediaKind, ToolCall, ToolCallKind, ToolDefinition, ToolInput, ToolResult,
     UserAnswer, UserQuestion, UserQuestionOption, UserQuestionRequest,
 };
-pub use turn::{TokenUsage, Turn};
+pub use turn::{CacheWriteTokensDetails, TokenUsage, Turn};
 
 #[cfg(test)]
 mod tests {

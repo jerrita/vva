@@ -331,5 +331,7 @@ fn parse_usage_metadata(um: &serde_json::Value) -> Result<TokenUsage, ProviderEr
         total_tokens: usage.total_token_count,
         cached_tokens: usage.cached_content_token_count,
         reasoning_tokens: usage.thoughts_token_count,
+        cache_write_tokens: None,
+        cache_write_tokens_details: None,
     })
 }

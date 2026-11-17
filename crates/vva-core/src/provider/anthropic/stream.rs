@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 
 use super::parse::{
-    AnthropicUsageSnapshot, project_annotation, project_fetch_call, project_search_call,
+    AnthropicUsageSnapshot, ServerUses, project_annotation, project_fetch_call,
+    project_search_call, take_server_use,
 };
 use crate::event::AgentEvent;
 use crate::model::{
@@ -19,6 +20,7 @@ use crate::provider::http::SseEventHandler;
 #[derive(Default)]
 pub(super) struct AnthropicStreamHandler {
     blocks: Vec<AnthropicContentBlock>,
+    server_uses: ServerUses,
     /// tool_use / server_tool_use 的增量输入 JSON：官方规范以 input_json_delta 流式下发，
     /// 完整 JSON 由 finish 统一解析回填；server tool 结果块到达时提前解析配对
     partial_inputs: HashMap<usize, String>,
@@ -27,9 +29,10 @@ pub(super) struct AnthropicStreamHandler {
 }
 
 impl AnthropicStreamHandler {
-    pub(super) fn new(sender: Option<mpsc::Sender<AgentEvent>>) -> Self {
+    pub(super) fn new(sender: Option<mpsc::Sender<AgentEvent>>, server_uses: ServerUses) -> Self {
         Self {
             forwarder: EventForwarder::new(sender),
+            server_uses,
             ..Default::default()
         }
     }
@@ -45,33 +48,34 @@ impl AnthropicStreamHandler {
     }
 
     /// 解析指定服务端调用的完整 input（结果块到达时输入流已结束），并回填至原生块
-    fn server_use_input(&mut self, tool_use_id: &str) -> Result<serde_json::Value, ProviderError> {
-        let idx = self
-            .blocks
-            .iter()
-            .position(
-                |b| matches!(b, AnthropicContentBlock::ServerToolUse { id, .. } if id == tool_use_id),
-            )
-            .ok_or_else(|| {
-                ProviderError::Protocol(format!(
-                    "server tool result without preceding server_tool_use '{tool_use_id}'"
-                ))
-            })?;
-        let partial = self.partial_inputs.remove(&idx).unwrap_or_default();
-        let input: serde_json::Value = if partial.is_empty() {
-            serde_json::json!({})
-        } else {
-            serde_json::from_str(&partial).map_err(|e| {
-                ProviderError::Protocol(format!("Invalid server tool input JSON: {e}"))
-            })?
-        };
-        if let AnthropicContentBlock::ServerToolUse {
-            input: block_input, ..
-        } = &mut self.blocks[idx]
-        {
-            *block_input = input.clone();
+    fn server_use_input(
+        &mut self,
+        tool_use_id: &str,
+        expected_name: &str,
+    ) -> Result<serde_json::Value, ProviderError> {
+        if let Some(idx) = self.blocks.iter().position(
+            |b| matches!(b, AnthropicContentBlock::ServerToolUse { id, .. } if id == tool_use_id),
+        ) {
+            let partial = self.partial_inputs.remove(&idx).unwrap_or_default();
+            let input = if partial.is_empty() {
+                serde_json::json!({})
+            } else {
+                serde_json::from_str(&partial).map_err(|e| {
+                    ProviderError::Protocol(format!("Invalid server tool input JSON: {e}"))
+                })?
+            };
+            if let AnthropicContentBlock::ServerToolUse {
+                name,
+                input: block_input,
+                ..
+            } = &mut self.blocks[idx]
+            {
+                *block_input = input.clone();
+                self.server_uses
+                    .insert(tool_use_id.to_string(), (name.clone(), input));
+            }
         }
-        Ok(input)
+        take_server_use(&mut self.server_uses, tool_use_id, expected_name)
     }
 
     /// 流结束：将累积的增量输入解析回填，产出原生块链
@@ -144,7 +148,7 @@ impl SseEventHandler for AnthropicStreamHandler {
                         if block_type == "web_search_tool_result" {
                             let content: AnthropicSearchResultContent =
                                 from_value(raw_content, "web_search_tool_result content")?;
-                            let input = self.server_use_input(&tool_use_id)?;
+                            let input = self.server_use_input(&tool_use_id, "web_search")?;
                             let call = project_search_call(&tool_use_id, &input, &content)?;
                             self.forwarder.web_search_call(call).await;
                             AnthropicContentBlock::WebSearchToolResult {
@@ -154,7 +158,7 @@ impl SseEventHandler for AnthropicStreamHandler {
                         } else {
                             let content: AnthropicFetchResultContent =
                                 from_value(raw_content, "web_fetch_tool_result content")?;
-                            let input = self.server_use_input(&tool_use_id)?;
+                            let input = self.server_use_input(&tool_use_id, "web_fetch")?;
                             let call = project_fetch_call(&tool_use_id, &input, &content)?;
                             self.forwarder.web_search_call(call).await;
                             AnthropicContentBlock::WebFetchToolResult {
