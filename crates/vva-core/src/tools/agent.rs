@@ -21,7 +21,6 @@ pub struct SubagentContext {
     pub workspace_root: PathBuf,
     pub current_model: String,
     pub current_variant: Option<String>,
-    pub web_search: bool,
     pub depth: u8,
 }
 
@@ -32,7 +31,6 @@ impl SubagentContext {
             workspace_root: session.header.workspace_root.clone(),
             current_model: session.header.current_model.clone(),
             current_variant: session.header.current_variant.clone(),
-            web_search: session.header.web_search,
             depth: session.header.depth,
         }
     }
@@ -370,7 +368,6 @@ mod tests {
                 workspace_root: PathBuf::from("."),
                 current_model: "p/m".into(),
                 current_variant: None,
-                web_search: false,
                 depth: 0,
             },
         )

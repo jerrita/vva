@@ -80,7 +80,7 @@ impl SessionManager {
         self.sessions.lock().await.get(id).cloned()
     }
 
-    /// 句柄表读取：内存未命中时从存储加载（不回写运行时偏好，供 broker 与 agent space 使用）
+    /// 句柄表读取：内存未命中时从存储加载（由宿主明确提供装配）
     pub async fn open(
         self: &Arc<Self>,
         id: &str,
@@ -124,53 +124,38 @@ impl SessionManager {
     pub async fn delete_session(&self, handle: &Arc<ManagedSession>) -> Result<(), String> {
         handle.delete().await?;
         self.sessions.lock().await.remove(&handle.id);
-        self.delete_child_sessions(&handle.id).await;
+        self.delete_child_sessions(&handle.id).await?;
         Ok(())
     }
 
     /// 级联删除 parent 会话的全部 subagent 子会话（派生链递归）：
     /// 活跃句柄经 Stop{delete} 停任务并删盘，冷会话直接删存储记录
-    async fn delete_child_sessions(&self, parent_id: &str) {
-        let children: Vec<String> = match self.store.list_sessions().await {
-            Ok(sessions) => sessions
-                .into_iter()
-                .filter(|session| session.parent.as_deref() == Some(parent_id))
-                .map(|session| session.id)
-                .collect(),
-            Err(error) => {
-                tracing::warn!("Child sessions of {parent_id} unavailable: {error}");
-                Vec::new()
-            }
-        };
+    async fn delete_child_sessions(&self, parent_id: &str) -> Result<(), String> {
+        let children: Vec<String> = self
+            .store
+            .list_sessions()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|session| session.parent.as_deref() == Some(parent_id))
+            .map(|session| session.id)
+            .collect();
         for child_id in children {
             let live = self.sessions.lock().await.get(&child_id).cloned();
             match live {
                 Some(handle) => {
-                    if handle.delete().await.is_ok() {
-                        self.sessions.lock().await.remove(&child_id);
-                    } else {
-                        // 任务已退出：通道不可达，直接删除存储记录
-                        let _ = self.store.delete_session(&child_id).await;
-                    }
+                    handle.delete().await?;
+                    self.sessions.lock().await.remove(&child_id);
                 }
-                None => {
-                    let _ = self.store.delete_session(&child_id).await;
-                }
+                None => self
+                    .store
+                    .delete_session(&child_id)
+                    .await
+                    .map_err(|error| error.to_string())?,
             }
-            Box::pin(self.delete_child_sessions(&child_id)).await;
+            Box::pin(self.delete_child_sessions(&child_id)).await?;
         }
-    }
-
-    /// 内存句柄中非空闲会话的运行状态文案（与 Web 快照 `state` 同词）。
-    pub async fn live_run_states(&self) -> HashMap<String, String> {
-        let sessions = self.sessions.lock().await;
-        sessions
-            .iter()
-            .filter_map(|(id, handle)| {
-                let status = handle.snapshot().state.status();
-                (!status.is_empty()).then(|| (id.clone(), status))
-            })
-            .collect()
+        Ok(())
     }
 
     pub async fn submit_prompt(

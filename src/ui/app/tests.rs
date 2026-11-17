@@ -1,6 +1,5 @@
 use super::*;
 use crate::harness::ManagedSession;
-use crate::storage::SessionStore;
 use crate::ui::test_support::create_test_app;
 
 /// 等待会话后台轮次结束，避免 App::new 的 try_read 与引擎写锁产生调度竞争
@@ -707,8 +706,11 @@ async fn sidebar_task_click_expands_only_the_collapsed_work_segment() {
             .get_mut("task-build")
             .unwrap();
         task.status = status;
-        task.finished_at =
-            (status == BackgroundTaskStatus::Completed).then(std::time::Instant::now);
+        if status == BackgroundTaskStatus::Completed {
+            Arc::make_mut(&mut app.view)
+                .background_finished
+                .insert("task-build".into(), std::time::Instant::now());
+        }
         app.response_expand.insert(response_id.clone(), false);
         app.tool_expand
             .insert("call-build".into(), ToolExpand::Hidden);

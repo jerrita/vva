@@ -25,17 +25,6 @@ pub enum RunState {
     Tool(String),
 }
 
-impl RunState {
-    pub fn status(&self) -> String {
-        match self {
-            Self::Idle => String::new(),
-            Self::Thinking => "Thinking...".into(),
-            Self::Responding => "Responding...".into(),
-            Self::Tool(name) => format!("Executing tool: {name}"),
-        }
-    }
-}
-
 /// 会话任务发布的只读视图；草稿与已完成消息使用相同的内容类型。
 /// `revision` 每次发布递增，供订阅方判定缓存是否失效。
 ///

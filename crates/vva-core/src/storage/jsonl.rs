@@ -6,12 +6,9 @@ use std::path::{Path, PathBuf};
 use super::{SessionStore, StoreError};
 use crate::model::{JsonlRecord, SESSION_VERSION, Session, SessionHeader, SessionSummary, Turn};
 
-pub const SCRATCH_DIR: &str = "scratch";
-pub const TOOL_OUTPUTS_DIR: &str = "tool_outputs";
-
 /// JSONL 追加写存储引擎。
 ///
-/// 文件布局：`{base}/{project_key}/{session_id}.jsonl`，同目录 `scratch/` 为项目便签、`tool_outputs/` 为大工具输出。
+/// 文件布局：`{base}/{project_key}/{session_id}.jsonl`。
 /// 首行 Header 记录 + 逐行 Turn 记录。Header 变更（标题生成、模型切换）
 /// 时整体重写文件——JSONL 首行长度不定、无法原地替换，以低频写放大换取格式
 /// 简单。重写经同目录临时文件落盘后 rename 替换，中途失败保留原文件。
@@ -71,28 +68,19 @@ fn session_file_name(session_id: &str) -> String {
     format!("{session_id}.jsonl")
 }
 
-fn find_session_path(base_dir: &Path, session_id: &str) -> Option<PathBuf> {
+fn find_session_path(base_dir: &Path, session_id: &str) -> Result<Option<PathBuf>, StoreError> {
     let name = session_file_name(session_id);
-    if let Ok(projects) = fs::read_dir(base_dir) {
-        for project in projects.flatten() {
-            let project_path = project.path();
-            if !project_path.is_dir() {
-                continue;
-            }
-            let candidate = project_path.join(&name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    for project in fs::read_dir(base_dir)? {
+        let project = project?;
+        if !project.file_type()?.is_dir() {
+            continue;
+        }
+        let candidate = project.path().join(&name);
+        if candidate.is_file() {
+            return Ok(Some(candidate));
         }
     }
-    let legacy = base_dir.join(&name);
-    legacy.is_file().then_some(legacy)
-}
-
-fn ensure_subdir_sync(project_dir: &Path, name: &str) -> Result<PathBuf, StoreError> {
-    let path = project_dir.join(name);
-    fs::create_dir_all(&path)?;
-    Ok(path)
+    Ok(None)
 }
 
 /// 将 JSONL 记录序列化为单行写入
@@ -104,8 +92,7 @@ fn write_record(file: &mut File, record: &JsonlRecord) -> Result<(), StoreError>
 fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError> {
     let dir = project_dir(base_dir, &session.header.workspace_root);
     let path = dir.join(session_file_name(&session.header.id));
-    ensure_subdir_sync(&dir, SCRATCH_DIR)?;
-    ensure_subdir_sync(&dir, TOOL_OUTPUTS_DIR)?;
+    fs::create_dir_all(&dir)?;
 
     // 写入同目录临时文件后原子替换：重写中途失败时原文件与历史保持完整
     let temp_path = path.with_extension("jsonl.tmp");
@@ -124,15 +111,11 @@ fn save_header_sync(base_dir: &Path, session: &Session) -> Result<(), StoreError
 
     fs::rename(&temp_path, &path)?;
 
-    let legacy = base_dir.join(session_file_name(&session.header.id));
-    if legacy != path && legacy.is_file() {
-        fs::remove_file(legacy)?;
-    }
     Ok(())
 }
 
 fn append_turn_sync(base_dir: &Path, session_id: &str, turn: &Turn) -> Result<(), StoreError> {
-    let path = find_session_path(base_dir, session_id)
+    let path = find_session_path(base_dir, session_id)?
         .ok_or_else(|| StoreError::NotFound(session_id.to_string()))?;
 
     let mut file = OpenOptions::new().create(false).append(true).open(&path)?;
@@ -143,7 +126,7 @@ fn append_turn_sync(base_dir: &Path, session_id: &str, turn: &Turn) -> Result<()
 }
 
 fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session>, StoreError> {
-    let Some(path) = find_session_path(base_dir, session_id) else {
+    let Some(path) = find_session_path(base_dir, session_id)? else {
         return Ok(None);
     };
 
@@ -156,18 +139,10 @@ fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session
         None => return Err(StoreError::InvalidFormat("Empty session file".into())),
     };
 
-    let header: SessionHeader = match serde_json::from_str::<JsonlRecord>(&first_line)? {
-        JsonlRecord::Header(h) => *h,
-        _ => {
-            return Err(StoreError::InvalidFormat(
-                "First line must be SessionHeader".into(),
-            ));
-        }
-    };
-    if header.version != SESSION_VERSION {
+    let header = decode_header(&first_line)?;
+    if header.id != session_id {
         return Err(StoreError::InvalidFormat(format!(
-            "unsupported session version {} (expected {SESSION_VERSION})",
-            header.version
+            "Session ID does not match file: {session_id}"
         )));
     }
 
@@ -175,9 +150,6 @@ fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session
     for line in lines {
         let line_str = line?;
         let trimmed = line_str.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
         match serde_json::from_str::<JsonlRecord>(trimmed)? {
             JsonlRecord::Turn(t) => turns.push(*t),
             _ => return Err(StoreError::InvalidFormat("Expected Turn record".into())),
@@ -187,21 +159,25 @@ fn load_session_sync(base_dir: &Path, session_id: &str) -> Result<Option<Session
     Ok(Some(header.into_session(turns)))
 }
 
-/// 统计剩余字节流中的换行符数量（会话摘要只需轮次条数，无需解析内容）
-fn count_lines(reader: &mut BufReader<File>) -> usize {
-    let mut buffer = [0u8; 64 * 1024];
-    let mut count = 0;
-    while let Ok(read) = std::io::Read::read(reader, &mut buffer) {
-        if read == 0 {
-            break;
-        }
-        count += buffer[..read].iter().filter(|byte| **byte == b'\n').count();
+fn decode_header(line: &str) -> Result<SessionHeader, StoreError> {
+    #[derive(serde::Deserialize)]
+    struct Version {
+        version: u32,
     }
-    count
+    let version: Version = serde_json::from_str(line)?;
+    if version.version != SESSION_VERSION {
+        return Err(StoreError::UnsupportedVersion(version.version));
+    }
+    match serde_json::from_str::<JsonlRecord>(line)? {
+        JsonlRecord::Header(header) => Ok(*header),
+        _ => Err(StoreError::InvalidFormat(
+            "First line must be SessionHeader".into(),
+        )),
+    }
 }
 
 fn delete_session_sync(base_dir: &Path, session_id: &str) -> Result<(), StoreError> {
-    if let Some(path) = find_session_path(base_dir, session_id) {
+    if let Some(path) = find_session_path(base_dir, session_id)? {
         fs::remove_file(path)?;
     }
     Ok(())
@@ -216,29 +192,25 @@ fn collect_summaries(dir: &Path, summaries: &mut Vec<SessionSummary>) -> Result<
         if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
             continue;
         }
-        let Ok(file) = File::open(&path) else {
-            continue;
-        };
+        let file = File::open(&path)?;
         let mut reader = BufReader::new(file);
         let mut first_line = String::new();
-        let parsed_header = reader.read_line(&mut first_line).ok().and_then(|_| {
-            match serde_json::from_str::<JsonlRecord>(&first_line) {
-                Ok(JsonlRecord::Header(header)) if header.version == SESSION_VERSION => {
-                    Some(*header)
-                }
-                _ => {
-                    tracing::warn!(
-                        "unsupported or corrupt session header, skipped: {}",
-                        path.display()
-                    );
-                    None
-                }
-            }
-        });
-        if let Some(header) = parsed_header {
-            let turn_count = count_lines(&mut reader);
-            summaries.push(SessionSummary::from_header(header, turn_count));
+        reader.read_line(&mut first_line)?;
+        let header = decode_header(&first_line)?;
+        if path.file_stem().and_then(|stem| stem.to_str()) != Some(header.id.as_str()) {
+            return Err(StoreError::InvalidFormat(format!(
+                "Session ID does not match file: {}",
+                path.display()
+            )));
         }
+        let mut turn_count = 0;
+        for line in reader.lines() {
+            match serde_json::from_str::<JsonlRecord>(&line?)? {
+                JsonlRecord::Turn(_) => turn_count += 1,
+                _ => return Err(StoreError::InvalidFormat("Expected Turn record".into())),
+            }
+        }
+        summaries.push(SessionSummary::from_header(header, turn_count));
     }
     Ok(())
 }
@@ -293,16 +265,6 @@ impl SessionStore for JsonlSessionStore {
         let base_dir = self.base_dir.clone();
         run_blocking(move || list_sessions_sync(&base_dir)).await
     }
-
-    async fn ensure_scratch(&self, workspace: &Path) -> Result<PathBuf, StoreError> {
-        let dir = project_dir(&self.base_dir, workspace);
-        run_blocking(move || ensure_subdir_sync(&dir, SCRATCH_DIR)).await
-    }
-
-    async fn ensure_tool_outputs(&self, workspace: &Path) -> Result<PathBuf, StoreError> {
-        let dir = project_dir(&self.base_dir, workspace);
-        run_blocking(move || ensure_subdir_sync(&dir, TOOL_OUTPUTS_DIR)).await
-    }
 }
 
 #[cfg(test)]
@@ -322,7 +284,6 @@ mod tests {
             Some("Bugfix task".into()),
             "a/gpt-5.6-terra",
             Some("high".into()),
-            crate::model::SessionToggles::default(),
         );
 
         // 写入 Session 头部
@@ -364,8 +325,6 @@ mod tests {
         assert_eq!(loaded.header.title, Some("Bugfix task".into()));
         assert_eq!(loaded.header.current_model, "a/gpt-5.6-terra");
         assert_eq!(loaded.header.current_variant.as_deref(), Some("high"));
-        assert_eq!(loaded.header.editor, crate::model::EditorKind::Patch);
-        assert!(loaded.header.web_search);
         assert_eq!(loaded.turns.len(), 2);
         assert_eq!(loaded.latest_openai_response_id(None), Some("resp_001xyz"));
 
@@ -375,25 +334,11 @@ mod tests {
                 .join(format!("{}.jsonl", session.header.id))
                 .is_file()
         );
-        assert!(project.join(SCRATCH_DIR).is_dir());
-        assert!(project.join(TOOL_OUTPUTS_DIR).is_dir());
-        let scratch = store
-            .ensure_scratch(Path::new("/tmp/repo"))
-            .await
-            .expect("scratch");
-        assert_eq!(scratch, project.join(SCRATCH_DIR));
-        let tool_outputs = store
-            .ensure_tool_outputs(Path::new("/tmp/repo"))
-            .await
-            .expect("tool_outputs");
-        assert_eq!(tool_outputs, project.join(TOOL_OUTPUTS_DIR));
-
         let summaries = store.list_sessions().await.expect("list sessions");
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, session.header.id);
         assert_eq!(summaries[0].current_model, "a/gpt-5.6-terra");
         assert_eq!(summaries[0].current_variant.as_deref(), Some("high"));
-        assert!(summaries[0].web_search);
         assert_eq!(summaries[0].turn_count, 2);
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -415,8 +360,6 @@ mod tests {
         assert_ne!(dir_a, dir_b);
         assert!(dir_a.join(format!("{}.jsonl", a.header.id)).is_file());
         assert!(dir_b.join(format!("{}.jsonl", b.header.id)).is_file());
-        assert!(dir_a.join(SCRATCH_DIR).is_dir());
-        assert!(dir_b.join(SCRATCH_DIR).is_dir());
 
         let summaries = store.list_sessions().await.expect("list");
         assert_eq!(summaries.len(), 2);

@@ -1,15 +1,15 @@
-use crate::harness::session::handle::{Command, PendingDelivery};
-use crate::harness::session::task::*;
-use crate::harness::*;
-use crate::model::{Message, Session};
-use crate::provider::{CompletionOptions, ProviderResponse};
-use crate::storage::{SessionStore, jsonl::JsonlSessionStore};
-use crate::tools::agent::SubagentReport;
-use crate::tools::background::BackgroundStatus;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
+use vva_core::harness::session::handle::{Command, PendingDelivery};
+use vva_core::harness::session::task::*;
+use vva_core::harness::*;
+use vva_core::model::{Message, Session};
+use vva_core::provider::{CompletionOptions, ProviderResponse};
+use vva_core::storage::{SessionStore, jsonl::JsonlSessionStore};
+use vva_core::tools::agent::SubagentReport;
+use vva_core::tools::background::BackgroundStatus;
 
 // ---- 共享夹具 ----
 
@@ -54,19 +54,19 @@ impl ScriptedProvider {
 }
 
 #[async_trait::async_trait]
-impl crate::provider::Provider for ScriptedProvider {
+impl vva_core::provider::Provider for ScriptedProvider {
     fn name(&self) -> &str {
         "scripted-test"
     }
-    fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+    fn capabilities(&self) -> vva_core::provider::ProviderCapabilities {
         Default::default()
     }
     async fn complete(
         &self,
         _: &Session,
-        _: &[crate::model::ToolDefinition],
+        _: &[vva_core::model::ToolDefinition],
         _: &CompletionOptions,
-    ) -> Result<ProviderResponse, crate::provider::ProviderError> {
+    ) -> Result<ProviderResponse, vva_core::provider::ProviderError> {
         let repeat = self.called.swap(true, std::sync::atomic::Ordering::SeqCst);
         Ok(ProviderResponse {
             messages: (self.script)(repeat),
@@ -77,17 +77,17 @@ impl crate::provider::Provider for ScriptedProvider {
     async fn complete_stream(
         &self,
         session: &Session,
-        tools: &[crate::model::ToolDefinition],
+        tools: &[vva_core::model::ToolDefinition],
         options: &CompletionOptions,
         _: Option<mpsc::Sender<AgentEvent>>,
-    ) -> Result<ProviderResponse, crate::provider::ProviderError> {
+    ) -> Result<ProviderResponse, vva_core::provider::ProviderError> {
         self.complete(session, tools, options).await
     }
 }
 
 pub(crate) fn engine(
     provider: Arc<ScriptedProvider>,
-    tools: crate::tools::ToolRegistry,
+    tools: vva_core::tools::ToolRegistry,
 ) -> ExecutionPlan {
     ExecutionPlan {
         provider,
@@ -120,15 +120,15 @@ pub(crate) enum TestBlock {
 }
 
 #[async_trait::async_trait]
-impl crate::tools::Tool for TestTool {
+impl vva_core::tools::Tool for TestTool {
     fn name(&self) -> &str {
         self.name
     }
     fn description(&self) -> &str {
         "test tool"
     }
-    fn input(&self) -> crate::model::ToolInput {
-        crate::model::ToolInput::Json({
+    fn input(&self) -> vva_core::model::ToolInput {
+        vva_core::model::ToolInput::Json({
             serde_json::json!({"type": "object", "properties": {"label": {"type": "string"}}})
         })
     }
@@ -151,8 +151,8 @@ impl crate::tools::Tool for TestTool {
     }
 }
 
-pub(crate) fn registry_with(tool: TestTool) -> crate::tools::ToolRegistry {
-    let mut tools = crate::tools::ToolRegistry::new();
+pub(crate) fn registry_with(tool: TestTool) -> vva_core::tools::ToolRegistry {
+    let mut tools = vva_core::tools::ToolRegistry::new();
     tools.register(Arc::new(tool));
     tools
 }
@@ -193,7 +193,7 @@ pub(crate) fn queued(
     text: &str,
 ) -> (
     PendingDelivery,
-    crate::harness::session::handle::DeliveryReceipt,
+    vva_core::harness::session::handle::DeliveryReceipt,
 ) {
     let (completion, receipt) = oneshot::channel();
     (
@@ -216,13 +216,7 @@ pub(crate) fn persisted_task() -> SessionTask {
 
 pub(crate) fn command_task() -> (SessionTask, Arc<ManagedSession>, mpsc::Receiver<Command>) {
     let root = tmp("async-session");
-    let session = Session::with_model(
-        &root,
-        Some("Async fixture".into()),
-        "p/m",
-        None,
-        Default::default(),
-    );
+    let session = Session::with_model(&root, Some("Async fixture".into()), "p/m", None);
     let id = session.header.id.clone();
     let (commands, rx) = mpsc::channel(1);
     let setup = fixed_setup();

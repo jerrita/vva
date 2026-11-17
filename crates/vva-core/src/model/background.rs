@@ -21,7 +21,7 @@ pub enum BackgroundTaskKind {
     Agent,
 }
 
-/// 进程内的任务展示信息；历史结果不重新进入侧栏的短暂展示周期。
+/// 进程内的任务启动信息；身份、类型与启动时刻不从历史恢复。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundTaskActivity {
     pub name: String,
@@ -44,8 +44,6 @@ pub struct BackgroundTask {
     /// 启动快照携带，后续状态快照沿用；不参与持久化与 Web 协议。
     #[serde(skip)]
     pub activity: Option<BackgroundTaskActivity>,
-    #[serde(skip)]
-    pub finished_at: Option<Instant>,
 }
 
 impl BackgroundTask {
@@ -59,19 +57,6 @@ impl BackgroundTask {
             total_bytes: None,
             truncated: false,
             activity: None,
-            finished_at: None,
-        }
-    }
-
-    pub fn label(&self) -> String {
-        match self.status {
-            BackgroundTaskStatus::Running => "后台运行中".into(),
-            BackgroundTaskStatus::Completed => "已完成".into(),
-            BackgroundTaskStatus::Failed => self
-                .exit_code
-                .map_or_else(|| "失败".into(), |code| format!("退出码 {code}")),
-            BackgroundTaskStatus::Stopped => "已停止".into(),
-            BackgroundTaskStatus::Interrupted => "已中断".into(),
         }
     }
 }
@@ -89,16 +74,12 @@ pub fn update_background_task(
         if previous.activity.is_none() {
             previous.activity = task.activity;
         }
-        if previous.activity.is_some() && previous.finished_at.is_none() {
-            previous.finished_at = Some(Instant::now());
-        }
         return;
     }
-    if let Some(previous) = tasks.get(&task.task_id) {
-        if task.activity.is_none() {
-            task.activity.clone_from(&previous.activity);
-        }
-        task.finished_at = previous.finished_at;
+    if let Some(previous) = tasks.get(&task.task_id)
+        && task.activity.is_none()
+    {
+        task.activity.clone_from(&previous.activity);
     }
     if let Some(previous) = tasks.get(&task.task_id)
         && previous.status == BackgroundTaskStatus::Stopped
@@ -107,12 +88,6 @@ pub fn update_background_task(
         if task.output.is_empty() {
             task.output.clone_from(&previous.output);
         }
-    }
-    if task.status != BackgroundTaskStatus::Running
-        && task.activity.is_some()
-        && task.finished_at.is_none()
-    {
-        task.finished_at = Some(Instant::now());
     }
     tasks.insert(task.task_id.clone(), task);
 }
@@ -180,7 +155,6 @@ mod tests {
         let completed = tasks[&task.task_id].clone();
         assert_eq!(completed.status, BackgroundTaskStatus::Completed);
         assert_eq!(completed.activity, Some(activity));
-        assert!(completed.finished_at.is_some());
         update_background_task(&mut tasks, task.clone());
         assert_eq!(tasks[&task.task_id], completed);
         update_background_task(

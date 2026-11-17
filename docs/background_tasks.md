@@ -23,7 +23,7 @@
 
 ## 领域与传输
 
-- `BackgroundTask` 是强类型任务快照，包含任务身份、状态、输出、退出码及截断信息。
+- core `BackgroundTask` 是强类型任务快照，包含任务身份、状态、输出、退出码及截断信息。状态文案由应用投影生成；TUI 终态保留 5 秒的计时保存在应用 `SessionView.background_finished`，不进入领域模型或 JSONL。
 - 启动和查询的 `ToolResult` 携带快照；后台完成 reminder 所在 `Turn` 携带最终快照。
 - 原始调用与回执保留；JSONL 追加记录最终结果，不重写历史工具结果。
 - 模型仍接收原有 reminder 并按现有规则自动续跑。供应商协议不变，UI 不解析 reminder 正文。
