@@ -1,11 +1,11 @@
 # 供应商适配
 
-适配器实现厂商官方原生协议，约束（零兜底、Mock 真实性）见 [AGENTS.md §2](../AGENTS.md#2-设计约束)。代码位置 [`src/provider/`](../src/provider/)。
+适配器实现厂商官方原生协议，约束（零兜底、Mock 真实性）见 [AGENTS.md §2](../AGENTS.md#2-设计约束)。代码位置 [`crates/vva-core/src/provider/`](../crates/vva-core/src/provider/)。
 
 ## 1. 公共层
 
 ### 1.1 接口边界
-[`Provider`](../src/provider/mod.rs) trait 对外暴露调用方需要的能力：
+[`Provider`](../crates/vva-core/src/provider/mod.rs) trait 对外暴露调用方需要的能力：
 
 ```rust
 #[async_trait]
@@ -17,12 +17,12 @@ pub trait Provider: Send + Sync {
 }
 ```
 
-端点拼装、鉴权头、请求构建与响应解析属于各适配器内部实现。[`http.rs`](../src/provider/http.rs) 提供 `post_json` 与 `post_sse`；[`websocket.rs`](../src/provider/websocket.rs) 使用独立的 HTTP/1.1 客户端升级连接，沿用公共客户端配置以保留代理、TLS 与鉴权行为，并在空闲期间处理控制帧。适配器负责协议事件到领域模型的转换。
+端点拼装、鉴权头、请求构建与响应解析属于各适配器内部实现。[`http.rs`](../crates/vva-core/src/provider/http.rs) 提供 `post_json` 与 `post_sse`；[`websocket.rs`](../crates/vva-core/src/provider/websocket.rs) 使用独立的 HTTP/1.1 客户端升级连接，沿用公共客户端配置以保留代理、TLS 与鉴权行为，并在空闲期间处理控制帧。适配器负责协议事件到领域模型的转换。
 
-跨供应商的通用辅助集中在 [`common.rs`](../src/provider/common.rs)：事件背压转发（`EventForwarder`）、同角色块合并（`RoleBlockMerger`）以及严格字段读取（`require_str` / `require_u64` / `require_bool` / `require_value` / `require_array`）——必填字段缺失或类型不符一律报协议错误，三家适配器使用同一套读取器与错误语义。
+跨供应商的通用辅助集中在 [`common.rs`](../crates/vva-core/src/provider/common.rs)：事件背压转发（`EventForwarder`）、同角色块合并（`RoleBlockMerger`）以及严格字段读取（`require_str` / `require_u64` / `require_bool` / `require_value` / `require_array`）——必填字段缺失或类型不符一律报协议错误，三家适配器使用同一套读取器与错误语义。
 
 ### 1.2 Freeform 工具
-工具入参形态由 [`ToolInput`](../src/model/tool.rs) 声明：`Json(schema)` 或 `Freeform { grammar }`（grammar 为可选 Lark 文法）。领域层的 freeform 调用为 `ToolCall { kind: Custom, arguments: <原始输入文本> }`，协议差异只在适配器内处理：
+工具入参形态由 [`ToolInput`](../crates/vva-core/src/model/tool.rs) 声明：`Json(schema)` 或 `Freeform { grammar }`（grammar 为可选 Lark 文法）。领域层的 freeform 调用为 `ToolCall { kind: Custom, arguments: <原始输入文本> }`，协议差异只在适配器内处理：
 - **Responses**：原生 custom tool。声明为 `{"type":"custom", "format": text | grammar(lark)}`，输出条目 `custom_tool_call` 解析为 Custom 调用，结果以 `custom_tool_call_output` 回传；
 - **Anthropic / Gemini**：无 freeform 协议，声明时投影为单字段 `{"input": string}` 的 function（`common::function_parameters`），解析时取出 `input` 原文构造 Custom 调用，回放时重新包装；参数不是恰含字符串 `input` 的对象时报协议错误。
 
@@ -32,7 +32,7 @@ pub trait Provider: Send + Sync {
 
 ## 2. OpenAI Responses API 适配器
 
-代码位置：[`src/provider/response/`](../src/provider/response/)
+代码位置：[`crates/vva-core/src/provider/response/`](../crates/vva-core/src/provider/response/)
 
 ### 2.1 传输与上下文续接
 
@@ -57,7 +57,7 @@ pub trait Provider: Send + Sync {
 
 ## 3. Anthropic Messages API 适配器
 
-代码位置：[`src/provider/anthropic/`](../src/provider/anthropic/)
+代码位置：[`crates/vva-core/src/provider/anthropic/`](../crates/vva-core/src/provider/anthropic/)
 
 ### 3.1 Prompt Caching (`cache_control`) 注入
 - **原生机制**：Anthropic 要求在特定块注入 `{"type": "ephemeral"}` 标记缓存断点。
@@ -90,7 +90,7 @@ pub trait Provider: Send + Sync {
 
 ## 4. Google Gemini API 适配器
 
-代码位置：[`src/provider/gemini/`](../src/provider/gemini/)
+代码位置：[`crates/vva-core/src/provider/gemini/`](../crates/vva-core/src/provider/gemini/)
 
 ### 4.1 原生 Google Search Grounding 投影
 - 原生启用 `tools: [{ "google_search": {} }]`；
@@ -111,7 +111,7 @@ pub trait Provider: Send + Sync {
 
 ## 5. 通用 SSE 流式事件解码器
 
-代码位置：[`src/provider/sse.rs`](../src/provider/sse.rs)
+代码位置：[`crates/vva-core/src/provider/sse.rs`](../crates/vva-core/src/provider/sse.rs)
 
 - 提供通用标准 Server-Sent Events 流式解码器（`SseDecoder`）；
 - 遵循 W3C 规范：支持分块 Chunked 输入拆包、多字节 UTF-8 跨包重组、CRLF/LF 换行规范化以及空行事件触发机制；

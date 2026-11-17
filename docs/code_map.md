@@ -3,9 +3,10 @@
 按目录给出职责，文件级细节以源码为准。设计说明见 [README](README.md) 索引。
 
 ```
-src/
+Cargo.toml                 # workspace；default-members = vva + vva-core
+build.rs                   # 仅应用：frontend 构建
+src/                       # vva 应用
 ├── lib.rs / main.rs        # 模块导出 / CLI 入口 (vva run, session list|inspect, web, agent, version, update)
-├── event.rs                # AgentEvent 统一事件流 (Provider 流式增量 + Harness 工具/Notice/Aborted)
 ├── find.rs                 # 工作区遍历与模糊匹配 (walk_workspace / fuzzy_match；TUI @ 补全与 Web go-to-file 共用)
 ├── app/                    # 应用会话 facade 与装配策略
 │   ├── session.rs          # VvaSessionManager：模型偏好、配置重载、会话创建与子代理装配
@@ -13,7 +14,7 @@ src/
 │   ├── mention.rs          # @ 文件引用解析与展开
 │   └── web.rs              # 外置联网模型与凭据解析
 ├── system.rs               # 系统环境采集与系统提示组装 (日期 / OS / arch / workspace / scratch)
-├── discover.rs             # agents 与 skills 共用的目录优先级与 name 校验
+├── discover.rs             # 应用默认的全局与项目发现目录
 ├── prompts/system.md       # 系统提示模板
 ├── config/                 # 配置
 │   ├── mod.rs              # load_config 寻址与分层合并 (含 FALLBACK_MODEL_SPEC)
@@ -22,42 +23,8 @@ src/
 │   ├── env.rs              # env 文件 (dotenv 子集)
 │   ├── resolver.rs         # resolve_model → ResolvedModel；create_provider 单独构造
 │   └── state.rs            # ~/.vva/state.json 运行时偏好
-├── model/                  # 领域模型
-│   ├── session.rs          # Session / SessionHeader / JsonlRecord
-│   ├── turn.rs             # Turn / TokenUsage
-│   ├── message.rs          # Message
-│   ├── content.rs          # ContentPart / Annotation / MediaSource
-│   ├── meta.rs             # Response / Anthropic / Gemini 轮次元数据
-│   ├── tool.rs             # ToolCall / ToolResult / ToolDefinition / ToolInput (Json | Freeform + Lark)
-│   └── background.rs       # 后台任务快照与状态
-├── storage/                # SessionStore trait；jsonl.rs 为追加写实现
-├── provider/               # 供应商适配 (Provider trait、capabilities、共享 HTTP Client)
-│   ├── input.rs            # ProviderType / InputCapabilities 执行类型与媒体校验
-│   ├── common.rs           # EventForwarder / require_* / RoleBlockMerger / normalize_endpoint
-│   ├── http.rs             # post_json / post_sse (SseEventHandler)
-│   ├── sse.rs              # SSE 解码器
-│   ├── websocket.rs        # JSON WebSocket 传输与控制帧处理
-│   ├── response/           # OpenAI Responses (request / parse / stream / websocket / search / image)
-│   ├── anthropic/          # Anthropic Messages (request / parse / stream)
-│   └── gemini/             # Gemini (request / parse 累积器 / stream)
-├── tools/                  # 工具集
-│   ├── mod.rs / names.rs   # Tool trait 与 ToolRegistry (按编辑协议组装、白名单裁剪) / 工具名常量
-│   ├── filesystem/         # Read / Write / Edit / Glob / Grep 与共享基建
-│   ├── apply_patch.rs      # apply_patch (Codex V4A, freeform；文法 apply_patch.lark)
-│   ├── hashline/           # hashline_edit：snapshot / session / parse / apply / block
-│   ├── shell.rs            # Shell (前台超时 / 输出上限 / run_in_background)
-│   ├── background.rs       # TaskOutput / TaskStop 与后台任务注册表
-│   ├── agent.rs            # Agent 工具与 SessionBroker trait (派生 subagent)
-│   ├── session_ipc.rs      # SendMessage 跨会话消息
-│   ├── ask_user.rs         # AskUser
-│   ├── skill.rs            # Skill 工具 (按 name 加载 SKILL.md)
-│   └── web/                # web_search / web_fetch 外置 provider (brave / deepseek / google / tavily / zhipu / local)
-├── agents/mod.rs           # Subagent 定义：AgentDef 解析与 discover_agents (内置 general / explore)
-├── skills/mod.rs           # Agent Skills：SkillFrontmatter 解析与 discover_skills
-├── harness/                # 调度引擎
-│   ├── assembly.rs         # AgentAssembly / SessionSetup / ExecutionPlan / FixedSetup
-│   ├── testing.rs          # (cfg(test)) StubBroker
-│   └── session/            # SessionManager 句柄表 · SessionTask 执行任务 · ManagedSession 句柄/Command · SessionView 快照
+├── agents/mod.rs           # 默认目录优先级与内置 general / explore；re-export core AgentDef / 解析器
+├── skills/mod.rs           # 默认目录优先级与斜杠调用；re-export core Skill / 解析器
 ├── space/                  # 常驻 IM agent (设计见 docs/agent.md)
 │   ├── mod.rs              # AgentSpace 启动校验与装配、tool_factory
 │   ├── runtime/            # 主循环 / inbound / commands / schedule / mode_model
@@ -84,4 +51,46 @@ frontend/                   # React + Vite + TypeScript；build.rs 构建期编�
 ├── src/api.ts · types.ts · sessionSync.ts · toolNames.ts
 ├── src/hooks/ · utils/ · styles/
 └── src/components/         # Sidebar / Chat / Composer / Parts / trace / files / StatsPanel / modals ...
+crates/vva-core/
+├── Cargo.toml             # 默认无 feature 的库
+├── tests/support/         # 随代码迁移的共享协议与运行时测试 fixture
+└── src/
+    ├── lib.rs
+    ├── agents.rs          # AgentDef、YAML 解析与显式目录扫描
+    ├── skills.rs          # Skill、SKILL.md 解析与显式目录扫描
+    ├── discover.rs        # 通用字段校验
+    ├── event.rs                # AgentEvent 统一事件流 (Provider 流式增量 + Harness 工具/Notice/Aborted)
+    ├── model/                  # 领域模型
+    │   ├── session.rs          # Session / SessionHeader / JsonlRecord
+    │   ├── turn.rs             # Turn / TokenUsage
+    │   ├── message.rs          # Message
+    │   ├── content.rs          # ContentPart / Annotation / MediaSource
+    │   ├── meta.rs             # Response / Anthropic / Gemini 轮次元数据
+    │   ├── tool.rs             # ToolCall / ToolResult / ToolDefinition / ToolInput (Json | Freeform + Lark)
+    │   └── background.rs       # 后台任务快照与状态
+    ├── storage/                # SessionStore trait；jsonl.rs 为追加写实现
+    ├── provider/               # 供应商适配 (Provider trait、capabilities、共享 HTTP Client)
+    │   ├── input.rs            # ProviderType / InputCapabilities 执行类型与媒体校验
+    │   ├── common.rs           # EventForwarder / require_* / RoleBlockMerger / normalize_endpoint
+    │   ├── http.rs             # post_json / post_sse (SseEventHandler)
+    │   ├── sse.rs              # SSE 解码器
+    │   ├── websocket.rs        # JSON WebSocket 传输与控制帧处理
+    │   ├── response/           # OpenAI Responses (request / parse / stream / websocket / search / image)
+    │   ├── anthropic/          # Anthropic Messages (request / parse / stream)
+    │   └── gemini/             # Gemini (request / parse 累积器 / stream)
+    ├── tools/                  # 工具集
+    │   ├── mod.rs / names.rs   # Tool trait 与 ToolRegistry (按编辑协议组装、白名单裁剪) / 工具名常量
+    │   ├── filesystem/         # Read / Write / Edit / Glob / Grep 与共享基建
+    │   ├── apply_patch.rs      # apply_patch (Codex V4A, freeform；文法 apply_patch.lark)
+    │   ├── hashline/           # hashline_edit：snapshot / session / parse / apply / block
+    │   ├── shell.rs            # Shell (前台超时 / 输出上限 / run_in_background)
+    │   ├── background.rs       # TaskOutput / TaskStop 与后台任务注册表
+    │   ├── agent.rs            # Agent 工具与 SessionBroker trait (派生 subagent)
+    │   ├── session_ipc.rs      # SendMessage 跨会话消息
+    │   ├── ask_user.rs         # AskUser
+    │   ├── skill.rs            # Skill 工具 (按 name 加载 SKILL.md)
+    │   └── web/                # web_search / web_fetch 外置 provider (brave / deepseek / google / tavily / zhipu / local)
+    └── harness/                # 调度引擎
+        ├── assembly.rs         # AgentAssembly / SessionSetup / ExecutionPlan / FixedSetup
+        └── session/            # SessionManager 句柄表 · SessionTask 执行任务 · ManagedSession 句柄/Command · SessionView 快照
 ```
