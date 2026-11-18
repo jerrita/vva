@@ -77,6 +77,8 @@ pub trait Provider: Send + Sync {
   - 在全局系统提示词（System Prompt）尾部追加 `cache_control`；
   - 在长对话的历史消息分界点维护断点标记；
   - 响应报文中提取 `cache_creation_input_tokens` 与 `cache_read_input_tokens` 并写入 `AnthropicTurnMeta`，供计费引擎结算折扣。
+- **流式用量快照**：`message_delta.usage` 中的 `input_tokens`、`cache_creation_input_tokens`、`cache_read_input_tokens` 数值覆盖已有累计值，不相加；缺省保留，显式 0 覆盖。JSON null 不覆盖是 core 的设计选择，并非官方明确规定的合并语义。累计语义及输入从 2679 更新到 10682 的例子见 [官方流式文档](https://platform.claude.com/docs/en/build-with-claude/streaming#streaming-request-with-web-search-tool-use)。
+- **投影口径**：`TokenUsage.prompt_tokens = input_tokens`、`total_tokens = input_tokens + output_tokens`；缓存读同时进入 `cached_tokens` 和 Anthropic meta，缓存创建只进入 Anthropic meta。非流式路径沿用相同投影，不因本修复改变口径。
 
 ### 3.2 Thinking 思考块数字签名 (`signature`) 保持
 - **防篡改签名要求**：Anthropic 启用 Extended Thinking 的模型在返回思考内容时随附加密签名 `signature`。
