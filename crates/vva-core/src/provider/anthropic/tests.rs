@@ -243,6 +243,86 @@ async fn test_anthropic_streaming_matches_non_streaming_parse() {
     assert_eq!(streamed.meta.anthropic, parsed.meta.anthropic);
 }
 
+// usage 是累计快照：覆盖后报数值，缺省/null 保留，0 也是有效数值。
+#[tokio::test]
+async fn message_delta_usage_updates_cumulative_input_and_cache_counts() {
+    use serde_json::json;
+
+    for (name, start_usage, deltas, expected) in [
+        (
+            "official web-search usage",
+            json!({"input_tokens": 2679, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 3}),
+            vec![
+                json!({"input_tokens": 10682, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 510}),
+            ],
+            (10682, 510, 11192, Some(0), Some(0)),
+        ),
+        (
+            "updated fields survive later omissions",
+            json!({"input_tokens": 10, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 30, "output_tokens": 1}),
+            vec![
+                json!({"input_tokens": 40, "cache_creation_input_tokens": 50, "cache_read_input_tokens": 60, "output_tokens": 7}),
+                json!({"input_tokens": 45, "output_tokens": 9}),
+            ],
+            (45, 9, 54, Some(50), Some(60)),
+        ),
+        (
+            "omitted input fields",
+            json!({"input_tokens": 10, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 30, "output_tokens": 1}),
+            vec![json!({"output_tokens": 7}), json!({"output_tokens": 9})],
+            (10, 9, 19, Some(20), Some(30)),
+        ),
+        (
+            "explicit zero boundary",
+            json!({"input_tokens": 10, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 30, "output_tokens": 1}),
+            vec![
+                json!({"input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0, "output_tokens": 7}),
+            ],
+            (0, 7, 7, Some(0), Some(0)),
+        ),
+        (
+            "null input fields",
+            json!({"input_tokens": 10, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 30, "output_tokens": 1}),
+            vec![
+                json!({"input_tokens": null, "cache_creation_input_tokens": null, "cache_read_input_tokens": null, "output_tokens": 7}),
+            ],
+            (10, 7, 17, Some(20), Some(30)),
+        ),
+    ] {
+        let mut handler = AnthropicStreamHandler::new(None, ServerUses::new());
+        handler.on_event(json!({
+            "type": "message_start",
+            "message": {"id": "msg_usage", "type": "message", "role": "assistant", "content": [],
+                "model": "claude-sonnet-4-5", "stop_reason": null, "stop_sequence": null, "usage": start_usage}
+        })).await.unwrap();
+        for usage in deltas {
+            handler.on_event(json!({
+                "type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": usage
+            })).await.unwrap();
+        }
+        handler
+            .on_event(json!({"type": "message_stop"}))
+            .await
+            .unwrap();
+        let (blocks, usage) = handler.finish().unwrap();
+        let response = assemble_response(blocks, usage, &[], ServerUses::new()).unwrap();
+        let usage = response.usage.unwrap();
+        let meta = response.meta.anthropic.unwrap();
+        assert_eq!(
+            (
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                usage.total_tokens,
+                meta.cache_creation_input_tokens,
+                usage.cached_tokens
+            ),
+            expected,
+            "{name}",
+        );
+        assert_eq!(meta.cache_read_input_tokens, usage.cached_tokens, "{name}");
+    }
+}
+
 #[tokio::test]
 async fn test_anthropic_stream_error_event_reports_protocol_error() {
     let mut handler = AnthropicStreamHandler::new(None, ServerUses::new());

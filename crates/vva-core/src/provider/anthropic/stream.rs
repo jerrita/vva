@@ -272,6 +272,22 @@ impl SseEventHandler for AnthropicStreamHandler {
                 if let Some(u) = json.get("usage") {
                     self.usage.seen = true;
                     self.usage.output_tokens = require_u64(u, "output_tokens")? as u32;
+                    // 累计数值覆盖；缺省/null 不改变快照，显式 0 仍覆盖。
+                    if u.get("input_tokens").is_some_and(|v| !v.is_null()) {
+                        self.usage.input_tokens = require_u64(u, "input_tokens")? as u32;
+                    }
+                    if u.get("cache_creation_input_tokens")
+                        .is_some_and(|v| !v.is_null())
+                    {
+                        self.usage.cache_creation_input_tokens =
+                            Some(require_u64(u, "cache_creation_input_tokens")? as u32);
+                    }
+                    if u.get("cache_read_input_tokens")
+                        .is_some_and(|v| !v.is_null())
+                    {
+                        self.usage.cache_read_input_tokens =
+                            Some(require_u64(u, "cache_read_input_tokens")? as u32);
+                    }
                 }
             }
             "message_stop" | "ping" => {}
