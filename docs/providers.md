@@ -104,7 +104,7 @@ pub trait Provider: Send + Sync {
 
 ### 3.5 流式工具参数解析错误
 
-`complete_stream` 解析工具参数 JSON 失败时返回 `ProviderError::AnthropicToolInputJson`。`block_index` 是 SSE 的块索引，`stop_reason` 和 `message_stop_seen` 记录已收到的结束信息，`source.classify()`、`source.line()` 和 `source.column()` 提供 JSON 错误类别和位置。调用方可从事件通道保留出错前已转发的正文。
+`complete_stream` 解析工具参数 JSON 失败时返回 `ProviderError::AnthropicToolInputJson`。`block_index` 是 SSE 的块索引，`stop_reason` 和 `message_stop_seen` 记录已收到的结束信息，`source.classify()`、`source.line()` 和 `source.column()` 提供 JSON 错误类别和位置。调用方可显式读取 `raw_input` 查看传给解析器的完整字符串，`Display` 和 `Debug` 均省略该字段。调用方可从事件通道保留出错前已转发的正文。
 
 ---
 

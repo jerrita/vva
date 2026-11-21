@@ -15,6 +15,7 @@ pub(crate) mod sse;
 #[cfg(feature = "response")]
 mod websocket;
 
+use std::fmt;
 #[cfg(any(feature = "response", feature = "anthropic", feature = "gemini"))]
 use std::sync::OnceLock;
 
@@ -46,7 +47,7 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
         .read_timeout(std::time::Duration::from_secs(300))
 }
 
-#[derive(Debug, Error)]
+#[derive(Error)]
 pub enum ProviderError {
     #[error("HTTP error: {0}")]
     #[cfg(any(feature = "response", feature = "anthropic", feature = "gemini"))]
@@ -70,9 +71,42 @@ pub enum ProviderError {
         block_index: usize,
         stop_reason: Option<String>,
         message_stop_seen: bool,
+        /// 实际传给 JSON 解析器的完整参数字符串，错误格式化时省略。
+        raw_input: String,
         #[source]
         source: serde_json::Error,
     },
+}
+
+impl fmt::Debug for ProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(any(feature = "response", feature = "anthropic", feature = "gemini"))]
+            Self::Http(error) => f.debug_tuple("Http").field(error).finish(),
+            #[cfg(feature = "response")]
+            Self::WebSocket(error) => f.debug_tuple("WebSocket").field(error).finish(),
+            Self::ApiError { status, body } => f
+                .debug_struct("ApiError")
+                .field("status", status)
+                .field("body", body)
+                .finish(),
+            Self::Protocol(message) => f.debug_tuple("Protocol").field(message).finish(),
+            #[cfg(feature = "anthropic")]
+            Self::AnthropicToolInputJson {
+                block_index,
+                stop_reason,
+                message_stop_seen,
+                source,
+                ..
+            } => f
+                .debug_struct("AnthropicToolInputJson")
+                .field("block_index", block_index)
+                .field("stop_reason", stop_reason)
+                .field("message_stop_seen", message_stop_seen)
+                .field("source", source)
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

@@ -27,7 +27,7 @@ pub(super) struct AnthropicStreamHandler {
     usage: AnthropicUsageSnapshot,
     message_stop_seen: bool,
     // 服务端结果配对时可能先发现参数错误，留到收尾以携带后续结束事件的信息。
-    deferred_input_error: Option<(usize, serde_json::Error)>,
+    deferred_input_error: Option<(usize, String, serde_json::Error)>,
     forwarder: EventForwarder,
 }
 
@@ -66,7 +66,8 @@ impl AnthropicStreamHandler {
                 match serde_json::from_str(&partial) {
                     Ok(parsed) => *input = parsed,
                     Err(source) => {
-                        self.deferred_input_error.get_or_insert((idx, source));
+                        self.deferred_input_error
+                            .get_or_insert((idx, partial, source));
                         return Ok(None);
                     }
                 }
@@ -81,14 +82,15 @@ impl AnthropicStreamHandler {
     pub(super) fn finish(
         mut self,
     ) -> Result<(Vec<AnthropicContentBlock>, AnthropicUsageSnapshot), ProviderError> {
-        let input_error = |block_index, source| ProviderError::AnthropicToolInputJson {
+        let input_error = |block_index, raw_input, source| ProviderError::AnthropicToolInputJson {
             block_index,
             stop_reason: self.usage.stop_reason.clone(),
             message_stop_seen: self.message_stop_seen,
+            raw_input,
             source,
         };
-        if let Some((idx, source)) = self.deferred_input_error {
-            return Err(input_error(idx, source));
+        if let Some((idx, raw_input, source)) = self.deferred_input_error {
+            return Err(input_error(idx, raw_input, source));
         }
         for (idx, block) in self.blocks.iter_mut().enumerate() {
             let input = match block {
@@ -99,8 +101,8 @@ impl AnthropicStreamHandler {
             if let Some(partial) = self.partial_inputs.remove(&idx)
                 && !partial.is_empty()
             {
-                *input =
-                    serde_json::from_str(&partial).map_err(|source| input_error(idx, source))?;
+                *input = serde_json::from_str(&partial)
+                    .map_err(|source| input_error(idx, partial, source))?;
             }
         }
         Ok((self.blocks, self.usage))

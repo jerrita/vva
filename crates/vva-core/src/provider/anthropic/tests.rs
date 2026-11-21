@@ -329,7 +329,7 @@ async fn complete_stream_reports_tool_json_diagnostics() {
     use serde_json::{error::Category, json};
 
     let incomplete = "{\n  \"query\": \"bud";
-    let malformed = r#"{"query":"iris"}!"#;
+    let malformed = r#"{"query":"iris"}! payload-tail "#;
     let client_tool =
         json!({"type": "tool_use", "id": "toolu_flower", "name": "find_flower", "input": {}});
     let server_tool = json!({"type": "server_tool_use", "id": "srvtoolu_flower", "name": "web_search", "input": {}});
@@ -394,8 +394,11 @@ async fn complete_stream_reports_tool_json_diagnostics() {
             json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "I can help."}}),
             json!({"type": "content_block_stop", "index": 0}),
             json!({"type": "content_block_start", "index": 1, "content_block": block}),
-            json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": partial}}),
         ];
+        let (prefix, suffix) = partial.split_at(9);
+        for fragment in [prefix, suffix] {
+            events.push(json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": fragment}}));
+        }
         if reason.is_some() {
             events.push(json!({"type": "content_block_stop", "index": 1}));
         }
@@ -444,10 +447,16 @@ async fn complete_stream_reports_tool_json_diagnostics() {
             .await
             .unwrap_err();
         server.abort();
+        for formatted in [err.to_string(), format!("{err:?}"), format!("{err:#?}")] {
+            assert!(!formatted.contains("raw_input"));
+            assert!(!formatted.contains("query"));
+            assert!(!formatted.contains("payload-tail"));
+        }
         let ProviderError::AnthropicToolInputJson {
             block_index,
             stop_reason,
             message_stop_seen,
+            raw_input,
             source,
         } = err
         else {
@@ -456,6 +465,7 @@ async fn complete_stream_reports_tool_json_diagnostics() {
         assert_eq!(block_index, 1);
         assert_eq!(stop_reason.as_deref(), reason);
         assert_eq!(message_stop_seen, stopped);
+        assert_eq!(raw_input, partial);
         assert_eq!(
             (source.classify(), source.line(), source.column()),
             expected

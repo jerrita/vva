@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.1.4] - 2026-11-21
+
+- Anthropic Messages 流式工具参数解析失败时，`AnthropicToolInputJson.raw_input` 保留传给解析器的完整字符串，默认错误格式化省略原文。vva-core 升至 0.4.0，逐字段匹配该变体的调用方需接收 `raw_input` 或使用 `..`。
+
 ## [2.1.3] - 2026-11-21
 
 - Anthropic Messages 流式工具参数 JSON 解析失败时，返回 JSON 错误类别及行列、工具块索引、`stop_reason` 和 `message_stop` 接收状态。vva-core 升至 0.3.0，穷举匹配 `ProviderError` 的调用方需处理新变体 `AnthropicToolInputJson`。
