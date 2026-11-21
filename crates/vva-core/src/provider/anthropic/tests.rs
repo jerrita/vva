@@ -818,6 +818,80 @@ async fn test_anthropic_web_search_streaming_matches_parse() {
     assert_eq!(streamed.meta, parsed.meta);
 }
 
+#[tokio::test]
+async fn anthropic_web_search_stream_preserves_initial_input() {
+    use serde_json::json;
+
+    for (input, fragments) in [
+        (json!({"query": "orchid care"}), &[][..]),
+        (json!({"query": "orchid care"}), &[""][..]),
+        (json!({}), &[r#"{"query":"orchid"#, r#" care"}"#][..]),
+    ] {
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut handler = AnthropicStreamHandler::new(Some(tx), ServerUses::new());
+        for event in [
+            json!({
+                "type": "message_start",
+                "message": {"usage": {"input_tokens": 20}}
+            }),
+            json!({
+                "type": "content_block_start", "index": 0,
+                "content_block": {
+                    "type": "server_tool_use", "id": "srvtoolu_orchid",
+                    "name": "web_search", "input": input
+                }
+            }),
+        ] {
+            handler.on_event(event).await.unwrap();
+        }
+        for fragment in fragments {
+            handler
+                .on_event(json!({
+                    "type": "content_block_delta", "index": 0,
+                    "delta": {"type": "input_json_delta", "partial_json": fragment}
+                }))
+                .await
+                .unwrap();
+        }
+        for event in [
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({
+                "type": "content_block_start", "index": 1,
+                "content_block": {
+                    "type": "web_search_tool_result", "tool_use_id": "srvtoolu_orchid", "content": []
+                }
+            }),
+            json!({"type": "content_block_stop", "index": 1}),
+            json!({
+                "type": "content_block_start", "index": 2,
+                "content_block": {"type": "text", "text": ""}
+            }),
+            json!({
+                "type": "content_block_delta", "index": 2,
+                "delta": {"type": "text_delta", "text": "No results found."}
+            }),
+            json!({"type": "content_block_stop", "index": 2}),
+            json!({
+                "type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 5}
+            }),
+            json!({"type": "message_stop"}),
+        ] {
+            handler.on_event(event).await.unwrap();
+        }
+
+        let (blocks, _) = handler.finish().unwrap();
+        assert!(
+            matches!(&blocks[0], AnthropicContentBlock::ServerToolUse { input, .. }
+            if *input == json!({"query": "orchid care"}))
+        );
+        assert!(matches!(rx.try_recv(), Ok(AgentEvent::WebSearchCall(call))
+            if call.id == "srvtoolu_orchid" && call.query == "orchid care"));
+        assert!(matches!(rx.try_recv(), Ok(AgentEvent::Text { delta, .. })
+            if delta == "No results found."));
+    }
+}
+
 #[test]
 fn test_anthropic_scope_mismatch_rebuilds_and_projects_web_call() {
     let provider = AnthropicProvider::new("test-key");

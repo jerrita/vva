@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.1.2] - 2026-11-21
+
+- 修复 Anthropic Messages 流式解析丢弃 `server_tool_use` 初始 `input` 的问题，搜索查询随起始块到达时可正常配对结果并继续读取正文。vva-core 升至 0.2.2。
+
 ## [2.1.1] - 2026-11-19
 
 - 修复 Anthropic Messages 流式 message_delta 忽略后报输入及缓存读写累计计数的问题：数值覆盖，缺省/null 保留，显式 0 生效；vva-core 升为 0.2.1，原有用量投影口径不变。

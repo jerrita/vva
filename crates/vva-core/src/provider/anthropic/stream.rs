@@ -55,25 +55,17 @@ impl AnthropicStreamHandler {
     ) -> Result<serde_json::Value, ProviderError> {
         if let Some(idx) = self.blocks.iter().position(
             |b| matches!(b, AnthropicContentBlock::ServerToolUse { id, .. } if id == tool_use_id),
-        ) {
-            let partial = self.partial_inputs.remove(&idx).unwrap_or_default();
-            let input = if partial.is_empty() {
-                serde_json::json!({})
-            } else {
-                serde_json::from_str(&partial).map_err(|e| {
-                    ProviderError::Protocol(format!("Invalid server tool input JSON: {e}"))
-                })?
-            };
-            if let AnthropicContentBlock::ServerToolUse {
-                name,
-                input: block_input,
-                ..
-            } = &mut self.blocks[idx]
+        ) && let AnthropicContentBlock::ServerToolUse { name, input, .. } = &mut self.blocks[idx]
+        {
+            if let Some(partial) = self.partial_inputs.remove(&idx)
+                && !partial.is_empty()
             {
-                *block_input = input.clone();
-                self.server_uses
-                    .insert(tool_use_id.to_string(), (name.clone(), input));
+                *input = serde_json::from_str(&partial).map_err(|e| {
+                    ProviderError::Protocol(format!("Invalid server tool input JSON: {e}"))
+                })?;
             }
+            self.server_uses
+                .insert(tool_use_id.to_string(), (name.clone(), input.clone()));
         }
         take_server_use(&mut self.server_uses, tool_use_id, expected_name)
     }
@@ -133,14 +125,15 @@ impl SseEventHandler for AnthropicStreamHandler {
                         name: require_str(cb, "name")?.to_string(),
                         input: serde_json::json!({}),
                     },
-                    "server_tool_use" => {
-                        self.partial_inputs.insert(idx, String::new());
-                        AnthropicContentBlock::ServerToolUse {
-                            id: require_str(cb, "id")?.to_string(),
-                            name: require_str(cb, "name")?.to_string(),
-                            input: serde_json::json!({}),
-                        }
-                    }
+                    "server_tool_use" => AnthropicContentBlock::ServerToolUse {
+                        id: require_str(cb, "id")?.to_string(),
+                        name: require_str(cb, "name")?.to_string(),
+                        // 官方联网搜索 SSE 示例允许省略起始 input，由增量提供。
+                        input: cb
+                            .get("input")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({})),
+                    },
                     // server tool 结果块整块到达（执行期间流暂停，无增量 delta）
                     "web_search_tool_result" | "web_fetch_tool_result" => {
                         let tool_use_id = require_str(cb, "tool_use_id")?.to_string();

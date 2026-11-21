@@ -91,7 +91,7 @@ pub trait Provider: Send + Sync {
 - **服务端代执行**：`server_tool_use` 与 `web_search_tool_result` / `web_fetch_tool_result` 块由服务端直接产出，无需回传 `tool_result`。
 - **统一投影**：web_search 调用对投影为 `WebSearchCall`（Search 动作，携带来源列表，错误结果按 Failed 上报）；web_fetch 调用对投影为 `WebSearchCall`（OpenPage 动作）；文本块中的 `web_search_result_location` 引用投影为 `Annotation::WebSearchResultLocation`（无字符偏移，以 `cited_text` 摘录定位）。
 - **原生块链保真回传**：assistant 全部原生内容块（强类型 `AnthropicContentBlock`，含 `encrypted_content` / `encrypted_index` 等服务端加密字段与 `redacted_thinking`）存入 `AnthropicTurnMeta.content_blocks`，多轮请求逐块原样回传，缺失或改动即 400；同 Responses `output_items` 原生条目链策略。
-- **流式事件**：`server_tool_use` 的输入经 `input_json_delta` 增量下发；结果块在 `content_block_start` 整块到达；引用经 `citations_delta` 逐条追加至当前 text 块。
+- **流式事件**：`server_tool_use` 保留 `content_block_start` 中的 `input`，有非空 `input_json_delta` 时用拼接后的 JSON 替换。结果块在 `content_block_start` 整块到达，引用经 `citations_delta` 逐条追加至当前 text 块。
 - **pause_turn 续包**：本次请求从传入 `Session` 的 assistant `TurnMeta.anthropic.content_blocks` 提取同 scope/affinity 下尚未匹配结果的 `server_tool_use`。流式和非流式续响应可只含 `web_search_tool_result` / `web_fetch_tool_result`，按 `tool_use_id` 关联历史 input 后投影；同响应配对保持，缺失调用或工具名不匹配仍报协议错误。无 Provider 私有会话缓存。
 - **宿主续发**：宿主检查 `ProviderResponse.meta.anthropic.stop_reason == Some("pause_turn")`，将响应 messages、usage、完整 meta 保存为 assistant Turn 并追加至 Session，按自身预算再次调用 `Provider::complete` / `complete_stream`，保持相同 affinity。不要捏造客户端 tool_result；只保存通用 messages 会丢失配对输入。ManagedSession 不增加自动续发循环；不新增 container 支持。
 - **端点能力诊断**：模型误以客户端 `tool_use` 调用服务端工具时（端点未实现 server tools 的典型症状），工具结果返回显式诊断（端点不支持原生服务端工具）。
