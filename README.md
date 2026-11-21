@@ -112,7 +112,7 @@ vva run --model anthropic/claude-sonnet-4-5  # 以 供应商/模型 指定
 
 ## Rust 后端集成
 
-仓库应用版本为 2.1.1，可复用包为 `crates/vva-core`（0.2.1，导入名 `vva_core`，默认 features 为空）。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`；已有 [headless 示例](crates/vva-core/examples/headless.rs) 需要 `response,jsonl`，不依赖 TUI/Web。
+仓库应用版本为 2.1.2，可复用包为 `crates/vva-core`（0.2.2，导入名 `vva_core`，默认 features 为空）。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`；已有 [headless 示例](crates/vva-core/examples/headless.rs) 需要 `response,jsonl`，不依赖 TUI/Web。
 
 本版新增 Responses 独立摘要选项及缓存写入用量，支持 Anthropic `pause_turn` 结果续包从历史原生块关联。精确字段、兼容边界及宿主续发方式见 [Provider 文档](docs/providers.md#23-responses-摘要与缓存写入用量)；公开结构体新增字段使 crate 从 0.1.0 升为 0.2.0。装配与生命周期见 [架构文档](docs/architecture.md#4-外部消费与生命周期)。
 
