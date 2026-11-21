@@ -21,6 +21,7 @@ pub(crate) struct Response {
     pub keep_open: bool,
 }
 
+#[cfg(feature = "web-tools")]
 impl Response {
     pub fn json(value: Value) -> Self {
         Self {

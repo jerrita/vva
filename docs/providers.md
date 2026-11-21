@@ -102,6 +102,10 @@ pub trait Provider: Send + Sync {
 
 独立请求只提取文本与搜索结果的 URL、可选标题，不按服务端调用 ID 配对；搜索原生块和加密字段不进入主会话。提取结果作为普通 `ToolResult` 文本回传，主会话继续按客户端调用 ID 关联调用与结果。该路径不修改原生 Anthropic 适配器的强类型校验。搜索错误、缺少结果块、非法报文和流中断均作为工具错误返回；合法的空结果列表表示未命中。原生 fetch 与外置 fetch 沿用原有配置。
 
+### 3.5 流式工具参数解析错误
+
+`complete_stream` 解析工具参数 JSON 失败时返回 `ProviderError::AnthropicToolInputJson`。`block_index` 是 SSE 的块索引，`stop_reason` 和 `message_stop_seen` 记录已收到的结束信息，`source.classify()`、`source.line()` 和 `source.column()` 提供 JSON 错误类别和位置。调用方可从事件通道保留出错前已转发的正文。
+
 ---
 
 ## 4. Google Gemini API 适配器

@@ -324,6 +324,150 @@ async fn message_delta_usage_updates_cumulative_input_and_cache_counts() {
 }
 
 #[tokio::test]
+async fn complete_stream_reports_tool_json_diagnostics() {
+    use crate::test_support::http::{Response, serve};
+    use serde_json::{error::Category, json};
+
+    let incomplete = "{\n  \"query\": \"bud";
+    let malformed = r#"{"query":"iris"}!"#;
+    let client_tool =
+        json!({"type": "tool_use", "id": "toolu_flower", "name": "find_flower", "input": {}});
+    let server_tool = json!({"type": "server_tool_use", "id": "srvtoolu_flower", "name": "web_search", "input": {}});
+    let mut session = Session::new(PathBuf::from("/tmp"), None);
+    session.append_turn(Turn::user_turn(Message::text("Find a flower.")));
+    let tools = [ToolDefinition {
+        name: "find_flower".into(),
+        description: "Find a flower".into(),
+        input: ToolInput::Json(
+            json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+        ),
+    }];
+    let options = CompletionOptions {
+        model: "claude-sonnet-4-5".into(),
+        ..Default::default()
+    };
+
+    for (block, partial, reason, stopped, expected) in [
+        (
+            &client_tool,
+            incomplete,
+            Some("max_tokens"),
+            true,
+            (Category::Eof, 2, 15),
+        ),
+        (
+            &client_tool,
+            malformed,
+            Some("end_turn"),
+            true,
+            (Category::Syntax, 1, 17),
+        ),
+        (
+            &client_tool,
+            incomplete,
+            None,
+            false,
+            (Category::Eof, 2, 15),
+        ),
+        (
+            &client_tool,
+            incomplete,
+            Some("max_tokens"),
+            false,
+            (Category::Eof, 2, 15),
+        ),
+        (
+            &server_tool,
+            malformed,
+            Some("end_turn"),
+            true,
+            (Category::Syntax, 1, 17),
+        ),
+    ] {
+        let mut events = vec![
+            json!({"type": "message_start", "message": {
+                "id": "msg_flower", "type": "message", "role": "assistant", "content": [],
+                "model": options.model, "stop_reason": null, "stop_sequence": null,
+                "usage": {"input_tokens": 12, "output_tokens": 0}
+            }}),
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "I can help."}}),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({"type": "content_block_start", "index": 1, "content_block": block}),
+            json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": partial}}),
+        ];
+        if reason.is_some() {
+            events.push(json!({"type": "content_block_stop", "index": 1}));
+        }
+        if block == &server_tool {
+            events.extend([
+                json!({"type": "content_block_start", "index": 2, "content_block": {
+                    "type": "web_search_tool_result", "tool_use_id": "srvtoolu_flower", "content": []
+                }}),
+                json!({"type": "content_block_stop", "index": 2}),
+            ]);
+        }
+        if let Some(reason) = reason {
+            events.push(json!({"type": "message_delta", "delta": {"stop_reason": reason, "stop_sequence": null}, "usage": {"output_tokens": 10}}));
+        }
+        if stopped {
+            events.push(json!({"type": "message_stop"}));
+        }
+        let body: String = events
+            .into_iter()
+            .map(|event| {
+                format!(
+                    "event: {}\ndata: {event}\n\n",
+                    event["type"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let (endpoint, server) = serve(move |request| {
+            assert_eq!(request.path, "/messages");
+            assert_eq!(request.body["stream"], true);
+            let body = body.clone();
+            async move {
+                Response {
+                    status: 200,
+                    headers: vec![("content-type", "text/event-stream".into())],
+                    body,
+                    keep_open: false,
+                }
+            }
+        })
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(8);
+        let err = AnthropicProvider::new("test-key")
+            .with_base_url(endpoint)
+            .complete_stream(&session, &tools, &options, Some(tx))
+            .await
+            .unwrap_err();
+        server.abort();
+        let ProviderError::AnthropicToolInputJson {
+            block_index,
+            stop_reason,
+            message_stop_seen,
+            source,
+        } = err
+        else {
+            panic!("unexpected stream error: {err:?}");
+        };
+        assert_eq!(block_index, 1);
+        assert_eq!(stop_reason.as_deref(), reason);
+        assert_eq!(message_stop_seen, stopped);
+        assert_eq!(
+            (source.classify(), source.line(), source.column()),
+            expected
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentEvent::Text { delta, .. }) if delta == "I can help.")
+        );
+        assert!(rx.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
 async fn test_anthropic_stream_error_event_reports_protocol_error() {
     let mut handler = AnthropicStreamHandler::new(None, ServerUses::new());
     let err = handler

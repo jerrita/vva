@@ -28,7 +28,7 @@ pub(crate) mod session {
 pub(crate) mod websocket;
 
 #[cfg(any(
-    feature = "web-tools",
+    feature = "anthropic",
     all(
         feature = "response",
         feature = "jsonl",
