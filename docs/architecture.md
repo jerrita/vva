@@ -15,7 +15,7 @@ vva 在统一 Session 抽象之上保留各供应商原生特性。设计约束�
 
 ## 2. 分层
 
-Cargo workspace 含根应用 `vva`（2.1.2）和 `crates/vva-core`（0.2.2），`default-members` 同时包含两包，依赖方向为 `vva → vva-core`。
+Cargo workspace 含根应用 `vva`（2.1.3）和 `crates/vva-core`（0.3.0），`default-members` 同时包含两包，依赖方向为 `vva → vva-core`。
 core 的 `response`、`anthropic`、`gemini`、`filesystem-tools`、`shell-tools`、`web-tools`、`jsonl` feature 默认关闭；根应用显式开启全部能力。
 `web-tools` 联动 Anthropic 独立搜索与 Gemini 原生联网实现。关闭实现不裁剪历史元数据，也不更换协议或工具。
 `build.rs`、终端 / 剪贴板、Axum、静态资源和 frontend 仅属于应用；单独构建 core 不执行 npm。

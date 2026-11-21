@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.1.3] - 2026-11-21
+
+- Anthropic Messages 流式工具参数 JSON 解析失败时，返回 JSON 错误类别及行列、工具块索引、`stop_reason` 和 `message_stop` 接收状态。vva-core 升至 0.3.0，穷举匹配 `ProviderError` 的调用方需处理新变体 `AnthropicToolInputJson`。
+
 ## [2.1.2] - 2026-11-21
 
 - 修复 Anthropic Messages 流式解析丢弃 `server_tool_use` 初始 `input` 的问题，搜索查询随起始块到达时可正常配对结果并继续读取正文。vva-core 升至 0.2.2。

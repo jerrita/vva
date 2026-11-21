@@ -61,6 +61,18 @@ pub enum ProviderError {
     },
     #[error("Protocol error: {0}")]
     Protocol(String),
+    /// Anthropic Messages 流式工具输入解析失败。`source` 提供 JSON 类别与行列。
+    #[cfg(feature = "anthropic")]
+    #[error(
+        "Protocol error: Invalid tool input JSON: {source} (Anthropic block {block_index}, stop_reason={stop_reason:?}, message_stop_seen={message_stop_seen})"
+    )]
+    AnthropicToolInputJson {
+        block_index: usize,
+        stop_reason: Option<String>,
+        message_stop_seen: bool,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
