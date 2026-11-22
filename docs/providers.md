@@ -98,9 +98,22 @@ pub trait Provider: Send + Sync {
 
 ### 3.4 独立搜索
 
-模型启用 `annotation.standalone_search` 后，主会话调用客户端 `web_search`，工具使用同一模型、端点和凭据发起独立 Messages 流式请求，仅携带搜索词和搜索工具，以 `tool_choice` 强制选择搜索并关闭 thinking；工具版本及开关见 [config-reference §4.2](config-reference.md#42-annotation-注记)。
+core 通过 `StandaloneSearchTool::install(&provider, &mut options, &mut tools)` 提供独立搜索模式。安装入口完成客户端 `web_search` 注册、主请求原生搜索关闭和同名服务端预留清理；`enable_web_search` 原本为 `false` 时不执行任何修改。宿主先选定搜索实现，安装会按 `ToolRegistry::register` 的语义替换已有的同名客户端工具，安装后不再注册外置搜索回退。VVA 的 `annotation.standalone_search` 在应用层映射到该入口，联网开关与工具权限仍在安装前求值。
 
-独立请求只提取文本与搜索结果的 URL、可选标题，不按服务端调用 ID 配对；搜索原生块和加密字段不进入主会话。提取结果作为普通 `ToolResult` 文本回传，主会话继续按客户端调用 ID 关联调用与结果。该路径不修改原生 Anthropic 适配器的强类型校验。搜索错误、缺少结果块、非法报文和流中断均作为工具错误返回；合法的空结果列表表示未命中。原生 fetch 与外置 fetch 沿用原有配置。
+```rust
+let mut options = CompletionOptions {
+    model,
+    enable_web_search: true,
+    enable_web_fetch: false,
+    web_tool_version: Some("20250305".into()),
+    ..Default::default()
+};
+StandaloneSearchTool::install(&provider, &mut options, &mut tools);
+```
+
+安装时捕获独立请求所需的模型、输出上限和 `web_tool_version`，独立请求复用同一 Provider 的端点与凭据，仅携带搜索词和搜索工具，以 `tool_choice` 强制选择搜索并关闭 thinking。主请求的 `enable_web_search` 随后设为 `false`，`enable_web_fetch` 与 `web_tool_version` 不被改写；主请求仍启用原生 fetch 时，该版本同时用于 fetch，因此宿主需选择两种工具都支持的版本，或按示例关闭原生 fetch。版本默认值及应用层注记见 [config-reference §4.2](config-reference.md#42-annotation-注记)。
+
+独立请求只提取文本与搜索结果的 URL、可选标题，不读取 `tool_use_id`，也不按服务端调用 ID 配对；搜索原生块和加密字段不进入主会话。提取结果作为普通 `ToolResult` 文本回传，主会话继续按客户端调用 ID 关联调用与结果。该路径不修改原生 Anthropic 适配器的强类型校验。搜索错误、缺少结果块、非法报文和流中断均作为工具错误返回；合法的空结果列表表示未命中。原生 fetch 与外置 fetch 沿用原有配置。
 
 ### 3.5 流式工具参数解析错误
 

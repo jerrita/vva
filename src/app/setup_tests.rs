@@ -365,7 +365,7 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
         }}),
         json!({"type": "content_block_stop", "index": 0}),
         json!({"type": "content_block_start", "index": 1, "content_block": {
-            "type": "web_search_tool_result", "tool_use_id": "different_result_id", "content": [
+            "type": "web_search_tool_result", "content": [
                 {"type": "web_search_result", "title": "Example docs", "url": "https://example.com/docs", "encrypted_content": "opaque_1"},
                 {"type": "web_search_result", "url": "https://example.com/guide", "encrypted_content": "opaque_2"}
             ]
@@ -455,7 +455,6 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
         assert!(result.content.contains("Example docs"));
         assert!(result.content.contains("https://example.com/guide"));
         assert!(result.content.contains("Search summary."));
-        assert!(!result.content.contains("different_result_id"));
         assert!(!result.content.contains("opaque_"));
         assert_eq!(result.tool_call_id, "client_search");
         let mut turn = Turn::assistant_turn(response.messages);

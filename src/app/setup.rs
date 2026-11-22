@@ -160,14 +160,11 @@ impl VvaSessionSetup {
             && resolved.effective_type() == vva_core::provider::ProviderType::Anthropic
             && resolved.model_config.standalone_search();
         let search_provider = standalone_search.then(|| resolved.create_anthropic_provider());
-        let options = CompletionOptions {
+        let mut options = CompletionOptions {
             model: resolved.model_id,
             max_tokens,
             reasoning_effort: resolved.selected_variant,
-            enable_web_search: web_declared
-                && search_allowed
-                && (!bundled_fetch || fetch_allowed)
-                && !standalone_search,
+            enable_web_search: web_declared && search_allowed && (!bundled_fetch || fetch_allowed),
             enable_web_fetch: web_declared
                 && resolved.model_config.declare_web_fetch()
                 && fetch_allowed,
@@ -177,12 +174,11 @@ impl VvaSessionSetup {
             ..Default::default()
         };
         if let Some(provider) = search_provider {
-            tools.register(Arc::new(
-                vva_core::tools::web::standalone::StandaloneSearchTool::new(
-                    provider,
-                    options.clone(),
-                ),
-            ));
+            vva_core::tools::web::standalone::StandaloneSearchTool::install(
+                &provider,
+                &mut options,
+                &mut tools,
+            );
         }
         // 开启原生联网搜索时预留服务端工具名：端点未代执行而由模型误发起
         // 客户端调用时，注册表给出显式诊断而非误导性的 Tool not found

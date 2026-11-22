@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.1.5] - 2026-11-22
+
+- vva-core 升至 0.5.0：新增 `StandaloneSearchTool::install`，统一完成 Anthropic 客户端 `web_search` 注册、主请求原生搜索关闭及同名服务端预留清理，宿主可复用相同模型、端点、凭据和搜索版本直接接入独立搜索。
+- VVA 独立搜索装配迁移到 core 统一入口；文档明确搜索与原生 fetch 的版本共享约束及同名工具替换规则，并覆盖搜索结果缺少 `tool_use_id` 时仍按主对话客户端调用 ID 回传的流程。原生搜索配对与校验保持不变。
+
 ## [2.1.4] - 2026-11-21
 
 - Anthropic Messages 流式工具参数解析失败时，`AnthropicToolInputJson.raw_input` 保留传给解析器的完整字符串，默认错误格式化省略原文。vva-core 升至 0.4.0，逐字段匹配该变体的调用方需接收 `raw_input` 或使用 `..`。
