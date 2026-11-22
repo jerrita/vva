@@ -3896,7 +3896,7 @@ dependencies = [
 
 [[package]]
 name = "vva"
-version = "2.1.5"
+version = "2.1.6"
 dependencies = [
  "arboard",
  "async-trait",
@@ -3930,7 +3930,7 @@ dependencies = [
 
 [[package]]
 name = "vva-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "base64",

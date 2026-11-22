@@ -396,7 +396,9 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
                 assert_eq!(headers["x-api-key"], "fixture-key");
                 assert_eq!(headers["anthropic-version"], "2023-06-01");
                 requests.send(body.clone()).await.unwrap();
-                if body["tool_choice"]["name"] == "web_search" {
+                if body["tool_choice"]["type"] == "auto" {
+                    assert!(body.get("thinking").is_none());
+                    assert_eq!(body["tool_choice"], json!({"type": "auto"}));
                     return ([("content-type", "text/event-stream")], sse).into_response();
                 }
                 let has_result = body["messages"].as_array().unwrap().iter().any(|message| {
@@ -486,12 +488,11 @@ async fn standalone_search_returns_text_without_replaying_server_blocks() {
         );
         let search = received.try_recv().unwrap();
         assert_eq!(search["model"], "search-model");
-        assert_eq!(search["thinking"], json!({"type": "disabled"}));
-        assert_eq!(
-            search["tool_choice"],
-            json!({"type": "tool", "name": "web_search"})
-        );
+        assert!(search.get("thinking").is_none());
+        assert_eq!(search["tool_choice"], json!({"type": "auto"}));
+        assert_eq!(search["output_config"], json!({"effort": "medium"}));
         assert_eq!(search["tools"].as_array().unwrap().len(), 1);
+        assert!(search["tools"][0].get("allowed_callers").is_none());
         assert_eq!(search["tools"][0]["type"], expected_tool);
         assert_eq!(search["messages"].as_array().unwrap().len(), 1);
         assert!(!search.to_string().contains("main-only-marker"));

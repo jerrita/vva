@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.1.6] - 2026-11-22
+
+- vva-core 升至 0.5.1：Anthropic 独立搜索子请求与 Claude Code 参数行为对齐，省略 `thinking` 与 `allowed_callers`，使用 `tool_choice: {"type":"auto"}` 和 `output_config: {"effort":"medium"}`，避免 Sonnet 5.5 及兼容网关因禁用思考或强制工具调用返回 HTTP 400；搜索结果仍按主对话客户端工具调用 ID 回传。
+
 ## [2.1.5] - 2026-11-22
 
 - vva-core 升至 0.5.0：新增 `StandaloneSearchTool::install`，统一完成 Anthropic 客户端 `web_search` 注册、主请求原生搜索关闭及同名服务端预留清理，宿主可复用相同模型、端点、凭据和搜索版本直接接入独立搜索。

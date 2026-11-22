@@ -112,9 +112,9 @@ vva run --model anthropic/claude-sonnet-4-5  # 以 供应商/模型 指定
 
 ## Rust 后端集成
 
-仓库应用版本为 2.1.5，可复用包为 `crates/vva-core`（0.5.0，导入名 `vva_core`，默认 features 为空）。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`；已有 [headless 示例](crates/vva-core/examples/headless.rs) 需要 `response,jsonl`，不依赖 TUI/Web。
+仓库应用版本为 2.1.6，可复用包为 `crates/vva-core`（0.5.1，导入名 `vva_core`，默认 features 为空）。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`；已有 [headless 示例](crates/vva-core/examples/headless.rs) 需要 `response,jsonl`，不依赖 TUI/Web。
 
-本版新增 `StandaloneSearchTool::install`，宿主可通过统一入口接入 Anthropic 独立搜索，复用现有客户端工具循环。版本共享约束、同名工具替换及主会话回传见 [Provider 文档](docs/providers.md#34-独立搜索)；装配与生命周期见 [架构文档](docs/architecture.md#4-外部消费与生命周期)。
+本版将 Anthropic 独立搜索子请求与 Claude Code 参数行为对齐，省略 thinking 与 `allowed_callers`，采用自动工具选择和 medium effort。版本共享约束、同名工具替换及主会话回传见 [Provider 文档](docs/providers.md#34-独立搜索)；装配与生命周期见 [架构文档](docs/architecture.md#4-外部消费与生命周期)。
 
 ## 使用
 

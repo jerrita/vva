@@ -111,7 +111,7 @@ let mut options = CompletionOptions {
 StandaloneSearchTool::install(&provider, &mut options, &mut tools);
 ```
 
-安装时捕获独立请求所需的模型、输出上限和 `web_tool_version`，独立请求复用同一 Provider 的端点与凭据，仅携带搜索词和搜索工具，以 `tool_choice` 强制选择搜索并关闭 thinking。主请求的 `enable_web_search` 随后设为 `false`，`enable_web_fetch` 与 `web_tool_version` 不被改写；主请求仍启用原生 fetch 时，该版本同时用于 fetch，因此宿主需选择两种工具都支持的版本，或按示例关闭原生 fetch。版本默认值及应用层注记见 [config-reference §4.2](config-reference.md#42-annotation-注记)。
+安装时捕获独立请求所需的模型、输出上限和 `web_tool_version`，独立请求复用同一 Provider 的端点与凭据，仅携带搜索词和搜索工具，省略 thinking 与 `allowed_callers`，使用 `tool_choice: {"type":"auto"}` 和 `output_config: {"effort":"medium"}`。主请求的 `enable_web_search` 随后设为 `false`，`enable_web_fetch` 与 `web_tool_version` 不被改写；主请求仍启用原生 fetch 时，该版本同时用于 fetch，因此宿主需选择两种工具都支持的版本，或按示例关闭原生 fetch。版本默认值及应用层注记见 [config-reference §4.2](config-reference.md#42-annotation-注记)。
 
 独立请求只提取文本与搜索结果的 URL、可选标题，不读取 `tool_use_id`，也不按服务端调用 ID 配对；搜索原生块和加密字段不进入主会话。提取结果作为普通 `ToolResult` 文本回传，主会话继续按客户端调用 ID 关联调用与结果。该路径不修改原生 Anthropic 适配器的强类型校验。搜索错误、缺少结果块、非法报文和流中断均作为工具错误返回；合法的空结果列表表示未命中。原生 fetch 与外置 fetch 沿用原有配置。
 

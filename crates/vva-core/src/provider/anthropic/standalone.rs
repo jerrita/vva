@@ -24,11 +24,11 @@ impl AnthropicProvider {
         let body = serde_json::json!({
             "model": options.model,
             "max_tokens": options.max_tokens.unwrap_or(4096).min(4096),
-            "thinking": {"type": "disabled"},
             "system": "You are an assistant for performing a web search tool use.",
             "messages": [{"role": "user", "content": format!("Perform a web search for the query: {query}")}],
-            "tools": [{"type": format!("web_search_{version}"), "name": "web_search", "allowed_callers": ["direct"], "max_uses": 8}],
-            "tool_choice": {"type": "tool", "name": "web_search"},
+            "tools": [{"type": format!("web_search_{version}"), "name": "web_search", "max_uses": 8}],
+            "tool_choice": {"type": "auto"},
+            "output_config": {"effort": "medium"},
             "stream": true
         });
         let mut handler = SearchStream::default();
