@@ -1,5 +1,3 @@
-> 此项目为个人玩具，目前你不应该期望能将其用于稳定的生产
-
 <div align="center">
   <h1 align="center">
     <img src="frontend/public/favicon.png" width="200">
@@ -14,10 +12,8 @@ vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，
 多数编程助手把所有模型压成同一个 Chat Completions 接口，缓存、思考签名、原生搜索等能力随之丢失。vva 为每家供应商实现原生协议：
 
 - **OpenAI Responses**：`previous_response_id` 服务端链式续接，只上传增量上下文；
-- **Anthropic Messages**：Prompt Caching 断点与 Thinking 签名完整回传，长会话持续命中缓存；
+- **Anthropic Messages**：Prompt Caching 断点与 Thinking 签名回传，长会话持续命中缓存；
 - **Google Gemini**：原生 Google Search Grounding，回答附带精确到片段的引用来源。
-
-结果是更低的 token 成本、更快的响应，以及模型能力不打折扣。
 
 ## 特性
 
@@ -26,8 +22,8 @@ vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，
 - **用量透明**：实时显示 token、缓存命中与费用；
 - **多模态**：`@` 引用工作区文件，图片与 PDF 作为原生附件发送；
 - **可扩展**：支持 `AGENTS.md` 指令、[Agent Skills](https://agentskills.io)、自定义 subagent；
-- **联网兜底**：模型无原生搜索时可接入 Brave / Tavily / Gemini / DeepSeek / 智谱搜索与网页抓取；
-- **常驻 IM agent**：`vva agent` 接入 QQ，自动路由会话、沉淀长期记忆、执行定时任务。
+- **联网补全**：模型无原生搜索时可接入 Brave / Tavily / Gemini / DeepSeek / 智谱搜索与网页抓取；
+- **常驻 IM agent**：`vva agent` 接入 QQ，自动路由会话、整理长期记忆、执行定时任务。
 
 ## 安装
 
@@ -43,14 +39,12 @@ curl -fsSL https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.
 irm https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.ps1 | iex
 ```
 
-已安装时，安装脚本比较本地与最新版本，已是最新则跳过下载。也可直接执行：
-
 ```bash
 vva version   # 查看当前版本
-vva update    # 更新到最新 release（安装到当前可执行文件所在目录）
+vva update    # 更新到最新 release，安装到当前可执行文件所在目录
 ```
 
-从源码构建需要 Rust 1.85+；构建期需要 Node.js 与 npm（Web 前端打包进二进制，运行时无需 Node）。
+从源码构建需要 Rust 1.85+，构建期需要 Node.js 与 npm。Web 前端打包进二进制，运行时不需要 Node。
 
 ```bash
 cargo install --git https://github.com/jerrita/vva
@@ -58,19 +52,19 @@ cargo install --git https://github.com/jerrita/vva
 
 ### Android / Termux
 
-在 Termux 中安装依赖后，运行上方的一键安装命令：
+安装依赖后运行上方的一键安装命令：
 
 ```bash
 pkg install bash curl tar coreutils ca-certificates
 ```
 
-安装脚本选择 `android-arm64` 产物，默认安装到 `$PREFIX/bin`，可通过 `VVA_INSTALL_DIR` 修改。主目录读取 `$HOME`，未设置时使用 `/data/data/com.termux/files/home`；全局配置位于该目录下的 `.vva/config.jsonc`，会话与技能等数据也保存在 `.vva` 下。
-
-在 Termux 中从源码构建时，先安装 `rust clang make nodejs-lts`，再执行上方的 `cargo install` 命令。
+- 安装脚本选择 `android-arm64` 产物，默认安装到 `$PREFIX/bin`，可用 `VVA_INSTALL_DIR` 修改。
+- 主目录取 `$HOME`，未设置时为 `/data/data/com.termux/files/home`。全局配置在该目录下的 `.vva/config.jsonc`，会话与技能等数据也保存在 `.vva` 下。
+- 从源码构建：先安装 `rust clang make nodejs-lts`，再执行上方的 `cargo install`。
 
 ## 快速开始
 
-已有官方 API Key 时，设置环境变量即可直接使用：
+已有官方 API Key 时，设置环境变量即可：
 
 ```bash
 export OPENAI_API_KEY=...
@@ -94,27 +88,7 @@ vva run --model anthropic/claude-sonnet-4-5  # 以 供应商/模型 指定
 }
 ```
 
-自定义供应商、推理档位、费率、联网搜索等配置见 [配置参考](docs/config-reference.md)；配置文件声明 `"$schema"` 指向 [schema.json](schema.json) 可获得编辑器补全。
-
-也可以把下面的 prompt 交给其他 coding agent，由它辅助完成配置：
-
-```text
-帮我配置 vva（https://github.com/jerrita/vva）。
-先阅读配置参考与 schema：
-- https://raw.githubusercontent.com/jerrita/vva/master/docs/config-reference.md
-- https://raw.githubusercontent.com/jerrita/vva/master/schema.json
-
-然后询问我要使用的供应商、端点、模型与是否需要联网搜索，据此生成 ~/.vva/config.jsonc：
-- 文件开头声明 "$schema" 指向上面的 schema.json；
-- API Key 以 "${ENV_VAR}" 引用，密钥写入 ~/.vva/env（KEY=VALUE 格式），不写进配置文件；
-- 写入后运行 `vva run "hello"` 验证，报错时按配置参考修正。
-```
-
-## Rust 后端集成
-
-仓库应用版本为 2.1.6，可复用包为 `crates/vva-core`（0.5.1，导入名 `vva_core`，默认 features 为空）。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`；已有 [headless 示例](crates/vva-core/examples/headless.rs) 需要 `response,jsonl`，不依赖 TUI/Web。
-
-本版将 Anthropic 独立搜索子请求与 Claude Code 参数行为对齐，省略 thinking 与 `allowed_callers`，采用自动工具选择和 medium effort。版本共享约束、同名工具替换及主会话回传见 [Provider 文档](docs/providers.md#34-独立搜索)；装配与生命周期见 [架构文档](docs/architecture.md#4-外部消费与生命周期)。
+全部配置字段见[配置参考](docs/config-reference.md)。配置文件声明 `"$schema"` 指向 [schema.json](schema.json) 可获得编辑器补全。
 
 ## 使用
 
@@ -126,6 +100,12 @@ vva agent                              # 常驻 IM agent
 ```
 
 终端界面中输入 `/help` 查看命令，`/model` 切换模型，`/sessions` 恢复历史会话。
+
+## Rust 集成
+
+`crates/vva-core`（导入名 `vva_core`，默认 features 为空）可单独复用。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`。[headless 示例](crates/vva-core/examples/headless.rs) 只需 `response,jsonl`，不依赖 TUI / Web。
+
+装配与生命周期见[架构文档](docs/architecture.md#4-外部消费与生命周期)。
 
 ## 文档
 
