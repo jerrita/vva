@@ -7,111 +7,74 @@
   <p align="center">用满每家模型原生能力的 AI 编程助手</p>
 </div>
 
-vva 是终端与浏览器中的 AI 编程助手：用自然语言描述任务，模型在你的项目里读写文件、执行命令、联网查资料，直到完成。
-
-多数编程助手把所有模型压成同一个 Chat Completions 接口，缓存、思考签名、原生搜索等能力随之丢失。vva 为每家供应商实现原生协议：
-
-- **OpenAI Responses**：`previous_response_id` 服务端链式续接，只上传增量上下文；
-- **Anthropic Messages**：Prompt Caching 断点与 Thinking 签名回传，长会话持续命中缓存；
-- **Google Gemini**：原生 Google Search Grounding，回答附带精确到片段的引用来源。
-
-## 特性
-
+- **原生联网**：直接使用各家模型自带的搜索；模型无原生搜索时接入 Brave / Tavily / Gemini / DeepSeek / 智谱搜索与网页抓取；
 - **三种界面**：全屏终端界面、浏览器界面（含文件浏览与 IDE 布局）、单次命令行执行，共享同一套会话；
-- **会话持久化**：按项目自动保存，随时恢复、回退或分叉；
-- **用量透明**：实时显示 token、缓存命中与费用；
-- **多模态**：`@` 引用工作区文件，图片与 PDF 作为原生附件发送；
-- **可扩展**：支持 `AGENTS.md` 指令、[Agent Skills](https://agentskills.io)、自定义 subagent；
-- **联网补全**：模型无原生搜索时可接入 Brave / Tavily / Gemini / DeepSeek / 智谱搜索与网页抓取；
+- **跨供应商会话**：会话以统一格式存储，中途切换模型或供应商，上下文可接续；
 - **常驻 IM agent**：`vva agent` 接入 QQ，自动路由会话、整理长期记忆、执行定时任务。
+
+
+## 快速开始
+
+把下面这段话发给任意 coding agent（Claude Code、Codex 等），由它询问需求并完成配置：
+
+```text
+阅读 https://raw.githubusercontent.com/jerrita/vva/master/docs/config-reference.md，
+帮我配置 vva 的 ~/.vva/config.jsonc。
+先问我要接入哪些供应商，再逐个询问所需信息，例如协议类型、端点、API Key 所在的环境变量、可用模型与默认模型。
+配置完成后安装并执行 vva run "你好" 验证。
+```
+
+全部配置字段见[配置参考](docs/config-reference.md)。配置文件声明 `"$schema"` 指向 [schema.json](schema.json) 可获得编辑器补全。
 
 ## 安装
 
 一键安装或更新到最新 release：
 
 ```bash
-# Linux x86_64 / arm64 / riscv64gc、macOS Apple Silicon（arm64）、Android arm64（Termux）
 curl -fsSL https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.sh | bash
 ```
 
 ```powershell
-# Windows x64
 irm https://raw.githubusercontent.com/jerrita/vva/master/scripts/install.ps1 | iex
 ```
 
+默认安装到 `~/.local/bin`，Termux 为 `$PREFIX/bin`，Windows 为 `%LOCALAPPDATA%\vva\bin`，可用 `VVA_INSTALL_DIR` 修改。
+
+Termux 先安装依赖：`pkg install bash curl tar coreutils ca-certificates`。
+
 ```bash
 vva version   # 查看当前版本
-vva update    # 更新到最新 release，安装到当前可执行文件所在目录
+vva update    # 更新到最新 release
 ```
 
-从源码构建需要 Rust 1.85+，构建期需要 Node.js 与 npm。Web 前端打包进二进制，运行时不需要 Node。
+### 从源码构建
+
+需要 Rust 1.88+，构建期需要 Node.js 与 npm。
 
 ```bash
 cargo install --git https://github.com/jerrita/vva
 ```
 
-### Android / Termux
-
-安装依赖后运行上方的一键安装命令：
-
-```bash
-pkg install bash curl tar coreutils ca-certificates
-```
-
-- 安装脚本选择 `android-arm64` 产物，默认安装到 `$PREFIX/bin`，可用 `VVA_INSTALL_DIR` 修改。
-- 主目录取 `$HOME`，未设置时为 `/data/data/com.termux/files/home`。全局配置在该目录下的 `.vva/config.jsonc`，会话与技能等数据也保存在 `.vva` 下。
-- 从源码构建：先安装 `rust clang make nodejs-lts`，再执行上方的 `cargo install`。
-
-## 快速开始
-
-已有官方 API Key 时，设置环境变量即可：
-
-```bash
-export OPENAI_API_KEY=...
-vva                                          # 默认模型 openai/gpt-5.6-terra
-
-export ANTHROPIC_API_KEY=...                 # 或 GEMINI_API_KEY
-vva run --model anthropic/claude-sonnet-4-5  # 以 供应商/模型 指定
-```
-
-使用其他供应商或兼容端点时，写一份 `~/.vva/config.jsonc`：
-
-```jsonc
-{
-  "settings": { "default": "zai/glm-5.3" },
-  "providers": {
-    "zai": {
-      "type": "glm-coding-plan", // 智谱预设：只需密钥，端点与模型自动补全
-      "api_key": "${ZAI_API_KEY}"
-    }
-  }
-}
-```
-
-全部配置字段见[配置参考](docs/config-reference.md)。配置文件声明 `"$schema"` 指向 [schema.json](schema.json) 可获得编辑器补全。
-
 ## 使用
 
 ```bash
 vva                                    # 终端界面
-vva run "梳理 crates/vva-core/src/harness 的调用链"     # 单次执行，结果流式输出
+vva run "总结这个项目的目录结构"       # 单次执行，结果流式输出
 vva web                                # 浏览器界面，http://127.0.0.1:3000
 vva agent                              # 常驻 IM agent
 ```
 
 终端界面中输入 `/help` 查看命令，`/model` 切换模型，`/sessions` 恢复历史会话。
 
-## Rust 集成
-
-`crates/vva-core`（导入名 `vva_core`，默认 features 为空）可单独复用。按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`。[headless 示例](crates/vva-core/examples/headless.rs) 只需 `response,jsonl`，不依赖 TUI / Web。
-
-装配与生命周期见[架构文档](docs/architecture.md#4-外部消费与生命周期)。
-
 ## 文档
 
 - [使用指南](docs/usage.md)：命令、参数、扩展机制与 Agent Space
 - [配置参考](docs/config-reference.md)：配置文件全部字段
 - [设计文档](docs/README.md)：架构、领域模型、存储引擎、供应商适配
+
+## Rust 集成
+
+`crates/vva-core`（导入名 `vva_core`）可单独复用，默认不启用 feature；按需启用 `response` / `anthropic` / `gemini`，JSONL 存储启用 `jsonl`。用法见 [headless 示例](crates/vva-core/examples/headless.rs)与[架构文档](docs/architecture.md#4-外部消费与生命周期)。
 
 ## 许可证
 
